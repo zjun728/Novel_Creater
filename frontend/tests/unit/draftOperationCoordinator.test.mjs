@@ -34,11 +34,95 @@ function operation(overrides = {}) {
     partialOutputScalars,
     resultWorkingDraftRevision: status === 'completed' ? 5 : null,
     resultContentHash: status === 'completed' ? partialOutputHash : null,
+    resultSelectionStart: null,
+    resultSelectionEnd: null,
     failureCode: status === 'failed' ? 'DraftProviderFailed' : null,
     model: Object.freeze({ providerId: 'provider-1', modelName: 'writer-model' }),
     ...overrides,
   }
 }
+
+test('coordinator freezes one local command and keeps replacement preview separate', async () => {
+  const calls = []
+  const replacement = ' 新😀 '
+  const subject = coordinator({
+    startOperation: async next => {
+      calls.push(next)
+      return operation({
+        operationType: 'rewrite_selection',
+        partialOutput: replacement,
+        partialOutputHash: textHash(replacement),
+        resultContentHash: 'b'.repeat(64),
+        resultSelectionStart: 2,
+        resultSelectionEnd: 6,
+      })
+    },
+    reloadWorkspace: async () => ({
+      workingDraft: { revision: 5, contentHash: 'b'.repeat(64), content: '权威正文' },
+    }),
+  })
+
+  await subject.runLocal('rewrite_selection', {
+    expectedWorkingDraftRevision: 4,
+    expectedContentHash: HASH,
+    authorInstruction: '保持克制',
+    startOffset: 2,
+    endOffset: 4,
+    selectedTextHash: textHash('目标'),
+  })
+
+  assert.equal(calls.length, 1)
+  assert.equal(Object.isFrozen(calls[0]), true)
+  assert.equal(calls[0].idempotencyKey, KEY)
+  assert.equal(subject.preview, replacement)
+  assert.equal(subject.previewKind, 'replacement')
+  assert.deepEqual(subject.resultSelection, { startOffset: 2, endOffset: 6 })
+})
+
+test('local unknown retry reuses the identical frozen key and never reloads a cancellation preview', async () => {
+  const calls = []
+  let attempt = 0
+  const subject = coordinator({
+    startOperation: async next => {
+      calls.push(next)
+      attempt += 1
+      if (attempt === 1) {
+        throw new ApiError({
+          status: 0,
+          code: 'network_error',
+          message: 'unknown',
+        })
+      }
+      return operation({
+        operationType: 'rewrite_selection',
+        status: 'cancelled',
+        partialOutput: ' 局部预览 ',
+        partialOutputHash: textHash(' 局部预览 '),
+        partialOutputScalars: 6,
+        resultWorkingDraftRevision: null,
+        resultContentHash: null,
+      })
+    },
+    reloadWorkspace: async () => assert.fail('local cancellation must not reload'),
+  })
+  const local = {
+    expectedWorkingDraftRevision: 4,
+    expectedContentHash: HASH,
+    authorInstruction: '',
+    startOffset: 2,
+    endOffset: 4,
+    selectedTextHash: textHash('目标'),
+  }
+
+  await assert.rejects(subject.runLocal('rewrite_selection', local), ApiError)
+  await subject.retryUnknown()
+
+  assert.equal(calls.length, 2)
+  assert.strictEqual(calls[1], calls[0])
+  assert.equal(subject.status, 'cancelled')
+  assert.equal(subject.preview, ' 局部预览 ')
+  assert.equal(subject.resultSelection, null)
+})
 
 function deferred() {
   let resolve

@@ -52,11 +52,132 @@ function operation(overrides = {}) {
     partialOutputScalars: Array.from(partialOutput).length,
     resultWorkingDraftRevision: status === 'completed' ? 5 : null,
     resultContentHash: status === 'completed' ? partialOutputHash : null,
+    resultSelectionStart: null,
+    resultSelectionEnd: null,
     failureCode: status === 'failed' ? 'DraftProviderFailed' : null,
     model: Object.freeze({ providerId: 'provider-1', modelName: 'writer-model' }),
     ...overrides,
   }
 }
+
+test('local selection operation flushes exact text, previews separately, then exposes one undo', async () => {
+  const state = autosave({ text: '左侧目标右侧', revision: 4, hash: HASH })
+  const calls = []
+  const replacement = '新片段'
+  const resultHash = 'b'.repeat(64)
+  const pending = deferred()
+  const controller = operationController({
+    autosave: state,
+    createDraftOperation: async command => {
+      calls.push(['start', command])
+      return pending.promise
+    },
+    reloadWorkspace: async () => ({
+      workingDraft: {
+        revision: 5,
+        contentHash: resultHash,
+        content: `左侧${replacement}右侧`,
+      },
+    }),
+    undoLocalDraft: async command => {
+      calls.push(['undo', command])
+      return { workingDraft: { revision: 6, contentHash: HASH, content: '左侧目标右侧' } }
+    },
+  })
+  controller.setSelection({ startOffset: 2, endOffset: 4, selectedText: '目标' })
+
+  const request = controller.runSelectionOperation('rewrite_selection')
+  await Promise.resolve()
+  assert.equal(controller.editorText.value, '左侧目标右侧')
+  pending.resolve(operation({
+    operationType: 'rewrite_selection',
+    partialOutput: replacement,
+    partialOutputHash: textHash(replacement),
+    resultContentHash: resultHash,
+    resultSelectionStart: 2,
+    resultSelectionEnd: 5,
+  }))
+  await request
+
+  assert.equal(state.flushCalls, 1)
+  assert.equal(calls[0][1].startOffset, 2)
+  assert.equal(calls[0][1].endOffset, 4)
+  assert.equal(calls[0][1].selectedTextHash, textHash('目标'))
+  assert.equal(controller.undoAvailable.value, true)
+  assert.deepEqual(controller.restoredSelection.value, { startOffset: 2, endOffset: 5 })
+  await controller.undoLastLocal()
+  assert.deepEqual(calls[1], ['undo', {
+    expectedWorkingDraftRevision: 5,
+    expectedContentHash: resultHash,
+    sourceOperationId: OPERATION_ID,
+  }])
+  assert.equal(controller.undoAvailable.value, false)
+})
+
+test('local cancellation with preview preserves editor and unknown undo reconciles once without retry', async () => {
+  const state = autosave({ text: '左侧目标右侧', revision: 4, hash: HASH })
+  const resultHash = 'b'.repeat(64)
+  let reloads = 0
+  let undoCalls = 0
+  const controller = operationController({
+    autosave: state,
+    createDraftOperation: async () => operation({
+      operationType: 'rewrite_selection',
+      status: 'cancelled',
+      partialOutput: ' 取消前预览 ',
+      partialOutputHash: textHash(' 取消前预览 '),
+      partialOutputScalars: 7,
+      resultWorkingDraftRevision: null,
+      resultContentHash: null,
+    }),
+    reloadWorkspace: async () => {
+      reloads += 1
+      return { workingDraft: { revision: 6, contentHash: HASH, content: '已撤销' } }
+    },
+  })
+  controller.setSelection({ startOffset: 2, endOffset: 4, selectedText: '目标' })
+
+  await controller.runSelectionOperation('rewrite_selection')
+
+  assert.equal(controller.editorText.value, '左侧目标右侧')
+  assert.equal(state.resetCalls.length, 0)
+  assert.equal(controller.undoAvailable.value, false)
+  assert.equal(reloads, 0)
+
+  const completed = operationController({
+    autosave: state,
+    createDraftOperation: async () => operation({
+      operationType: 'rewrite_selection',
+      partialOutput: '新片段',
+      partialOutputHash: textHash('新片段'),
+      resultContentHash: resultHash,
+      resultSelectionStart: 2,
+      resultSelectionEnd: 5,
+    }),
+    reloadWorkspace: async () => {
+      reloads += 1
+      return reloads === 1
+        ? { workingDraft: { revision: 5, contentHash: resultHash, content: '新正文' } }
+        : { workingDraft: { revision: 6, contentHash: HASH, content: '已撤销' } }
+    },
+    undoLocalDraft: async () => {
+      undoCalls += 1
+      throw new ApiError({
+        status: 502,
+        code: 'DraftOperationUnavailable',
+        message: 'unknown',
+      })
+    },
+  })
+  completed.setSelection({ startOffset: 2, endOffset: 4, selectedText: '目标' })
+  await completed.runSelectionOperation('rewrite_selection')
+  assert.equal(completed.undoAvailable.value, true)
+  await completed.undoLastLocal()
+  assert.equal(undoCalls, 1)
+  assert.equal(reloads, 2)
+  assert.equal(completed.undoAvailable.value, false)
+  assert.equal(state.resetCalls.at(-1).workingDraft.content, '已撤销')
+})
 
 function operationController(overrides = {}) {
   return createChapterWriterController({

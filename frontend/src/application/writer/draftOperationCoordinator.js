@@ -17,10 +17,15 @@ const MAX_BASE_REVISION = 2_147_483_646
 const MAX_RESULT_REVISION = 2_147_483_647
 const MAX_EVENTS = 2_048
 const MAX_PARTIAL_SCALARS = 100_000
+const LOCAL_OPERATION_TYPES = new Set([
+  'rewrite_selection', 'polish_selection',
+  'expand_selection', 'compress_selection',
+])
 const OPERATION_FIELDS = [
   'id', 'projectId', 'chapterSessionId', 'operationType', 'status',
   'lastEventSequence', 'partialOutput', 'partialOutputHash',
   'partialOutputScalars', 'resultWorkingDraftRevision', 'resultContentHash',
+  'resultSelectionStart', 'resultSelectionEnd',
   'failureCode', 'model',
 ]
 const MODEL_FIELDS = ['providerId', 'modelName']
@@ -63,9 +68,13 @@ function uuid(value, label) {
   return value
 }
 
-function command(value, idFactory) {
+function command(value, idFactory, operationType = 'generate_new') {
   const source = object(value, 'draft operation command')
-  const fields = [
+  const local = LOCAL_OPERATION_TYPES.has(operationType)
+  const fields = local ? [
+    'expectedWorkingDraftRevision', 'expectedContentHash', 'authorInstruction',
+    'startOffset', 'endOffset', 'selectedTextHash',
+  ] : [
     'expectedWorkingDraftRevision', 'expectedContentHash', 'authorInstruction',
   ]
   if (
@@ -77,15 +86,30 @@ function command(value, idFactory) {
     || typeof source.expectedContentHash !== 'string'
     || !CONTENT_HASH.test(source.expectedContentHash)
     || typeof source.authorInstruction !== 'string'
-    || unicodeScalarLength(source.authorInstruction) > 2000
+    || unicodeScalarLength(source.authorInstruction) > (local ? 1000 : 2000)
+    || (local && (
+      !Number.isInteger(source.startOffset)
+      || source.startOffset < 0
+      || !Number.isInteger(source.endOffset)
+      || source.endOffset <= source.startOffset
+      || source.endOffset > MAX_PARTIAL_SCALARS
+      || typeof source.selectedTextHash !== 'string'
+      || !CONTENT_HASH.test(source.selectedTextHash)
+    ))
   ) throw new TypeError('Invalid draft operation command')
-  return Object.freeze({
-    operationType: 'generate_new',
+  const frozen = {
+    operationType,
     expectedWorkingDraftRevision: source.expectedWorkingDraftRevision,
     expectedContentHash: source.expectedContentHash,
     idempotencyKey: uuid(idFactory(), 'draft operation idempotency key'),
     authorInstruction: source.authorInstruction,
-  })
+  }
+  if (local) {
+    frozen.startOffset = source.startOffset
+    frozen.endOffset = source.endOffset
+    frozen.selectedTextHash = source.selectedTextHash
+  }
+  return Object.freeze(frozen)
 }
 
 function publicOperation(value) {
@@ -105,9 +129,12 @@ function publicOperation(value) {
   const revision = source.resultWorkingDraftRevision
   const contentHash = source.resultContentHash
   const failureCode = source.failureCode
+  const selectionStart = source.resultSelectionStart
+  const selectionEnd = source.resultSelectionEnd
+  const local = LOCAL_OPERATION_TYPES.has(source.operationType)
   const sourceModel = object(source.model, 'draft operation model')
   if (
-    source.operationType !== 'generate_new'
+    (!local && source.operationType !== 'generate_new')
     || !PUBLIC_STATUSES.has(status)
     || !Number.isInteger(sequence)
     || sequence < 1
@@ -146,9 +173,18 @@ function publicOperation(value) {
       || revision > MAX_RESULT_REVISION
       || typeof contentHash !== 'string'
       || !CONTENT_HASH.test(contentHash)
-      || contentHash !== partialOutputHash
       || partialOutput === ''
-      || partialOutput !== partialOutput.trim()
+      || (!local && (
+        contentHash !== partialOutputHash
+        || partialOutput !== partialOutput.trim()
+      ))
+      || (local && (
+        !Number.isInteger(selectionStart)
+        || selectionStart < 0
+        || !Number.isInteger(selectionEnd)
+        || selectionEnd !== selectionStart + partialOutputScalars
+        || selectionEnd > MAX_PARTIAL_SCALARS
+      ))
       || failureCode !== null
     ) throw new TypeError('Invalid draft operation response')
   } else if (status === 'cancelled') {
@@ -156,10 +192,11 @@ function publicOperation(value) {
     if (
       sequence < 2
       || failureCode !== null
-      || partialOutput !== partialOutput.trim()
-      || Boolean(partialOutput) !== hasResult
-      || (revision === null) !== (contentHash === null)
-      || (hasResult && (
+      || (!local && partialOutput !== partialOutput.trim())
+      || (local && hasResult)
+      || (!local && Boolean(partialOutput) !== hasResult)
+      || (!local && (revision === null) !== (contentHash === null))
+      || (!local && hasResult && (
         !Number.isInteger(revision)
         || revision < 1
         || revision > MAX_RESULT_REVISION
@@ -178,6 +215,9 @@ function publicOperation(value) {
   } else if (revision !== null || contentHash !== null || failureCode !== null) {
     throw new TypeError('Invalid draft operation response')
   }
+  if ((!local || status !== 'completed') && (
+    selectionStart !== null || selectionEnd !== null
+  )) throw new TypeError('Invalid draft operation response')
   const model = Object.freeze({
     providerId: sourceModel.providerId,
     modelName: sourceModel.modelName,
@@ -186,7 +226,7 @@ function publicOperation(value) {
     id: operationId,
     projectId,
     chapterSessionId,
-    operationType: 'generate_new',
+    operationType: source.operationType,
     status,
     lastEventSequence: sequence,
     partialOutput,
@@ -194,6 +234,8 @@ function publicOperation(value) {
     partialOutputScalars,
     resultWorkingDraftRevision: revision,
     resultContentHash: contentHash,
+    resultSelectionStart: selectionStart,
+    resultSelectionEnd: selectionEnd,
     failureCode,
     model,
   })
@@ -309,6 +351,13 @@ export function createDraftOperationCoordinator({
     if (expectedOperationId !== null && operation.id !== expectedOperationId) {
       throw new TypeError('Invalid draft operation response')
     }
+    if (
+      activeAction?.operationType
+      && operation.operationType !== activeAction.operationType
+    ) throw new TypeError('Invalid draft operation response')
+    if (activeAction && activeAction.operationType === null) {
+      activeAction.operationType = operation.operationType
+    }
     return operation
   }
 
@@ -338,10 +387,14 @@ export function createDraftOperationCoordinator({
       : null
   }
 
-  async function reloadCompleted(token) {
+  async function reloadCompleted(token, operation) {
     try {
       const workspace = await reload()
       if (!isCurrent(token)) return null
+      if (LOCAL_OPERATION_TYPES.has(operation.operationType) && (
+        workspace?.workingDraft?.revision !== operation.resultWorkingDraftRevision
+        || workspace?.workingDraft?.contentHash !== operation.resultContentHash
+      )) throw new TypeError('Invalid local draft operation workspace')
       return workspace
     } catch (error) {
       if (!isCurrent(token)) return null
@@ -358,7 +411,7 @@ export function createDraftOperationCoordinator({
         operation.status === 'cancelled'
         && operation.resultWorkingDraftRevision !== null
       )
-    ) return reloadCompleted(token)
+    ) return reloadCompleted(token, operation)
     return null
   }
 
@@ -550,7 +603,11 @@ export function createDraftOperationCoordinator({
     if (disposed) throw new TypeError('draft operation coordinator is disposed')
     if (activeAction) throw new TypeError('draft operation is already in progress')
     const token = ++actionGeneration
-    activeAction = { token, cancelPromise: null }
+    activeAction = {
+      token,
+      cancelPromise: null,
+      operationType: frozenCommand.operationType,
+    }
     currentStatus = 'starting'
     currentOperation = null
     currentBusy = true
@@ -613,7 +670,7 @@ export function createDraftOperationCoordinator({
     if (disposed) throw new TypeError('draft operation coordinator is disposed')
     if (activeAction) throw new TypeError('draft operation is already in progress')
     const token = ++actionGeneration
-    activeAction = { token, cancelPromise: null }
+    activeAction = { token, cancelPromise: null, operationType: null }
     retryCommand = null
     currentStatus = 'reconnecting'
     currentOperation = null
@@ -702,6 +759,9 @@ export function createDraftOperationCoordinator({
     get busy() { return currentBusy },
     get failureCode() { return currentFailureCode },
     get preview() { return timeline.preview },
+    get previewKind() { return timeline.previewKind },
+    get operationType() { return timeline.operationType },
+    get resultSelection() { return timeline.resultSelection },
     get reconnecting() { return currentReconnecting },
     get cancelling() { return currentCancelling },
     get retryAvailable() { return retryCommand !== null },
@@ -710,6 +770,15 @@ export function createDraftOperationCoordinator({
       if (activeAction) return Promise.reject(new TypeError('draft operation is already in progress'))
       if (retryCommand) return Promise.reject(new TypeError('draft operation recovery is pending'))
       return submit(command(value, createId))
+    },
+    runLocal(operationType, value) {
+      if (disposed) throw new TypeError('draft operation coordinator is disposed')
+      if (activeAction) return Promise.reject(new TypeError('draft operation is already in progress'))
+      if (retryCommand) return Promise.reject(new TypeError('draft operation recovery is pending'))
+      if (!LOCAL_OPERATION_TYPES.has(operationType)) {
+        return Promise.reject(new TypeError('invalid local draft operation type'))
+      }
+      return submit(command(value, createId, operationType))
     },
     retryUnknown() {
       if (disposed) throw new TypeError('draft operation coordinator is disposed')

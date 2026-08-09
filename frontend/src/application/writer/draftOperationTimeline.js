@@ -14,6 +14,10 @@ const OPERATION_STATUSES = new Set([
 const NORMALIZING_TERMINAL_STATUSES = new Set(['completed', 'cancelled'])
 const MAX_EVENTS = 2_048
 const MAX_PARTIAL_SCALARS = 100_000
+const LOCAL_OPERATION_TYPES = new Set([
+  'rewrite_selection', 'polish_selection',
+  'expand_selection', 'compress_selection',
+])
 
 function plainObject(value) {
   return Boolean(
@@ -87,6 +91,10 @@ async function calibratedSnapshot(value, hashText) {
   const revision = value.resultWorkingDraftRevision
   const resultHash = value.resultContentHash
   const failureCode = value.failureCode
+  const operationType = value.operationType
+  const local = LOCAL_OPERATION_TYPES.has(operationType)
+  const selectionStart = value.resultSelectionStart
+  const selectionEnd = value.resultSelectionEnd
   if (
     typeof operationId !== 'string'
     || !CANONICAL_UUID.test(operationId)
@@ -101,12 +109,24 @@ async function calibratedSnapshot(value, hashText) {
     || !Number.isInteger(sequence)
     || sequence < 1
     || sequence > MAX_EVENTS
+    || (!local && operationType !== 'generate_new')
   ) invalid()
   const actualHash = await hashText(text)
   if (actualHash !== outputHash) invalid()
   const evidence = TERMINAL_STATUSES.has(status)
     ? terminalEvidence(status, revision, resultHash, failureCode)
     : null
+  if (
+    local && status === 'completed'
+      ? (
+        !Number.isInteger(selectionStart)
+        || selectionStart < 0
+        || !Number.isInteger(selectionEnd)
+        || selectionEnd !== selectionStart + scalars
+        || selectionEnd > MAX_PARTIAL_SCALARS
+      )
+      : (selectionStart !== null || selectionEnd !== null)
+  ) invalid()
   return {
     operationId,
     status,
@@ -115,6 +135,10 @@ async function calibratedSnapshot(value, hashText) {
     scalars,
     sequence,
     evidence,
+    operationType,
+    previewKind: local ? 'replacement' : 'draft',
+    selectionStart,
+    selectionEnd,
   }
 }
 
@@ -128,6 +152,10 @@ export function createDraftOperationTimeline({ hashText = sha256Text } = {}) {
   let currentScalars = 0
   let currentCursor = 0
   let currentTerminalEvidence = null
+  let currentOperationType = null
+  let currentPreviewKind = null
+  let currentSelectionStart = null
+  let currentSelectionEnd = null
   let stateGeneration = 0
 
   async function calibrate(operation) {
@@ -141,10 +169,15 @@ export function createDraftOperationTimeline({ hashText = sha256Text } = {}) {
       currentScalars = snapshot.scalars
       currentCursor = snapshot.sequence
       currentTerminalEvidence = snapshot.evidence
+      currentOperationType = snapshot.operationType
+      currentPreviewKind = snapshot.previewKind
+      currentSelectionStart = snapshot.selectionStart
+      currentSelectionEnd = snapshot.selectionEnd
       return true
     }
     if (
       currentOperationId !== snapshot.operationId
+      || currentOperationType !== snapshot.operationType
       || currentCursor !== snapshot.sequence
     ) invalid()
     if (TERMINAL_EVENT_TYPES.has(snapshot.status)) {
@@ -166,6 +199,8 @@ export function createDraftOperationTimeline({ hashText = sha256Text } = {}) {
     }
     if (TERMINAL_STATUSES.has(snapshot.status)) {
       currentTerminalEvidence = snapshot.evidence
+      currentSelectionStart = snapshot.selectionStart
+      currentSelectionEnd = snapshot.selectionEnd
     }
     return true
   }
@@ -263,6 +298,10 @@ export function createDraftOperationTimeline({ hashText = sha256Text } = {}) {
     currentScalars = 0
     currentCursor = 0
     currentTerminalEvidence = null
+    currentOperationType = null
+    currentPreviewKind = null
+    currentSelectionStart = null
+    currentSelectionEnd = null
   }
 
   return Object.freeze({
@@ -271,5 +310,15 @@ export function createDraftOperationTimeline({ hashText = sha256Text } = {}) {
     reset,
     get preview() { return currentPreview },
     get cursor() { return currentCursor },
+    get previewKind() { return currentPreviewKind },
+    get operationType() { return currentOperationType },
+    get resultSelection() {
+      return currentSelectionStart === null
+        ? null
+        : Object.freeze({
+          startOffset: currentSelectionStart,
+          endOffset: currentSelectionEnd,
+        })
+    },
   })
 }

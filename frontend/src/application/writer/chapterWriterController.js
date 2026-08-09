@@ -1,10 +1,15 @@
 import { computed, ref } from 'vue'
 
 import { generateId } from '../../utils/id.js'
+import { sha256Text } from '../../utils/sha256Text.js'
 import { createDraftOperationCoordinator } from './draftOperationCoordinator.js'
 
 const CONTENT_HASH = /^[0-9a-f]{64}$/
 const IDEMPOTENCY_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const LOCAL_OPERATION_TYPES = new Set([
+  'rewrite_selection', 'polish_selection',
+  'expand_selection', 'compress_selection',
+])
 
 function currentBusy(value) {
   const resolved = typeof value === 'function' ? value() : value
@@ -37,6 +42,7 @@ export function createChapterWriterController({
   listDraftOperationEvents,
   cancelDraftOperation,
   reloadWorkspace,
+  undoLocalDraft: undoLocalDraftRequest,
   idFactory = generateId,
   pollScheduler,
   writeBusy = false,
@@ -69,23 +75,35 @@ export function createChapterWriterController({
   const actionBusy = computed(() => actionLock.value)
   const authorInstructionState = ref('')
   const selectionState = ref(null)
+  const undoEligibilityState = ref(null)
+  const restoredSelectionState = ref(null)
   const authorInstruction = computed(() => authorInstructionState.value)
   const selection = computed(() => selectionState.value)
   const streamingPreview = computed(() => {
     coordinatorRevision.value
-    return coordinator.busy ? coordinator.preview : null
+    return coordinator.busy && coordinator.previewKind === 'draft'
+      ? coordinator.preview
+      : null
   })
+  const replacementPreview = computed(() => {
+    coordinatorRevision.value
+    return coordinator.busy && coordinator.previewKind === 'replacement'
+      ? coordinator.preview
+      : null
+  })
+  const undoAvailable = computed(() => undoEligibilityState.value !== null)
+  const restoredSelection = computed(() => restoredSelectionState.value)
   const operationCancellable = computed(() => {
     coordinatorRevision.value
     const status = coordinator.operation?.status
     return actionLock.value
-      && (activeAction?.kind === 'generate' || activeAction?.kind === 'resume')
+      && ['generate', 'resume', 'local'].includes(activeAction?.kind)
       && !coordinator.cancelling
       && (status === 'starting' || status === 'running')
   })
   const editorText = computed(() => (
     actionLock.value
-    && (activeAction?.kind === 'generate' || activeAction?.kind === 'resume')
+    && ['generate', 'resume', 'local'].includes(activeAction?.kind)
     && streamingPreview.value !== null
       ? streamingPreview.value
       : String(autosave.text?.value ?? '')
@@ -151,7 +169,11 @@ export function createChapterWriterController({
       && editGeneration === fence.editGeneration
       && contextGeneration === fence.contextGeneration
       && autosave.text?.value === fence.visibleText
-    ) autosave.reset(workspace)
+    ) {
+      autosave.reset(workspace)
+      return true
+    }
+    return false
   }
 
   async function flushPersistedDraft() {
@@ -174,7 +196,11 @@ export function createChapterWriterController({
     }
     const before = autosave.text?.value
     const changed = autosave.edit(nextText)
-    if (autosave.text?.value !== before) editGeneration += 1
+    if (autosave.text?.value !== before) {
+      editGeneration += 1
+      undoEligibilityState.value = null
+      restoredSelectionState.value = null
+    }
     return changed
   }
 
@@ -204,6 +230,8 @@ export function createChapterWriterController({
     invalidateAction()
     authorInstructionState.value = ''
     selectionState.value = null
+    undoEligibilityState.value = null
+    restoredSelectionState.value = null
   }
 
   function dispose() {
@@ -216,6 +244,8 @@ export function createChapterWriterController({
     invalidateAction()
     authorInstructionState.value = ''
     selectionState.value = null
+    undoEligibilityState.value = null
+    restoredSelectionState.value = null
   }
 
   function claimAction(kind) {
@@ -248,6 +278,8 @@ export function createChapterWriterController({
   async function saveCandidate() {
     const token = claimAction('candidate')
     if (token === null) return false
+    undoEligibilityState.value = null
+    restoredSelectionState.value = null
     try {
       if (typeof freezeCandidateRequest !== 'function') throw new TypeError('freezeCandidate is required')
       if (!await flushPersistedDraft() || !isActionCurrent(token)) return false
@@ -273,6 +305,8 @@ export function createChapterWriterController({
   async function generateWorkingDraft() {
     const token = claimAction('generate')
     if (token === null) return false
+    undoEligibilityState.value = null
+    restoredSelectionState.value = null
     try {
       if (!await flushPersistedDraft() || !isActionCurrent(token)) return false
       const authority = persistedAuthority(autosave)
@@ -322,7 +356,13 @@ export function createChapterWriterController({
       const result = await request
       touchCoordinator()
       if (!isActionCurrent(token)) return null
-      if (fence) resyncIfUnchanged(result, fence)
+      if (fence) {
+        if (LOCAL_OPERATION_TYPES.has(coordinator.operation?.operationType)) {
+          acceptLocalResult(result, fence)
+        } else {
+          resyncIfUnchanged(result, fence)
+        }
+      }
       if (coordinator.status !== 'unknown') retryFence = null
       return result
     } catch (error) {
@@ -338,6 +378,8 @@ export function createChapterWriterController({
   async function resumeDraftOperation(operationId) {
     const token = claimAction('resume')
     if (token === null) return false
+    undoEligibilityState.value = null
+    restoredSelectionState.value = null
     const fence = {
       editGeneration,
       contextGeneration,
@@ -368,7 +410,7 @@ export function createChapterWriterController({
   async function cancelGeneration() {
     if (
       !actionLock.value
-      || (activeAction?.kind !== 'generate' && activeAction?.kind !== 'resume')
+      || !['generate', 'resume', 'local'].includes(activeAction?.kind)
     ) return false
     try {
       const request = coordinator.cancelActive()
@@ -396,6 +438,124 @@ export function createChapterWriterController({
     }
   }
 
+  function frozenSelection(value, text) {
+    const scalars = Array.from(String(text ?? ''))
+    const startOffset = value?.startOffset
+    const endOffset = value?.endOffset
+    const selectedText = value?.selectedText
+    if (
+      !Number.isInteger(startOffset)
+      || startOffset < 0
+      || !Number.isInteger(endOffset)
+      || endOffset <= startOffset
+      || endOffset > scalars.length
+      || typeof selectedText !== 'string'
+      || scalars.slice(startOffset, endOffset).join('') !== selectedText
+    ) throw new TypeError('valid draft selection is required')
+    return Object.freeze({ startOffset, endOffset, selectedText })
+  }
+
+  function acceptLocalResult(result, fence) {
+    const operation = coordinator.operation
+    if (
+      operation?.status !== 'completed'
+      || !LOCAL_OPERATION_TYPES.has(operation.operationType)
+      || result?.workingDraft?.revision !== operation.resultWorkingDraftRevision
+      || result?.workingDraft?.contentHash !== operation.resultContentHash
+      || coordinator.resultSelection === null
+    ) return false
+    if (!resyncIfUnchanged(result, fence)) return false
+    undoEligibilityState.value = Object.freeze({
+      expectedWorkingDraftRevision: operation.resultWorkingDraftRevision,
+      expectedContentHash: operation.resultContentHash,
+      sourceOperationId: operation.id,
+    })
+    restoredSelectionState.value = coordinator.resultSelection
+    return true
+  }
+
+  async function runSelectionOperation(operationType) {
+    if (!LOCAL_OPERATION_TYPES.has(operationType)) {
+      throw new TypeError('invalid local draft operation type')
+    }
+    const token = claimAction('local')
+    if (token === null) return false
+    undoEligibilityState.value = null
+    restoredSelectionState.value = null
+    try {
+      const captured = frozenSelection(selectionState.value, autosave.text?.value)
+      if (!await flushPersistedDraft() || !isActionCurrent(token)) return false
+      frozenSelection(captured, autosave.text?.value)
+      const authority = persistedAuthority(autosave)
+      const fence = {
+        editGeneration,
+        contextGeneration,
+        visibleText: autosave.text?.value,
+      }
+      retryFence = fence
+      let request
+      try {
+        request = coordinator.runLocal(operationType, {
+          expectedWorkingDraftRevision: authority.revision,
+          expectedContentHash: authority.contentHash,
+          authorInstruction: authorInstructionState.value,
+          startOffset: captured.startOffset,
+          endOffset: captured.endOffset,
+          selectedTextHash: await sha256Text(captured.selectedText),
+        })
+      } finally {
+        touchCoordinator()
+      }
+      const result = await request
+      touchCoordinator()
+      if (!isActionCurrent(token)) return null
+      acceptLocalResult(result, fence)
+      if (coordinator.status !== 'unknown') retryFence = null
+      return result
+    } catch (error) {
+      touchCoordinator()
+      if (coordinator.status !== 'unknown') retryFence = null
+      throw error
+    } finally {
+      releaseAction(token)
+      touchCoordinator()
+    }
+  }
+
+  async function undoLastLocal() {
+    const eligibility = undoEligibilityState.value
+    if (!eligibility) return false
+    const token = claimAction('undo')
+    if (token === null) return false
+    try {
+      const request = undoLocalDraftRequest || unavailable('undoLocalDraft')
+      try {
+        const restored = await request(eligibility)
+        if (!isActionCurrent(token)) return null
+        autosave.reset(restored)
+        undoEligibilityState.value = null
+        restoredSelectionState.value = null
+        return restored
+      } catch (error) {
+        if (!isActionCurrent(token)) return null
+        const unknown = error instanceof Error && (
+          Number(error.status || 0) === 0
+          || (Number(error.status || 0) === 502
+            && error.code === 'DraftOperationUnavailable')
+        )
+        if (!unknown) throw error
+        undoEligibilityState.value = null
+        restoredSelectionState.value = null
+        const reconciled = await (reloadWorkspace || unavailable('reloadWorkspace'))()
+        if (!isActionCurrent(token)) return null
+        autosave.reset(reconciled)
+        return reconciled
+      }
+    } finally {
+      releaseAction(token)
+    }
+  }
+
   return {
     beforeUnloadRisk,
     saveCandidate,
@@ -403,6 +563,8 @@ export function createChapterWriterController({
     retryUnknown,
     resumeDraftOperation,
     cancelGeneration,
+    runSelectionOperation,
+    undoLastLocal,
     canNavigate,
     edit,
     setAuthorInstruction,
@@ -413,10 +575,13 @@ export function createChapterWriterController({
     operationCancellable,
     editorText,
     streamingPreview,
+    replacementPreview,
     operationStatus,
     operationStatusText,
     operationRetryAvailable,
     authorInstruction,
     selection,
+    undoAvailable,
+    restoredSelection,
   }
 }

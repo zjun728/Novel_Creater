@@ -14,6 +14,9 @@ function operation({
   text = '',
   sequence = 1,
   status = 'running',
+  operationType = 'generate_new',
+  resultSelectionStart = null,
+  resultSelectionEnd = null,
   resultWorkingDraftRevision,
   resultContentHash,
   failureCode,
@@ -21,6 +24,7 @@ function operation({
   const result = status === 'completed' || (status === 'cancelled' && text)
   return {
     id: OPERATION_ID,
+    operationType,
     status,
     partialOutput: text,
     partialOutputHash: createHash('sha256').update(text, 'utf8').digest('hex'),
@@ -30,9 +34,29 @@ function operation({
     resultContentHash: resultContentHash ?? (result
       ? createHash('sha256').update(text, 'utf8').digest('hex')
       : null),
+    resultSelectionStart,
+    resultSelectionEnd,
     failureCode: failureCode ?? (status === 'failed' ? 'DraftProviderFailed' : null),
   }
 }
+
+test('timeline exposes a separate local replacement preview and terminal range', async () => {
+  const timeline = createDraftOperationTimeline({ hashText })
+  await timeline.calibrate(operation({
+    text: ' 新😀 ',
+    sequence: 2,
+    status: 'completed',
+    operationType: 'rewrite_selection',
+    resultContentHash: 'a'.repeat(64),
+    resultSelectionStart: 3,
+    resultSelectionEnd: 7,
+  }))
+
+  assert.equal(timeline.preview, ' 新😀 ')
+  assert.equal(timeline.previewKind, 'replacement')
+  assert.equal(timeline.operationType, 'rewrite_selection')
+  assert.deepEqual(timeline.resultSelection, { startOffset: 3, endOffset: 7 })
+})
 
 function page(events, { lastEventSequence, hasMore = false } = {}) {
   const nextAfter = events.length ? events.at(-1).sequence : 0
