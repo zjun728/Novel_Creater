@@ -906,7 +906,7 @@ NESTED_LOGICAL_REFERENCE_TARGETS: Mapping[tuple[str, str], str] = MappingProxyTy
 })
 POLYMORPHIC_LOGICAL_REFERENCE_TARGETS: Mapping[tuple[str, str], Mapping[str, str | None]] = MappingProxyType({
     ("canon_revisions", "source_id"): MappingProxyType({
-        "bootstrap": None, "finalization": "finalization_records", "manual_test": None,
+        "bootstrap": None, "finalization": "finalization_change_sets", "manual_test": None,
     }),
 })
 

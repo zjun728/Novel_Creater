@@ -174,7 +174,7 @@ def test_nested_and_polymorphic_references_have_explicit_real_semantics() -> Non
     assert PROJECT_TABLE_COLUMN_POLICIES["story_engine_batches"]["attempt_id"] == "excluded_sensitive_operational"
     assert NESTED_LOGICAL_REFERENCE_TARGETS == {("chapter_sessions", "story_block_id"): "story-block"}
     assert POLYMORPHIC_LOGICAL_REFERENCE_TARGETS[("canon_revisions", "source_id")] == {
-        "bootstrap": None, "finalization": "finalization_records", "manual_test": None,
+        "bootstrap": None, "finalization": "finalization_change_sets", "manual_test": None,
     }
 
 
@@ -946,13 +946,17 @@ async def test_repository_resolves_nested_story_block_and_polymorphic_canon_sour
             "chapter_sessions", id="chapter-db", project_id="project-db", chapter_num=1,
             planning_revision_id="planning-db", story_block_id="block-db", status="draft",
         )],
+        "finalization_change_sets": [_owned_row(
+            "finalization_change_sets", id="change-set-db", project_id="project-db",
+            status="committed", current_revision=1, current_revision_hash="2" * 64,
+        )],
         "finalization_records": [_owned_row(
             "finalization_records", id="finalization-db", project_id="project-db",
-            committed_canon_revision=1, finalized_at=3,
+            change_set_id="change-set-db", committed_canon_revision=1, finalized_at=3,
         )],
         "canon_revisions": [_owned_row(
             "canon_revisions", id="canon-revision-db", project_id="project-db", revision_number=1,
-            source_type="finalization", source_id="finalization-db", content_hash="2" * 64, created_at=3,
+            source_type="finalization", source_id="change-set-db", content_hash="2" * 64, created_at=3,
         )],
     })
 
@@ -961,8 +965,40 @@ async def test_repository_resolves_nested_story_block_and_polymorphic_canon_sour
     ).read_snapshot("project-db", 7)
 
     canon = next(record for record in snapshot.graph_records if record.entity_type == "canon-revision")
-    assert canon.data["sourceLogicalId"].startswith("finalization-record:")
+    change_set = next(
+        record for record in snapshot.graph_records
+        if record.entity_type == "finalization-change-set"
+    )
+    assert canon.data["sourceLogicalId"] == change_set.logical_id
+    assert canon.data["sourceLogicalId"].startswith("finalization-change-set:")
+    assert "finalization-db" not in repr(canon.to_public_dict())
     assert "block-db" not in repr(tuple(record.to_public_dict() for record in snapshot.graph_records))
+
+
+@pytest.mark.asyncio
+async def test_repository_rejects_finalization_canon_source_without_change_set() -> None:
+    orphan_source_id = "orphan-source-db"
+    session = _SnapshotSession({
+        "projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P")],
+        "finalization_records": [_owned_row(
+            "finalization_records", id=orphan_source_id, project_id="project-db",
+            committed_canon_revision=1, finalized_at=3,
+        )],
+        "canon_revisions": [_owned_row(
+            "canon_revisions", id="canon-revision-db", project_id="project-db", revision_number=1,
+            source_type="finalization", source_id=orphan_source_id,
+            content_hash="2" * 64, created_at=3,
+        )],
+    })
+
+    with pytest.raises(ProjectPackageInvalid, match="invalid package value") as raised:
+        await ProjectPackageRepository(
+            pool=_SnapshotPool(session), session_factory=lambda value: value,
+        ).read_snapshot("project-db", 7)
+
+    assert raised.value.__cause__ is None
+    assert orphan_source_id not in str(raised.value)
+    assert session.calls[-2:] == [("ROLLBACK", None), ("RELEASE", None)]
 
 
 @pytest.mark.asyncio
