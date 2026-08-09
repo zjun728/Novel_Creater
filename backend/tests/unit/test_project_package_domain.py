@@ -17,12 +17,14 @@ from backend.domain.project_packages import (
     PackageRecord,
     ProjectPackageInvalid,
     ProjectPackageManifest,
+    ProjectPackageSensitiveData,
     ProjectPackageTooLarge,
     build_manifest,
     build_structured_entries,
     canonical_jsonl,
     canonical_line,
     enforce_package_limits,
+    freeze_json_value,
     validate_archive_bytes,
     validate_json_depth,
 )
@@ -58,6 +60,22 @@ def test_payload_entries_are_exact_ascii_sorted_and_deterministic() -> None:
     assert [entry.path for entry in entries] == list(PAYLOAD_PATHS)
     assert all(entry.path.isascii() and entry.data.endswith(b"\n") for entry in entries)
     assert entries == build_structured_entries(_snapshot(reverse=False))
+
+
+def test_structured_projection_entry_deeply_thaws_frozen_json_deterministically() -> None:
+    frozen_projection = freeze_json_value({
+        "currentStateProjections": {"hashes": ["b", "a"], "count": 2},
+    })
+    snapshot = {"projection_validation": frozen_projection}
+
+    first = build_structured_entries(snapshot)
+    second = build_structured_entries(snapshot)
+    projection = next(entry for entry in first if entry.path == "validation/projections.json")
+
+    assert projection.data == (
+        b'{"currentStateProjections":{"count":2,"hashes":["b","a"]}}\n'
+    )
+    assert first == second
 
 
 def test_manifest_has_no_self_reference_and_hashes_exact_bytes() -> None:
@@ -207,6 +225,21 @@ def test_canonical_line_rejects_nan_and_excessive_json_depth() -> None:
     validate_json_depth(nested)
     with pytest.raises(ProjectPackageInvalid, match="invalid package value"):
         validate_json_depth({"next": nested})
+
+
+def test_canonical_line_deep_thaw_keeps_value_identity_and_sensitive_guards() -> None:
+    with pytest.raises(ProjectPackageInvalid, match="invalid package value") as unsupported:
+        canonical_line({"nested": {"value": object()}})
+    assert unsupported.value.__cause__ is None
+
+    with pytest.raises(ProjectPackageInvalid, match="invalid package value") as raw_identity:
+        canonical_line({
+            "nested": {"finalChapterId": "550e8400-e29b-41d4-a716-446655440000"},
+        })
+    assert raw_identity.value.__cause__ is None
+
+    with pytest.raises(ProjectPackageSensitiveData, match="sensitive field class"):
+        canonical_line({"nested": {"apiKey": "secret"}})
 
 
 def test_limit_guards_cover_entries_structured_blobs_totals_and_archive(monkeypatch) -> None:

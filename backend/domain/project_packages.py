@@ -219,7 +219,7 @@ def canonical_json_bytes(value: Mapping[str, object]) -> bytes:
     _reject_sensitive(value)
     _validate_logical_identity_references(value)
     try:
-        return canonical_json(dict(value)).encode("utf-8")
+        return canonical_json(_thaw_json(value)).encode("utf-8")
     except (TypeError, ValueError):
         raise _invalid_value() from None
 
