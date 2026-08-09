@@ -23,6 +23,8 @@
     "test:browser:phase4c": "node ../scripts/run-tests.mjs browser-phase4c",
     "test:e2e:phase5": "node e2e/run-phase5.mjs",
     "test:browser:phase5": "node ../scripts/run-tests.mjs browser-phase5",
+    "test:e2e:phase6a": "node e2e/run-phase6a.mjs",
+    "test:browser:phase6a": "node ../scripts/run-tests.mjs browser-phase6a",
     "test:e2e:phase3": "node e2e/run-phase3.mjs",
     "test:e2e:phase2": "node e2e/run-phase2.mjs",
     "test:e2e": "node e2e/run-phase2.mjs"
