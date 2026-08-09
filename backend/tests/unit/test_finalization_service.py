@@ -320,6 +320,35 @@ async def test_prepare_uses_two_short_transactions_and_publishes_revision_one():
 
 
 @pytest.mark.asyncio
+async def test_prepare_keeps_corpus_refs_in_authority_but_not_provider_manifest():
+    snapshot = _snapshot()
+    snapshot["contract_context"] = {
+        "revision": 1,
+        "contentHash": HASH_A,
+        "content": {
+            "genre": "玄幻",
+            "corpusSourceRefs": [{
+                "id": "source-1",
+                "fragments": [{"fragmentId": "fragment-1"}],
+            }],
+        },
+    }
+    repository = FakeRepository(snapshots=[snapshot, snapshot])
+    service, _, quality, extraction = _service(repository)
+
+    result = await service.prepare(_command())
+
+    assert result.status == "awaiting_author"
+    for call in (*quality.calls, *extraction.calls):
+        provider_contract = call["manifest"].contract_context
+        assert provider_contract["content"] == {"genre": "玄幻"}
+    authority = repository.inserted_attempts[0]["context_manifest"]
+    assert authority["contexts"]["contractHash"] == canonical_hash(
+        snapshot["contract_context"],
+    )
+
+
+@pytest.mark.asyncio
 async def test_quality_failure_is_advisory_and_extraction_still_runs_once():
     repository = FakeRepository()
     service, _, quality, extraction = _service(

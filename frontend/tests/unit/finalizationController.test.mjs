@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { reactive } from 'vue'
 
 import { createFinalizationController } from '../../src/application/writer/finalizationController.js'
 
@@ -76,7 +77,7 @@ test('prepare, correct, confirm and commit expose one fenced primary action', as
   assert.equal(calls[0][2].expectedCanonRevision, 0)
   assert.match(calls[0][2].idempotencyKey, /^[a-f0-9]{64}$/u)
 
-  await controller.correctChangeSet({ ...payload, summary: '作者修正摘要' })
+  await controller.correctChangeSet(reactive({ ...payload, summary: '作者修正摘要' }))
   assert.equal(controller.review.value.changeSet.revision, 2)
   await controller.confirmChangeSet()
   assert.equal(controller.primaryAction.value, 'commit')

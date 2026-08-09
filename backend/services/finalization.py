@@ -326,6 +326,15 @@ class FinalizationService:
         identity = FinalizationService._binding_identity(snapshot.get(binding_key))
         if identity is None:
             raise FinalizationConflict("FINALIZATION_PROVIDER_UNAVAILABLE")
+        contract_context = snapshot["contract_context"]
+        provider_contract_context = dict(contract_context)
+        contract_content = contract_context.get("content")
+        if type(contract_content) is dict:
+            provider_contract_context["content"] = {
+                key: value
+                for key, value in contract_content.items()
+                if key != "corpusSourceRefs"
+            }
         return FinalizationProviderManifest.model_validate({
             "chapter_number": chapter_number,
             "candidate_hash": command.candidate_hash,
@@ -333,7 +342,7 @@ class FinalizationService:
             "canon_context": snapshot["canon_context"],
             "planning_context": snapshot["planning_context"],
             "outline_context": snapshot["outline_context"],
-            "contract_context": snapshot["contract_context"],
+            "contract_context": provider_contract_context,
             "bible_context": snapshot["bible_context"],
             "policy_version": snapshot["policy_version"],
             "binding": FinalizationBinding.model_validate(identity),

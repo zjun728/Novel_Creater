@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from hashlib import sha256
 
 import pytest
 
@@ -63,6 +64,8 @@ async def _bootstrap(session):
         project_id=PROJECT, revision=1, items=binding_items,
     ))
     now = 1_900_000_000_000
+    fragment_text = "A" * 300
+    fragment_hash = sha256(fragment_text.encode("utf-8")).hexdigest()
     await session.execute(
         """INSERT INTO projects
            (id,title,genre,description,target_words,target_chapters,status,
@@ -208,7 +211,7 @@ async def _bootstrap(session):
             chapter_char_start,chapter_char_end,normalized_text,content_hash,
             index_payload,analysis_version,created_at)
            VALUES (%s,%s,%s,1,0,300,%s,%s,'{}','analysis-v1',%s)""",
-        (FRAGMENT, SOURCE, CHAPTER, "A" * 300, "f" * 64, now),
+        (FRAGMENT, SOURCE, CHAPTER, fragment_text, fragment_hash, now),
     )
     await session.execute(
         "INSERT INTO project_contract_heads VALUES (%s,0,NULL,NULL,NULL,NULL,%s)",
@@ -221,7 +224,7 @@ async def _bootstrap(session):
         "card_hash": card_hash,
         "source_hash": source_hash,
         "binding_hash": binding_hash,
-        "fragment_hash": "f" * 64,
+        "fragment_hash": fragment_hash,
     }
 
 

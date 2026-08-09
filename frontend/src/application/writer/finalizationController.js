@@ -1,4 +1,4 @@
-import { computed, ref, shallowRef } from 'vue'
+import { computed, ref, shallowRef, toRaw } from 'vue'
 
 import { generateId } from '../../utils/id.js'
 import { sha256Text } from '../../utils/sha256Text.js'
@@ -151,7 +151,7 @@ export function createFinalizationController({
       }
       await correct({
         ...currentRevision(review.value),
-        changeSet: structuredClone(changeSet),
+        changeSet: structuredClone(toRaw(changeSet)),
       })
       if (!active()) return null
       const value = await getReview()
