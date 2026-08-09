@@ -557,6 +557,25 @@ def command(**overrides):
     return StartDraftOperation(**values)
 
 
+def local_command(repo, **overrides):
+    selected = "目标"
+    content = "左" * 301 + selected + "右" * 301
+    repo.draft.update(
+        content=content,
+        content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+    )
+    values = {
+        "operation_type": "rewrite_selection",
+        "expected_content_hash": repo.draft["content_hash"],
+        "start_offset": 301,
+        "end_offset": 303,
+        "selected_text_hash": hashlib.sha256(selected.encode("utf-8")).hexdigest(),
+        "author_instruction": "保持克制",
+    }
+    values.update(overrides)
+    return command(**values)
+
+
 async def start_and_finish(service, operation_command):
     started = await service.start(operation_command)
     launch = next(
@@ -602,6 +621,90 @@ async def test_generate_new_reserves_calls_outside_transaction_and_atomically_co
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "operation_type",
+    (
+        "rewrite_selection",
+        "polish_selection",
+        "expand_selection",
+        "compress_selection",
+    ),
+)
+async def test_local_operation_reservation_freezes_exact_selection_and_minimal_prompt(
+    operation_type,
+):
+    service, repo, gateway, _, _ = make_service()
+    operation_command = local_command(repo, operation_type=operation_type)
+
+    started = await service.start(operation_command)
+
+    assert started.operation_type == operation_type
+    assert gateway.calls == []
+    attempt = next(iter(repo.operations.values()))
+    assert attempt["operation_type"] == operation_type
+    assert attempt["input_manifest"]["selection"] == {
+        "startOffset": 301,
+        "endOffset": 303,
+        "selectedTextHash": operation_command.selected_text_hash,
+    }
+    launch = service._test_registry.launches[0]
+    context = launch[1].__closure__[0].cell_contents
+    rendered = "\n".join(
+        item["content"] for item in context["gateway_messages"]
+    )
+    assert "目标" in rendered
+    assert "左" * 300 in rendered
+    assert "右" * 300 in rendered
+    assert "左" * 301 not in rendered
+    assert "右" * 301 not in rendered
+    assert repo.draft["content"] not in rendered
+
+
+@pytest.mark.asyncio
+async def test_local_selection_drift_fails_before_reservation_or_provider_launch():
+    from backend.services.draft_operations import DraftOperationConflict
+
+    service, repo, gateway, _, _ = make_service()
+    operation_command = local_command(repo, selected_text_hash="0" * 64)
+
+    with pytest.raises(DraftOperationConflict):
+        await service.start(operation_command)
+
+    assert repo.operations == {}
+    assert service._test_registry.launches == []
+    assert gateway.calls == []
+
+
+def test_local_command_validation_requires_exact_fields_and_1000_scalar_instruction():
+    from backend.services.draft_operations import DraftOperationRequestInvalid
+
+    service, repo, _, _, _ = make_service()
+    assert len(service.validate(local_command(repo, author_instruction="😀" * 1000)).author_instruction) == 1000
+    for overrides in (
+        {"start_offset": None},
+        {"start_offset": True},
+        {"end_offset": 301},
+        {"selected_text_hash": None},
+        {"selected_text_hash": "A" * 64},
+        {"author_instruction": "😀" * 1001},
+    ):
+        with pytest.raises(DraftOperationRequestInvalid):
+            service.validate(local_command(repo, **overrides))
+
+
+def test_local_request_fingerprint_binds_range_and_selected_digest():
+    service, repo, _, _, _ = make_service()
+    original = local_command(repo)
+    same = local_command(repo)
+    changed_range = local_command(repo, start_offset=300)
+    changed_digest = local_command(repo, selected_text_hash="1" * 64)
+
+    assert service._request_fingerprint(original) == service._request_fingerprint(same)
+    assert service._request_fingerprint(original) != service._request_fingerprint(changed_range)
+    assert service._request_fingerprint(original) != service._request_fingerprint(changed_digest)
+
+
+@pytest.mark.asyncio
 async def test_public_stored_projection_returns_valid_completed_operation():
     service, repo, _, _, _ = make_service()
     await start_and_finish(service, command())
@@ -613,6 +716,52 @@ async def test_public_stored_projection_returns_valid_completed_operation():
     assert result.status == "completed"
     assert result.last_event_sequence == 2
     assert result.result_content_hash == stored["result_content_hash"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "corrupt",
+    (
+        lambda manifest: manifest.pop("selection"),
+        lambda manifest: manifest["selection"].update(extra="x"),
+        lambda manifest: manifest["selection"].update(startOffset=True),
+        lambda manifest: manifest["selection"].update(endOffset=301),
+        lambda manifest: manifest["selection"].update(selectedTextHash="A" * 64),
+    ),
+)
+async def test_public_stored_projection_requires_closed_local_selection_manifest(corrupt):
+    from backend.services.draft_operations import DraftOperationStorageError
+
+    service, repo, _, _, _ = make_service()
+    await service.start(local_command(repo))
+    stored = _stored_attempt(next(iter(repo.operations.values())))
+    manifest = json.loads(stored["input_manifest_json"])
+    corrupt(manifest)
+    stored["input_manifest_json"] = canonical_json(manifest)
+    stored["input_manifest_hash"] = canonical_hash(manifest)
+
+    with pytest.raises(DraftOperationStorageError):
+        service.project_stored_result(stored)
+
+
+@pytest.mark.asyncio
+async def test_public_stored_projection_rejects_selection_manifest_for_generate_new():
+    from backend.services.draft_operations import DraftOperationStorageError
+
+    service, repo, _, _, _ = make_service()
+    await service.start(command())
+    stored = _stored_attempt(next(iter(repo.operations.values())))
+    manifest = json.loads(stored["input_manifest_json"])
+    manifest["selection"] = {
+        "startOffset": 0,
+        "endOffset": 1,
+        "selectedTextHash": "0" * 64,
+    }
+    stored["input_manifest_json"] = canonical_json(manifest)
+    stored["input_manifest_hash"] = canonical_hash(manifest)
+
+    with pytest.raises(DraftOperationStorageError):
+        service.project_stored_result(stored)
 
 
 @pytest.mark.asyncio

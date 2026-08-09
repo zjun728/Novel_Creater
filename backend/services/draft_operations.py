@@ -35,9 +35,15 @@ from backend.services.draft_operation_execution import (
     DraftOperationExecution,
     MAX_DRAFT_OPERATION_EVENTS,
 )
+from backend.services.draft_selection import (
+    LOCAL_DRAFT_OPERATION_TYPES,
+    selection_context,
+    validate_selection,
+)
 
 
 DRAFT_OPERATION_AUTHOR_INSTRUCTION_MAX_LENGTH = 2_000
+DRAFT_OPERATION_LOCAL_AUTHOR_INSTRUCTION_MAX_LENGTH = 1_000
 DRAFT_OPERATION_CONTENT_MAX_SCALARS = 100_000
 _EMPTY_OUTPUT_HASH = hashlib.sha256(b"").hexdigest()
 _HASH = re.compile(r"^[0-9a-f]{64}$")
@@ -154,6 +160,9 @@ class StartDraftOperation:
     expected_content_hash: str
     idempotency_key: str
     author_instruction: str = ""
+    start_offset: int | None = None
+    end_offset: int | None = None
+    selected_text_hash: str | None = None
 
 
 @dataclass(frozen=True)
@@ -227,11 +236,18 @@ class DraftOperationService:
     def validate(cls, command: StartDraftOperation) -> StartDraftOperation:
         try:
             instruction = command.author_instruction
+            local = command.operation_type in LOCAL_DRAFT_OPERATION_TYPES
+            instruction_limit = (
+                DRAFT_OPERATION_LOCAL_AUTHOR_INSTRUCTION_MAX_LENGTH
+                if local else DRAFT_OPERATION_AUTHOR_INSTRUCTION_MAX_LENGTH
+            )
             if (
                 not isinstance(command, StartDraftOperation)
                 or not cls._canonical_uuid(command.project_id)
                 or not cls._canonical_uuid(command.chapter_session_id)
-                or command.operation_type != "generate_new"
+                or command.operation_type not in (
+                    LOCAL_DRAFT_OPERATION_TYPES | {"generate_new"}
+                )
                 or isinstance(command.expected_working_draft_revision, bool)
                 or not isinstance(command.expected_working_draft_revision, int)
                 or command.expected_working_draft_revision <= 0
@@ -239,7 +255,28 @@ class DraftOperationService:
                 or _HASH.fullmatch(command.expected_content_hash) is None
                 or not cls._canonical_uuid(command.idempotency_key)
                 or not isinstance(instruction, str)
-                or len(instruction) > DRAFT_OPERATION_AUTHOR_INSTRUCTION_MAX_LENGTH
+                or len(instruction) > instruction_limit
+                or (
+                    local
+                    and (
+                        isinstance(command.start_offset, bool)
+                        or not isinstance(command.start_offset, int)
+                        or command.start_offset < 0
+                        or isinstance(command.end_offset, bool)
+                        or not isinstance(command.end_offset, int)
+                        or command.end_offset <= command.start_offset
+                        or not isinstance(command.selected_text_hash, str)
+                        or _HASH.fullmatch(command.selected_text_hash) is None
+                    )
+                )
+                or (
+                    not local
+                    and any(value is not None for value in (
+                        command.start_offset,
+                        command.end_offset,
+                        command.selected_text_hash,
+                    ))
+                )
             ):
                 raise ValueError
             instruction.encode("utf-8")
@@ -248,11 +285,14 @@ class DraftOperationService:
         return StartDraftOperation(
             project_id=command.project_id,
             chapter_session_id=command.chapter_session_id,
-            operation_type="generate_new",
+            operation_type=command.operation_type,
             expected_working_draft_revision=command.expected_working_draft_revision,
             expected_content_hash=command.expected_content_hash,
             idempotency_key=command.idempotency_key,
             author_instruction=instruction.strip(),
+            start_offset=command.start_offset,
+            end_offset=command.end_offset,
+            selected_text_hash=command.selected_text_hash,
         )
 
     async def start(self, command: StartDraftOperation) -> DraftOperationResult:
@@ -436,6 +476,18 @@ class DraftOperationService:
             if not self._draft_matches_command(draft, command):
                 raise DraftOperationConflict()
 
+            selection = None
+            if command.operation_type in LOCAL_DRAFT_OPERATION_TYPES:
+                try:
+                    selection = validate_selection(
+                        draft.get("content"),
+                        command.start_offset,
+                        command.end_offset,
+                        command.selected_text_hash,
+                    )
+                except ValueError:
+                    raise DraftOperationConflict() from None
+
             authority = await self._read_authority(session, chapter_session, draft)
             manifest = self._manifest(command, authority)
             manifest_hash = canonical_hash(manifest)
@@ -450,7 +502,7 @@ class DraftOperationService:
                 "id": operation_id,
                 "project_id": command.project_id,
                 "chapter_session_id": command.chapter_session_id,
-                "operation_type": "generate_new",
+                "operation_type": command.operation_type,
                 "idempotency_key": command.idempotency_key,
                 "request_fingerprint": fingerprint,
                 "active_slot": 1,
@@ -500,10 +552,13 @@ class DraftOperationService:
                 "api_key": provider_authority["api_key"],
             }
             gateway_messages = build_chapter_draft_messages(
-                operation_type="generate_new",
+                operation_type=command.operation_type,
                 chapter_session=prompt_session,
                 working_draft=draft,
                 author_instruction=command.author_instruction,
+                selection_context=(
+                    selection_context(selection) if selection is not None else None
+                ),
             )
             return None, {
                 "command": command,
@@ -525,6 +580,7 @@ class DraftOperationService:
                     authority["provider"]
                 ),
                 "gateway_messages": gateway_messages,
+                "selection": selection,
                 "stream_enabled": (
                     provider_authority["stream"]
                     and provider_authority["supports_streaming"]
@@ -1353,10 +1409,16 @@ class DraftOperationService:
     def _manifest(cls, command, authority):
         manifest = {
             "schemaVersion": 1,
-            "operationType": "generate_new",
+            "operationType": command.operation_type,
             **cls._authority_snapshot(authority),
             "authorInstruction": command.author_instruction,
         }
+        if command.operation_type in LOCAL_DRAFT_OPERATION_TYPES:
+            manifest["selection"] = {
+                "startOffset": command.start_offset,
+                "endOffset": command.end_offset,
+                "selectedTextHash": command.selected_text_hash,
+            }
         secrets = normalize_provider_secrets(
             (authority["provider"].get("api_key"), authority["provider"].get("base_url"))
         )
@@ -1366,14 +1428,21 @@ class DraftOperationService:
 
     @staticmethod
     def _request_fingerprint(command):
-        return canonical_hash({
+        fingerprint = {
             "projectId": command.project_id,
             "chapterSessionId": command.chapter_session_id,
-            "operationType": "generate_new",
+            "operationType": command.operation_type,
             "baseWorkingDraftRevision": command.expected_working_draft_revision,
             "baseWorkingDraftHash": command.expected_content_hash,
             "authorInstruction": command.author_instruction,
-        })
+        }
+        if command.operation_type in LOCAL_DRAFT_OPERATION_TYPES:
+            fingerprint["selection"] = {
+                "startOffset": command.start_offset,
+                "endOffset": command.end_offset,
+                "selectedTextHash": command.selected_text_hash,
+            }
+        return canonical_hash(fingerprint)
 
     @staticmethod
     def _draft_matches_command(draft, command):
@@ -1605,6 +1674,26 @@ class DraftOperationService:
             if canonical_hash(manifest) != manifest_hash:
                 raise ValueError
             model = manifest.get("model")
+            selection_manifest = manifest.get("selection")
+            if operation_type in LOCAL_DRAFT_OPERATION_TYPES:
+                if (
+                    not isinstance(selection_manifest, Mapping)
+                    or set(selection_manifest) != {
+                        "startOffset", "endOffset", "selectedTextHash",
+                    }
+                    or isinstance(selection_manifest.get("startOffset"), bool)
+                    or not isinstance(selection_manifest.get("startOffset"), int)
+                    or selection_manifest["startOffset"] < 0
+                    or isinstance(selection_manifest.get("endOffset"), bool)
+                    or not isinstance(selection_manifest.get("endOffset"), int)
+                    or selection_manifest["endOffset"]
+                    <= selection_manifest["startOffset"]
+                    or not isinstance(selection_manifest.get("selectedTextHash"), str)
+                    or _HASH.fullmatch(selection_manifest["selectedTextHash"]) is None
+                ):
+                    raise ValueError
+            elif "selection" in manifest:
+                raise ValueError
             if (
                 not isinstance(model, Mapping)
                 or model.get("providerId") != provider_id
@@ -1625,7 +1714,9 @@ class DraftOperationService:
                 not DraftOperationService._canonical_uuid(row["id"])
                 or not DraftOperationService._canonical_uuid(row["project_id"])
                 or not DraftOperationService._canonical_uuid(row["chapter_session_id"])
-                or operation_type != "generate_new"
+                or operation_type not in (
+                    LOCAL_DRAFT_OPERATION_TYPES | {"generate_new"}
+                )
                 or status not in _STATUSES
                 or not 1 <= last_event_sequence <= MAX_DRAFT_OPERATION_EVENTS
                 or (
