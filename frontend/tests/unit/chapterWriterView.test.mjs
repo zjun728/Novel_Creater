@@ -180,3 +180,48 @@ test('author instruction input enforces a Unicode-scalar limit with an accessibl
   assert.match(view, /unicodeScalarLength|limitUnicodeScalarText/)
   assert.match(view, /id="author-instruction-count"[^>]*aria-live="polite"/)
 })
+
+test('non-empty exact selection reveals four compact local tools with one shared busy and cancel path', async () => {
+  const view = await source('views/ChapterWriterView.vue')
+
+  assert.match(view, /const validSelection = computed/)
+  assert.match(view, /selectedText\.length > 0/)
+  assert.match(view, /scalars\.slice\(startOffset, endOffset\)\.join\(''\) === selectedText/)
+  assert.match(view, /v-if="validSelection" class="selection-tools"/)
+  for (const [label, operationType] of [
+    ['AI 改写', 'rewrite_selection'],
+    ['AI 润色', 'polish_selection'],
+    ['AI 扩写', 'expand_selection'],
+    ['AI 缩写', 'compress_selection'],
+  ]) {
+    assert.match(view, new RegExp(`>${label}<\\/n-button>`))
+    assert.match(view, new RegExp(`runSelectionOperation\\('${operationType}'\\)`))
+  }
+  assert.match(view, /:disabled="commandDisabled"/)
+  assert.match(view, /:loading="controller\.actionBusy\.value"/)
+  assert.match(view, /controller\.operationCancellable\.value/)
+  assert.doesNotMatch(view, /selection-modal|history-drawer|page\.evaluate|\bfetch\(|\baxios\b/)
+})
+
+test('local replacement preview stays outside the editor and exposes only one ephemeral undo action', async () => {
+  const view = await source('views/ChapterWriterView.vue')
+
+  assert.match(view, /undoLocalDraft:\s*command\s*=>\s*chapterSessionStore\.undoLocalDraft/)
+  assert.match(view, /:selection-range="controller\.restoredSelection\.value"/)
+  assert.match(view, /class="replacement-preview"[\s\S]*?替换内容预览/)
+  assert.match(view, /\{\{ controller\.replacementPreview\.value \}\}/)
+  assert.match(view, /v-if="controller\.undoAvailable\.value"[\s\S]*?@click="undoLastLocal"[\s\S]*?>撤销本次 AI 修改<\/n-button>/)
+  assert.equal((view.match(/撤销本次 AI 修改/g) || []).length, 1)
+  assert.match(view, /controller\.undoLastLocal\(\)/)
+  assert.doesNotMatch(view, /replacementPreview\.value[^\n]*model-value/)
+})
+
+test('selection tools use the existing instruction field with a 1000-scalar local limit', async () => {
+  const view = await source('views/ChapterWriterView.vue')
+  const update = functionBody(view, 'function updateAuthorInstruction(')
+
+  assert.match(view, /const authorInstructionLimit = computed\(\(\) => validSelection\.value \? 1_000 : 2_000\)/)
+  assert.match(update, /authorInstructionLimit\.value/)
+  assert.match(view, /\{\{ authorInstructionCount \}\} \/ \{\{ authorInstructionLimit \}\}/)
+  assert.equal((view.match(/id="author-instruction"/g) || []).length, 1)
+})

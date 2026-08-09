@@ -250,3 +250,24 @@ test('locates empty scalar ranges and rejects reversed ranges without side effec
   assert.throws(() => locatePlainTextRange(textarea, text, 2, 1), RangeError)
   assert.deepEqual(calls, [])
 })
+
+test('restores a terminal replacement range across astral text without changing textarea content', () => {
+  const text = '序😀替换内容尾'
+  const calls = []
+  const textarea = {
+    value: text,
+    focus() {
+      calls.push('focus')
+    },
+    setSelectionRange(start, end) {
+      calls.push(['setSelectionRange', start, end])
+    },
+  }
+
+  assert.deepEqual(locatePlainTextRange(textarea, text, 2, 6), {
+    selectionStart: 3,
+    selectionEnd: 7,
+  })
+  assert.equal(textarea.value, text)
+  assert.deepEqual(calls, ['focus', ['setSelectionRange', 3, 7]])
+})

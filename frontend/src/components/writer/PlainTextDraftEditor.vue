@@ -12,6 +12,7 @@ const props = defineProps({
   disabled: { type: Boolean, default: false },
   readonly: { type: Boolean, default: false },
   streaming: { type: Boolean, default: false },
+  selectionRange: { type: Object, default: null },
   placeholder: { type: String, default: '' },
   dirty: { type: Boolean, default: false },
   status: { type: String, default: 'idle' },
@@ -87,6 +88,20 @@ function locateRange(startOffset, endOffset) {
     endOffset,
   )
 }
+
+function restoreSelection() {
+  const range = props.selectionRange
+  if (!range) return
+  try {
+    locateRange(range.startOffset, range.endOffset)
+  } catch {
+    // A late or stale terminal range must never move focus or alter the draft.
+  }
+}
+
+watch(() => props.selectionRange, range => {
+  if (range) void nextTick(restoreSelection)
+}, { flush: 'post' })
 
 defineExpose({ locateRange })
 </script>

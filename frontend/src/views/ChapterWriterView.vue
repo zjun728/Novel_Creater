@@ -84,8 +84,28 @@ const controller = createChapterWriterController({
     projectId.value,
     operationId,
   ),
+  undoLocalDraft: command => chapterSessionStore.undoLocalDraft(
+    projectId.value,
+    command,
+  ),
   reloadWorkspace: () => chapterSessionStore.reloadCurrentWorkspace(projectId.value),
 })
+const validSelection = computed(() => {
+  const value = controller.selection.value
+  const startOffset = value?.startOffset
+  const endOffset = value?.endOffset
+  const selectedText = value?.selectedText
+  const scalars = Array.from(controller.editorText.value)
+  return Number.isInteger(startOffset)
+    && startOffset >= 0
+    && Number.isInteger(endOffset)
+    && endOffset > startOffset
+    && endOffset <= scalars.length
+    && typeof selectedText === 'string'
+    && selectedText.length > 0
+    && scalars.slice(startOffset, endOffset).join('') === selectedText
+})
+const authorInstructionLimit = computed(() => validSelection.value ? 1_000 : 2_000)
 const authorInstructionNotice = ref('')
 const authorInstructionCount = computed(
   () => unicodeScalarLength(controller.authorInstruction.value),
@@ -93,10 +113,11 @@ const authorInstructionCount = computed(
 
 function updateAuthorInstruction(nextInstruction) {
   try {
-    const limited = limitUnicodeScalarText(String(nextInstruction ?? ''), 2_000)
+    const limit = authorInstructionLimit.value
+    const limited = limitUnicodeScalarText(String(nextInstruction ?? ''), limit)
     controller.setAuthorInstruction(limited.value)
     authorInstructionNotice.value = limited.truncated
-      ? '已截断超过 2000 个 Unicode 字符的内容。'
+      ? `已截断超过 ${limit} 个 Unicode 字符的内容。`
       : ''
   } catch {
     authorInstructionNotice.value = '输入包含无效字符，未接受。'
@@ -107,6 +128,11 @@ const editorDisabled = computed(() => !session.value)
 const editorReadonly = computed(() => controller.actionBusy.value)
 const commandDisabled = computed(() => (
   !session.value || controller.actionBusy.value || chapterSessionStore.commandBusy
+))
+const localCommandDisabled = computed(() => (
+  commandDisabled.value
+  || !validSelection.value
+  || authorInstructionCount.value > 1_000
 ))
 
 function savedTime() {
@@ -189,6 +215,30 @@ async function stopGeneration() {
     await controller.cancelGeneration()
   } catch {
     if (!controller.operationStatusText.value) actionError.value = '生成失败'
+  }
+}
+
+async function runSelectionOperation(operationType) {
+  actionError.value = ''
+  try {
+    const result = await controller.runSelectionOperation(operationType)
+    if (!result && !controller.operationStatusText.value) {
+      actionError.value = '当前选区未能安全处理，请重新选择后重试。'
+    }
+  } catch {
+    if (!controller.operationStatusText.value) {
+      actionError.value = '当前选区 AI 操作未完成，请重新选择后重试。'
+    }
+  }
+}
+
+async function undoLastLocal() {
+  actionError.value = ''
+  try {
+    const result = await controller.undoLastLocal()
+    if (!result) actionError.value = '本次 AI 修改已不能安全撤销。'
+  } catch {
+    actionError.value = '本次 AI 修改已不能安全撤销。'
   }
 }
 
@@ -320,6 +370,7 @@ onBeforeUnmount(() => {
               :disabled="editorDisabled"
               :readonly="editorReadonly"
               :streaming="controller.streamingPreview.value !== null"
+              :selection-range="controller.restoredSelection.value"
               :dirty="autosave.dirty.value"
               :status="autosave.status.value"
               :last-saved-at="lastSavedAt"
@@ -328,6 +379,22 @@ onBeforeUnmount(() => {
               @selection-change="controller.setSelection"
               @retry="retryAutosave"
             />
+            <div v-if="validSelection" class="selection-tools" aria-label="AI 选区工具">
+              <span>已选择 {{ Array.from(controller.selection.value.selectedText).length }} 字</span>
+              <n-button size="small" secondary :disabled="localCommandDisabled" :loading="controller.actionBusy.value" @click="runSelectionOperation('rewrite_selection')">AI 改写</n-button>
+              <n-button size="small" secondary :disabled="localCommandDisabled" :loading="controller.actionBusy.value" @click="runSelectionOperation('polish_selection')">AI 润色</n-button>
+              <n-button size="small" secondary :disabled="localCommandDisabled" :loading="controller.actionBusy.value" @click="runSelectionOperation('expand_selection')">AI 扩写</n-button>
+              <n-button size="small" secondary :disabled="localCommandDisabled" :loading="controller.actionBusy.value" @click="runSelectionOperation('compress_selection')">AI 缩写</n-button>
+            </div>
+            <section
+              v-if="controller.replacementPreview.value !== null"
+              class="replacement-preview"
+              aria-live="polite"
+              aria-label="替换内容预览"
+            >
+              <strong>替换内容预览</strong>
+              <pre>{{ controller.replacementPreview.value }}</pre>
+            </section>
             <div
               v-if="controller.operationStatusText.value"
               class="draft-operation-layer"
@@ -348,7 +415,7 @@ onBeforeUnmount(() => {
           <div class="generation-box">
             <label for="author-instruction">作者临时要求</label>
             <n-input id="author-instruction" :value="controller.authorInstruction.value" type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" aria-describedby="author-instruction-count" placeholder="可选：例如“多一点市井对话”“情绪更压迫”“不要写成设定说明”。" :disabled="commandDisabled" @update:value="updateAuthorInstruction" />
-            <p id="author-instruction-count" class="author-instruction-count" aria-live="polite">{{ authorInstructionCount }} / 2000<span v-if="authorInstructionNotice"> · {{ authorInstructionNotice }}</span></p>
+            <p id="author-instruction-count" class="author-instruction-count" aria-live="polite">{{ authorInstructionCount }} / {{ authorInstructionLimit }}<span v-if="authorInstructionNotice"> · {{ authorInstructionNotice }}</span></p>
           </div>
 
           <div class="editor-actions">
@@ -357,6 +424,7 @@ onBeforeUnmount(() => {
               <n-button v-if="!session" type="primary" :disabled="true" :loading="chapterSessionStore.creating">请先完成并确认本章小纲</n-button>
               <n-button type="primary" secondary :disabled="commandDisabled" :loading="controller.actionBusy.value" @click="generateWorkingDraft">AI 生成工作稿</n-button>
               <n-button type="success" :disabled="commandDisabled" :loading="controller.actionBusy.value" @click="saveCandidate">保存为候选</n-button>
+              <n-button v-if="controller.undoAvailable.value" secondary :disabled="commandDisabled" :loading="controller.actionBusy.value" @click="undoLastLocal">撤销本次 AI 修改</n-button>
             </template>
           </div>
           <n-alert v-if="actionError" type="error" class="writer-action-error" title="章节操作未完成">{{ actionError }}</n-alert>
@@ -420,6 +488,11 @@ h1 { margin: 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: clamp(3
 .draft-operation-layer { position: absolute; z-index: 2; top: 12px; right: 12px; display: flex; align-items: center; gap: 10px; max-width: calc(100% - 24px); max-height: 48px; overflow: auto; pointer-events: none; border: 1px solid rgba(150, 117, 72, .34); border-radius: 999px; padding: 8px 12px; color: #534535; background: rgba(255, 253, 248, .9); box-shadow: 0 8px 24px rgba(58, 48, 34, .1); font-size: 12px; font-weight: 700; }
 .draft-operation-retry { pointer-events: auto; border: 0; padding: 0; color: #8b5c25; background: transparent; font: inherit; cursor: pointer; text-decoration: underline; }
 .draft-operation-retry:focus-visible { outline: 2px solid #8b5c25; outline-offset: 3px; }
+.selection-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; border-left: 3px solid #967548; padding: 8px 10px; background: #f8f1e5; }
+.selection-tools > span { margin-right: 2px; color: #756858; font-size: 12px; font-weight: 700; }
+.replacement-preview { margin-top: 10px; border: 1px solid #d8c7aa; border-radius: 8px; padding: 12px 14px; background: #f6efe2; box-shadow: inset 3px 0 0 #967548; }
+.replacement-preview strong { color: #76552f; font-size: 12px; letter-spacing: .08em; }
+.replacement-preview pre { overflow: auto; max-height: 220px; margin: 8px 0 0; color: #40372d; white-space: pre-wrap; overflow-wrap: anywhere; font: 14px/1.8 Georgia, 'Noto Serif SC', serif; }
 .draft-empty { min-height: 440px; display: grid; place-items: center; margin: 0; color: #81776a; border: 1px dashed #d7cbb8; border-radius: 10px; background: #fffefb; }
 .generation-box { display: grid; gap: 8px; margin-top: 14px; }
 .generation-box label { color: #70675c; font-size: 12px; font-weight: 700; }

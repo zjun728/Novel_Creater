@@ -67,3 +67,16 @@ test('streaming follows output until the reader scrolls more than 24px from the 
   assert.match(returnToLatest, /autoFollow\.value = true/)
   assert.match(returnToLatest, /scrollToLatest\(\)/)
 })
+
+test('terminal replacement range is restored through the same native textarea without mutating text', async () => {
+  const editor = await source
+
+  assert.match(editor, /selectionRange: \{ type: Object, default: null \}/)
+  assert.match(editor, /watch\(\(\) => props\.selectionRange/)
+  assert.match(editor, /nextTick\(restoreSelection\)/)
+  const restore = functionBody(editor, 'function restoreSelection(')
+  assert.match(restore, /locateRange\(range\.startOffset, range\.endOffset\)/)
+  assert.doesNotMatch(restore, /emit\('update:modelValue'|\.value\s*=/)
+  assert.equal((editor.match(/<textarea/g) || []).length, 1)
+  assert.doesNotMatch(editor, /contenteditable/)
+})
