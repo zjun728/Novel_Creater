@@ -23,7 +23,10 @@ from backend.prompts.finalization import (
     FinalizationProviderManifest,
 )
 from backend.repositories.finalization import FinalizationRepository
-from backend.services.finalization_checks import run_finalization_prechecks
+from backend.services.finalization_checks import (
+    run_finalization_prechecks,
+    validate_change_set_context,
+)
 
 
 _HASH_LENGTH = 64
@@ -486,6 +489,12 @@ class FinalizationService:
             )
             if type(change_set) is not FinalizationChangeSet:
                 raise ValueError("invalid extraction")
+            validate_change_set_context(
+                change_set,
+                candidate_content=candidate["content"],
+                canon_context=snapshot["canon_context"],
+                planning_context=snapshot["planning_context"],
+            )
         except asyncio.CancelledError:
             await self._terminalize(
                 command=command,

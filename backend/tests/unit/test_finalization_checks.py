@@ -4,8 +4,11 @@ from hashlib import sha256
 
 import pytest
 
-from backend.domain.finalization import FinalizationAuthority
-from backend.services.finalization_checks import run_finalization_prechecks
+from backend.domain.finalization import FinalizationAuthority, FinalizationChangeSet
+from backend.services.finalization_checks import (
+    run_finalization_prechecks,
+    validate_change_set_context,
+)
 
 
 HASH_A = "a" * 64
@@ -233,3 +236,87 @@ def test_short_common_phrase_is_not_a_copy_block():
         },),
         copy_check_completed=True,
     ) == ()
+
+
+def _context_change_set(content, **overrides):
+    evidence = {
+        "startScalar": 0,
+        "endScalar": 2,
+        "excerptHash": _hash_text(content[:2]),
+        "confidence": 1.0,
+        "rationale": "正文直接证据。",
+    }
+    payload = {
+        "schemaVersion": "finalization-changeset-v1",
+        "title": "第一章",
+        "summary": "摘要",
+        "existingEntityIds": ["entity-1"],
+        "entities": [],
+        "aliases": [],
+        "canonEvents": [],
+        "storyProgressEvents": [{
+            "id": "progress-1", "targetType": "story_block",
+            "targetId": "block-1", "status": "advanced",
+            "evidence": evidence,
+        }],
+        "planningPatches": [{
+            "id": "patch-1", "targetType": "plot", "targetId": "plot-1",
+            "expectedRevision": 2, "expectedHash": HASH_B,
+            "fieldPath": "futureDirection", "replacement": "继续追查。",
+            "evidence": evidence,
+        }],
+        "planningSuggestions": [],
+    }
+    payload.update(overrides)
+    return FinalizationChangeSet.model_validate(payload)
+
+
+def _change_set_context():
+    return (
+        {"entities": [{"id": "entity-1"}]},
+        {"content": {
+            "volumes": [],
+            "plots": [{
+                "id": "plot-1", "revision": 2, "contentHash": HASH_B,
+            }],
+            "storyBlocks": [{
+                "id": "block-1", "revision": 1, "contentHash": HASH_A,
+                "stages": [],
+            }],
+        }},
+    )
+
+
+def test_change_set_context_accepts_exact_evidence_canon_and_planning_identities():
+    content = "正文证据"
+    canon, planning = _change_set_context()
+
+    validate_change_set_context(
+        _context_change_set(content),
+        candidate_content=content,
+        canon_context=canon,
+        planning_context=planning,
+    )
+
+
+@pytest.mark.parametrize("mutation", ("unknown_entity", "bad_evidence", "planning_drift"))
+def test_change_set_context_rejects_closed_reference_or_evidence_drift(mutation):
+    content = "正文证据"
+    canon, planning = _change_set_context()
+    change_set = _context_change_set(content)
+    if mutation == "unknown_entity":
+        change_set = _context_change_set(content, existingEntityIds=["other"])
+    elif mutation == "bad_evidence":
+        payload = change_set.model_dump(by_alias=True, mode="json")
+        payload["storyProgressEvents"][0]["evidence"]["excerptHash"] = HASH_A
+        change_set = FinalizationChangeSet.model_validate(payload)
+    else:
+        planning["content"]["plots"][0]["revision"] = 3
+
+    with pytest.raises(ValueError, match="Finalization ChangeSet context invalid"):
+        validate_change_set_context(
+            change_set,
+            candidate_content=content,
+            canon_context=canon,
+            planning_context=planning,
+        )

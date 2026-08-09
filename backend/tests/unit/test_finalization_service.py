@@ -89,7 +89,10 @@ def _binding(task_key: str):
 def _snapshot():
     return {
         "canon_context": {"revision": 0, "entities": []},
-        "planning_context": {"revision": 1, "contentHash": HASH_A},
+        "planning_context": {
+            "revision": 1, "contentHash": HASH_A,
+            "content": {"volumes": [], "plots": [], "storyBlocks": []},
+        },
         "outline_context": {"revision": 1, "contentHash": HASH_B},
         "contract_context": {"revision": 1, "contentHash": HASH_A},
         "bible_context": {"revision": 1, "contentHash": HASH_B},
@@ -216,10 +219,13 @@ class QualityProvider:
 
 
 class ExtractionProvider:
-    def __init__(self, transactions, *, failure=None, cancelled=False):
+    def __init__(
+        self, transactions, *, failure=None, cancelled=False, result=None,
+    ):
         self.transactions = transactions
         self.failure = failure
         self.cancelled = cancelled
+        self.result = result
         self.calls = []
 
     async def extract(self, **kwargs):
@@ -229,7 +235,7 @@ class ExtractionProvider:
             raise asyncio.CancelledError()
         if self.failure:
             raise self.failure
-        return _change_set()
+        return self.result or _change_set()
 
 
 def _command():
@@ -247,11 +253,12 @@ def _command():
 
 
 def _service(repository, *, quality_failure=None, extraction_failure=None,
-             cancelled=False):
+             cancelled=False, extraction_result=None):
     transactions = TransactionFactory()
     quality = QualityProvider(transactions, failure=quality_failure)
     extraction = ExtractionProvider(
         transactions, failure=extraction_failure, cancelled=cancelled,
+        result=extraction_result,
     )
     identifiers = iter((
         "attempt-1", "report-1", "extraction-1", "revision-row-1",
@@ -389,6 +396,23 @@ async def test_extraction_failure_records_fixed_failed_state():
     assert len(extraction.calls) == 1
     assert result.status == "failed"
     assert repository.terminal[0]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_extraction_with_identity_outside_frozen_context_is_failed():
+    payload = _change_set().model_dump(by_alias=True, mode="json")
+    payload["existingEntityIds"] = ["missing-entity"]
+    invalid = FinalizationChangeSet.model_validate(payload)
+    repository = FakeRepository()
+    service, _, _, extraction = _service(
+        repository, extraction_result=invalid,
+    )
+
+    result = await service.prepare(_command())
+
+    assert len(extraction.calls) == 1
+    assert result.status == "failed"
+    assert repository.inserted_revisions == []
 
 
 @pytest.mark.asyncio

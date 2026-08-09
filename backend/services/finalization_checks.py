@@ -10,6 +10,7 @@ from backend.domain.finalization import (
     DeterministicBlock,
     EvidenceLocation,
     FinalizationAuthority,
+    FinalizationChangeSet,
     HardBlockCode,
 )
 from backend.domain.json_contracts import canonical_hash
@@ -276,4 +277,118 @@ def run_finalization_prechecks(
     return tuple(blocks)
 
 
-__all__ = ["run_finalization_prechecks"]
+def _planning_identities(planning_context: Mapping[str, Any]):
+    content = planning_context.get("content")
+    if not isinstance(content, Mapping):
+        raise ValueError("Finalization ChangeSet context invalid")
+    identities: dict[str, dict[str, tuple[int, str]]] = {
+        "volume": {}, "plot": {}, "story_block": {}, "stage": {},
+        "scene_task": {},
+    }
+
+    def add(kind: str, value: object) -> None:
+        if not isinstance(value, Mapping):
+            raise ValueError("Finalization ChangeSet context invalid")
+        identity = value.get("id")
+        revision = value.get("revision")
+        content_hash = value.get("contentHash", value.get("content_hash"))
+        if (
+            not isinstance(identity, str)
+            or type(revision) is not int
+            or revision < 1
+            or not isinstance(content_hash, str)
+            or len(content_hash) != 64
+            or identity in identities[kind]
+        ):
+            raise ValueError("Finalization ChangeSet context invalid")
+        identities[kind][identity] = (revision, content_hash)
+
+    for kind, key in (("volume", "volumes"), ("plot", "plots")):
+        values = content.get(key)
+        if type(values) is not list:
+            raise ValueError("Finalization ChangeSet context invalid")
+        for value in values:
+            add(kind, value)
+    blocks = content.get("storyBlocks")
+    if type(blocks) is not list:
+        raise ValueError("Finalization ChangeSet context invalid")
+    for block in blocks:
+        add("story_block", block)
+        stages = block.get("stages") if isinstance(block, Mapping) else None
+        if type(stages) is not list:
+            raise ValueError("Finalization ChangeSet context invalid")
+        for stage in stages:
+            add("stage", stage)
+            tasks = stage.get("sceneTasks") if isinstance(stage, Mapping) else None
+            if type(tasks) is not list:
+                raise ValueError("Finalization ChangeSet context invalid")
+            for task in tasks:
+                add("scene_task", task)
+    return identities
+
+
+def validate_change_set_context(
+    change_set: FinalizationChangeSet,
+    *,
+    candidate_content: str,
+    canon_context: Mapping[str, Any],
+    planning_context: Mapping[str, Any],
+) -> None:
+    """Verify every closed identity and evidence pin against frozen inputs."""
+
+    if type(change_set) is not FinalizationChangeSet or not isinstance(
+        candidate_content, str
+    ):
+        raise ValueError("Finalization ChangeSet context invalid")
+    if not isinstance(canon_context, Mapping) or not isinstance(
+        planning_context, Mapping
+    ):
+        raise ValueError("Finalization ChangeSet context invalid")
+    entity_rows = canon_context.get("entities")
+    if type(entity_rows) is not list:
+        raise ValueError("Finalization ChangeSet context invalid")
+    existing_entities = set()
+    for row in entity_rows:
+        identity = row.get("id") if isinstance(row, Mapping) else None
+        if not isinstance(identity, str) or identity in existing_entities:
+            raise ValueError("Finalization ChangeSet context invalid")
+        existing_entities.add(identity)
+    declared_existing = set(change_set.existing_entity_ids)
+    if (
+        not declared_existing.issubset(existing_entities)
+        or {item.id for item in change_set.entities} & existing_entities
+    ):
+        raise ValueError("Finalization ChangeSet context invalid")
+
+    planning = _planning_identities(planning_context)
+    all_planning_ids = {
+        identity for values in planning.values() for identity in values
+    }
+    for progress in change_set.story_progress_events:
+        if progress.target_id not in planning[progress.target_type.value]:
+            raise ValueError("Finalization ChangeSet context invalid")
+    for patch in change_set.planning_patches:
+        identity = planning[patch.target_type.value].get(patch.target_id)
+        if identity != (patch.expected_revision, patch.expected_hash):
+            raise ValueError("Finalization ChangeSet context invalid")
+    for suggestion in change_set.planning_suggestions:
+        if suggestion.target_id is not None and suggestion.target_id not in all_planning_ids:
+            raise ValueError("Finalization ChangeSet context invalid")
+
+    evidence_values = (
+        *(item.evidence for item in change_set.canon_events),
+        *(item.evidence for item in change_set.story_progress_events),
+        *(item.evidence for item in change_set.planning_patches),
+        *(item.evidence for item in change_set.planning_suggestions),
+    )
+    for evidence in evidence_values:
+        if (
+            evidence.end_scalar > len(candidate_content)
+            or _text_hash(
+                candidate_content[evidence.start_scalar:evidence.end_scalar]
+            ) != evidence.excerpt_hash
+        ):
+            raise ValueError("Finalization ChangeSet context invalid")
+
+
+__all__ = ["run_finalization_prechecks", "validate_change_set_context"]
