@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { NAlert, NButton } from 'naive-ui'
 
+import NovelDownloadPanel from '../components/projects/NovelDownloadPanel.vue'
 import { useProjectStore } from '../stores/projectStore.js'
 import { projectBiblePath, projectContractPath } from '../router/projectRoutes.js'
 
@@ -58,6 +59,11 @@ function returnToLibrary() {
         <n-button :loading="restoring" type="primary" @click="restoreProject">恢复项目</n-button>
         <n-button quaternary @click="returnToLibrary">返回项目库</n-button>
       </div>
+      <novel-download-panel
+        :key="String(project.id)"
+        :project-id="project.id"
+        :title="project.title"
+      />
     </section>
   </main>
 </template>

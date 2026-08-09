@@ -4,6 +4,7 @@ import { NButton, NResult, NSkeleton } from 'naive-ui'
 
 import ArchivedProjectStatusView from './ArchivedProjectStatusView.vue'
 import NotFoundView from './NotFoundView.vue'
+import NovelDownloadPanel from '../components/projects/NovelDownloadPanel.vue'
 import { useRouteProject } from '../composables/useRouteProject.js'
 import { useProjectStore } from '../stores/projectStore.js'
 
@@ -259,6 +260,12 @@ watch(
         >
           规划模型不可用；手工契约与圣经仍可继续，只有 AI 生成被停用。
         </p>
+
+        <novel-download-panel
+          :key="String(routeProject.project.value.id)"
+          :project-id="routeProject.project.value.id"
+          :title="routeProject.project.value.title"
+        />
       </template>
     </section>
   </main>

@@ -231,6 +231,10 @@ test.before(async () => {
     ssr: { noExternal: ['naive-ui'] },
     optimizeDeps: { noDiscovery: true },
   })
+  const DeliveryPanel = (
+    await vite.ssrLoadModule('/src/components/projects/NovelDownloadPanel.vue')
+  ).default
+  DeliveryPanel.render = await clientRender('components/projects/NovelDownloadPanel.vue')
   ArchivedOverview = (
     await vite.ssrLoadModule('/src/views/ArchivedProjectStatusView.vue')
   ).default
@@ -392,6 +396,27 @@ test('outline and writer actions navigate only to the exact server targetPath', 
     assert.match(html, new RegExp(`href="${targetPath}"`))
     assert.match(html, new RegExp(label))
   }
+})
+
+test('overview keeps its one primary next action before the secondary delivery desk', async () => {
+  const html = await renderOverview(preparation({
+    nextAction: 'continue_contract',
+    targetPath: '/projects/project%20%2F%20%E4%B8%80/contract',
+    contract: 'draft',
+    bible: 'missing',
+  }))
+  assert.equal((html.match(/class="overview-next-action"/g) || []).length, 1)
+  assert.match(html, /novel-download-panel/)
+  assert.ok(html.indexOf('overview-next-action') < html.indexOf('novel-download-panel'))
+})
+
+test('archived status shares the novel delivery desk instance', async () => {
+  const source = await readFile(
+    new URL('../../src/views/ArchivedProjectStatusView.vue', import.meta.url),
+    'utf8',
+  )
+  assert.match(source, /import NovelDownloadPanel/)
+  assert.match(source, /<novel-download-panel[\s\S]*:project-id="project\.id"/)
 })
 
 test('overview depends only on projectStore authority and has no browser joins', async () => {

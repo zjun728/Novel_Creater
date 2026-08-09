@@ -201,11 +201,14 @@ test.after(async () => {
   await vite?.close()
 })
 
-async function renderOverlay(operation) {
+async function renderOverlay(operation, patch) {
   const pinia = createPinia()
   setActivePinia(pinia)
   const store = createOperationStore('operation')()
-  if (operation) store.start(operation)
+  if (operation) {
+    const id = store.start(operation)
+    if (patch) store.update(id, patch)
+  }
   const app = createSSRApp(overlayComponent)
   app.use(pinia)
   return renderToString(app)
@@ -245,6 +248,60 @@ test('operation tokens prefer the latest blocker and finish only their own work'
   assert.equal(store.current.label, '新提示')
   assert.equal(store.finish(latestNotice), true)
   assert.equal(store.current, null)
+})
+
+test('operation overlay renders the latest permitted update detail', async () => {
+  const html = await renderOverlay(
+    { label: '正在准备下载', detail: '初始状态', blocking: true },
+    { label: '下载已就绪', detail: '文件即将保存' },
+  )
+  assert.match(html, /下载已就绪/)
+  assert.match(html, /文件即将保存/)
+  assert.doesNotMatch(html, /初始状态/)
+})
+
+test('operation updates only its own visible copy without changing blocker priority', () => {
+  setActivePinia(createPinia())
+  const store = createOperationStore('operation-update')()
+  const notice = store.start({ label: '准备下载', detail: '正在收集章节' })
+  const blocker = store.start({ label: '正在导入', detail: '请勿离开', blocking: true })
+
+  assert.equal(store.update(notice, { label: '下载已就绪', detail: 'TXT' }), true)
+  assert.equal(store.current.id, blocker)
+  assert.equal(store.current.label, '正在导入')
+  assert.equal(store.update(blocker, { label: '导入完成', detail: '已写入档案' }), true)
+  assert.equal(store.current.label, '导入完成')
+  assert.equal(store.current.detail, '已写入档案')
+  assert.equal(store.update('unknown-token', { label: 'ignored' }), false)
+  assert.throws(() => store.update(blocker, { blocking: false }), /label or detail/i)
+  assert.equal(store.blocking, true)
+})
+
+test('beforeunload manager installs only while work blocks and cleans up on disposal', async () => {
+  const { createBeforeUnloadManager } = await import(
+    '../../src/router/operationNavigationGuard.js'
+  )
+  const calls = []
+  const windowRef = {
+    addEventListener(type, handler) { calls.push(['add', type, handler]) },
+    removeEventListener(type, handler) { calls.push(['remove', type, handler]) },
+  }
+  const manager = createBeforeUnloadManager(() => windowRef)
+  manager.setBlocking(false)
+  assert.deepEqual(calls, [])
+  manager.setBlocking(true)
+  assert.equal(calls.length, 1)
+  assert.deepEqual(calls[0].slice(0, 2), ['add', 'beforeunload'])
+  const event = { prevented: false, preventDefault() { this.prevented = true } }
+  calls[0][2](event)
+  assert.equal(event.prevented, true)
+  assert.equal(event.returnValue, '')
+  manager.setBlocking(true)
+  assert.equal(calls.length, 1)
+  manager.setBlocking(false)
+  assert.deepEqual(calls[1].slice(0, 2), ['remove', 'beforeunload'])
+  manager.dispose()
+  assert.equal(calls.length, 2)
 })
 
 test('memory-router guard blocks push and back navigation only while an operation blocks', async () => {
