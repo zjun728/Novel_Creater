@@ -86,10 +86,17 @@ class OwnedImportQuarantine:
             parent = Path(temp_parent).resolve(strict=True)
             if not parent.is_dir() or _is_link(parent):
                 raise _invalid()
-            root = Path(tempfile.mkdtemp(prefix=QUARANTINE_PREFIX, dir=parent)).resolve(strict=True)
+            raw_root = Path(tempfile.mkdtemp(prefix=QUARANTINE_PREFIX, dir=parent))
+            owner = cls(
+                root=raw_root,
+                _archive_path=raw_root / QUARANTINE_FILENAME,
+                _parent=parent,
+            )
+            root = raw_root.resolve(strict=True)
             if root.parent != parent or not root.name.startswith(QUARANTINE_PREFIX) or _is_link(root):
                 raise _invalid()
-            owner = cls(root=root, _archive_path=root / QUARANTINE_FILENAME, _parent=parent)
+            owner.root = root
+            owner._archive_path = root / QUARANTINE_FILENAME
             try:
                 apply_private_permissions(root, is_directory=True)
             except PrivateFilePermissionsError:

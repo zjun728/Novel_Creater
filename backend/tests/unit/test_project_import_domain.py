@@ -148,6 +148,67 @@ def test_quarantine_permission_failure_retries_cleanup_before_returning(tmp_path
     assert list(parent.iterdir()) == []
 
 
+@pytest.mark.parametrize("failure", ["resolve", "validation"])
+def test_quarantine_establishes_cleanup_ownership_before_fallible_root_checks(
+    tmp_path: Path, monkeypatch, failure: str
+) -> None:
+    parent = tmp_path / "quarantine"
+    parent.mkdir()
+    import backend.domain.project_imports as imports
+
+    real_mkdtemp = imports.tempfile.mkdtemp
+    created: list[Path] = []
+
+    def make_real_root(*args, **kwargs):
+        root = Path(real_mkdtemp(*args, **kwargs))
+        created.append(root)
+        return str(root)
+
+    monkeypatch.setattr(imports.tempfile, "mkdtemp", make_real_root)
+    if failure == "resolve":
+        real_resolve = Path.resolve
+        resolve_attempts = 0
+
+        def fail_created_resolve(self: Path, *args, **kwargs):
+            nonlocal resolve_attempts
+            if created and self == created[0] and resolve_attempts == 0:
+                resolve_attempts += 1
+                raise RuntimeError("unavailable")
+            return real_resolve(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "resolve", fail_created_resolve)
+    else:
+        real_is_link = imports._is_link
+        link_attempts = 0
+
+        def fail_validation_once(path):
+            nonlocal link_attempts
+            if created and path == created[0] and link_attempts == 0:
+                link_attempts += 1
+                return True
+            return real_is_link(path)
+
+        monkeypatch.setattr(imports, "_is_link", fail_validation_once)
+
+    original_rmtree = imports.shutil.rmtree
+    attempts = 0
+
+    def fail_cleanup_once(path, *args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("unavailable")
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(imports.shutil, "rmtree", fail_cleanup_once)
+    with pytest.raises(ProjectImportInvalid, match="invalid project import archive") as raised:
+        OwnedImportQuarantine.create(temp_parent=parent)
+    assert raised.value.__cause__ is None
+    assert created
+    assert attempts >= 2
+    assert list(parent.iterdir()) == []
+
+
 def test_quarantine_cleanup_failure_is_retryable(tmp_path: Path, monkeypatch) -> None:
     parent = tmp_path / "quarantine"
     parent.mkdir()

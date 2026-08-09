@@ -28,6 +28,10 @@ def _central_offset(data: bytes) -> int:
     return struct.unpack_from("<I", data, eocd + 16)[0]
 
 
+def _eocd_offset(data: bytes) -> int:
+    return data.rfind(b"PK\x05\x06")
+
+
 def test_verifies_stored_phase6b_envelope_and_streamed_digest(tmp_path: Path) -> None:
     path = tmp_path / "package.zip"
     payload = _valid_archive(path)
@@ -120,7 +124,7 @@ def test_rejects_fixed_zip_metadata_mutations(tmp_path: Path, offset: int, value
 
 
 @pytest.mark.parametrize("name", [
-    "project\\graph.jsonl", "../project/graph.jsonl", "/project/graph.jsonl",
+    "project\\graph.jsonl", "./project/graph.jsonl", "../project/graph.jsonl", "/project/graph.jsonl",
     "C:/project/graph.jsonl", "project/graph\x00.json", "project/gráph.jsonl",
     "unrecognized/document", "PROJECT/GRAPH.JSONL",
 ])
@@ -251,5 +255,57 @@ def test_rejects_comments_extras_nonstored_timestamp_and_mode(tmp_path: Path, ki
     with zipfile.ZipFile(path, "w", compression=info.compress_type, allowZip64=False) as archive:
         archive.comment = b"comment" if kind == "archive-comment" else b""
         archive.writestr(info, b"x")
+    with pytest.raises(ProjectImportInvalid, match="invalid project import archive"):
+        verify_raw_zip_envelope(path)
+
+
+@pytest.mark.parametrize("field_offset", [4, 6, 8, 10])
+def test_rejects_each_multidisk_eocd_field(tmp_path: Path, field_offset: int) -> None:
+    path = tmp_path / "package.zip"
+    data = _valid_archive(path)
+    eocd = _eocd_offset(data)
+    path.write_bytes(data[:eocd + field_offset] + b"\x02\x00" + data[eocd + field_offset + 2:])
+    with pytest.raises(ProjectImportInvalid, match="invalid project import archive"):
+        verify_raw_zip_envelope(path)
+
+
+def test_path_limit_accepts_exact_boundary_and_rejects_one_byte_over(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "package.zip"
+    _valid_archive(path)
+    import backend.security.project_package_paths as package_paths
+
+    monkeypatch.setattr(package_paths, "MAX_ENTRY_PATH_BYTES", len("project/graph.jsonl"))
+    assert verify_raw_zip_envelope(path)
+    monkeypatch.setattr(package_paths, "MAX_ENTRY_PATH_BYTES", len("project/graph.jsonl") - 1)
+    with pytest.raises(ProjectImportInvalid, match="invalid project import archive"):
+        verify_raw_zip_envelope(path)
+
+
+@pytest.mark.parametrize("offset,value", [
+    (20, b"\xff\xff\xff\xff"), (24, b"\xff\xff\xff\xff"),
+    (42, b"\xff\xff\xff\xff"),
+])
+def test_rejects_each_central_zip64_sentinel(tmp_path: Path, offset: int, value: bytes) -> None:
+    path = tmp_path / "package.zip"
+    data = _valid_archive(path)
+    central = _central_offset(data)
+    path.write_bytes(data[:central + offset] + value + data[central + offset + len(value):])
+    with pytest.raises(ProjectImportInvalid, match="invalid project import archive"):
+        verify_raw_zip_envelope(path)
+
+
+def test_rejects_local_filename_mismatch_after_valid_central_path(tmp_path: Path) -> None:
+    path = tmp_path / "package.zip"
+    data = _valid_archive(path)
+    path.write_bytes(data[:30] + b"q" + data[31:])
+    with pytest.raises(ProjectImportInvalid, match="invalid project import archive"):
+        verify_raw_zip_envelope(path)
+
+
+def test_corrupted_stored_member_is_rejected_during_streamed_crc_verification(tmp_path: Path) -> None:
+    path = tmp_path / "package.zip"
+    data = _valid_archive(path)
+    data_offset = 30 + len("project/graph.jsonl")
+    path.write_bytes(data[:data_offset] + b"X" + data[data_offset + 1:])
     with pytest.raises(ProjectImportInvalid, match="invalid project import archive"):
         verify_raw_zip_envelope(path)
