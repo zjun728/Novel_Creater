@@ -12,6 +12,7 @@ from types import MappingProxyType
 from backend.domain.bibles import BiblePayload
 from backend.domain.chapter_outlines import ChapterOutline, DraftChapterOutline, EditableChapterOutlineContent
 from backend.domain.contracts import CreationContractPayload
+from backend.domain.finalization import FinalizationChangeSet, QualityFinding, change_set_payload
 from backend.domain.planning import DraftPlanningAggregate, PlanningAggregate
 from backend.domain.project_packages import PackageRecord, RECORD_FIELD_ALLOWLISTS, ProjectPackageBusy, ProjectPackageConflict, ProjectPackageInvalid, ProjectPackageNotFound, freeze_json_value
 from backend.database import DatabaseSession
@@ -1503,6 +1504,133 @@ def _rewrite_creation_contract_payload(
     return payload
 
 
+_FINALIZATION_PLANNING_TARGET_KINDS: Mapping[str, str] = MappingProxyType({
+    "volume": "planning-volume",
+    "plot": "planning-plot",
+    "story_block": "story-block",
+    "stage": "planning-stage",
+    "scene_task": "scene-task",
+})
+
+
+def _next_authority_logical_id(counters: dict[str, int], kind: str) -> str:
+    counters[kind] = counters.get(kind, 0) + 1
+    return f"{kind}:{counters[kind]}"
+
+
+def _rewrite_finalization_change_set(
+    change_set: FinalizationChangeSet,
+    *,
+    planning_identities: Mapping[tuple[str, object], str],
+    canon_entity_ids: Mapping[object, str],
+    counters: dict[str, int],
+) -> dict[str, object]:
+    payload = change_set_payload(change_set)
+    local_id_fields = (
+        (change_set.entities, payload["entities"], "finalization-entity"),
+        (change_set.aliases, payload["aliases"], "finalization-alias"),
+        (change_set.canon_events, payload["canonEvents"], "finalization-event"),
+        (
+            change_set.story_progress_events,
+            payload["storyProgressEvents"],
+            "finalization-progress-event",
+        ),
+        (
+            change_set.planning_patches,
+            payload["planningPatches"],
+            "finalization-planning-patch",
+        ),
+        (
+            change_set.planning_suggestions,
+            payload["planningSuggestions"],
+            "finalization-planning-suggestion",
+        ),
+    )
+    local_ids: dict[object, str] = {}
+    for values, dumped_values, kind in local_id_fields:
+        for value, dumped in zip(values, dumped_values, strict=True):
+            if value.id in local_ids:
+                raise _invalid()
+            logical_id = _next_authority_logical_id(counters, kind)
+            local_ids[value.id] = logical_id
+            dumped["id"] = logical_id
+
+    existing_entity_ids: dict[object, str] = {}
+    for raw_id in change_set.existing_entity_ids:
+        logical_id = canon_entity_ids.get(raw_id)
+        if logical_id is None or raw_id in existing_entity_ids:
+            raise _invalid()
+        existing_entity_ids[raw_id] = logical_id
+    payload["existingEntityIds"] = [
+        existing_entity_ids[raw_id] for raw_id in change_set.existing_entity_ids
+    ]
+    new_entity_ids = {
+        entity.id: local_ids[entity.id] for entity in change_set.entities
+    }
+
+    def entity_reference(raw_id: object) -> str:
+        logical_id = new_entity_ids.get(raw_id, existing_entity_ids.get(raw_id))
+        if logical_id is None:
+            raise _invalid()
+        return logical_id
+
+    for value, dumped in zip(change_set.aliases, payload["aliases"], strict=True):
+        dumped["entityId"] = entity_reference(value.entity_id)
+    for value, dumped in zip(change_set.canon_events, payload["canonEvents"], strict=True):
+        if value.entity_id is not None:
+            dumped["entityId"] = entity_reference(value.entity_id)
+
+    def planning_reference(target_type: object, raw_id: object) -> str:
+        kind = _FINALIZATION_PLANNING_TARGET_KINDS.get(str(target_type))
+        if kind is None:
+            raise _invalid()
+        return _authority_id(planning_identities, kind, raw_id)
+
+    for value, dumped in zip(
+        change_set.story_progress_events, payload["storyProgressEvents"], strict=True,
+    ):
+        dumped["targetId"] = planning_reference(value.target_type.value, value.target_id)
+    for value, dumped in zip(
+        change_set.planning_patches, payload["planningPatches"], strict=True,
+    ):
+        dumped["targetId"] = planning_reference(value.target_type.value, value.target_id)
+    for value, dumped in zip(
+        change_set.planning_suggestions, payload["planningSuggestions"], strict=True,
+    ):
+        if value.target_id is None:
+            continue
+        matches = [
+            planning_identities[(kind, value.target_id)]
+            for kind in _FINALIZATION_PLANNING_TARGET_KINDS.values()
+            if (kind, value.target_id) in planning_identities
+        ]
+        if len(matches) != 1:
+            raise _invalid()
+        dumped["targetId"] = matches[0]
+    return payload
+
+
+def _rewrite_quality_findings(
+    value: object,
+    *,
+    counters: dict[str, int],
+) -> list[dict[str, object]]:
+    parsed = _json_value(value)
+    if not isinstance(parsed, list) or len(parsed) > 256:
+        raise _invalid()
+    findings = [QualityFinding.model_validate(item) for item in parsed]
+    raw_ids: set[str] = set()
+    payload: list[dict[str, object]] = []
+    for finding in findings:
+        if finding.id in raw_ids:
+            raise _invalid()
+        raw_ids.add(finding.id)
+        dumped = finding.model_dump(mode="json", by_alias=True)
+        dumped["id"] = _next_authority_logical_id(counters, "quality-finding")
+        payload.append(dumped)
+    return payload
+
+
 def _rewrite_finalization_receipt(
     value: object,
     record: Mapping[str, object],
@@ -1809,6 +1937,19 @@ class ProjectPackageRepository:
                         json.dumps(_json_value(row["content_json"]), ensure_ascii=False)
                     )
 
+                finalization_change_set_models: dict[int, FinalizationChangeSet] = {}
+                for row in rows_by_table["finalization_change_set_revisions"]:
+                    finalization_change_set_models[id(row)] = FinalizationChangeSet.model_validate(
+                        _json_value(row["payload_json"])
+                    )
+
+                quality_findings_payloads = {
+                    id(row): _rewrite_quality_findings(
+                        row["findings_json"], counters=authority_counters,
+                    )
+                    for row in rows_by_table["candidate_quality_reports"]
+                }
+
                 authority_payloads: dict[int, object] = {
                     row_id: _rewrite_planning_payload(model, authority_identities)
                     for row_id, model in planning_models.items()
@@ -1822,6 +1963,15 @@ class ProjectPackageRepository:
                         model, authority_identities, planning_revision_ids
                     )
                     for row_id, model in outline_models.items()
+                })
+                authority_payloads.update({
+                    row_id: _rewrite_finalization_change_set(
+                        model,
+                        planning_identities=authority_identities,
+                        canon_entity_ids=identity_maps["canon_entities"],
+                        counters=authority_counters,
+                    )
+                    for row_id, model in finalization_change_set_models.items()
                 })
                 final_chapter_rows_by_id = {
                     row["id"]: row for row in rows_by_table["final_chapters"]
@@ -2055,11 +2205,14 @@ class ProjectPackageRepository:
                                 if field_name.startswith("@"):
                                     continue
                                 if column.endswith("_json") and value is not None:
-                                    value = (
-                                        authority_payloads[id(row)]
-                                        if id(row) in authority_payloads
-                                        else _json_value(value)
-                                    )
+                                    if table == "candidate_quality_reports" and column == "findings_json":
+                                        value = quality_findings_payloads[id(row)]
+                                    else:
+                                        value = (
+                                            authority_payloads[id(row)]
+                                            if id(row) in authority_payloads
+                                            else _json_value(value)
+                                        )
                                 data[field_name] = value
                                 continue
                             if category == "logical_reference":

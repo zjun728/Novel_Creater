@@ -15,6 +15,7 @@ from backend.domain.project_packages import PackageRecord, RECORD_FIELD_ALLOWLIS
 from backend.domain.project_packages import ProjectPackageBusy, ProjectPackageConflict, ProjectPackageInvalid, ProjectPackageNotFound
 from backend.domain.seeds import SeedPayload
 from backend.domain.story_engines import StoryEngineOption
+from backend.tests.unit.test_finalization_domain import _payload as _finalization_change_set_payload
 from backend.repositories.project_packages import (
     INTERNAL_NON_PACKAGE_TABLES,
     PROJECT_OWNED_TABLES,
@@ -379,6 +380,38 @@ def _planning_authority_json(block_id: str, content_hash: str) -> str:
         }],
         "contentHash": content_hash,
     })
+
+
+def _full_finalization_change_set_payload() -> tuple[dict[str, object], tuple[str, ...]]:
+    raw_ids = (
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+        "33333333-3333-4333-8333-333333333333",
+        "44444444-4444-4444-8444-444444444444",
+        "55555555-5555-4555-8555-555555555555",
+        "66666666-6666-4666-8666-666666666666",
+        "77777777-7777-4777-8777-777777777777",
+        "88888888-8888-4888-8888-888888888888",
+    )
+    (
+        existing_entity_id,
+        entity_id,
+        alias_id,
+        event_id,
+        progress_id,
+        patch_id,
+        suggestion_id,
+        planning_target_id,
+    ) = raw_ids
+    payload = _finalization_change_set_payload()
+    payload["existingEntityIds"] = [existing_entity_id]
+    payload["entities"][0]["id"] = entity_id
+    payload["aliases"][0].update({"id": alias_id, "entityId": entity_id})
+    payload["canonEvents"][0].update({"id": event_id, "entityId": existing_entity_id})
+    payload["storyProgressEvents"][0].update({"id": progress_id, "targetId": planning_target_id})
+    payload["planningPatches"][0].update({"id": patch_id, "targetId": planning_target_id})
+    payload["planningSuggestions"][0].update({"id": suggestion_id, "targetId": planning_target_id})
+    return payload, raw_ids
 
 
 def _bible_authority_json() -> str:
@@ -1402,6 +1435,155 @@ async def test_finalization_receipt_rewrites_closed_result_authority_ids() -> No
     }
     assert final_chapter_id not in repr(snapshot)
     assert planning_revision_id not in repr(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_finalization_authority_payloads_rewrite_all_local_and_external_ids() -> None:
+    payload, raw_ids = _full_finalization_change_set_payload()
+    existing_entity_id, entity_id, _, _, _, _, _, planning_target_id = raw_ids
+    finding_id = "99999999-9999-4999-8999-999999999999"
+    quality_finding = {
+        "id": finding_id,
+        "dimension": "dialogue_credibility",
+        "reason": "人物语气缺少区分",
+        "suggestedAction": "调整第二段对话",
+        "evidence": {
+            "startScalar": 0, "endScalar": 4, "excerptHash": "a" * 64,
+            "confidence": 0.9, "rationale": "正文直接陈述",
+        },
+    }
+    session = _SnapshotSession({
+        "projects": [_owned_row(
+            "projects", id="project-db", lifecycle_revision=7, title="P",
+        )],
+        "planning_revisions": [_owned_row(
+            "planning_revisions", id="planning-db", project_id="project-db",
+            revision=1, content_json=_planning_authority_json(planning_target_id, "b" * 64),
+            content_hash="b" * 64,
+        )],
+        "canon_entities": [_owned_row(
+            "canon_entities", id=existing_entity_id, project_id="project-db",
+            entity_type="person", canonical_name="Existing", normalized_name="existing",
+            created_revision=1, created_at=1,
+        )],
+        "finalization_change_sets": [_owned_row(
+            "finalization_change_sets", id="change-set-db", project_id="project-db",
+            status="awaiting_author", current_revision=1, current_revision_hash="c" * 64,
+        )],
+        "finalization_change_set_revisions": [_owned_row(
+            "finalization_change_set_revisions", id="change-set-revision-db",
+            project_id="project-db", change_set_id="change-set-db", revision=1,
+            payload_json=json.dumps(payload), content_hash="c" * 64,
+            source="extraction", created_at=2,
+        )],
+        "candidate_quality_reports": [_owned_row(
+            "candidate_quality_reports", id="quality-db", project_id="project-db",
+            status="completed", findings_json=json.dumps([quality_finding]),
+            deterministic_blocks_json="[]", content_hash="d" * 64, created_at=2,
+        )],
+    })
+
+    snapshot = await ProjectPackageRepository(
+        pool=_SnapshotPool(session), session_factory=lambda value: value,
+    ).read_snapshot("project-db", 7)
+
+    by_type = {record.entity_type: record for record in snapshot.graph_records}
+    rewritten = by_type["finalization-change-set-revision"].data["payload"]
+    canon_logical_id = by_type["canon-entity"].logical_id
+    story_block_logical_id = rewritten["storyProgressEvents"][0]["targetId"]
+    assert rewritten["existingEntityIds"] == (canon_logical_id,)
+    assert rewritten["entities"][0]["id"].startswith("finalization-entity:")
+    assert rewritten["aliases"][0]["id"].startswith("finalization-alias:")
+    assert rewritten["aliases"][0]["entityId"] == rewritten["entities"][0]["id"]
+    assert rewritten["canonEvents"][0]["id"].startswith("finalization-event:")
+    assert rewritten["canonEvents"][0]["entityId"] == canon_logical_id
+    assert rewritten["storyProgressEvents"][0]["id"].startswith("finalization-progress-event:")
+    assert rewritten["planningPatches"][0]["id"].startswith("finalization-planning-patch:")
+    assert rewritten["planningPatches"][0]["targetId"] == story_block_logical_id
+    assert rewritten["planningSuggestions"][0]["id"].startswith(
+        "finalization-planning-suggestion:"
+    )
+    assert rewritten["planningSuggestions"][0]["targetId"] == story_block_logical_id
+    assert rewritten["planningPatches"][0]["expectedHash"] == payload["planningPatches"][0]["expectedHash"]
+    assert rewritten["canonEvents"][0]["evidence"]["excerptHash"] == "a" * 64
+    finding = by_type["candidate-quality"].data["findings"][0]
+    assert finding["id"].startswith("quality-finding:")
+    assert finding["reason"] == quality_finding["reason"]
+    rendered = repr(snapshot)
+    assert entity_id not in rendered
+    assert finding_id not in rendered
+    assert all(raw_id not in rendered for raw_id in raw_ids)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure_kind",
+    ("dangling-canon", "unknown-local", "planning-type-mismatch", "extra-field", "quality-extra"),
+)
+async def test_finalization_authority_payloads_fail_closed_without_cause(
+    failure_kind: str,
+) -> None:
+    payload, raw_ids = _full_finalization_change_set_payload()
+    existing_entity_id, _, _, _, _, _, _, planning_target_id = raw_ids
+    canon_rows = [_owned_row(
+        "canon_entities", id=existing_entity_id, project_id="project-db",
+        entity_type="person", canonical_name="Existing", normalized_name="existing",
+        created_revision=1, created_at=1,
+    )]
+    quality_finding = {
+        "id": "99999999-9999-4999-8999-999999999999",
+        "dimension": "dialogue_credibility",
+        "reason": "人物语气缺少区分",
+        "suggestedAction": "调整第二段对话",
+        "evidence": {
+            "startScalar": 0, "endScalar": 4, "excerptHash": "a" * 64,
+            "confidence": 0.9, "rationale": "正文直接陈述",
+        },
+    }
+    if failure_kind == "dangling-canon":
+        canon_rows = []
+    elif failure_kind == "unknown-local":
+        payload["aliases"][0]["entityId"] = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    elif failure_kind == "planning-type-mismatch":
+        payload["storyProgressEvents"][0]["targetType"] = "stage"
+    elif failure_kind == "extra-field":
+        payload["unexpectedId"] = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    else:
+        quality_finding["unexpectedId"] = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    session = _SnapshotSession({
+        "projects": [_owned_row(
+            "projects", id="project-db", lifecycle_revision=7, title="P",
+        )],
+        "planning_revisions": [_owned_row(
+            "planning_revisions", id="planning-db", project_id="project-db",
+            revision=1, content_json=_planning_authority_json(planning_target_id, "b" * 64),
+            content_hash="b" * 64,
+        )],
+        "canon_entities": canon_rows,
+        "finalization_change_sets": [_owned_row(
+            "finalization_change_sets", id="change-set-db", project_id="project-db",
+            status="awaiting_author", current_revision=1, current_revision_hash="c" * 64,
+        )],
+        "finalization_change_set_revisions": [_owned_row(
+            "finalization_change_set_revisions", id="change-set-revision-db",
+            project_id="project-db", change_set_id="change-set-db", revision=1,
+            payload_json=json.dumps(payload), content_hash="c" * 64,
+            source="extraction", created_at=2,
+        )],
+        "candidate_quality_reports": [_owned_row(
+            "candidate_quality_reports", id="quality-db", project_id="project-db",
+            status="completed", findings_json=json.dumps([quality_finding]),
+            deterministic_blocks_json="[]", content_hash="d" * 64, created_at=2,
+        )],
+    })
+
+    with pytest.raises(ProjectPackageInvalid, match="invalid package value") as raised:
+        await ProjectPackageRepository(
+            pool=_SnapshotPool(session), session_factory=lambda value: value,
+        ).read_snapshot("project-db", 7)
+
+    assert raised.value.__cause__ is None
+    assert all(raw_id not in str(raised.value) for raw_id in raw_ids)
 
 
 @pytest.mark.asyncio
