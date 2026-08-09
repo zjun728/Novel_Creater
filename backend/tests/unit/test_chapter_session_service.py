@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import hashlib
 
 import pytest
@@ -35,6 +36,19 @@ def candidate_command(repo, chapter_session_id, *, idempotency_key=FREEZE_KEY_1)
         expected_working_draft_revision=draft["revision"],
         expected_content_hash=draft["content_hash"],
         idempotency_key=idempotency_key,
+    )
+
+
+def load_candidate_command(repo, chapter_session_id, candidate_id):
+    from backend.services.chapter_sessions import LoadDraftCandidate
+
+    draft = repo.working_drafts[chapter_session_id]
+    return LoadDraftCandidate(
+        project_id="p1",
+        chapter_session_id=chapter_session_id,
+        candidate_id=candidate_id,
+        expected_working_draft_revision=draft["revision"],
+        expected_content_hash=draft["content_hash"],
     )
 
 
@@ -121,6 +135,9 @@ class FakeChapterRepository:
         self.reject_freeze_request_insert = False
         self.working_draft_cas_calls = []
         self.freeze_requests = []
+        self.recovery_rows = []
+        self.reject_recovery_insert = False
+        self.reject_working_draft_upsert = False
 
     async def lock_project(self, session, project_id):
         self.call_order.append("lock_project")
@@ -185,6 +202,14 @@ class FakeChapterRepository:
             None,
         )
 
+    async def lock_session_for_operation(
+        self, session, project_id, chapter_session_id
+    ):
+        self.call_order.append("lock_session_for_operation")
+        return await self.read_session_by_id(
+            session, project_id, chapter_session_id
+        )
+
     async def insert_chapter_session(self, session, row):
         self.call_order.append("insert_chapter_session")
         self.sessions.append(row)
@@ -193,6 +218,15 @@ class FakeChapterRepository:
     async def read_working_draft(self, session, chapter_session_id):
         self.call_order.append("read_working_draft")
         return self.working_drafts.get(chapter_session_id)
+
+    async def lock_working_draft_for_operation(
+        self, session, project_id, chapter_session_id
+    ):
+        self.call_order.append("lock_working_draft_for_operation")
+        draft = self.working_drafts.get(chapter_session_id)
+        if draft is None or draft["project_id"] != project_id:
+            return None
+        return draft
 
     async def upsert_working_draft(
         self,
@@ -203,6 +237,8 @@ class FakeChapterRepository:
         expected_content_hash=None,
     ):
         self.call_order.append("upsert_working_draft")
+        if self.reject_working_draft_upsert:
+            return False
         if expected_revision is not None or expected_content_hash is not None:
             self.working_draft_cas_calls.append(
                 (expected_revision, expected_content_hash)
@@ -217,6 +253,13 @@ class FakeChapterRepository:
             ):
                 return False
         self.working_drafts[row["chapter_session_id"]] = row
+        return True
+
+    async def insert_working_draft_revision(self, session, row):
+        self.call_order.append("insert_working_draft_revision")
+        if self.reject_recovery_insert:
+            return False
+        self.recovery_rows.append(row)
         return True
 
     async def insert_candidate(self, session, row):
@@ -282,6 +325,21 @@ class FakeChapterRepository:
             for item in self.candidates
             if item["chapter_session_id"] == chapter_session_id
         ]
+
+    async def read_candidate_for_load(
+        self, session, project_id, chapter_session_id, candidate_id
+    ):
+        self.call_order.append("read_candidate_for_load")
+        return next(
+            (
+                item
+                for item in self.candidates
+                if item["project_id"] == project_id
+                and item["chapter_session_id"] == chapter_session_id
+                and item["id"] == candidate_id
+            ),
+            None,
+        )
 
 
 class FakeTx:
@@ -1322,6 +1380,184 @@ async def test_malformed_candidate_basis_fails_closed_without_public_metadata(
         candidate.projection_revision,
         candidate.projection_hash,
     ) == (None,) * 9
+
+
+@pytest.mark.asyncio
+async def test_load_candidate_atomically_replaces_working_draft_with_recovery():
+    from backend.services.chapter_sessions import (
+        ChapterSessionService,
+        SaveWorkingDraft,
+    )
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+    created = await service.create_session(create_command())
+    first = await service.save_working_draft(SaveWorkingDraft(
+        "p1", created.session.id, 1, sha256_text(""), "候选稿甲",
+    ))
+    saved = await service.save_candidate(
+        candidate_command(repo, created.session.id)
+    )
+    candidate_id = saved.saved_candidate_id
+    await service.save_working_draft(SaveWorkingDraft(
+        "p1", created.session.id, first.working_draft.revision,
+        first.working_draft.content_hash, "当前工作稿乙",
+    ))
+    frozen_candidates = deepcopy(repo.candidates)
+    repo.call_order.clear()
+
+    result = await service.load_candidate(
+        load_candidate_command(repo, created.session.id, candidate_id)
+    )
+
+    assert result.working_draft.revision == 4
+    assert result.working_draft.content == "候选稿甲"
+    assert result.working_draft.content_hash == sha256_text("候选稿甲")
+    assert result.working_draft.source_payload == {
+        "source": "candidate-load",
+        "candidateId": candidate_id,
+        "candidateContentHash": sha256_text("候选稿甲"),
+        "baseWorkingDraftRevision": 3,
+    }
+    assert len(result.candidates) == len(repo.candidates) == 1
+    assert repo.candidates == frozen_candidates
+    assert result.candidates[0].created_at == repo.candidates[0]["created_at"]
+    assert [row["snapshot_role"] for row in repo.recovery_rows] == [
+        "before", "after",
+    ]
+    assert all(row["replacement_reason"] == "candidate_load"
+               for row in repo.recovery_rows)
+    assert all(row["source_operation_id"] is None
+               for row in repo.recovery_rows)
+    assert all(row["source_candidate_id"] == candidate_id
+               for row in repo.recovery_rows)
+    assert repo.call_order[:5] == [
+        "lock_project",
+        "lock_session_for_operation",
+        "lock_working_draft_for_operation",
+        "read_candidate_for_load",
+        "insert_working_draft_revision",
+    ]
+    assert repo.call_order.count("insert_working_draft_revision") == 2
+
+
+@pytest.mark.asyncio
+async def test_load_candidate_allows_stale_basis_and_keeps_it_visible():
+    from backend.services.chapter_sessions import ChapterSessionService, SaveWorkingDraft
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+    created = await service.create_session(create_command())
+    await service.save_working_draft(SaveWorkingDraft(
+        "p1", created.session.id, 1, sha256_text(""), "旧基线候选",
+    ))
+    saved = await service.save_candidate(candidate_command(repo, created.session.id))
+    repo.outline["chapter_outline_hash"] = "e" * 64
+
+    result = await service.load_candidate(
+        load_candidate_command(repo, created.session.id, saved.saved_candidate_id)
+    )
+
+    assert result.working_draft.content == "旧基线候选"
+    assert result.candidates[0].basis_status == "stale"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked_state", ("active", "finalized", "superseded"))
+async def test_load_candidate_rejects_nonexclusive_or_closed_session(blocked_state):
+    from backend.services.chapter_sessions import ChapterSessionConflict, ChapterSessionService
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+    created = await service.create_session(create_command())
+    repo.working_drafts[created.session.id].update(
+        content="候选", content_hash=sha256_text("候选")
+    )
+    saved = await service.save_candidate(candidate_command(repo, created.session.id))
+    session = repo.sessions[0]
+    if blocked_state == "active":
+        session["active_draft_operation_id"] = FREEZE_KEY_4
+    else:
+        session["effective_status"] = blocked_state
+
+    with pytest.raises(ChapterSessionConflict):
+        await service.load_candidate(
+            load_candidate_command(repo, created.session.id, saved.saved_candidate_id)
+        )
+
+    assert repo.recovery_rows == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    ("missing", "cross_owner", "corrupt", "utf8", "cas", "recovery", "upsert"),
+)
+async def test_load_candidate_fails_closed_before_publishing_invalid_state(failure):
+    from backend.services.chapter_sessions import ChapterSessionConflict, ChapterSessionService
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+    created = await service.create_session(create_command())
+    repo.working_drafts[created.session.id].update(
+        content="候选", content_hash=sha256_text("候选")
+    )
+    saved = await service.save_candidate(candidate_command(repo, created.session.id))
+    command = load_candidate_command(repo, created.session.id, saved.saved_candidate_id)
+    if failure == "missing":
+        command = type(command)(**{**command.__dict__, "candidate_id": "missing"})
+    elif failure == "cross_owner":
+        repo.candidates[0]["project_id"] = "p2"
+    elif failure == "corrupt":
+        repo.candidates[0]["content_hash"] = "f" * 64
+    elif failure == "utf8":
+        repo.candidates[0]["content"] = "\ud800"
+    elif failure == "cas":
+        command = type(command)(**{
+            **command.__dict__, "expected_content_hash": "f" * 64,
+        })
+    elif failure == "recovery":
+        repo.reject_recovery_insert = True
+    else:
+        repo.reject_working_draft_upsert = True
+
+    with pytest.raises(ChapterSessionConflict):
+        await service.load_candidate(command)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("project_id", ""),
+        ("chapter_session_id", ""),
+        ("candidate_id", ""),
+        ("expected_working_draft_revision", True),
+        ("expected_working_draft_revision", 0),
+        ("expected_content_hash", "A" * 64),
+    ),
+)
+async def test_load_candidate_validates_closed_command(field, value):
+    from backend.services.chapter_sessions import (
+        ChapterSessionRequestInvalid,
+        ChapterSessionService,
+        LoadDraftCandidate,
+    )
+
+    service = ChapterSessionService(
+        FakeChapterRepository(), transaction_factory=tx_factory
+    )
+    values = {
+        "project_id": "p1",
+        "chapter_session_id": "session-1",
+        "candidate_id": "candidate-1",
+        "expected_working_draft_revision": 1,
+        "expected_content_hash": "a" * 64,
+    }
+    values[field] = value
+
+    with pytest.raises(ChapterSessionRequestInvalid):
+        await service.load_candidate(LoadDraftCandidate(**values))
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ("working-draft", "candidate"))

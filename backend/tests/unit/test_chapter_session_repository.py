@@ -102,6 +102,33 @@ async def test_upsert_working_draft_uses_revision_and_hash_cas():
     assert args[-2:] == (2, "a" * 64)
 
 
+@pytest.mark.asyncio
+async def test_read_candidate_for_load_locks_exact_owner_and_normalizes_row():
+    stored = _candidate_row()
+    stored_db = {
+        **stored,
+        "provenance_json": canonical_json(stored["provenance"]),
+    }
+    session = CapturingSession(rows=[stored_db])
+
+    result = await ChapterSessionRepository().read_candidate_for_load(
+        session,
+        stored["project_id"],
+        stored["chapter_session_id"],
+        stored["id"],
+    )
+
+    sql, args = session.calls[0]
+    compact = " ".join(sql.split())
+    assert "WHERE project_id=%s AND chapter_session_id=%s AND id=%s" in compact
+    assert "FOR UPDATE" in compact
+    assert args == (
+        stored["project_id"], stored["chapter_session_id"], stored["id"],
+    )
+    assert result["provenance"]["schemaVersion"] == "draft-candidate-basis-v1"
+    assert result["created_at"] == stored["created_at"]
+
+
 def _candidate_row():
     basis = {
         "schemaVersion": "draft-candidate-basis-v1",

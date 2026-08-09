@@ -80,6 +80,15 @@ class SaveDraftCandidate:
 
 
 @dataclass(frozen=True)
+class LoadDraftCandidate:
+    project_id: str
+    chapter_session_id: str
+    candidate_id: str
+    expected_working_draft_revision: int
+    expected_content_hash: str
+
+
+@dataclass(frozen=True)
 class CandidateSaveResult:
     workspace: ChapterWorkspace
     saved_candidate_id: str
@@ -493,6 +502,128 @@ class ChapterSessionService:
                 str(persisted_candidate["id"]),
             )
 
+    async def load_candidate(
+        self,
+        command: LoadDraftCandidate,
+    ) -> ChapterWorkspace:
+        self._validate_load_candidate_command(command)
+        async with self.transaction_factory() as session:
+            if await self.repository.lock_project(
+                session, command.project_id
+            ) is None:
+                raise ProjectNotFound()
+            locked_session = await self.repository.lock_session_for_operation(
+                session, command.project_id, command.chapter_session_id,
+            )
+            if locked_session is None:
+                raise ChapterSessionNotFound("Chapter session not found")
+            chapter_session = await self.repository.read_session_by_id(
+                session, command.project_id, command.chapter_session_id,
+            )
+            if chapter_session is None:
+                raise ChapterSessionNotFound("Chapter session not found")
+            effective_status = chapter_session.get(
+                "effective_status", chapter_session["status"]
+            )
+            if effective_status == "superseded":
+                raise ChapterSessionConflict("Chapter session is superseded")
+            if effective_status != "drafting":
+                raise ChapterSessionConflict("Chapter session is finalized")
+            if chapter_session.get("active_draft_operation_id") is not None:
+                raise ChapterSessionConflict("draft operation is active")
+            draft = await self.repository.lock_working_draft_for_operation(
+                session, command.project_id, command.chapter_session_id,
+            )
+            if draft is None:
+                raise ChapterSessionPreconditionFailed("working draft is required")
+            if (
+                int(draft["revision"])
+                != command.expected_working_draft_revision
+                or draft["content_hash"] != command.expected_content_hash
+            ):
+                raise ChapterSessionConflict("working draft revision or hash drift")
+            candidate = await self.repository.read_candidate_for_load(
+                session,
+                command.project_id,
+                command.chapter_session_id,
+                command.candidate_id,
+            )
+            if candidate is None:
+                raise ChapterSessionConflict("candidate is unavailable")
+            content = candidate.get("content")
+            content_hash = candidate.get("content_hash")
+            try:
+                verified_content_hash = (
+                    self._content_hash(content) if type(content) is str else None
+                )
+            except UnicodeEncodeError:
+                verified_content_hash = None
+            if (
+                type(content) is not str
+                or type(content_hash) is not str
+                or re.fullmatch(r"[0-9a-f]{64}", content_hash) is None
+                or verified_content_hash != content_hash
+            ):
+                raise ChapterSessionConflict("candidate content is invalid")
+            now = int(time.time() * 1000)
+            next_revision = int(draft["revision"]) + 1
+            recovery_common = {
+                "project_id": command.project_id,
+                "chapter_session_id": command.chapter_session_id,
+                "working_draft_id": draft["id"],
+                "replacement_reason": "candidate_load",
+                "source_operation_id": None,
+                "source_candidate_id": candidate["id"],
+                "created_at": now,
+            }
+            if not await self.repository.insert_working_draft_revision(
+                session,
+                {
+                    **recovery_common,
+                    "id": str(uuid4()),
+                    "working_draft_revision": int(draft["revision"]),
+                    "snapshot_role": "before",
+                    "content": draft["content"],
+                    "content_hash": draft["content_hash"],
+                },
+            ):
+                raise ChapterSessionConflict("candidate load recovery conflict")
+            row = self._working_row(
+                command.project_id,
+                command.chapter_session_id,
+                revision=next_revision,
+                content=content,
+                content_hash=content_hash,
+                source_payload={
+                    "source": "candidate-load",
+                    "candidateId": candidate["id"],
+                    "candidateContentHash": content_hash,
+                    "baseWorkingDraftRevision": int(draft["revision"]),
+                },
+                updated_at=now,
+                draft_id=draft["id"],
+            )
+            if not await self.repository.upsert_working_draft(
+                session,
+                row,
+                expected_revision=command.expected_working_draft_revision,
+                expected_content_hash=command.expected_content_hash,
+            ):
+                raise ChapterSessionConflict("working draft revision or hash drift")
+            if not await self.repository.insert_working_draft_revision(
+                session,
+                {
+                    **recovery_common,
+                    "id": str(uuid4()),
+                    "working_draft_revision": next_revision,
+                    "snapshot_role": "after",
+                    "content": content,
+                    "content_hash": content_hash,
+                },
+            ):
+                raise ChapterSessionConflict("candidate load recovery conflict")
+            return await self._workspace(session, chapter_session)
+
     async def _workspace(self, session, chapter_session: Mapping[str, Any]) -> ChapterWorkspace:
         draft = await self.repository.read_working_draft(session, chapter_session["id"])
         candidates = await self.repository.list_candidates(session, chapter_session["id"])
@@ -593,6 +724,27 @@ class ChapterSessionService:
         ):
             raise ChapterSessionRequestInvalid(
                 "candidate save command is invalid",
+            )
+
+    def _validate_load_candidate_command(
+        self,
+        command: LoadDraftCandidate,
+    ) -> None:
+        if (
+            type(command.project_id) is not str
+            or not command.project_id
+            or type(command.chapter_session_id) is not str
+            or not command.chapter_session_id
+            or type(command.candidate_id) is not str
+            or not command.candidate_id
+            or type(command.expected_working_draft_revision) is not int
+            or command.expected_working_draft_revision < 1
+            or type(command.expected_content_hash) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", command.expected_content_hash)
+            is None
+        ):
+            raise ChapterSessionRequestInvalid(
+                "candidate load command is invalid",
             )
 
     def _matches_create_command(
@@ -708,6 +860,7 @@ class ChapterSessionService:
             projection_revision=None if basis is None else basis["projectionRevision"],
             projection_hash=None if basis is None else basis["projectionHash"],
             basis_status="current" if matches else "stale",
+            created_at=int(row.get("created_at") or 0),
             status=row.get("effective_status", "drafting"),
         )
 

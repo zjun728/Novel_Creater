@@ -1081,6 +1081,21 @@ class ChapterSessionRepository:
         )
         return self._candidate(row) if row else None
 
+    async def read_candidate_for_load(
+        self,
+        session,
+        project_id: str,
+        chapter_session_id: str,
+        candidate_id: str,
+    ):
+        row = await session.fetchone(
+            """SELECT * FROM draft_candidates
+                 WHERE project_id=%s AND chapter_session_id=%s AND id=%s
+                 FOR UPDATE""",
+            (project_id, chapter_session_id, candidate_id),
+        )
+        return self._candidate(row) if row else None
+
     async def read_candidate_freeze_request(
         self,
         session,

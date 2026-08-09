@@ -12,7 +12,10 @@ import pytest
 from backend.gateways.chapter_draft_provider import ChapterDraftProviderError
 from backend.repositories.chapter_sessions import ChapterSessionRepository
 from backend.services.chapter_sessions import (
+    ChapterSessionConflict,
     ChapterSessionService,
+    LoadDraftCandidate,
+    SaveDraftCandidate,
     SaveWorkingDraft,
 )
 from backend.services.draft_operations import (
@@ -921,3 +924,97 @@ async def test_provider_wait_leaves_second_connection_readable(disposable_mysql)
     assert gateway.active_transaction_observations == [0, 0]
     assert probe.active == 0
     assert probe.entries == probe.exits == 3
+
+
+@pytest.mark.asyncio
+async def test_candidate_load_commits_both_snapshots_or_rolls_back_all(
+    disposable_mysql,
+):
+    workspace, transaction_factory, chapter_service = await _workspace(
+        disposable_mysql
+    )
+    first = await chapter_service.save_working_draft(SaveWorkingDraft(
+        PROJECT,
+        workspace.session.id,
+        workspace.working_draft.revision,
+        workspace.working_draft.content_hash,
+        "候选稿甲",
+    ))
+    saved = await chapter_service.save_candidate(SaveDraftCandidate(
+        PROJECT,
+        workspace.session.id,
+        first.working_draft.revision,
+        first.working_draft.content_hash,
+        "51000000-0000-4000-8000-000000000001",
+    ))
+    candidate_before = await disposable_mysql.session.fetchone(
+        "SELECT * FROM draft_candidates WHERE id=%s",
+        (saved.saved_candidate_id,),
+    )
+    current = await chapter_service.save_working_draft(SaveWorkingDraft(
+        PROJECT,
+        workspace.session.id,
+        first.working_draft.revision,
+        first.working_draft.content_hash,
+        "当前工作稿乙",
+    ))
+    loaded = await chapter_service.load_candidate(LoadDraftCandidate(
+        PROJECT,
+        workspace.session.id,
+        saved.saved_candidate_id,
+        current.working_draft.revision,
+        current.working_draft.content_hash,
+    ))
+
+    recovery = await _recovery(disposable_mysql.session, workspace.session.id)
+    assert loaded.working_draft.revision == current.working_draft.revision + 1
+    assert loaded.working_draft.content == "候选稿甲"
+    assert [row["snapshot_role"] for row in recovery] == ["before", "after"]
+    assert {row["source_operation_id"] for row in recovery} == {None}
+    assert {row["source_candidate_id"] for row in recovery} == {
+        saved.saved_candidate_id
+    }
+    candidate_after = await disposable_mysql.session.fetchone(
+        "SELECT * FROM draft_candidates WHERE id=%s",
+        (saved.saved_candidate_id,),
+    )
+    assert candidate_after == candidate_before
+
+    before_failure = await chapter_service.save_working_draft(SaveWorkingDraft(
+        PROJECT,
+        workspace.session.id,
+        loaded.working_draft.revision,
+        loaded.working_draft.content_hash,
+        "事务失败前的工作稿",
+    ))
+
+    class FailAfterDraftRepository(ChapterSessionRepository):
+        def __init__(self):
+            self.recovery_calls = 0
+
+        async def insert_working_draft_revision(self, session, row):
+            self.recovery_calls += 1
+            if self.recovery_calls == 2:
+                return False
+            return await super().insert_working_draft_revision(session, row)
+
+    failing_service = ChapterSessionService(
+        FailAfterDraftRepository(), transaction_factory=transaction_factory
+    )
+    with pytest.raises(
+        ChapterSessionConflict, match="candidate load recovery conflict"
+    ):
+        await failing_service.load_candidate(LoadDraftCandidate(
+            PROJECT,
+            workspace.session.id,
+            saved.saved_candidate_id,
+            before_failure.working_draft.revision,
+            before_failure.working_draft.content_hash,
+        ))
+
+    persisted = await _draft(disposable_mysql.session, workspace.session.id)
+    assert persisted["revision"] == before_failure.working_draft.revision
+    assert persisted["content_hash"] == before_failure.working_draft.content_hash
+    assert len(await _recovery(
+        disposable_mysql.session, workspace.session.id
+    )) == 2

@@ -52,6 +52,7 @@ class DraftCandidateView:
     projection_revision: int | None
     projection_hash: str | None
     basis_status: str
+    created_at: int
     status: str
 
 
