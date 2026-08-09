@@ -8,6 +8,12 @@
 
 **Tech Stack:** Python 3.12, FastAPI, Pydantic v2, aiomysql, `zipfile`, SHA-256, canonical JSON, Vue 3, Pinia, Node test runner, pytest, Playwright, disposable MySQL.
 
+## Execution status
+
+Accepted on 2026-08-10. Tasks 1–7 are complete; final specification and quality reviews reported
+`Critical/Important/Minor = 0/0/0` new findings. Exact evidence and the zero-residue ledger are recorded in
+`docs/acceptance/2026-08-10-phase-6b-deterministic-project-backup.md`.
+
 ---
 
 ## Scope guard
@@ -441,23 +447,23 @@ Commit: `test: accept phase6b deterministic project backup`
 - Create: `docs/acceptance/2026-08-10-phase-6b-deterministic-project-backup.md`
 - Modify: this plan's execution status after acceptance
 
-- [ ] **Step 1: Run the combined Phase 6B focused suite once fresh.**
+- [x] **Step 1: Run the combined Phase 6B focused suite once fresh.**
 
 Run domain/security/repository/service/API/frontend/runner-contract tests from Tasks 1–6, one disposable-MySQL snapshot test, `py_compile`, frontend build, and `git diff --check`. Do not run branch-wide Phase 6 gates.
 
-- [ ] **Step 2: Run one specification review.**
+- [x] **Step 2: Run one specification review.**
 
 Require `Critical/Important/Minor = 0/0/0` for new findings. Only Critical/Important active-path data corruption, security, deterministic-package, or guaranteed cleanup defects may return to implementation; record extreme non-blockers for Phase 7 hardening.
 
-- [ ] **Step 3: Run one serial quality review after spec passes.**
+- [x] **Step 3: Run one serial quality review after spec passes.**
 
 Use the same stop rule. Do not start a second review loop for new non-blocking scope.
 
-- [ ] **Step 4: Record exact evidence and resource ledger.**
+- [x] **Step 4: Record exact evidence and resource ledger.**
 
 The acceptance document records commands, exit/counts, first-cause history, review counts, package format/version/hash, and DB/process/port/temp/corpus/download/artifact/Vite residue. It must not contain body text, secret values, DSNs, Provider output, or local absolute corpus paths.
 
-- [ ] **Step 5: Commit and proceed directly to 6C.**
+- [x] **Step 5: Commit and proceed directly to 6C.**
 
 Commit: `docs: accept phase6b deterministic project backup`
 
