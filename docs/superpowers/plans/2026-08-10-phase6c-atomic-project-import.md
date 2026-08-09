@@ -52,6 +52,8 @@ GET  /api/project-imports/{command_id}
 
 ## Task 1: Raw ZIP envelope and owned upload quarantine
 
+**Status:** Complete at `d5098b0`; specification review `0/0/0`, quality review `0/0/2` approved.
+
 **Files:**
 
 - Create: `backend/security/project_import_archives.py`
@@ -62,7 +64,7 @@ GET  /api/project-imports/{command_id}
 - Create: `backend/tests/unit/test_project_import_domain.py`
 - Modify: `backend/tests/unit/test_project_package_temp_cleanup.py`
 
-- [ ] **Step 1: Write the raw-envelope RED matrix.**
+- [x] **Step 1: Write the raw-envelope RED matrix.**
 
 Construct byte-level fixtures for one valid Phase 6B archive and mutate EOCD/local/central fields.
 Require fixed `ProjectImportInvalid` for prefix/trailing bytes, ZIP64, multi-disk, flag bits, encryption,
@@ -70,7 +72,7 @@ data descriptor, compression, comments, extra fields, timestamp, mode/type, cent
 CRC/size mismatch, non-ASCII/backslash/dot/absolute/drive/duplicate/case-fold path, undeclared entry,
 and every v1 limit. Assert exception cause is `None` and no rejected path/value appears in the message.
 
-- [ ] **Step 2: Run the RED.**
+- [x] **Step 2: Run the RED.**
 
 Run:
 
@@ -81,7 +83,7 @@ python -m pytest -q backend/tests/unit/test_project_import_archive_security.py b
 Expected: collection fails because `backend.security.project_import_archives` and
 `backend.domain.project_imports` do not exist.
 
-- [ ] **Step 3: Implement the closed archive types and verifier.**
+- [x] **Step 3: Implement the closed archive types and verifier.**
 
 Implement:
 
@@ -93,7 +95,7 @@ Parse EOCD, central headers, and local headers with `struct`; reject ZIP64 and a
 before constructing `ZipFile`. Stream each member through one bounded reader that verifies CRC,
 length, SHA-256, and declared limits.
 
-- [ ] **Step 4: Implement request-owned quarantine.**
+- [x] **Step 4: Implement request-owned quarantine.**
 
 First move the existing Phase 6B private-file permission implementation, without behavior changes,
 from `backend/services/project_packages.py` to `backend/security/private_files.py`; keep the existing
@@ -102,12 +104,12 @@ It must create an exclusive random directory/file, use the shared helper to enfo
 or the Windows exact-SID DACL, stream at most `MAX_ARCHIVE_BYTES`, and expose idempotent retryable
 cleanup. Do not store the upload filename.
 
-- [ ] **Step 5: Run GREEN and static checks.**
+- [x] **Step 5: Run GREEN and static checks.**
 
 Run the Task 1 tests, `py_compile`, and `git diff --check`. Expected: all pass and every owned root is
 cleaned after success, invalid input, cancellation, and injected cleanup retry.
 
-- [ ] **Step 6: Commit.**
+- [x] **Step 6: Commit.**
 
 ```powershell
 git add backend/security/project_import_archives.py backend/security/private_files.py backend/domain/project_imports.py backend/services/project_packages.py backend/tests/unit/test_project_import_archive_security.py backend/tests/unit/test_project_import_domain.py backend/tests/unit/test_project_package_temp_cleanup.py
