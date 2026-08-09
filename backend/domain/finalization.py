@@ -465,6 +465,7 @@ __all__ = [
     "HardBlockCode",
     "QualityReportPayload",
     "QualityReportStatus",
+    "QualityFinding",
     "change_set_hash",
     "change_set_payload",
 ]
