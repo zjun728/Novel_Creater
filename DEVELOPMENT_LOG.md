@@ -207,7 +207,27 @@ missing/error/retry、IME、Tab 焦点循环、Escape 焦点恢复、全局阻�
 - Full-draft rewrite、candidate load/compare/fusion、finalization、Canon projection、
   download/export、real-provider quality 与 product-database readiness 仍未验收。
 
+## 2026-08-09 Phase 4C Candidate Load / Read-only Compare 完成
+
+- 分支：`codex/phase3d-boundary-acceptance`；功能代码验收快照：`05491f2`；源码 Schema：
+  `writer-core-v1.11.0`。
+- 交付严格 CAS 的 immutable Candidate load、同事务 before/update/after recovery，以及最多两份
+  Candidate 的紧凑只读并排比较。
+- 载入前 flush 可见编辑，client 只采用身份/content/hash/revision 全部校准的完整 server
+  workspace；迟到响应、错误 owner、过期 CAS、活跃 operation 与损坏 Candidate 均不能写回。
+- 没有 Candidate fusion、全文 AI 改写、通用 recovery browser、第二编辑器、Canon 写入或
+  finalization 行为；browser 不启动 Provider。
+- Fresh slice gates：Python/API/schema `230 passed`，Node `118/118 passed`，Vite build
+  `2966 modules transformed`，affected MySQL `1 passed` 且 `1/1/0`，UI-only browser
+  `1/1 passed`。
+- 最终资源账本：owned process/listener、Phase4C temp、pytest temp、Vite `deps_temp`、test DB
+  均为 `0`；Real Provider calls `0`；Product DB reads/writes `0/0`。
+- 规格与质量审查均为 `Critical/Important/Minor = 0/0/0`；详细证据：
+  `docs/acceptance/2026-08-09-phase-4c-candidate-load-compare.md`。
+- 本切片按精简风险门禁验收；完整 unit/integration、历史 Phase 4 browser 与 release matrix
+  延期到 Phase 4 close 串行运行一次。
+
 ## 下一步
 
-唯一下一产品切片是 Phase 4C candidate load 与 two-candidate read-only comparison；
-AI fusion 延期。自动门禁继续禁止产品数据库、真实 Provider 和 live 网站。
+唯一下一步是 Phase 4 close 的完整串行回归与阶段事实收口；AI fusion、full-draft rewrite、
+真实 Provider、产品数据库和 live 网站继续延期。
