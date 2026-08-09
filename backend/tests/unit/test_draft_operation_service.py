@@ -2254,3 +2254,86 @@ async def test_operation_writes_lock_project_then_session_then_attempt(path):
         await service.read(PROJECT_ID, SESSION_ID, started.operation_id)
 
     assert repo.lock_order[:3] == ["project", "session", "attempt"]
+
+
+@pytest.mark.asyncio
+async def test_local_success_replaces_only_exact_range_and_persists_derived_range():
+    replacement = "  新🌙段  "
+    gateway = FakeGateway(replacement)
+    service, repo, _, _, _ = make_service(gateway=gateway)
+    operation_command = local_command(repo)
+    original = repo.draft["content"]
+
+    result = await start_and_finish(service, operation_command)
+
+    expected = "左" * 301 + replacement + "右" * 301
+    expected_hash = hashlib.sha256(expected.encode("utf-8")).hexdigest()
+    replacement_hash = hashlib.sha256(replacement.encode("utf-8")).hexdigest()
+    assert result.status == "completed"
+    assert result.operation_type == "rewrite_selection"
+    assert result.result_working_draft_revision == 2
+    assert result.result_content_hash == expected_hash
+    assert result.result_selection_start == 301
+    assert result.result_selection_end == 301 + len(replacement)
+    assert result.partial_output == replacement
+    assert result.partial_output_hash == replacement_hash
+    assert result.partial_output_scalars == len(replacement)
+    assert repo.draft["content"] == expected
+    assert repo.draft["content"] != original
+    assert repo.draft["source_payload"]["operationType"] == "rewrite_selection"
+    assert [row["content"] for row in repo.revisions] == [original, expected]
+    assert [row["replacement_reason"] for row in repo.revisions] == [
+        "rewrite_selection", "rewrite_selection",
+    ]
+
+    stored = _stored_attempt(next(iter(repo.operations.values())))
+    reloaded = service.project_stored_result(stored)
+    assert reloaded.result_selection_start == result.result_selection_start
+    assert reloaded.result_selection_end == result.result_selection_end
+
+
+@pytest.mark.asyncio
+async def test_local_cancel_keeps_original_even_with_nonempty_persisted_partial():
+    service, repo, _, registry, _, _ = make_background_service()
+    operation_command = local_command(repo)
+    original = copy.deepcopy(repo.draft)
+    started = await service.start(operation_command)
+    attempt = repo.operations[started.operation_id]
+    partial = "局部替换预览"
+    attempt.update(
+        partial_output_text=partial,
+        partial_output_hash=hashlib.sha256(partial.encode("utf-8")).hexdigest(),
+        partial_output_scalars=len(partial),
+        last_event_sequence=2,
+    )
+
+    cancelled = await service.cancel(PROJECT_ID, SESSION_ID, started.operation_id)
+
+    assert cancelled.status == "cancelled"
+    assert cancelled.operation_type == "rewrite_selection"
+    assert cancelled.partial_output == partial
+    assert cancelled.result_working_draft_revision is None
+    assert cancelled.result_content_hash is None
+    assert cancelled.result_selection_start is None
+    assert cancelled.result_selection_end is None
+    assert repo.draft == original
+    assert repo.revisions == []
+    assert registry.cancelled == [started.operation_id]
+
+
+@pytest.mark.asyncio
+async def test_local_provider_failure_keeps_original_and_reports_local_type():
+    gateway = FakeGateway(ChapterDraftProviderError("safe provider boundary"))
+    service, repo, _, _, _ = make_service(gateway=gateway)
+    operation_command = local_command(repo)
+    original = copy.deepcopy(repo.draft)
+
+    result = await start_and_finish(service, operation_command)
+
+    assert result.status == "failed"
+    assert result.operation_type == "rewrite_selection"
+    assert result.failure_code == "DraftProviderFailed"
+    assert result.result_selection_start is None
+    assert result.result_selection_end is None
+    assert repo.draft == original
+    assert repo.revisions == []

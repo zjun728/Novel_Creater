@@ -37,6 +37,7 @@ from backend.services.draft_operation_execution import (
 )
 from backend.services.draft_selection import (
     LOCAL_DRAFT_OPERATION_TYPES,
+    replace_selection,
     selection_context,
     validate_selection,
 )
@@ -183,6 +184,8 @@ class DraftOperationResult:
     partial_output: str
     partial_output_hash: str
     partial_output_scalars: int
+    result_selection_start: int | None = None
+    result_selection_end: int | None = None
 
 
 class DraftOperationService:
@@ -362,7 +365,9 @@ class DraftOperationService:
 
         async def on_complete(content: str) -> None:
             normalized = self._validated_provider_content(
-                context, content, strip=True
+                context,
+                content,
+                strip=context["command"].operation_type not in LOCAL_DRAFT_OPERATION_TYPES,
             )
             await self._settle_success(context, normalized)
 
@@ -727,6 +732,32 @@ class DraftOperationService:
             attempt = locked["attempt"]
             draft = locked["draft"]
 
+            local_operation = (
+                context["command"].operation_type in LOCAL_DRAFT_OPERATION_TYPES
+            )
+            result_selection_start = None
+            result_selection_end = None
+            replacement = content
+            if local_operation:
+                try:
+                    target = validate_selection(
+                        draft["content"],
+                        context["command"].start_offset,
+                        context["command"].end_offset,
+                        context["command"].selected_text_hash,
+                    )
+                    content, result_selection_start, result_selection_end = (
+                        replace_selection(target, replacement)
+                    )
+                except ValueError:
+                    raise _DraftOperationResultInvalid(
+                        "local draft replacement is invalid"
+                    ) from None
+                if len(content) > DRAFT_OPERATION_CONTENT_MAX_SCALARS:
+                    raise _DraftOperationResultInvalid(
+                        "local draft replacement exceeds the draft limit"
+                    )
+
             now = self._clock()
             sequence = int(attempt["last_event_sequence"]) + 1
             if sequence > MAX_DRAFT_OPERATION_EVENTS:
@@ -735,6 +766,10 @@ class DraftOperationService:
                 )
             result_revision = int(draft["revision"]) + 1
             result_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            partial_output = replacement if local_operation else content
+            partial_output_hash = hashlib.sha256(
+                partial_output.encode("utf-8")
+            ).hexdigest()
             before = self._recovery_row(
                 context, draft, int(draft["revision"]), "before",
                 draft["content"], draft["content_hash"], now,
@@ -754,7 +789,7 @@ class DraftOperationService:
                 "source_payload": {
                     "source": "draft-operation",
                     "operationId": attempt["id"],
-                    "operationType": "generate_new",
+                    "operationType": context["command"].operation_type,
                     "providerId": attempt["provider_id"],
                     "modelName": attempt["model_name_snapshot"],
                     "baseWorkingDraftRevision": int(draft["revision"]),
@@ -794,9 +829,9 @@ class DraftOperationService:
                     "fencing_token": int(attempt["fencing_token"]),
                     "result_working_draft_revision": result_revision,
                     "result_content_hash": result_hash,
-                    "partial_output_text": content,
-                    "partial_output_hash": result_hash,
-                    "partial_output_scalars": len(content),
+                    "partial_output_text": partial_output,
+                    "partial_output_hash": partial_output_hash,
+                    "partial_output_scalars": len(partial_output),
                     "previous_partial_output_hash": attempt["partial_output_hash"],
                     "previous_last_event_sequence": int(
                         attempt["last_event_sequence"]
@@ -811,7 +846,7 @@ class DraftOperationService:
                 operation_id=attempt["id"],
                 project_id=context["command"].project_id,
                 chapter_session_id=context["command"].chapter_session_id,
-                operation_type="generate_new",
+                operation_type=context["command"].operation_type,
                 status="completed",
                 last_event_sequence=sequence,
                 result_working_draft_revision=result_revision,
@@ -819,9 +854,11 @@ class DraftOperationService:
                 failure_code=None,
                 provider_id=attempt["provider_id"],
                 model_name=attempt["model_name_snapshot"],
-                partial_output=content,
-                partial_output_hash=result_hash,
-                partial_output_scalars=len(content),
+                partial_output=partial_output,
+                partial_output_hash=partial_output_hash,
+                partial_output_scalars=len(partial_output),
+                result_selection_start=result_selection_start,
+                result_selection_end=result_selection_end,
             )
 
     async def _settle_failure(self, context, code):
@@ -873,7 +910,7 @@ class DraftOperationService:
             operation_id=attempt["id"],
             project_id=context["command"].project_id,
             chapter_session_id=context["command"].chapter_session_id,
-            operation_type="generate_new",
+            operation_type=context["command"].operation_type,
             status="failed",
             last_event_sequence=sequence,
             result_working_draft_revision=None,
@@ -1047,11 +1084,13 @@ class DraftOperationService:
                     normalized = validate_provider_response_text(
                         persisted, strip=True
                     )
-                result_hash = (
+                partial_hash = (
                     hashlib.sha256(normalized.encode("utf-8")).hexdigest()
                     if normalized
                     else None
                 )
+                local_operation = attempt["operation_type"] in LOCAL_DRAFT_OPERATION_TYPES
+                result_hash = None if local_operation else partial_hash
                 sequence = int(attempt["last_event_sequence"]) + 1
                 if sequence > MAX_DRAFT_OPERATION_EVENTS:
                     raise DraftOperationStorageError(
@@ -1062,7 +1101,7 @@ class DraftOperationService:
                         "command": StartDraftOperation(
                             project_id=project_id,
                             chapter_session_id=session_id,
-                            operation_type="generate_new",
+                            operation_type=attempt["operation_type"],
                             expected_working_draft_revision=int(
                                 attempt["base_working_draft_revision"]
                             ),
@@ -1079,7 +1118,7 @@ class DraftOperationService:
                     "result_content_hash": result_hash,
                     "partial_output_text": normalized,
                     "partial_output_hash": (
-                        result_hash if result_hash is not None else _EMPTY_OUTPUT_HASH
+                        partial_hash if partial_hash is not None else _EMPTY_OUTPUT_HASH
                     ),
                     "partial_output_scalars": len(normalized),
                     "closed_payload": {
@@ -1087,7 +1126,7 @@ class DraftOperationService:
                         "resultContentHash": result_hash,
                     },
                 }
-                if normalized:
+                if normalized and not local_operation:
                     draft = await self.repository.lock_working_draft_for_operation(
                         session, project_id, session_id
                     )
@@ -1174,7 +1213,7 @@ class DraftOperationService:
             "working_draft_id": draft["id"],
             "working_draft_revision": revision,
             "snapshot_role": role,
-            "replacement_reason": "generate_new",
+            "replacement_reason": attempt["operation_type"],
             "source_operation_id": attempt["id"],
             "content": content,
             "content_hash": content_hash,
@@ -1572,7 +1611,7 @@ class DraftOperationService:
             "working_draft_id": draft["id"],
             "working_draft_revision": revision,
             "snapshot_role": role,
-            "replacement_reason": "generate_new",
+            "replacement_reason": context["command"].operation_type,
             "source_operation_id": context["attempt"]["id"],
             "content": content,
             "content_hash": content_hash,
@@ -1797,10 +1836,15 @@ class DraftOperationService:
                     or not isinstance(result_hash, str)
                     or _HASH.fullmatch(result_hash) is None
                     or failure_code is not None
-                    or result_hash != partial_output_hash
                     or not partial_output
-                    or partial_output != partial_output.strip()
                     or cancelled_at is not None
+                    or (
+                        operation_type == "generate_new"
+                        and (
+                            result_hash != partial_output_hash
+                            or partial_output != partial_output.strip()
+                        )
+                    )
                 ):
                     raise ValueError
             elif status == "cancelled":
@@ -1809,7 +1853,12 @@ class DraftOperationService:
                     or cancelled_at != completed_at
                     or partial_output != partial_output.strip()
                     or (
-                        bool(partial_output)
+                        operation_type in LOCAL_DRAFT_OPERATION_TYPES
+                        and (result_revision is not None or result_hash is not None)
+                    )
+                    or (
+                        operation_type == "generate_new"
+                        and bool(partial_output)
                         and (
                             result_revision is None
                             or result_revision != base_revision + 1
@@ -1817,7 +1866,8 @@ class DraftOperationService:
                         )
                     )
                     or (
-                        not partial_output
+                        operation_type == "generate_new"
+                        and not partial_output
                         and (result_revision is not None or result_hash is not None)
                     )
                 ):
@@ -1837,6 +1887,16 @@ class DraftOperationService:
                 or cancelled_at is not None
             ):
                 raise ValueError
+            result_selection_start = None
+            result_selection_end = None
+            if (
+                operation_type in LOCAL_DRAFT_OPERATION_TYPES
+                and status == "completed"
+            ):
+                result_selection_start = selection_manifest["startOffset"]
+                result_selection_end = (
+                    result_selection_start + partial_output_scalars
+                )
             return DraftOperationResult(
                 operation_id=row["id"],
                 project_id=row["project_id"],
@@ -1852,6 +1912,8 @@ class DraftOperationService:
                 partial_output=partial_output,
                 partial_output_hash=partial_output_hash,
                 partial_output_scalars=partial_output_scalars,
+                result_selection_start=result_selection_start,
+                result_selection_end=result_selection_end,
             )
         except (KeyError, TypeError, ValueError, UnicodeError, RecursionError):
             raise DraftOperationStorageError("stored draft operation is invalid") from None

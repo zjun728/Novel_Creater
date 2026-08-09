@@ -243,6 +243,24 @@ def _command(workspace, key: str, *, instruction: str = "增强人物试探"):
     )
 
 
+def _local_command(workspace, key: str, *, operation_type="rewrite_selection"):
+    content = workspace.working_draft.content
+    selected = "目标"
+    start = content.index(selected)
+    return StartDraftOperation(
+        project_id=PROJECT,
+        chapter_session_id=workspace.session.id,
+        operation_type=operation_type,
+        expected_working_draft_revision=workspace.working_draft.revision,
+        expected_content_hash=workspace.working_draft.content_hash,
+        idempotency_key=key,
+        author_instruction="保持克制",
+        start_offset=start,
+        end_offset=start + len(selected),
+        selected_text_hash=hashlib.sha256(selected.encode("utf-8")).hexdigest(),
+    )
+
+
 async def _queue_reservation_race(
     transaction_factory,
     probe,
@@ -454,6 +472,88 @@ async def test_success_commits_one_attempt_recovery_events_and_matching_metadata
         sentinel not in persisted_coordination
         for sentinel in (provider["api_key"], provider["base_url"])
     )
+
+
+@pytest.mark.asyncio
+async def test_local_success_replaces_one_range_with_distinct_result_and_partial_hashes(
+    disposable_mysql,
+):
+    workspace, transaction_factory, chapter_service = await _workspace(disposable_mysql)
+    original = "左侧目标右侧"
+    workspace = await chapter_service.save_working_draft(SaveWorkingDraft(
+        PROJECT,
+        workspace.session.id,
+        workspace.working_draft.revision,
+        workspace.working_draft.content_hash,
+        original,
+    ))
+    replacement = "新的🌙片段"
+    service = _operation_service(
+        transaction_factory, _ProviderBoundary(output=replacement)
+    )
+
+    started = await service.start(_local_command(
+        workspace, "41000000-0000-4000-8000-000000000010"
+    ))
+    result = await _settled_result(service, started)
+
+    draft = await _draft(disposable_mysql.session, workspace.session.id)
+    attempts = await _attempts(disposable_mysql.session, workspace.session.id)
+    recovery = await _recovery(disposable_mysql.session, workspace.session.id)
+    expected = "左侧" + replacement + "右侧"
+    assert result.status == attempts[0]["status"] == "completed"
+    assert draft["content"] == expected
+    assert result.result_content_hash == hashlib.sha256(
+        expected.encode("utf-8")
+    ).hexdigest()
+    assert result.partial_output_hash == hashlib.sha256(
+        replacement.encode("utf-8")
+    ).hexdigest()
+    assert result.result_content_hash != result.partial_output_hash
+    assert (result.result_selection_start, result.result_selection_end) == (
+        2, 2 + len(replacement),
+    )
+    assert [row["content"] for row in recovery] == [original, expected]
+    assert all(
+        row["replacement_reason"] == "rewrite_selection" for row in recovery
+    )
+
+
+@pytest.mark.asyncio
+async def test_local_cancel_with_durable_partial_preserves_original_transactionally(
+    disposable_mysql,
+):
+    workspace, transaction_factory, chapter_service = await _workspace(disposable_mysql)
+    original = "左侧目标右侧"
+    workspace = await chapter_service.save_working_draft(SaveWorkingDraft(
+        PROJECT,
+        workspace.session.id,
+        workspace.working_draft.revision,
+        workspace.working_draft.content_hash,
+        original,
+    ))
+    service = _operation_service(transaction_factory, _ProviderBoundary())
+    command = _local_command(
+        workspace, "41000000-0000-4000-8000-000000000011"
+    )
+    immediate, context = await service._reserve(command)
+    assert immediate is None
+    partial = "尚未提交的局部预览"
+    await service._append_delta(context, partial)
+
+    cancelled = await service.cancel(
+        PROJECT, workspace.session.id, context["attempt"]["id"]
+    )
+
+    draft = await _draft(disposable_mysql.session, workspace.session.id)
+    recovery = await _recovery(disposable_mysql.session, workspace.session.id)
+    assert cancelled.status == "cancelled"
+    assert cancelled.partial_output == partial
+    assert cancelled.result_working_draft_revision is None
+    assert cancelled.result_content_hash is None
+    assert draft["revision"] == workspace.working_draft.revision
+    assert draft["content"] == original
+    assert not recovery
 
 
 @pytest.mark.asyncio
