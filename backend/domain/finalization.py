@@ -457,10 +457,12 @@ def change_set_hash(value: FinalizationChangeSet) -> str:
 __all__ = [
     "ChangeSetSource",
     "ConfirmationPin",
+    "DeterministicBlock",
     "EvidenceLocation",
     "FinalizationAuthority",
     "FinalizationChangeSet",
     "FinalizationState",
+    "HardBlockCode",
     "QualityReportPayload",
     "QualityReportStatus",
     "change_set_hash",
