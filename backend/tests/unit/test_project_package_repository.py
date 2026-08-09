@@ -1349,6 +1349,118 @@ async def test_creation_contract_payload_rejects_missing_frozen_reference_withou
 
 
 @pytest.mark.asyncio
+async def test_finalization_receipt_rewrites_closed_result_authority_ids() -> None:
+    finalization_record_id = "11111111-1111-4111-8111-111111111111"
+    final_chapter_id = "22222222-2222-4222-8222-222222222222"
+    planning_revision_id = "33333333-3333-4333-8333-333333333333"
+    planning_hash = "a" * 64
+    projection_hash = "b" * 64
+    receipt = {
+        "finalChapterId": final_chapter_id,
+        "canonRevision": 3,
+        "projectionHash": projection_hash,
+        "planningRevisionId": planning_revision_id,
+        "planningRevision": 1,
+        "planningHash": planning_hash,
+    }
+    session = _SnapshotSession({
+        "projects": [_owned_row(
+            "projects", id="project-db", lifecycle_revision=7, title="P",
+        )],
+        "planning_revisions": [_owned_row(
+            "planning_revisions", id=planning_revision_id, project_id="project-db",
+            revision=1, content_json=_planning_authority_json("block-db", planning_hash),
+            content_hash=planning_hash,
+        )],
+        "finalization_records": [_owned_row(
+            "finalization_records", id=finalization_record_id, project_id="project-db",
+            committed_canon_revision=3, result_payload_json=json.dumps(receipt),
+            finalized_at=10,
+        )],
+        "final_chapters": [_owned_row(
+            "final_chapters", id=final_chapter_id, project_id="project-db",
+            finalization_record_id=finalization_record_id, chapter_num=1,
+            content="final", content_hash="c" * 64,
+            planning_revision_id=planning_revision_id, planning_revision=1,
+            planning_hash=planning_hash, canon_revision=3, finalized_at=10,
+        )],
+    })
+
+    snapshot = await ProjectPackageRepository(
+        pool=_SnapshotPool(session), session_factory=lambda value: value,
+    ).read_snapshot("project-db", 7)
+
+    by_type = {record.entity_type: record for record in snapshot.graph_records}
+    result = by_type["finalization-record"].data["resultPayload"]
+    assert result == {
+        "finalChapterId": by_type["final-chapter"].logical_id,
+        "canonRevision": 3,
+        "projectionHash": projection_hash,
+        "planningRevisionId": by_type["planning-revision"].logical_id,
+        "planningRevision": 1,
+        "planningHash": planning_hash,
+    }
+    assert final_chapter_id not in repr(snapshot)
+    assert planning_revision_id not in repr(snapshot)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_kind", ("dangling", "mismatch", "extra-field"))
+async def test_finalization_receipt_rejects_dangling_mismatched_or_open_shape_without_cause(
+    failure_kind: str,
+) -> None:
+    finalization_record_id = "44444444-4444-4444-8444-444444444444"
+    final_chapter_id = "55555555-5555-4555-8555-555555555555"
+    planning_revision_id = "66666666-6666-4666-8666-666666666666"
+    planning_hash = "d" * 64
+    receipt = {
+        "finalChapterId": final_chapter_id,
+        "canonRevision": 2,
+        "projectionHash": "e" * 64,
+        "planningRevisionId": planning_revision_id,
+        "planningRevision": 1,
+        "planningHash": planning_hash,
+    }
+    final_chapter_planning_hash = planning_hash
+    if failure_kind == "dangling":
+        receipt["finalChapterId"] = "77777777-7777-4777-8777-777777777777"
+    elif failure_kind == "mismatch":
+        final_chapter_planning_hash = "f" * 64
+    else:
+        receipt["unexpectedId"] = "88888888-8888-4888-8888-888888888888"
+    session = _SnapshotSession({
+        "projects": [_owned_row(
+            "projects", id="project-db", lifecycle_revision=7, title="P",
+        )],
+        "planning_revisions": [_owned_row(
+            "planning_revisions", id=planning_revision_id, project_id="project-db",
+            revision=1, content_json=_planning_authority_json("block-db", planning_hash),
+            content_hash=planning_hash,
+        )],
+        "finalization_records": [_owned_row(
+            "finalization_records", id=finalization_record_id, project_id="project-db",
+            committed_canon_revision=2, result_payload_json=json.dumps(receipt),
+            finalized_at=10,
+        )],
+        "final_chapters": [_owned_row(
+            "final_chapters", id=final_chapter_id, project_id="project-db",
+            finalization_record_id=finalization_record_id, chapter_num=1,
+            content="final", content_hash="c" * 64,
+            planning_revision_id=planning_revision_id, planning_revision=1,
+            planning_hash=final_chapter_planning_hash, canon_revision=2, finalized_at=10,
+        )],
+    })
+
+    with pytest.raises(ProjectPackageInvalid, match="invalid package value") as raised:
+        await ProjectPackageRepository(
+            pool=_SnapshotPool(session), session_factory=lambda value: value,
+        ).read_snapshot("project-db", 7)
+
+    assert raised.value.__cause__ is None
+    assert all(raw_id not in str(raised.value) for raw_id in receipt.values() if isinstance(raw_id, str))
+
+
+@pytest.mark.asyncio
 async def test_repository_resolves_nested_story_block_and_polymorphic_canon_source() -> None:
     session = _SnapshotSession({
         "projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P")],
@@ -1366,7 +1478,20 @@ async def test_repository_resolves_nested_story_block_and_polymorphic_canon_sour
         )],
         "finalization_records": [_owned_row(
             "finalization_records", id="finalization-db", project_id="project-db",
-            change_set_id="change-set-db", committed_canon_revision=1, finalized_at=3,
+            change_set_id="change-set-db", committed_canon_revision=1,
+            result_payload_json=json.dumps({
+                "finalChapterId": "final-chapter-db", "canonRevision": 1,
+                "projectionHash": "3" * 64, "planningRevisionId": "planning-db",
+                "planningRevision": 1, "planningHash": "1" * 64,
+            }),
+            finalized_at=3,
+        )],
+        "final_chapters": [_owned_row(
+            "final_chapters", id="final-chapter-db", project_id="project-db",
+            finalization_record_id="finalization-db", chapter_num=1,
+            content="final", content_hash="4" * 64,
+            planning_revision_id="planning-db", planning_revision=1,
+            planning_hash="1" * 64, canon_revision=1, finalized_at=3,
         )],
         "canon_revisions": [_owned_row(
             "canon_revisions", id="canon-revision-db", project_id="project-db", revision_number=1,
@@ -1552,7 +1677,14 @@ async def test_key_recovery_relations_are_exported_as_package_logical_ids_and_pu
         )],
         "finalization_records": [_owned_row(
             "finalization_records", id="finalization-db", project_id="project-db",
-            chapter_session_id="chapter-db", draft_candidate_id="candidate-db", finalized_at=9,
+            chapter_session_id="chapter-db", draft_candidate_id="candidate-db",
+            committed_canon_revision=1,
+            result_payload_json=json.dumps({
+                "finalChapterId": "final-chapter-db", "canonRevision": 1,
+                "projectionHash": "c" * 64, "planningRevisionId": "planning-db",
+                "planningRevision": 4, "planningHash": "5" * 64,
+            }),
+            finalized_at=9,
         )],
         "final_chapters": [_owned_row(
             "final_chapters", id="final-chapter-db", project_id="project-db",

@@ -1503,6 +1503,65 @@ def _rewrite_creation_contract_payload(
     return payload
 
 
+def _rewrite_finalization_receipt(
+    value: object,
+    record: Mapping[str, object],
+    *,
+    final_chapter_rows: Mapping[object, Mapping[str, object]],
+    planning_revision_rows: Mapping[object, Mapping[str, object]],
+    final_chapter_ids: Mapping[object, str],
+    planning_revision_ids: Mapping[object, str],
+) -> dict[str, object]:
+    receipt = _json_value(value)
+    expected_fields = {
+        "finalChapterId", "canonRevision", "projectionHash",
+        "planningRevisionId", "planningRevision", "planningHash",
+    }
+    if not isinstance(receipt, Mapping) or set(receipt) != expected_fields:
+        raise _invalid()
+    final_chapter_id = receipt["finalChapterId"]
+    planning_revision_id = receipt["planningRevisionId"]
+    if (
+        not isinstance(final_chapter_id, str)
+        or not final_chapter_id
+        or not isinstance(planning_revision_id, str)
+        or not planning_revision_id
+        or type(receipt["canonRevision"]) is not int
+        or receipt["canonRevision"] < 1
+        or type(receipt["planningRevision"]) is not int
+        or receipt["planningRevision"] < 1
+        or not isinstance(receipt["projectionHash"], str)
+        or re.fullmatch(r"[0-9a-f]{64}", receipt["projectionHash"]) is None
+        or not isinstance(receipt["planningHash"], str)
+        or re.fullmatch(r"[0-9a-f]{64}", receipt["planningHash"]) is None
+    ):
+        raise _invalid()
+
+    final_chapter = final_chapter_rows.get(final_chapter_id)
+    planning_revision = planning_revision_rows.get(planning_revision_id)
+    final_chapter_logical_id = final_chapter_ids.get(final_chapter_id)
+    planning_revision_logical_id = planning_revision_ids.get(planning_revision_id)
+    if (
+        final_chapter is None
+        or planning_revision is None
+        or final_chapter_logical_id is None
+        or planning_revision_logical_id is None
+        or final_chapter["finalization_record_id"] != record["id"]
+        or final_chapter["planning_revision_id"] != planning_revision_id
+        or final_chapter["planning_revision"] != receipt["planningRevision"]
+        or final_chapter["planning_hash"] != receipt["planningHash"]
+        or final_chapter["canon_revision"] != receipt["canonRevision"]
+        or planning_revision["revision"] != receipt["planningRevision"]
+        or planning_revision["content_hash"] != receipt["planningHash"]
+        or record["committed_canon_revision"] != receipt["canonRevision"]
+    ):
+        raise _invalid()
+    return dict(receipt) | {
+        "finalChapterId": final_chapter_logical_id,
+        "planningRevisionId": planning_revision_logical_id,
+    }
+
+
 def _invalid() -> ProjectPackageInvalid:
     return ProjectPackageInvalid("invalid package value")
 
@@ -1763,6 +1822,23 @@ class ProjectPackageRepository:
                         model, authority_identities, planning_revision_ids
                     )
                     for row_id, model in outline_models.items()
+                })
+                final_chapter_rows_by_id = {
+                    row["id"]: row for row in rows_by_table["final_chapters"]
+                }
+                planning_revision_rows_by_id = {
+                    row["id"]: row for row in rows_by_table["planning_revisions"]
+                }
+                authority_payloads.update({
+                    id(row): _rewrite_finalization_receipt(
+                        row["result_payload_json"],
+                        row,
+                        final_chapter_rows=final_chapter_rows_by_id,
+                        planning_revision_rows=planning_revision_rows_by_id,
+                        final_chapter_ids=identity_maps["final_chapters"],
+                        planning_revision_ids=identity_maps["planning_revisions"],
+                    )
+                    for row in rows_by_table["finalization_records"]
                 })
                 nested_story_blocks = {
                     raw_id: logical_id
