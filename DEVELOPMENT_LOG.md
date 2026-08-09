@@ -245,7 +245,27 @@ missing/error/retry、IME、Tab 焦点循环、Escape 焦点恢复、全局阻�
 - Full-draft rewrite、Candidate fusion、general recovery browsing、Canon/finalization、真实
   Provider、产品数据库与内容质量仍未验收。
 
+## 2026-08-09 Phase 5 Lean Atomic Finalization 收口
+
+- 分支：`codex/phase3d-boundary-acceptance`；阶段门禁快照：`8edc651`；源码 Schema：
+  `writer-core-v1.12.0`。
+- 交付 current Candidate 的 deterministic precheck、注入 Provider 的质量报告与单次 ChangeSet
+  提取、作者修正 revision、整体确认，以及 FinalChapter/Canon/Projection/Planning progress/
+  Session final 的单事务提交和完整回滚。
+- Writer 只增加一个紧凑 finalization panel；没有第二编辑器、通用 workflow、评分框架、后台
+  job、runtime migration 或旧 finalization 兼容路径。
+- Fresh Phase gates：Python `3430 passed, 6 skipped`，root scripts Node `378/378`，frontend
+  Node `710/710`，integration `370 passed` 且 `368/368/0`，build `2969 modules`，Phase 5
+  browser `1/1`。
+- 最终资源账本：owned Python/Node process、Phase5 temp、Vite `deps_temp`、artifact root 和
+  test DB 均为 `0`；Real Provider calls `0`；Product DB reads/writes `0/0`。
+- Phase gate 收口 route inventory、旧 Writer fixture、browser pytest-temp 隔离和两个旧 MySQL
+  finalization fixtures；均为测试契约修复，没有修改生产行为或放宽校验。
+- 规格与质量审查均为 `Critical/Important/Minor = 0/0/0`；详细证据：
+  `docs/acceptance/2026-08-09-phase-5-atomic-finalization.md`。
+- 真实 Provider 质量、产品数据库、下载/备份/导入和内容质量仍未验收。
+
 ## 下一步
 
-唯一下一产品阶段是 Phase 5；先设计最小 quality audit、单次 `FinalizationChangeSet`、作者
-整体确认与原子定稿闭环。真实 Provider、产品数据库和 live 网站继续需要另行明确批准。
+唯一下一产品阶段是 Phase 6：小说下载、安全备份、预检与导入。真实 Provider、产品数据库、
+live 网站和真实文章生成继续需要用户另行明确批准。

@@ -26,8 +26,8 @@ Novel Creator 要帮助作者持续写出长篇、连贯、可控并且让人愿
 | Phase 2 | 创作资产、Provider/模型设置、市场来源、选题与种子、契约、圣经、模型继承与资产冻结 | 已完成门禁 |
 | Phase 3 | 分卷、情节、故事块、小纲、已发生事实与未来计划 | 已完成门禁 |
 | Phase 4 | 自动暂存、流式新稿、改写、扩写、压缩、候选、对比、融合 | 精简 Writer Loop 已完成 Phase 门禁；B1–B3 仅 fake provider，C 无 Provider；fusion/full-draft rewrite 延期且未验收 |
-| Phase 5 | 质量审核、单次事实提取、整体确认、原子定稿与失败回滚 | 下一步：先做最小设计 |
-| Phase 6 | 小说下载、安全备份、预检与导入 | 待开始 |
+| Phase 5 | 质量审核、单次事实提取、整体确认、原子定稿与失败回滚 | 精简闭环已完成 Phase 门禁；仅 fake quality/extraction Provider |
+| Phase 6 | 小说下载、安全备份、预检与导入 | 下一步 |
 | Phase 7 | 产品库、真实 Provider、自由浏览器探索、《典镇山河》30 章人工验收 | 待开始 |
 
 ## 3. Phase 2 完成边界
@@ -76,8 +76,8 @@ Phase 3 沿用唯一 `planning-v1` aggregate、唯一 `planningStore` 和
 依据身份纳入 Schema；从空库建立，不提供 migration 或 compatibility path。Seed、
 Contract 与 Bible 的已确认内容是永久基线；未来 Planning 只处理尚未实现的内容。
 正文定稿前对应大纲可以调整，正文定稿后大纲与事实不可修改；Phase 3 只交付定稿前
-的权威围栏，原子定稿仍属于 Phase 5。Setting 与知识库仍将在 Phase 5 经由
-Canon/Projection 落地；这不是已交付能力。详细证据见：
+的权威围栏，原子定稿随后由 Phase 5 交付。Phase 5 已把作者确认的 ChangeSet 写入
+Canon/Projection；独立 Setting/知识库浏览体验仍不是已交付能力。详细证据见：
 
 - `docs/acceptance/2026-07-30-phase-3-story-planning.md`
 - `docs/acceptance/2026-07-31-phase-3-immutable-boundary-alignment.md`
@@ -87,8 +87,10 @@ Canon/Projection 落地；这不是已交付能力。详细证据见：
 - Phase 4B3 exact-selection rewrite/polish/expand/compress、local cancellation 与 one-step
   append-only undo 已验收（仅 fake streaming provider）。
 - Phase 4C candidate load 与 two-candidate read-only comparison 已在无 Provider 场景验收。
-- Phase 4 lean Writer Loop 已完成完整 Phase 门禁；下一步进入 Phase 5 最小设计。AI fusion、
-  full-draft rewrite 与 general recovery browsing 继续延期且未验收。
+- Phase 4 lean Writer Loop 已完成完整 Phase 门禁。AI fusion、full-draft rewrite 与 general
+  recovery browsing 继续延期且未验收。
+- Phase 5 lean quality review / ChangeSet / atomic finalization 已完成完整 Phase 门禁，仅以
+  fake quality/extraction Provider 验收；下一步进入 Phase 6 下载、备份、预检与导入。
 
 ## 5. 写作链路的先决修复
 
@@ -101,8 +103,9 @@ Canon/Projection 落地；这不是已交付能力。详细证据见：
 4. Provider 调用不持有长数据库事务，最终提交使用 manifest hash、幂等键和 CAS；
 5. fake adapter 只能授予单元证据，不能授予 Provider/DB/内容 Ready。
 
-随后建设单一 `FinalizationChangeSet`、Canon 唯一事实源和单事务定稿。设定、记忆、
+Phase 5 已建设单一 `FinalizationChangeSet`、Canon 唯一事实源和单事务定稿。设定、记忆、
 人物弧光、伏笔和故事块状态只能由同一批已确认 Canon 变化投影，不能各自重新读正文。
+该自动验收不证明真实 Provider 质量、产品数据库、导出/备份或小说内容质量。
 
 ## 6. 每阶段共同门禁
 

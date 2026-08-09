@@ -369,7 +369,7 @@ test('Phase 3B detailed plan freezes its delivery and safety contract', async ()
   );
 });
 
-test('Phase 3 remains historical while the lean Phase 4 gate is complete', async () => {
+test('Phase 3 remains historical while the lean Phase 5 gate is complete', async () => {
   const [
     currentState,
     productPlan,
@@ -402,7 +402,7 @@ test('Phase 3 remains historical while the lean Phase 4 gate is complete', async
   );
   assert.match(
     currentConclusion,
-    /^- 当前完成交付包：\*\*Phase 3 Story Planning\*\* 与 \*\*Phase 4 lean Writer Loop\*\*。Phase 4B1–B3\r?\n  仅以注入 fake provider 验收；Phase 4C Candidate load\/read-only compare 不启动 Provider。$/m,
+    /^- 当前完成交付包：\*\*Phase 3 Story Planning\*\*、\*\*Phase 4 lean Writer Loop\*\* 与\r?\n  \*\*Phase 5 lean atomic finalization\*\*。Phase 4B1–B3 仅以注入 fake provider 验收；\r?\n  Phase 4C 不启动 Provider；Phase 5 仅以注入 fake quality\/extraction Provider 验收。$/m,
   );
   assert.match(
     currentConclusion,
@@ -414,7 +414,7 @@ test('Phase 3 remains historical while the lean Phase 4 gate is complete', async
   );
   assert.match(
     currentConclusion,
-    /^- \*\*Phase 4 lean Writer Loop 已完成 Phase 级完整门禁\*\*；下一产品阶段为 Phase 5 最小\r?\n  quality audit \/ FinalizationChangeSet \/ atomic finalization 设计。$/m,
+    /^- \*\*Phase 5 lean quality review \/ FinalizationChangeSet \/ atomic finalization 已完成 Phase 级\r?\n  完整门禁\*\*；下一产品阶段为 Phase 6 下载、备份、预检与导入。$/m,
   );
   assert.match(
     currentConclusion,
@@ -422,17 +422,20 @@ test('Phase 3 remains historical while the lean Phase 4 gate is complete', async
   );
   assert.match(
     currentConclusion,
-    /^- 当前自动证据边界：Real Provider calls `0`、Product DB reads\/writes `0\/0`；\r?\n  Phase 4B2 `generate_new` streaming\/reconnect\/cancel 与 Phase 4B3 exact-selection local\r?\n  tools\/one-step undo 仅以注入 fake streaming provider 验收；Phase 4C load\/compare 不启动\r?\n  Provider。Full-draft rewrite、candidate fusion、general recovery browsing、real-provider\r?\n  quality、product-database readiness、Finalization 和 Content Quality 仍未就绪。$/m,
+    /^- Phase 5 门禁快照：`8edc651`。$/m,
+  );
+  assert.match(
+    currentConclusion,
+    /^- 当前自动证据边界：Real Provider calls `0`、Product DB reads\/writes `0\/0`；\r?\n  Phase 4B2 `generate_new` streaming\/reconnect\/cancel 与 Phase 4B3 exact-selection local\r?\n  tools\/one-step undo 仅以注入 fake streaming provider 验收；Phase 4C load\/compare 不启动\r?\n  Provider。Phase 5 作者审查、更正、整体确认和原子提交仅以注入 fake quality\/extraction\r?\n  Provider 验收。Full-draft rewrite、candidate fusion、general recovery browsing、\r?\n  real-provider quality、product-database readiness、export\/backup 和 Content Quality\r?\n  仍未就绪。$/m,
   );
 
   const currentSlice = readSection(currentState, '当前工程切片');
   assert.match(
     currentSlice,
-    /^\*\*Phase 4 lean Writer Loop 已完成完整 Phase 门禁\*\*；下一产品阶段是 Phase 5，先设计最小$/m,
+    /^\*\*Phase 5 lean atomic finalization 已完成完整 Phase 门禁\*\*；下一产品阶段是 Phase 6 小说$/m,
   );
-  assert.match(currentSlice, /quality audit、单次 `FinalizationChangeSet`、作者整体确认与原子定稿/u);
-  assert.match(currentSlice, /Candidate fusion、\r?\nfull-draft rewrite 与 general recovery browsing 继续延期/u);
-  assert.match(currentSlice, /自动门禁继续禁止真实 Provider、\r?\n产品数据库和 live 网站/u);
+  assert.match(currentSlice, /下载、安全备份、预检与导入。Candidate fusion、full-draft rewrite 与 general recovery\r?\nbrowsing 继续延期/u);
+  assert.match(currentSlice, /自动门禁继续禁止真实 Provider、产品数据库和 live 网站/u);
 
   const schemaBoundary = readSection(currentState, '当前 Schema 与数据库边界');
   assert.match(
@@ -445,7 +448,7 @@ test('Phase 3 remains historical while the lean Phase 4 gate is complete', async
   );
   assert.match(
     schemaBoundary,
-    /^- 当前开发分支源码 Schema：`writer-core-v1\.11\.0`。$/m,
+    /^- 当前开发分支源码 Schema：`writer-core-v1\.12\.0`。$/m,
   );
   assert.match(
     schemaBoundary,
@@ -874,7 +877,7 @@ test('Phase 3C detailed plan freezes its delivery and safety contract', async ()
   }
 });
 
-test('Phase 3 immutable-boundary acceptance remains historical after lean Phase 4 close', async () => {
+test('Phase 3 immutable-boundary acceptance remains historical after lean Phase 5 close', async () => {
   const [acceptance, alignment, currentState, productPlan, developmentLog] = await Promise.all([
     readProjectFile('docs/acceptance/2026-07-30-phase-3-story-planning.md'),
     readProjectFile('docs/acceptance/2026-07-31-phase-3-immutable-boundary-alignment.md'),
@@ -988,17 +991,20 @@ test('Phase 3 immutable-boundary acceptance remains historical after lean Phase 
     'the report may record only the fixed delivery baseline and functional implementation SHAs',
   );
 
-  assert.match(currentState, /\*\*Phase 4 lean Writer Loop\*\*。Phase 4B1–B3\r?\n  仅以注入 fake provider 验收；Phase 4C Candidate load\/read-only compare 不启动 Provider。/u);
+  assert.match(currentState, /\*\*Phase 5 lean atomic finalization\*\*。Phase 4B1–B3 仅以注入 fake provider 验收；\r?\n  Phase 4C 不启动 Provider；Phase 5 仅以注入 fake quality\/extraction Provider 验收。/u);
   assert.match(currentState, /^- 当前开发分支：`codex\/phase3d-boundary-acceptance`。$/m);
   assert.match(currentState, /^- Phase 3D 与 Phase 3 已完成：Future Plan\/Actual Progress\/Canon Projection 同 revision 只读组合与完整 Phase 3 门禁。$/m);
-  assert.match(currentState, /^- \*\*Phase 4 lean Writer Loop 已完成 Phase 级完整门禁\*\*；下一产品阶段为 Phase 5 最小$/m);
+  assert.match(currentState, /^- \*\*Phase 5 lean quality review \/ FinalizationChangeSet \/ atomic finalization 已完成 Phase 级$/m);
   assert.match(currentState, /^- Phase 4 门禁快照：`840d90a`。$/m);
+  assert.match(currentState, /^- Phase 5 门禁快照：`8edc651`。$/m);
   assert.doesNotMatch(currentState, /Phase 3D[^\n]*下一步/u);
 
   assert.match(productPlan, /^\| Phase 3 \|.*\| 已完成门禁 \|$/m);
   assert.match(productPlan, /^\| Phase 4 \| 自动暂存、流式新稿、改写、扩写、压缩、候选、对比、融合 \| 精简 Writer Loop 已完成 Phase 门禁；B1–B3 仅 fake provider，C 无 Provider；fusion\/full-draft rewrite 延期且未验收 \|$/m);
+  assert.match(productPlan, /^\| Phase 5 \| 质量审核、单次事实提取、整体确认、原子定稿与失败回滚 \| 精简闭环已完成 Phase 门禁；仅 fake quality\/extraction Provider \|$/m);
   assert.match(productPlan, /^- Phase 4B1 formal `generate_new` 已验收（仅 fake provider）。$/m);
-  assert.match(productPlan, /^- Phase 4 lean Writer Loop 已完成完整 Phase 门禁；下一步进入 Phase 5 最小设计。AI fusion、\r?\n  full-draft rewrite 与 general recovery browsing 继续延期且未验收。$/m);
+  assert.match(productPlan, /^- Phase 4 lean Writer Loop 已完成完整 Phase 门禁。AI fusion、full-draft rewrite 与 general\r?\n  recovery browsing 继续延期且未验收。$/m);
+  assert.match(productPlan, /^- Phase 5 lean quality review \/ ChangeSet \/ atomic finalization 已完成完整 Phase 门禁，仅以\r?\n  fake quality\/extraction Provider 验收；下一步进入 Phase 6 下载、备份、预检与导入。$/m);
   assert.doesNotMatch(productPlan, /Phase 3D[^\n]*下一步/u);
 
   const phase3Log = readSection(developmentLog, '2026-07-30 Phase 3 Story Planning 完成');
