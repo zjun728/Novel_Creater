@@ -19,7 +19,7 @@ ALLOWED_FIXED_PATHS = frozenset((*PAYLOAD_PATHS, MANIFEST_PATH, MANIFEST_HASH_PA
 CORPUS_BLOB_RE = re.compile(r"^corpus/blobs/sha256/[0-9a-f]{64}$")
 _SENSITIVE_FIELD_CLASSES = frozenset({
     "apikey", "baseurl", "authorization", "token", "password", "dsn", "lease", "ownertoken",
-    "includeapikeys", "hasapikey", "absolutepath", "localpath", "filesystempath", "enabled",
+    "includeapikeys", "hasapikey", "provideruuid", "absolutepath", "localpath", "filesystempath", "enabled",
 })
 
 

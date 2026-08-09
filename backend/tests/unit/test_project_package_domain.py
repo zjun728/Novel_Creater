@@ -134,6 +134,24 @@ def test_canonical_jsonl_rejects_duplicate_identity_before_sorting() -> None:
             canonical_jsonl(records)
 
 
+@pytest.mark.parametrize("data", [
+    {"seedId": "550e8400-e29b-41d4-a716-446655440000"},
+    {"nested": {"finalization": [{"entity_id": "550e8400-e29b-41d4-a716-446655440000"}]}},
+])
+def test_record_payload_rejects_raw_database_id_values_recursively(data: dict[str, object]) -> None:
+    with pytest.raises(ProjectPackageInvalid, match="invalid package value"):
+        PackageRecord("project", "project:1", data={"label": "project", "payload": data})
+
+
+def test_record_payload_accepts_only_package_logical_identity_values() -> None:
+    record = PackageRecord(
+        "project", "project:1",
+        data={"label": "project", "payload": {"seedId": "creative-seed:1", "items": [{"entity_id": None}, {"entity_id": "canon-entity:2"}]}},
+    )
+
+    assert record.to_public_dict()["logicalId"] == "project:1"
+
+
 def test_manifest_entries_are_strict_payload_or_blob_values_without_self_reference() -> None:
     entries = build_structured_entries(_snapshot())
     manifest_entries = tuple(

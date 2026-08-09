@@ -43,6 +43,7 @@ def test_entry_path_accepts_only_fixed_paths_or_lowercase_sha256_blob() -> None:
 @pytest.mark.parametrize("key", [
     "apiKey", "api_key", "baseURL", "base_url", "Authorization", "token", "password", "dsn", "lease", "ownerToken",
     "includeApiKeys", "hasApiKey", "absolutePath", "localPath", "filesystemPath", "enabled",
+    "providerUuid",
 ])
 def test_sensitive_key_is_rejected_without_value_or_path(key: str) -> None:
     sentinel = "SECRET_MUST_NOT_APPEAR"

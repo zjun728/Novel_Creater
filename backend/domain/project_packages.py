@@ -39,12 +39,66 @@ PAYLOAD_PATHS = (
 # Task 1 intentionally exports six closed record kinds. Task 2 extends this
 # registry only after its ownership inventory has classified every authority.
 RECORD_FIELD_ALLOWLISTS: Mapping[str, frozenset[str]] = MappingProxyType({
-    "project": frozenset({"label"}),
-    "chapter": frozenset({"label"}),
-    "operation": frozenset({"label"}),
-    "provider-history": frozenset({"label"}),
-    "asset": frozenset({"label"}),
-    "corpus-revision": frozenset({"label"}),
+    "project": frozenset({"label", "title", "genre", "description", "targetWords", "targetChapters", "status", "currentChapter", "archivedAt", "lifecycleRevision", "createdAt", "updatedAt", "payload"}),
+    "creative-seed": frozenset({"label", "status", "createdAt", "updatedAt"}),
+    "creative-seed-revision": frozenset({"label", "seedLogicalId", "revision", "payload", "contentHash", "createdAt"}),
+    "creative-seed-head": frozenset({"label", "seedLogicalId", "revisionLogicalId", "revision", "contentHash", "updatedAt"}),
+    "project-seed-selection-revision": frozenset({"label", "selectionRevision", "seedLogicalId", "seedRevisionLogicalId", "seedHash", "selectedAt"}),
+    "project-selected-seed": frozenset({"label", "seedLogicalId", "seedRevisionLogicalId", "seedHash", "selectionRevision", "selectedAt", "updatedAt"}),
+    "project-model-binding-revision": frozenset({"label", "revision", "contentHash", "sourceProjectLogicalId", "createdAt"}),
+    "project-model-binding-item": frozenset({"label", "bindingRevisionLogicalId", "taskKey", "resolutionStatus", "providerName", "modelName", "itemHash"}),
+    "project-model-binding-head": frozenset({"label", "revision", "bindingRevisionLogicalId", "contentHash", "updatedAt"}),
+    "market-analysis": frozenset({"label", "snapshotHash", "timeRange", "contentHash", "createdAt"}),
+    "seed-inspiration-history": frozenset({"label", "status", "requestFingerprint", "resultHash", "snapshotHash", "createdAt", "completedAt"}),
+    "asset-recommendation-history": frozenset({"label", "status", "requestFingerprint", "resultHash", "createdAt", "completedAt"}),
+    "style-trial-history": frozenset({"label", "status", "requestFingerprint", "resultHash", "createdAt", "completedAt"}),
+    "story-engine-batch": frozenset({"label", "status", "contentHash", "createdAt", "completedAt"}),
+    "story-engine-option": frozenset({"label", "batchLogicalId", "optionOrder", "payload", "contentHash", "createdAt"}),
+    "project-contract-draft": frozenset({"label", "revision", "payload", "contentHash", "updatedAt"}),
+    "creation-contract": frozenset({"label", "revision", "payload", "contentHash", "createdAt"}),
+    "style-contract": frozenset({"label", "revision", "payload", "contentHash", "createdAt"}),
+    "project-contract-head": frozenset({"label", "revision", "creationContractLogicalId", "styleContractLogicalId", "contentHash", "updatedAt"}),
+    "contract-confirmation": frozenset({"label", "status", "contractRevision", "contentHash", "createdAt", "completedAt"}),
+    "creation-contract-engine-ref": frozenset({"label", "creationContractLogicalId", "storyEngineLogicalId", "contentHash"}),
+    "style-contract-template-ref": frozenset({"label", "styleContractLogicalId", "templateName", "templateRevision", "contentHash"}),
+    "creation-contract-experience-ref": frozenset({"label", "creationContractLogicalId", "experienceTitle", "experienceRevision", "contentHash"}),
+    "creation-contract-corpus-ref": frozenset({"label", "creationContractLogicalId", "corpusRevisionLogicalId", "contentHash"}),
+    "creation-contract-corpus-fragment-ref": frozenset({"label", "creationContractLogicalId", "corpusRevisionLogicalId", "fragmentOrder", "contentHash"}),
+    "project-bible-draft": frozenset({"label", "revision", "payload", "contentHash", "updatedAt"}),
+    "bible-generation-history": frozenset({"label", "status", "requestFingerprint", "resultHash", "createdAt", "completedAt"}),
+    "creation-bible-revision": frozenset({"label", "revision", "payload", "contentHash", "createdAt"}),
+    "project-bible-head": frozenset({"label", "revision", "bibleRevisionLogicalId", "contentHash", "updatedAt"}),
+    "bible-confirmation": frozenset({"label", "status", "bibleRevision", "contentHash", "createdAt", "completedAt"}),
+    "planning-draft": frozenset({"label", "revision", "payload", "contentHash", "updatedAt"}),
+    "planning-generation-history": frozenset({"label", "status", "requestFingerprint", "resultHash", "createdAt", "completedAt"}),
+    "planning-revision": frozenset({"label", "revision", "payload", "contentHash", "createdAt"}),
+    "project-planning-head": frozenset({"label", "revision", "planningRevisionLogicalId", "contentHash", "updatedAt"}),
+    "planning-confirmation": frozenset({"label", "status", "planningRevision", "contentHash", "createdAt", "completedAt"}),
+    "chapter-outline-draft": frozenset({"label", "chapterNumber", "revision", "payload", "contentHash", "updatedAt"}),
+    "chapter-outline-generation-history": frozenset({"label", "status", "chapterNumber", "requestFingerprint", "resultHash", "createdAt", "completedAt"}),
+    "chapter-outline-revision": frozenset({"label", "chapterNumber", "revision", "planningRevisionLogicalId", "payload", "contentHash", "createdAt"}),
+    "project-chapter-outline-head": frozenset({"label", "chapterNumber", "revision", "outlineRevisionLogicalId", "contentHash", "updatedAt"}),
+    "chapter-outline-confirmation": frozenset({"label", "status", "chapterNumber", "outlineRevision", "contentHash", "createdAt", "completedAt"}),
+    "chapter": frozenset({"label", "chapterNumber", "status", "createdAt", "updatedAt"}),
+    "working-draft": frozenset({"label", "chapterLogicalId", "revision", "content", "contentHash", "updatedAt"}),
+    "operation": frozenset({"label", "chapterLogicalId", "operationKind", "status", "requestFingerprint", "resultHash", "createdAt", "completedAt"}),
+    "draft-candidate": frozenset({"label", "chapterLogicalId", "candidateOrder", "content", "contentHash", "createdAt"}),
+    "working-draft-revision": frozenset({"label", "workingDraftLogicalId", "revision", "content", "contentHash", "createdAt"}),
+    "operation-event": frozenset({"label", "operationLogicalId", "sequence", "eventType", "contentHash", "createdAt"}),
+    "candidate-freeze": frozenset({"label", "chapterLogicalId", "candidateLogicalId", "requestFingerprint", "createdAt"}),
+    "candidate-quality": frozenset({"label", "chapterLogicalId", "candidateLogicalId", "status", "candidateHash", "expectedCanonRevision", "expectedPlanningHash", "expectedOutlineHash", "policyVersion", "contextManifestHash", "modelName", "deterministicBlocks", "findings", "contentHash", "createdAt"}),
+    "finalization-change-set": frozenset({"label", "chapterLogicalId", "candidateLogicalId", "status", "candidateHash", "contentHash", "createdAt", "updatedAt", "confirmedAt"}),
+    "finalization-change-set-revision": frozenset({"label", "changeSetLogicalId", "revision", "payload", "contentHash", "source", "createdAt"}),
+    "finalization-record": frozenset({"label", "chapterLogicalId", "candidateLogicalId", "changeSetLogicalId", "changeSetRevision", "candidateHash", "changeSetHash", "expectedCanonRevision", "committedCanonRevision", "resultPayload", "resultHash", "finalizedAt"}),
+    "final-chapter": frozenset({"label", "chapterLogicalId", "candidateLogicalId", "chapterNumber", "title", "content", "contentHash", "canonRevision", "finalizedAt"}),
+    "canon-entity": frozenset({"label", "entityType", "canonicalName", "normalizedName", "createdRevision", "createdAt"}),
+    "entity-alias": frozenset({"label", "entityLogicalId", "alias", "normalizedAlias", "createdRevision", "createdAt"}),
+    "canon-revision": frozenset({"label", "revisionNumber", "parentRevisionNumber", "sourceType", "sourceLogicalId", "contentHash", "createdAt"}),
+    "canon-event": frozenset({"label", "canonRevisionLogicalId", "revisionNumber", "eventOrder", "entityLogicalId", "factKind", "fieldPath", "value", "evidence", "effectiveStartChapter", "effectiveEndChapter", "assertionOperator", "valueCardinality", "confirmationStatus", "createdAt"}),
+    "reference-use": frozenset({"label", "chapterLogicalId", "candidateLogicalId", "corpusRevisionLogicalId", "locationStart", "locationEnd", "referencePurpose", "referencedTextHash", "createdAt"}),
+    "provider-history": frozenset({"label", "providerName", "modelName", "taskKey", "bindingRevisionLogicalId", "bindingHash", "operationLogicalId"}),
+    "asset": frozenset({"label", "assetKind", "stableKey", "revision", "name", "category", "payload", "provenance", "contentHash", "status", "createdAt"}),
+    "corpus-revision": frozenset({"label", "sourceKey", "revision", "relativePath", "displayName", "author", "referenceTags", "notes", "provenance", "contentHash", "byteLength", "encoding", "parserVersion", "normalizerVersion", "fragmenterVersion", "indexVersion", "status", "importedAt", "analyzedAt", "createdAt"}),
 })
 _ENTITY_TYPE_RE = re.compile(r"^[a-z]+(?:-[a-z]+)*$")
 _LOWER_HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -129,9 +183,37 @@ def _reject_sensitive(value: object) -> None:
     reject_sensitive_keys(value)
 
 
+def _validate_logical_identity_references(value: object) -> None:
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            normalized = key.replace("_", "").replace("-", "").casefold() if isinstance(key, str) else ""
+            if normalized == "id" or normalized.endswith("id") or normalized.endswith("ids"):
+                candidates = nested if isinstance(nested, (list, tuple)) else (nested,)
+                if any(candidate is not None and (not isinstance(candidate, str) or not re.fullmatch(r"[a-z]+(?:-[a-z]+)*:[1-9][0-9]*", candidate)) for candidate in candidates):
+                    raise _invalid_value()
+            _validate_logical_identity_references(nested)
+    elif isinstance(value, (list, tuple)):
+        for nested in value:
+            _validate_logical_identity_references(nested)
+
+
+def freeze_json_value(value: object) -> object:
+    """Validate and deeply freeze JSON values retained by immutable DTOs."""
+    validate_json_depth(value)
+    _reject_sensitive(value)
+    _validate_logical_identity_references(value)
+    return _freeze_json(value)
+
+
+def thaw_json_value(value: object) -> object:
+    """Return a detached JSON-compatible copy of a frozen package value."""
+    return _thaw_json(value)
+
+
 def canonical_json_bytes(value: Mapping[str, object]) -> bytes:
     validate_json_depth(value)
     _reject_sensitive(value)
+    _validate_logical_identity_references(value)
     try:
         return canonical_json(dict(value)).encode("utf-8")
     except (TypeError, ValueError):
@@ -167,9 +249,7 @@ class PackageRecord:
             or not set(self.data).issubset(RECORD_FIELD_ALLOWLISTS[self.entity_type])
         ):
             raise _invalid_value()
-        validate_json_depth(self.data)
-        _reject_sensitive(self.data)
-        object.__setattr__(self, "data", _freeze_json(self.data))
+        object.__setattr__(self, "data", freeze_json_value(self.data))
 
     def to_public_dict(self) -> dict[str, object]:
         return {
