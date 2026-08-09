@@ -227,7 +227,25 @@ missing/error/retry、IME、Tab 焦点循环、Escape 焦点恢复、全局阻�
 - 本切片按精简风险门禁验收；完整 unit/integration、历史 Phase 4 browser 与 release matrix
   延期到 Phase 4 close 串行运行一次。
 
+## 2026-08-09 Phase 4 Lean Writer Loop 收口
+
+- 分支：`codex/phase3d-boundary-acceptance`；阶段门禁快照：`840d90a`；源码 Schema：
+  `writer-core-v1.11.0`。
+- Phase4B2 streaming/reconnect/cancel、Phase4B3 exact-selection local tools/one-step undo
+  仅以 fake streaming provider 验收；Phase4C Candidate load/read-only compare 不启动 Provider。
+- Fresh Phase gates：Python `3322 passed, 6 skipped`，root Node `374/374`，frontend
+  `701/701`，integration `368 passed` 且 `366/366/0`，build `2966 modules`，browser
+  `6/6`（B2 `4/4`、B3 `1/1`、C `1/1`）。
+- 最终本轮资源账本：owned process/listener、常见开发端口、pytest temp、Vite `deps_temp`、
+  browser root、test DB 均为 `0`；Real Provider calls `0`；Product DB reads/writes `0/0`。
+- 发现并修正 3 处全局测试契约漂移：route inventory、旧 Phase 状态断言、旧 Candidate SSR
+  fixture；没有修改生产代码或放宽产品校验。
+- 规格与质量审查均为 `Critical/Important/Minor = 0/0/0`；详细证据：
+  `docs/acceptance/2026-08-09-phase-4-writer-loop.md`。
+- Full-draft rewrite、Candidate fusion、general recovery browsing、Canon/finalization、真实
+  Provider、产品数据库与内容质量仍未验收。
+
 ## 下一步
 
-唯一下一步是 Phase 4 close 的完整串行回归与阶段事实收口；AI fusion、full-draft rewrite、
-真实 Provider、产品数据库和 live 网站继续延期。
+唯一下一产品阶段是 Phase 5；先设计最小 quality audit、单次 `FinalizationChangeSet`、作者
+整体确认与原子定稿闭环。真实 Provider、产品数据库和 live 网站继续需要另行明确批准。

@@ -28,21 +28,19 @@
 - Canonical release branch：`main`。
 - Phase 2 验收链已进入 `main`，链末提交：
   `f11faad531f04250f2a987390a468dfd14bf06a3`。
-- 当前完成交付包：**Phase 3 Story Planning**、**Phase 4B1 Formal Generation**、
-  **Phase 4B2 streaming / reconnect / cancel**、**Phase 4B3 exact-selection tools /
-  one-step undo**（均仅注入 fake provider），以及 **Phase 4C Candidate load /
-  two-candidate read-only comparison**（不启动 Provider）。
+- 当前完成交付包：**Phase 3 Story Planning** 与 **Phase 4 lean Writer Loop**。Phase 4B1–B3
+  仅以注入 fake provider 验收；Phase 4C Candidate load/read-only compare 不启动 Provider。
 - 当前开发分支：`codex/phase3d-boundary-acceptance`。
 - Phase 3D 与 Phase 3 已完成：Future Plan/Actual Progress/Canon Projection 同 revision 只读组合与完整 Phase 3 门禁。
-- **Phase 4C Candidate load 与 two-candidate read-only comparison 已验收**；下一步为
-  Phase 4 close 的一次完整回归与事实收口。
+- **Phase 4 lean Writer Loop 已完成 Phase 级完整门禁**；下一产品阶段为 Phase 5 最小
+  quality audit / FinalizationChangeSet / atomic finalization 设计。
 - 交付基线：`main@e8aebd9eb851ccc64f160022984342344905cd15`。
-- 功能代码 HEAD：`05491f2`。
+- Phase 4 门禁快照：`840d90a`。
 - 当前自动证据边界：Real Provider calls `0`、Product DB reads/writes `0/0`；
   Phase 4B2 `generate_new` streaming/reconnect/cancel 与 Phase 4B3 exact-selection local
   tools/one-step undo 仅以注入 fake streaming provider 验收；Phase 4C load/compare 不启动
-  Provider。Full-draft rewrite、candidate fusion、full Phase 4 close、real-provider quality、
-  product-database readiness、Finalization 和 Content Quality 仍未就绪。
+  Provider。Full-draft rewrite、candidate fusion、general recovery browsing、real-provider
+  quality、product-database readiness、Finalization 和 Content Quality 仍未就绪。
 
 ## Phase 2 已完成能力
 
@@ -128,10 +126,9 @@ Phase 3 acceptance 见：
 
 - 当前开发分支源码 Schema：`writer-core-v1.11.0`。
 - Phase 4B1 持久化 Draft Operation / Recovery Schema 与正式 `generate_new`：
-  **已验收（仅注入 fake provider）**；未完成 Phase 4B、真实 Provider 或产品数据库验收。
+  **已验收（仅注入 fake provider）**；不外推为真实 Provider 或产品数据库验收。
 - Phase 4B2 的 streaming / reconnect / cancel 持久化 Schema、provider/runtime 与 UI：
-  **已验收（仅注入 fake streaming provider）**；不宣称 full Phase 4B、真实 Provider 或
-  产品数据库已完成。
+  **已验收（仅注入 fake streaming provider）**；不宣称真实 Provider 或产品数据库已完成。
 - Phase 4B3 只扩展既有 operation/replacement CHECK 枚举，没有新增表或列；精确选区四工具、
   局部取消保留原稿与一步追加式撤销已验收（仅注入 fake streaming provider）。
 - Phase 4C 为 recovery 增加 Candidate source 外键与互斥 CHECK；Candidate load 和最多两份
@@ -149,7 +146,7 @@ Phase 3 acceptance 见：
 ## 尚未完成
 
 - Phase 4 旧扩展范围中仍未验收：full-draft rewrite、candidate fusion 与通用 recovery 浏览；
-  按精简产品策略不在 Phase 4 close 前自动扩展实现。
+  按精简产品策略没有在 Phase 4 close 中扩展实现。
 - Phase 5：质量审核、单次 `FinalizationChangeSet` 提取、整体确认、
   Canon 写入、单事务定稿和完整回滚。
 - Phase 6：小说下载、安全项目备份、预检和导入。
@@ -158,9 +155,10 @@ Phase 3 acceptance 见：
 
 ## 当前工程切片
 
-**Phase 4C Candidate load 与 two-candidate read-only comparison 已在无 Provider 场景验收**；
-当前工程切片已收口，下一步是 Phase 4 close 的完整串行门禁与阶段事实收口，fusion 和
-full-draft rewrite 继续延期。自动门禁继续禁止真实 Provider、产品数据库和 live 网站。
+**Phase 4 lean Writer Loop 已完成完整 Phase 门禁**；下一产品阶段是 Phase 5，先设计最小
+quality audit、单次 `FinalizationChangeSet`、作者整体确认与原子定稿。Candidate fusion、
+full-draft rewrite 与 general recovery browsing 继续延期。自动门禁继续禁止真实 Provider、
+产品数据库和 live 网站。
 受控 DeepSeek V3 Flash smoke 仍须用户另行明确批准和有效 token，且不是自动门禁。
 Seed、Contract 与 Bible 的已确认内容保持永久基线；未来 Planning 只处理尚未实现的内容。
 正文定稿前对应大纲可以调整，正文定稿后大纲与事实不可修改，均以已实现和规格明确支持

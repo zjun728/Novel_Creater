@@ -369,7 +369,7 @@ test('Phase 3B detailed plan freezes its delivery and safety contract', async ()
   );
 });
 
-test('Phase 3 remains historical while Phase 4C is accepted and Phase 4 close is next', async () => {
+test('Phase 3 remains historical while the lean Phase 4 gate is complete', async () => {
   const [
     currentState,
     productPlan,
@@ -402,7 +402,7 @@ test('Phase 3 remains historical while Phase 4C is accepted and Phase 4 close is
   );
   assert.match(
     currentConclusion,
-    /^- 当前完成交付包：\*\*Phase 3 Story Planning\*\*、\*\*Phase 4B1 Formal Generation\*\*、\r?\n  \*\*Phase 4B2 streaming \/ reconnect \/ cancel\*\*、\*\*Phase 4B3 exact-selection tools \/\r?\n  one-step undo\*\*（均仅注入 fake provider），以及 \*\*Phase 4C Candidate load \/\r?\n  two-candidate read-only comparison\*\*（不启动 Provider）。$/m,
+    /^- 当前完成交付包：\*\*Phase 3 Story Planning\*\* 与 \*\*Phase 4 lean Writer Loop\*\*。Phase 4B1–B3\r?\n  仅以注入 fake provider 验收；Phase 4C Candidate load\/read-only compare 不启动 Provider。$/m,
   );
   assert.match(
     currentConclusion,
@@ -414,25 +414,25 @@ test('Phase 3 remains historical while Phase 4C is accepted and Phase 4 close is
   );
   assert.match(
     currentConclusion,
-    /^- \*\*Phase 4C Candidate load 与 two-candidate read-only comparison 已验收\*\*；下一步为\r?\n  Phase 4 close 的一次完整回归与事实收口。$/m,
+    /^- \*\*Phase 4 lean Writer Loop 已完成 Phase 级完整门禁\*\*；下一产品阶段为 Phase 5 最小\r?\n  quality audit \/ FinalizationChangeSet \/ atomic finalization 设计。$/m,
   );
   assert.match(
     currentConclusion,
-    /^- 功能代码 HEAD：`05491f2`。$/m,
+    /^- Phase 4 门禁快照：`840d90a`。$/m,
   );
   assert.match(
     currentConclusion,
-    /^- 当前自动证据边界：Real Provider calls `0`、Product DB reads\/writes `0\/0`；\r?\n  Phase 4B2 `generate_new` streaming\/reconnect\/cancel 与 Phase 4B3 exact-selection local\r?\n  tools\/one-step undo 仅以注入 fake streaming provider 验收；Phase 4C load\/compare 不启动\r?\n  Provider。Full-draft rewrite、candidate fusion、full Phase 4 close、real-provider quality、\r?\n  product-database readiness、Finalization 和 Content Quality 仍未就绪。$/m,
+    /^- 当前自动证据边界：Real Provider calls `0`、Product DB reads\/writes `0\/0`；\r?\n  Phase 4B2 `generate_new` streaming\/reconnect\/cancel 与 Phase 4B3 exact-selection local\r?\n  tools\/one-step undo 仅以注入 fake streaming provider 验收；Phase 4C load\/compare 不启动\r?\n  Provider。Full-draft rewrite、candidate fusion、general recovery browsing、real-provider\r?\n  quality、product-database readiness、Finalization 和 Content Quality 仍未就绪。$/m,
   );
 
   const currentSlice = readSection(currentState, '当前工程切片');
   assert.match(
     currentSlice,
-    /^\*\*Phase 4C Candidate load 与 two-candidate read-only comparison 已在无 Provider 场景验收\*\*；$/m,
+    /^\*\*Phase 4 lean Writer Loop 已完成完整 Phase 门禁\*\*；下一产品阶段是 Phase 5，先设计最小$/m,
   );
-  assert.match(currentSlice, /下一步是 Phase 4 close 的完整串行门禁与阶段事实收口/u);
-  assert.match(currentSlice, /fusion 和\r?\nfull-draft rewrite 继续延期/u);
-  assert.match(currentSlice, /自动门禁继续禁止真实 Provider、产品数据库和 live 网站/u);
+  assert.match(currentSlice, /quality audit、单次 `FinalizationChangeSet`、作者整体确认与原子定稿/u);
+  assert.match(currentSlice, /Candidate fusion、\r?\nfull-draft rewrite 与 general recovery browsing 继续延期/u);
+  assert.match(currentSlice, /自动门禁继续禁止真实 Provider、\r?\n产品数据库和 live 网站/u);
 
   const schemaBoundary = readSection(currentState, '当前 Schema 与数据库边界');
   assert.match(
@@ -874,7 +874,7 @@ test('Phase 3C detailed plan freezes its delivery and safety contract', async ()
   }
 });
 
-test('Phase 3 immutable-boundary acceptance remains historical while current state tracks Phase 4C acceptance', async () => {
+test('Phase 3 immutable-boundary acceptance remains historical after lean Phase 4 close', async () => {
   const [acceptance, alignment, currentState, productPlan, developmentLog] = await Promise.all([
     readProjectFile('docs/acceptance/2026-07-30-phase-3-story-planning.md'),
     readProjectFile('docs/acceptance/2026-07-31-phase-3-immutable-boundary-alignment.md'),
@@ -988,17 +988,17 @@ test('Phase 3 immutable-boundary acceptance remains historical while current sta
     'the report may record only the fixed delivery baseline and functional implementation SHAs',
   );
 
-  assert.match(currentState, /\*\*Phase 4C Candidate load \/\r?\n  two-candidate read-only comparison\*\*（不启动 Provider）。/u);
+  assert.match(currentState, /\*\*Phase 4 lean Writer Loop\*\*。Phase 4B1–B3\r?\n  仅以注入 fake provider 验收；Phase 4C Candidate load\/read-only compare 不启动 Provider。/u);
   assert.match(currentState, /^- 当前开发分支：`codex\/phase3d-boundary-acceptance`。$/m);
   assert.match(currentState, /^- Phase 3D 与 Phase 3 已完成：Future Plan\/Actual Progress\/Canon Projection 同 revision 只读组合与完整 Phase 3 门禁。$/m);
-  assert.match(currentState, /^- \*\*Phase 4C Candidate load 与 two-candidate read-only comparison 已验收\*\*；下一步为$/m);
-  assert.match(currentState, /^- 功能代码 HEAD：`05491f2`。$/m);
+  assert.match(currentState, /^- \*\*Phase 4 lean Writer Loop 已完成 Phase 级完整门禁\*\*；下一产品阶段为 Phase 5 最小$/m);
+  assert.match(currentState, /^- Phase 4 门禁快照：`840d90a`。$/m);
   assert.doesNotMatch(currentState, /Phase 3D[^\n]*下一步/u);
 
   assert.match(productPlan, /^\| Phase 3 \|.*\| 已完成门禁 \|$/m);
-  assert.match(productPlan, /^\| Phase 4 \| 自动暂存、流式新稿、改写、扩写、压缩、候选、对比、融合 \| Phase 4B1、4B2、4B3 已验收（仅 fake provider）；Phase 4C load \/ read-only comparison 已无 Provider 验收；Phase 4 close 完整门禁下一步，fusion\/full-draft rewrite 延期 \|$/m);
+  assert.match(productPlan, /^\| Phase 4 \| 自动暂存、流式新稿、改写、扩写、压缩、候选、对比、融合 \| 精简 Writer Loop 已完成 Phase 门禁；B1–B3 仅 fake provider，C 无 Provider；fusion\/full-draft rewrite 延期且未验收 \|$/m);
   assert.match(productPlan, /^- Phase 4B1 formal `generate_new` 已验收（仅 fake provider）。$/m);
-  assert.match(productPlan, /^- Phase 4C candidate load 与 two-candidate read-only comparison 已在无 Provider 场景验收；\r?\n  下一步是 Phase 4 close 的一次完整回归。AI fusion 与 full-draft rewrite 继续延期。$/m);
+  assert.match(productPlan, /^- Phase 4 lean Writer Loop 已完成完整 Phase 门禁；下一步进入 Phase 5 最小设计。AI fusion、\r?\n  full-draft rewrite 与 general recovery browsing 继续延期且未验收。$/m);
   assert.doesNotMatch(productPlan, /Phase 3D[^\n]*下一步/u);
 
   const phase3Log = readSection(developmentLog, '2026-07-30 Phase 3 Story Planning 完成');

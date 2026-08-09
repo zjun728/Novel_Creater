@@ -25,8 +25,8 @@ Novel Creator 要帮助作者持续写出长篇、连贯、可控并且让人愿
 | Phase 1 | 产品壳层与项目生命周期 | 已完成门禁 |
 | Phase 2 | 创作资产、Provider/模型设置、市场来源、选题与种子、契约、圣经、模型继承与资产冻结 | 已完成门禁 |
 | Phase 3 | 分卷、情节、故事块、小纲、已发生事实与未来计划 | 已完成门禁 |
-| Phase 4 | 自动暂存、流式新稿、改写、扩写、压缩、候选、对比、融合 | Phase 4B1、4B2、4B3 已验收（仅 fake provider）；Phase 4C load / read-only comparison 已无 Provider 验收；Phase 4 close 完整门禁下一步，fusion/full-draft rewrite 延期 |
-| Phase 5 | 质量审核、单次事实提取、整体确认、原子定稿与失败回滚 | 待开始 |
+| Phase 4 | 自动暂存、流式新稿、改写、扩写、压缩、候选、对比、融合 | 精简 Writer Loop 已完成 Phase 门禁；B1–B3 仅 fake provider，C 无 Provider；fusion/full-draft rewrite 延期且未验收 |
+| Phase 5 | 质量审核、单次事实提取、整体确认、原子定稿与失败回滚 | 下一步：先做最小设计 |
 | Phase 6 | 小说下载、安全备份、预检与导入 | 待开始 |
 | Phase 7 | 产品库、真实 Provider、自由浏览器探索、《典镇山河》30 章人工验收 | 待开始 |
 
@@ -86,8 +86,9 @@ Canon/Projection 落地；这不是已交付能力。详细证据见：
 - Phase 4B2 streaming / reconnect / cancel 已验收（仅 fake streaming provider）。
 - Phase 4B3 exact-selection rewrite/polish/expand/compress、local cancellation 与 one-step
   append-only undo 已验收（仅 fake streaming provider）。
-- Phase 4C candidate load 与 two-candidate read-only comparison 已在无 Provider 场景验收；
-  下一步是 Phase 4 close 的一次完整回归。AI fusion 与 full-draft rewrite 继续延期。
+- Phase 4C candidate load 与 two-candidate read-only comparison 已在无 Provider 场景验收。
+- Phase 4 lean Writer Loop 已完成完整 Phase 门禁；下一步进入 Phase 5 最小设计。AI fusion、
+  full-draft rewrite 与 general recovery browsing 继续延期且未验收。
 
 ## 5. 写作链路的先决修复
 
