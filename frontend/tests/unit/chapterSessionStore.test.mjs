@@ -23,7 +23,8 @@ function workspace({
     projectId: 'project-1',
     activeDraftOperationId,
     session: {
-      id: sessionId, chapterNum: chapterNumber, expectedCanonRevision,
+      id: sessionId, projectId: 'project-1',
+      chapterNum: chapterNumber, expectedCanonRevision,
       planningRevisionId: 'planning-revision-1',
       planningRevision,
       planningHash,
@@ -36,7 +37,8 @@ function workspace({
       status: 'drafting',
     },
     workingDraft: {
-      id: `draft-${chapterNumber}`, chapterSessionId: sessionId,
+      id: `draft-${chapterNumber}`, projectId: 'project-1',
+      chapterSessionId: sessionId,
       revision, content, contentHash: 'a'.repeat(64),
     },
     candidates,
@@ -1056,6 +1058,64 @@ test('formal draft operation store is a stateless create read events boundary an
     ])
     assert.equal('draftOperationRetry' in store, false)
     assert.equal('operationIdempotencyKey' in store, false)
+  })
+})
+
+test('local undo updates only the current store generation and participates in write fencing', async () => {
+  const sourceOperationId = '33333333-3333-4333-8333-333333333333'
+  const command = Object.freeze({
+    expectedWorkingDraftRevision: 2,
+    expectedContentHash: 'a'.repeat(64),
+    sourceOperationId,
+  })
+  const calls = []
+  let undoResult = workspace({ content: '撤销后的正文', revision: 3 })
+  await withApiMethods([
+    [api.chapterSessions, 'get', async () => workspace({ content: '替换正文', revision: 2 })],
+    [api.chapterSessions, 'undoLocalDraft', async (projectId, sessionId, value) => {
+      calls.push([projectId, sessionId, value])
+      return undoResult
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useChapterSessionStore()
+    await store.load('project-1', 1)
+
+    assert.deepEqual(await store.undoLocalDraft('project-1', command), undoResult)
+    assert.equal(store.workingDraft.content, '撤销后的正文')
+    assert.deepEqual(calls, [['project-1', 'session-1', command]])
+
+    undoResult = workspace({ content: '错误会话', revision: 4, sessionId: 'session-other' })
+    await assert.rejects(
+      store.undoLocalDraft('project-1', {
+        ...command,
+        expectedWorkingDraftRevision: 3,
+      }),
+      /invalid local undo workspace/i,
+    )
+    assert.equal(store.workingDraft.content, '撤销后的正文')
+
+    const gate = deferred()
+    undoResult = gate.promise
+    const pending = store.undoLocalDraft('project-1', {
+      ...command,
+      expectedWorkingDraftRevision: 3,
+    })
+    assert.equal(store.undoingDraft, true)
+    assert.equal(store.commandBusy, true)
+    await assert.rejects(
+      store.saveCandidate('project-1', {
+        expectedWorkingDraftRevision: 3,
+        expectedContentHash: 'a'.repeat(64),
+        idempotencyKey: '11111111-1111-1111-1111-111111111111',
+      }),
+      /write is already in progress/,
+    )
+    store.invalidate()
+    gate.resolve(workspace({ content: '不得采纳的迟到撤销', revision: 4 }))
+    await pending
+    assert.equal(store.workingDraft.content, '撤销后的正文')
+    assert.equal(store.undoingDraft, false)
   })
 })
 

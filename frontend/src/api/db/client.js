@@ -1227,14 +1227,23 @@ const DRAFT_OPERATION_SENSITIVE_KEYS = new Set([
   'prompt', 'messages', 'provider', 'model', 'apikey', 'baseurl', 'debug',
   'responsebody',
 ])
-const DRAFT_OPERATION_COMMAND_FIELDS = [
+const DRAFT_OPERATION_GENERATE_COMMAND_FIELDS = [
   'operationType', 'expectedWorkingDraftRevision', 'expectedContentHash',
   'idempotencyKey', 'authorInstruction',
 ]
+const DRAFT_OPERATION_LOCAL_COMMAND_FIELDS = [
+  ...DRAFT_OPERATION_GENERATE_COMMAND_FIELDS,
+  'startOffset', 'endOffset', 'selectedTextHash',
+]
+const LOCAL_DRAFT_OPERATION_TYPES = new Set([
+  'rewrite_selection', 'polish_selection',
+  'expand_selection', 'compress_selection',
+])
 const DRAFT_OPERATION_RESPONSE_FIELDS = [
   'id', 'projectId', 'chapterSessionId', 'operationType', 'status',
   'partialOutput', 'partialOutputHash', 'partialOutputScalars',
   'lastEventSequence', 'resultWorkingDraftRevision', 'resultContentHash',
+  'resultSelectionStart', 'resultSelectionEnd',
   'failureCode', 'model',
 ]
 const DRAFT_OPERATION_MODEL_FIELDS = ['providerId', 'modelName']
@@ -1294,21 +1303,33 @@ function hasSensitiveDraftOperationKey(value, ancestors = new WeakSet()) {
 
 function draftOperationCommand(value) {
   const source = draftOperationObject(value, 'command')
+  const local = LOCAL_DRAFT_OPERATION_TYPES.has(source.operationType)
+  const fields = local
+    ? DRAFT_OPERATION_LOCAL_COMMAND_FIELDS
+    : DRAFT_OPERATION_GENERATE_COMMAND_FIELDS
   if (
     hasSensitiveDraftOperationKey(source)
-    || Object.keys(source).length !== DRAFT_OPERATION_COMMAND_FIELDS.length
-    || DRAFT_OPERATION_COMMAND_FIELDS.some(field => !Object.hasOwn(source, field))
-    || source.operationType !== 'generate_new'
+    || Object.keys(source).length !== fields.length
+    || fields.some(field => !Object.hasOwn(source, field))
+    || (!local && source.operationType !== 'generate_new')
     || !Number.isInteger(source.expectedWorkingDraftRevision)
     || source.expectedWorkingDraftRevision < 1
     || source.expectedWorkingDraftRevision > DRAFT_OPERATION_MAX_BASE_REVISION
     || typeof source.authorInstruction !== 'string'
-    || unicodeScalarLength(source.authorInstruction) > 2000
+    || unicodeScalarLength(source.authorInstruction) > (local ? 1000 : 2000)
+    || (local && (
+      !Number.isInteger(source.startOffset)
+      || source.startOffset < 0
+      || source.startOffset >= DRAFT_OPERATION_MAX_PARTIAL_SCALARS
+      || !Number.isInteger(source.endOffset)
+      || source.endOffset <= source.startOffset
+      || source.endOffset > DRAFT_OPERATION_MAX_PARTIAL_SCALARS
+    ))
   ) {
     throw new TypeError('Invalid draft operation command')
   }
-  return Object.freeze({
-    operationType: 'generate_new',
+  const command = {
+    operationType: source.operationType,
     expectedWorkingDraftRevision: source.expectedWorkingDraftRevision,
     expectedContentHash: draftOperationHash(
       source.expectedContentHash,
@@ -1316,6 +1337,41 @@ function draftOperationCommand(value) {
     ),
     idempotencyKey: draftOperationUuid(source.idempotencyKey, 'idempotency key'),
     authorInstruction: source.authorInstruction,
+  }
+  if (local) {
+    command.startOffset = source.startOffset
+    command.endOffset = source.endOffset
+    command.selectedTextHash = draftOperationHash(
+      source.selectedTextHash,
+      'selected text hash',
+    )
+  }
+  return Object.freeze(command)
+}
+
+function undoLocalDraftCommand(value) {
+  const source = draftOperationObject(value, 'undo command')
+  const fields = [
+    'expectedWorkingDraftRevision', 'expectedContentHash', 'sourceOperationId',
+  ]
+  if (
+    hasSensitiveDraftOperationKey(source)
+    || Object.keys(source).length !== fields.length
+    || fields.some(field => !Object.hasOwn(source, field))
+    || !Number.isInteger(source.expectedWorkingDraftRevision)
+    || source.expectedWorkingDraftRevision < 1
+    || source.expectedWorkingDraftRevision > DRAFT_OPERATION_MAX_BASE_REVISION
+  ) throw new TypeError('Invalid draft operation undo command')
+  return Object.freeze({
+    expectedWorkingDraftRevision: source.expectedWorkingDraftRevision,
+    expectedContentHash: draftOperationHash(
+      source.expectedContentHash,
+      'expected content hash',
+    ),
+    sourceOperationId: draftOperationUuid(
+      source.sourceOperationId,
+      'source operation id',
+    ),
   })
 }
 
@@ -1335,7 +1391,10 @@ function draftOperationResponse(value, expected = {}) {
   const partialOutputScalars = source.partialOutputScalars
   const revision = source.resultWorkingDraftRevision
   const resultHash = source.resultContentHash
+  const selectionStart = source.resultSelectionStart
+  const selectionEnd = source.resultSelectionEnd
   const failureCode = source.failureCode
+  const local = LOCAL_DRAFT_OPERATION_TYPES.has(source.operationType)
   const sourceModel = draftOperationObject(source.model, 'model')
   if (
     Object.keys(sourceModel).length !== DRAFT_OPERATION_MODEL_FIELDS.length
@@ -1347,7 +1406,8 @@ function draftOperationResponse(value, expected = {}) {
     (expected.operationId && operationId !== expected.operationId)
     || (expected.projectId && projectId !== expected.projectId)
     || (expected.sessionId && chapterSessionId !== expected.sessionId)
-    || source.operationType !== 'generate_new'
+    || (!local && source.operationType !== 'generate_new')
+    || (expected.operationType && source.operationType !== expected.operationType)
     || !DRAFT_OPERATION_STATUSES.has(status)
     || !Number.isInteger(sequence)
     || sequence < 1
@@ -1387,8 +1447,21 @@ function draftOperationResponse(value, expected = {}) {
       )
       || failureCode !== null
       || partialOutput === ''
-      || partialOutput !== partialOutput.trim()
-      || resultHash !== partialOutputHash
+      || (!local && (
+        partialOutput !== partialOutput.trim()
+        || resultHash !== partialOutputHash
+      ))
+      || (local && (
+        !Number.isInteger(selectionStart)
+        || selectionStart < 0
+        || !Number.isInteger(selectionEnd)
+        || selectionEnd !== selectionStart + partialOutputScalars
+        || selectionEnd > DRAFT_OPERATION_MAX_PARTIAL_SCALARS
+        || (
+          expected.selectionStart !== undefined
+          && selectionStart !== expected.selectionStart
+        )
+      ))
     ) throw new TypeError('Invalid draft operation response')
     draftOperationHash(resultHash, 'result content hash')
   } else if (status === 'cancelled') {
@@ -1396,10 +1469,11 @@ function draftOperationResponse(value, expected = {}) {
     if (
       sequence < 2
       || failureCode !== null
-      || partialOutput !== partialOutput.trim()
-      || (revision === null) !== (resultHash === null)
-      || Boolean(partialOutput) !== hasResult
-      || (hasResult && (
+      || (!local && partialOutput !== partialOutput.trim())
+      || (local && hasResult)
+      || (!local && (revision === null) !== (resultHash === null))
+      || (!local && Boolean(partialOutput) !== hasResult)
+      || (!local && hasResult && (
         !Number.isInteger(revision)
         || revision < 1
         || revision > DRAFT_OPERATION_MAX_RESULT_REVISION
@@ -1409,7 +1483,7 @@ function draftOperationResponse(value, expected = {}) {
         )
       ))
     ) throw new TypeError('Invalid draft operation response')
-    if (hasResult) {
+    if (!local && hasResult) {
       draftOperationHash(resultHash, 'result content hash')
       if (resultHash !== partialOutputHash) {
         throw new TypeError('Invalid draft operation response')
@@ -1425,12 +1499,15 @@ function draftOperationResponse(value, expected = {}) {
   } else if (revision !== null || resultHash !== null || failureCode !== null) {
     throw new TypeError('Invalid draft operation response')
   }
+  if ((!local || status !== 'completed') && (
+    selectionStart !== null || selectionEnd !== null
+  )) throw new TypeError('Invalid draft operation response')
   const model = Object.freeze({ providerId, modelName })
   return Object.freeze({
     id: operationId,
     projectId,
     chapterSessionId,
-    operationType: 'generate_new',
+    operationType: source.operationType,
     status,
     lastEventSequence: sequence,
     partialOutput,
@@ -1438,6 +1515,8 @@ function draftOperationResponse(value, expected = {}) {
     partialOutputScalars,
     resultWorkingDraftRevision: revision,
     resultContentHash: resultHash,
+    resultSelectionStart: selectionStart,
+    resultSelectionEnd: selectionEnd,
     failureCode,
     model,
   })
@@ -2204,6 +2283,8 @@ export const api = {
         projectId: normalizedProjectId,
         sessionId: normalizedSessionId,
         expectedBaseRevision: body.expectedWorkingDraftRevision,
+        operationType: body.operationType,
+        selectionStart: body.startOffset,
       })
     },
     readDraftOperation: async (projectId, sessionId, operationId) => {
@@ -2238,6 +2319,15 @@ export const api = {
         sessionId: normalizedSessionId,
         operationId: normalizedOperationId,
       })
+    },
+    undoLocalDraft: async (projectId, sessionId, command) => {
+      const normalizedProjectId = draftOperationUuid(projectId, 'project id')
+      const normalizedSessionId = draftOperationUuid(sessionId, 'session id')
+      const body = undoLocalDraftCommand(command)
+      return post(
+        `/projects/${segment(normalizedProjectId)}/chapter-sessions/${segment(normalizedSessionId)}/working-draft/undo`,
+        body,
+      )
     },
     saveCandidate: (projectId, sessionId, data) => post(
       `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/candidates`,

@@ -1271,6 +1271,8 @@ test('draft operation client uses only formal routes, strict bodies, and closed 
     partialOutputScalars: 2,
     resultWorkingDraftRevision: 5,
     resultContentHash: hash,
+    resultSelectionStart: null,
+    resultSelectionEnd: null,
     failureCode: null,
     model: { providerId: 'provider-1', modelName: 'writer-model' },
   }
@@ -1341,6 +1343,8 @@ test('draft operation client uses only formal routes, strict bodies, and closed 
       partialOutputScalars: 2,
       resultWorkingDraftRevision: 5,
       resultContentHash: hash,
+      resultSelectionStart: null,
+      resultSelectionEnd: null,
       failureCode: null,
       model: { providerId: 'provider-1', modelName: 'writer-model' },
     }
@@ -1367,6 +1371,210 @@ test('draft operation client uses only formal routes, strict bodies, and closed 
   }
 })
 
+test('draft operation client admits four exact local commands and closed terminal ranges', async () => {
+  const originalFetch = global.fetch
+  const calls = []
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const key = '44444444-4444-4444-8444-444444444444'
+  const selectedHash = 'a'.repeat(64)
+  const replacement = ' 新😀 '
+  const replacementHash = 'b'.repeat(64)
+  const resultHash = 'c'.repeat(64)
+  let operationType = 'rewrite_selection'
+  let responsePatch = {}
+  global.fetch = async (url, options) => {
+    calls.push({ url: String(url), options })
+    return jsonResponse({
+      id: operationId,
+      projectId,
+      chapterSessionId: sessionId,
+      operationType,
+      status: 'completed',
+      lastEventSequence: 2,
+      partialOutput: replacement,
+      partialOutputHash: replacementHash,
+      partialOutputScalars: 4,
+      resultWorkingDraftRevision: 5,
+      resultContentHash: resultHash,
+      resultSelectionStart: 2,
+      resultSelectionEnd: 6,
+      failureCode: null,
+      model: { providerId: 'provider-1', modelName: 'writer-model' },
+      ...responsePatch,
+    })
+  }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    for (const type of [
+      'rewrite_selection',
+      'polish_selection',
+      'expand_selection',
+      'compress_selection',
+    ]) {
+      operationType = type
+      const command = Object.freeze({
+        operationType: type,
+        expectedWorkingDraftRevision: 4,
+        expectedContentHash: 'd'.repeat(64),
+        idempotencyKey: key,
+        authorInstruction: '😀'.repeat(1000),
+        startOffset: 2,
+        endOffset: 4,
+        selectedTextHash: selectedHash,
+      })
+      const result = await api.chapterSessions.createDraftOperation(
+        projectId, sessionId, command,
+      )
+      assert.deepEqual(bodyOf(calls.at(-1)), command)
+      assert.equal(result.operationType, type)
+      assert.equal(result.resultSelectionStart, 2)
+      assert.equal(result.resultSelectionEnd, 6)
+      assert.notEqual(result.resultContentHash, result.partialOutputHash)
+    }
+
+    operationType = 'rewrite_selection'
+    for (const patch of [
+      { resultSelectionEnd: 7 },
+      { resultSelectionStart: null, resultSelectionEnd: null },
+      {
+        status: 'cancelled',
+        resultWorkingDraftRevision: null,
+        resultContentHash: null,
+        resultSelectionStart: 2,
+        resultSelectionEnd: 6,
+      },
+    ]) {
+      responsePatch = patch
+      await assert.rejects(
+        api.chapterSessions.readDraftOperation(
+          projectId, sessionId, operationId,
+        ),
+        TypeError,
+      )
+    }
+    responsePatch = {
+      status: 'cancelled',
+      partialOutput: ' 预览 ',
+      partialOutputScalars: 4,
+      resultWorkingDraftRevision: null,
+      resultContentHash: null,
+      resultSelectionStart: null,
+      resultSelectionEnd: null,
+    }
+    const cancelled = await api.chapterSessions.readDraftOperation(
+      projectId, sessionId, operationId,
+    )
+    assert.equal(cancelled.status, 'cancelled')
+    assert.equal(cancelled.partialOutput, ' 预览 ')
+    responsePatch = {}
+
+    const invalid = [
+      {
+        operationType: 'rewrite_selection',
+        expectedWorkingDraftRevision: 4,
+        expectedContentHash: 'd'.repeat(64),
+        idempotencyKey: key,
+        authorInstruction: '',
+        startOffset: 2,
+        endOffset: 2,
+        selectedTextHash: selectedHash,
+      },
+      {
+        operationType: 'rewrite_selection',
+        expectedWorkingDraftRevision: 4,
+        expectedContentHash: 'd'.repeat(64),
+        idempotencyKey: key,
+        authorInstruction: '',
+        startOffset: 99_999,
+        endOffset: 100_001,
+        selectedTextHash: selectedHash,
+      },
+      {
+        operationType: 'rewrite_selection',
+        expectedWorkingDraftRevision: 4,
+        expectedContentHash: 'd'.repeat(64),
+        idempotencyKey: key,
+        authorInstruction: '😀'.repeat(1001),
+        startOffset: 2,
+        endOffset: 4,
+        selectedTextHash: selectedHash,
+      },
+      {
+        operationType: 'generate_new',
+        expectedWorkingDraftRevision: 4,
+        expectedContentHash: 'd'.repeat(64),
+        idempotencyKey: key,
+        authorInstruction: '',
+        startOffset: 2,
+        endOffset: 4,
+        selectedTextHash: selectedHash,
+      },
+    ]
+    const cyclic = { ...invalid[0], endOffset: 4 }
+    cyclic.debug = cyclic
+    invalid.push(cyclic)
+    const acceptedCalls = calls.length
+    for (const command of invalid) {
+      await assert.rejects(
+        api.chapterSessions.createDraftOperation(projectId, sessionId, command),
+        TypeError,
+      )
+    }
+    assert.equal(calls.length, acceptedCalls)
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation client uses the exact local undo route and closed body', async () => {
+  const calls = []
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const sourceOperationId = '33333333-3333-4333-8333-333333333333'
+  const command = Object.freeze({
+    expectedWorkingDraftRevision: 5,
+    expectedContentHash: 'a'.repeat(64),
+    sourceOperationId,
+  })
+  const response = { projectId, session: { id: sessionId }, workingDraft: {} }
+  const originalFetch = global.fetch
+  global.fetch = async (url, options) => {
+    calls.push({ url: String(url), options })
+    return jsonResponse(response)
+  }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    assert.deepEqual(
+      await api.chapterSessions.undoLocalDraft(projectId, sessionId, command),
+      response,
+    )
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].options.method, 'POST')
+    assert.equal(
+      new URL(calls[0].url).pathname,
+      `/api/projects/${projectId}/chapter-sessions/${sessionId}/working-draft/undo`,
+    )
+    assert.deepEqual(bodyOf(calls[0]), command)
+
+    const acceptedCalls = calls.length
+    for (const invalid of [
+      { ...command, sourceOperationId: 'not-a-uuid' },
+      { ...command, apiKey: 'MUST-NOT-CROSS' },
+      { ...command, expectedWorkingDraftRevision: true },
+    ]) {
+      await assert.rejects(
+        api.chapterSessions.undoLocalDraft(projectId, sessionId, invalid),
+        TypeError,
+      )
+    }
+    assert.equal(calls.length, acceptedCalls)
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
 test('draft operation client exposes bounded streaming status, paginated events, and bodyless cancel', async () => {
   const originalFetch = global.fetch
   const calls = []
@@ -1387,6 +1595,8 @@ test('draft operation client exposes bounded streaming status, paginated events,
     partialOutputScalars: 2,
     resultWorkingDraftRevision: 5,
     resultContentHash: partialOutputHash,
+    resultSelectionStart: null,
+    resultSelectionEnd: null,
     failureCode: null,
     model: { providerId: 'provider-1', modelName: 'writer-model' },
   }
@@ -1484,6 +1694,8 @@ test('draft operation client rejects malformed streaming scalars and recursive e
     partialOutputScalars: 1,
     resultWorkingDraftRevision: null,
     resultContentHash: null,
+    resultSelectionStart: null,
+    resultSelectionEnd: null,
     failureCode: null,
     model: { providerId: 'provider-1', modelName: 'writer-model' },
   }
@@ -1523,6 +1735,8 @@ test('draft operation client rejects impossible streaming status correlations', 
     partialOutputScalars: 1,
     resultWorkingDraftRevision: null,
     resultContentHash: null,
+    resultSelectionStart: null,
+    resultSelectionEnd: null,
     failureCode: null,
     model: { providerId: 'provider-1', modelName: 'writer-model' },
   }
@@ -1768,6 +1982,8 @@ test('draft operation partials accept exactly 100000 Unicode scalars and reject 
     partialOutputScalars: 100_000,
     resultWorkingDraftRevision: null,
     resultContentHash: null,
+    resultSelectionStart: null,
+    resultSelectionEnd: null,
     failureCode: null,
     model: { providerId: 'provider-1', modelName: 'writer-model' },
   }
@@ -1860,6 +2076,8 @@ test('draft operation client counts author instructions by Unicode scalar value'
       partialOutputScalars: 2,
       resultWorkingDraftRevision: 2,
       resultContentHash: 'a'.repeat(64),
+      resultSelectionStart: null,
+      resultSelectionEnd: null,
       failureCode: null,
       model: { providerId: 'provider-1', modelName: 'writer-model' },
     })
@@ -2019,6 +2237,8 @@ test('draft operation client enforces exact safe revision bounds before transpor
     partialOutputScalars: 2,
     resultWorkingDraftRevision: result,
     resultContentHash: 'a'.repeat(64),
+    resultSelectionStart: null,
+    resultSelectionEnd: null,
     failureCode: null,
     model: { providerId: 'provider-1', modelName: 'writer-model' },
   }

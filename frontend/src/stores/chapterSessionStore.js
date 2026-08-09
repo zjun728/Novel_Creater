@@ -75,6 +75,31 @@ function requireCandidateCommand(command) {
   })
 }
 
+function requireUndoCommand(command) {
+  const fields = [
+    'expectedWorkingDraftRevision', 'expectedContentHash', 'sourceOperationId',
+  ]
+  if (
+    !command
+    || typeof command !== 'object'
+    || Array.isArray(command)
+    || Object.keys(command).length !== fields.length
+    || fields.some(field => !Object.hasOwn(command, field))
+    || !Number.isInteger(command.expectedWorkingDraftRevision)
+    || command.expectedWorkingDraftRevision < 1
+    || command.expectedWorkingDraftRevision > 2_147_483_646
+    || typeof command.expectedContentHash !== 'string'
+    || !CONTENT_HASH.test(command.expectedContentHash)
+    || typeof command.sourceOperationId !== 'string'
+    || !DRAFT_OPERATION_ID.test(command.sourceOperationId)
+  ) throw new TypeError('local undo command is required')
+  return Object.freeze({
+    expectedWorkingDraftRevision: command.expectedWorkingDraftRevision,
+    expectedContentHash: command.expectedContentHash,
+    sourceOperationId: command.sourceOperationId,
+  })
+}
+
 const CANDIDATE_BASIS_FIELDS = Object.freeze([
   'outlineRevisionId',
   'outlineRevision',
@@ -180,6 +205,28 @@ function normalizeWorkspace(nextWorkspace) {
   }
 }
 
+function requireUndoWorkspace(
+  nextWorkspace,
+  targetProjectId,
+  targetSessionId,
+  targetChapterNumber,
+  expectedRevision,
+) {
+  const normalized = normalizeWorkspace(nextWorkspace)
+  if (
+    normalized?.projectId !== targetProjectId
+    || normalized?.activeDraftOperationId !== null
+    || normalized?.session?.id !== targetSessionId
+    || normalized?.session?.chapterNum !== targetChapterNumber
+    || normalized?.workingDraft?.chapterSessionId !== targetSessionId
+    || normalized?.workingDraft?.revision !== expectedRevision + 1
+    || typeof normalized?.workingDraft?.content !== 'string'
+    || typeof normalized?.workingDraft?.contentHash !== 'string'
+    || !CONTENT_HASH.test(normalized.workingDraft.contentHash)
+  ) throw new TypeError('Invalid local undo workspace')
+  return normalized
+}
+
 export const useChapterSessionStore = defineStore('chapterSession', () => {
   const projectId = ref('')
   const chapterNumber = ref(0)
@@ -189,11 +236,13 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
   const creating = ref(false)
   const savingDraft = ref(false)
   const savingCandidate = ref(false)
+  const undoingDraft = ref(false)
   const loadGuard = createLatestRequestGuard()
   const createGuard = createLatestRequestGuard()
   const draftGuard = createLatestRequestGuard()
   const candidateGuard = createLatestRequestGuard()
   const authoritativeEntryGuard = createLatestRequestGuard()
+  const undoGuard = createLatestRequestGuard()
   let stateGeneration = 0
 
   const session = computed(() => workspace.value?.session || null)
@@ -206,10 +255,12 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     creating.value
     || savingDraft.value
     || savingCandidate.value
+    || undoingDraft.value
   ))
   const commandBusy = computed(() => (
     creating.value
     || savingCandidate.value
+    || undoingDraft.value
   ))
   const busy = computed(() => loading.value || writeBusy.value)
 
@@ -218,6 +269,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     creating.value = false
     savingDraft.value = false
     savingCandidate.value = false
+    undoingDraft.value = false
   }
 
   function assertWriteAvailable() {
@@ -239,6 +291,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
       draftGuard.invalidate()
       candidateGuard.invalidate()
       authoritativeEntryGuard.invalidate()
+      undoGuard.invalidate()
       workspace.value = null
       error.value = null
       resetPendingFlags()
@@ -687,6 +740,61 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     )
   }
 
+  async function undoLocalDraft(nextProjectId, command) {
+    const undoCommand = requireUndoCommand(command)
+    const {
+      projectId: targetProjectId,
+      sessionId,
+    } = operationContext(nextProjectId)
+    assertWriteAvailable()
+    const current = requireWorkspace(workspace.value)
+    if (
+      current.workingDraft.revision !== undoCommand.expectedWorkingDraftRevision
+      || current.workingDraft.contentHash !== undoCommand.expectedContentHash
+    ) throw new TypeError('local undo authority changed')
+    const generation = undoGuard.begin()
+    const targetChapterNumber = chapterNumber.value
+    const targetStateGeneration = stateGeneration
+    undoingDraft.value = true
+    try {
+      const restored = await api.chapterSessions.undoLocalDraft(
+        targetProjectId,
+        sessionId,
+        undoCommand,
+      )
+      const normalized = requireUndoWorkspace(
+        restored,
+        targetProjectId,
+        sessionId,
+        targetChapterNumber,
+        undoCommand.expectedWorkingDraftRevision,
+      )
+      if (isCurrent(
+        undoGuard,
+        generation,
+        targetProjectId,
+        targetChapterNumber,
+        targetStateGeneration,
+      )) acceptWorkspace(normalized)
+      return normalized
+    } catch (failure) {
+      if (isCurrent(
+        undoGuard,
+        generation,
+        targetProjectId,
+        targetChapterNumber,
+        targetStateGeneration,
+      )) error.value = publicError(failure)
+      throw failure
+    } finally {
+      if (
+        projectId.value === targetProjectId
+        && chapterNumber.value === targetChapterNumber
+        && undoGuard.isCurrent(generation)
+      ) undoingDraft.value = false
+    }
+  }
+
   function reloadCurrentWorkspace(nextProjectId) {
     return load(nextProjectId, chapterNumber.value)
   }
@@ -698,6 +806,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     draftGuard.invalidate()
     candidateGuard.invalidate()
     authoritativeEntryGuard.invalidate()
+    undoGuard.invalidate()
     resetPendingFlags()
   }
 
@@ -710,6 +819,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     creating,
     savingDraft,
     savingCandidate,
+    undoingDraft,
     session,
     workingDraft,
     candidates,
@@ -725,6 +835,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     readDraftOperation,
     listDraftOperationEvents,
     cancelDraftOperation,
+    undoLocalDraft,
     reloadCurrentWorkspace,
     saveCandidate,
     invalidate,
