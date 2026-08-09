@@ -18,8 +18,11 @@ import {
 } from 'naive-ui'
 
 import PlainTextDraftEditor from '@/components/writer/PlainTextDraftEditor.vue'
+import FinalizationPanel from '@/components/writer/FinalizationPanel.vue'
 import { createWorkingDraftAutosave } from '@/application/writer/workingDraftAutosave'
 import { createChapterWriterController } from '@/application/writer/chapterWriterController'
+import { createFinalizationController } from '@/application/writer/finalizationController'
+import { api } from '@/api/db/client'
 import { useChapterSessionStore } from '@/stores/chapterSessionStore'
 import { createLatestRequestGuard } from '@/utils/latestRequest'
 import {
@@ -67,9 +70,40 @@ const autosave = createWorkingDraftAutosave({
     snapshot,
   ),
 })
+const finalization = createFinalizationController({
+  getReview: () => api.chapterSessions.getFinalization(
+    projectId.value,
+    session.value.id,
+  ),
+  prepare: (candidateId, command) => api.chapterSessions.prepareFinalization(
+    projectId.value,
+    session.value.id,
+    candidateId,
+    command,
+  ),
+  correct: command => api.chapterSessions.correctFinalization(
+    projectId.value,
+    session.value.id,
+    command,
+  ),
+  confirm: command => api.chapterSessions.confirmFinalization(
+    projectId.value,
+    session.value.id,
+    command,
+  ),
+  commit: command => api.chapterSessions.commitFinalization(
+    projectId.value,
+    session.value.id,
+    command,
+  ),
+  onCommitted: async () => {
+    const workspace = await chapterSessionStore.reloadCurrentWorkspace(projectId.value)
+    if (workspace?.workingDraft) autosave.reset(workspace)
+  },
+})
 const controller = createChapterWriterController({
   autosave,
-  writeBusy: () => chapterSessionStore.commandBusy,
+  writeBusy: () => chapterSessionStore.commandBusy || finalization.busy.value,
   freezeCandidate: command => chapterSessionStore.saveCandidate(projectId.value, command),
   loadCandidate: (candidateId, command) => chapterSessionStore.loadCandidate(
     projectId.value,
@@ -134,9 +168,17 @@ function updateAuthorInstruction(nextInstruction) {
 }
 
 const editorDisabled = computed(() => !session.value)
-const editorReadonly = computed(() => controller.actionBusy.value)
+const editorReadonly = computed(() => (
+  controller.actionBusy.value
+  || finalization.busy.value
+  || finalization.finalized.value
+))
 const commandDisabled = computed(() => (
-  !session.value || controller.actionBusy.value || chapterSessionStore.commandBusy
+  !session.value
+  || controller.actionBusy.value
+  || chapterSessionStore.commandBusy
+  || finalization.busy.value
+  || finalization.finalized.value
 ))
 const localCommandDisabled = computed(() => (
   commandDisabled.value
@@ -151,6 +193,8 @@ function candidateSelected(candidateId) {
 function candidateSelectionDisabled(candidateId) {
   return controller.actionBusy.value
     || chapterSessionStore.commandBusy
+    || finalization.busy.value
+    || finalization.finalized.value
     || (!candidateSelected(candidateId) && selectedCandidateIds.value.length >= 2)
 }
 
@@ -206,6 +250,7 @@ watch(() => autosave.persistedRevision.value, updateLastSavedAt, { flush: 'sync'
 
 async function loadWorkspace(nextProjectId, nextChapterNumber) {
   controller.resetContext()
+  finalization.reset()
   selectedCandidateIds.value = []
   lastSavedAt.value = ''
   const targetProjectId = String(nextProjectId || '')
@@ -225,8 +270,10 @@ async function loadWorkspace(nextProjectId, nextChapterNumber) {
     if (chapterSessionStore.workspace?.workingDraft) {
       autosave.reset(chapterSessionStore.workspace)
       updateLastSavedAt()
+      await finalization.load()
+      if (!loadGuard.isCurrent(generation)) return
       const activeDraftOperationId = chapterSessionStore.workspace?.activeDraftOperationId
-      if (activeDraftOperationId) {
+      if (activeDraftOperationId && !finalization.finalized.value) {
         void controller.resumeDraftOperation(activeDraftOperationId).catch(() => {
           if (!loadGuard.isCurrent(generation)) return
           actionError.value = '生成失败'
@@ -326,12 +373,12 @@ async function retryAutosave() {
 }
 
 function backToProject() {
-  if (controller.actionBusy.value) return
+  if (controller.actionBusy.value || finalization.busy.value) return
   router.push(projectOverviewPath(projectId.value))
 }
 
 function guardBusyNavigation(event) {
-  if (!controller.actionBusy.value) return
+  if (!controller.actionBusy.value && !finalization.busy.value) return
   event.preventDefault()
 }
 
@@ -366,6 +413,7 @@ onBeforeUnmount(() => {
   syncBeforeUnloadRisk(false)
   loadGuard.invalidate()
   controller.dispose()
+  finalization.dispose()
   autosave.dispose()
   chapterSessionStore.invalidate()
 })
@@ -496,6 +544,12 @@ onBeforeUnmount(() => {
         </n-card>
 
         <aside class="side-stack">
+          <finalization-panel
+            v-if="session"
+            :controller="finalization"
+            :candidates="candidates"
+            :disabled="controller.actionBusy.value || chapterSessionStore.commandBusy"
+          />
           <n-card v-if="outlineContent" title="已确认小纲（只读）" :bordered="false">
             <p class="outline-goal">{{ outlineContent.chapterGoal }}</p>
             <dl class="outline-summary">

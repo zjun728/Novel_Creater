@@ -9,6 +9,7 @@ const DRAFT_OPERATION_TIMEOUT = 1_200_000
 const BIBLE_GENERATION_TIMEOUT = 210_000
 const PLANNING_GENERATION_TIMEOUT = 210_000
 const CHAPTER_OUTLINE_GENERATION_TIMEOUT = 210_000
+const FINALIZATION_PREPARE_TIMEOUT = 1_210_000
 
 async function request(method, path, body, timeoutMs = DEFAULT_TIMEOUT) {
   const controller = new AbortController()
@@ -1752,6 +1753,180 @@ function queryString(params = {}) {
   return result ? `?${result}` : ''
 }
 
+const FINALIZATION_HASH = /^[a-f0-9]{64}$/u
+const FINALIZATION_STATUSES = new Set([
+  'preparing', 'awaiting_author', 'committing', 'committed',
+  'invalidated', 'cancelled', 'failed',
+])
+
+function finalizationObject(value, label) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError(`Invalid finalization ${label}`)
+  }
+  return value
+}
+
+function finalizationHash(value, label) {
+  if (typeof value !== 'string' || !FINALIZATION_HASH.test(value)) {
+    throw new TypeError(`Invalid finalization ${label}`)
+  }
+  return value
+}
+
+function finalizationEvidence(value) {
+  if (value === null) return null
+  const source = finalizationObject(value, 'evidence')
+  return pickDefined(source, [
+    'startScalar', 'endScalar', 'excerptHash', 'confidence', 'rationale',
+  ])
+}
+
+function finalizationJson(value, ancestors = new WeakSet()) {
+  if (value === null || ['string', 'boolean'].includes(typeof value)) return value
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (!value || typeof value !== 'object' || ancestors.has(value)) {
+    throw new TypeError('Invalid finalization JSON value')
+  }
+  ancestors.add(value)
+  try {
+    if (Array.isArray(value)) {
+      return value.map(item => finalizationJson(item, ancestors))
+    }
+    if (![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+      throw new TypeError('Invalid finalization JSON value')
+    }
+    const result = {}
+    for (const [key, item] of Object.entries(value)) {
+      if (/api.?key|authorization|password|secret|token|dsn|raw.?provider/iu.test(key)) {
+        throw new TypeError('Invalid finalization JSON value')
+      }
+      Object.defineProperty(result, key, {
+        value: finalizationJson(item, ancestors),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      })
+    }
+    return result
+  } finally {
+    ancestors.delete(value)
+  }
+}
+
+function finalizationChangeSet(value) {
+  const source = finalizationObject(value, 'ChangeSet')
+  const evidenceItem = (item, fields) => ({
+    ...pickDefined(finalizationObject(item, 'ChangeSet item'), fields),
+    evidence: finalizationEvidence(item.evidence),
+  })
+  return {
+    ...pickDefined(source, ['schemaVersion', 'title', 'summary']),
+    existingEntityIds: [...(Array.isArray(source.existingEntityIds) ? source.existingEntityIds : [])],
+    entities: (source.entities || []).map(item => pickDefined(
+      finalizationObject(item, 'entity'), ['id', 'entityType', 'canonicalName'],
+    )),
+    aliases: (source.aliases || []).map(item => pickDefined(
+      finalizationObject(item, 'alias'), ['id', 'entityId', 'alias'],
+    )),
+    canonEvents: (source.canonEvents || []).map(item => ({
+      ...evidenceItem(item, [
+        'id', 'entityId', 'factKind', 'fieldPath', 'effectiveStartChapter',
+        'effectiveEndChapter', 'assertionOperator', 'valueCardinality',
+      ]),
+      value: finalizationJson(item.value),
+    })),
+    storyProgressEvents: (source.storyProgressEvents || []).map(item => (
+      evidenceItem(item, ['id', 'targetType', 'targetId', 'status'])
+    )),
+    planningPatches: (source.planningPatches || []).map(item => ({
+      ...evidenceItem(item, [
+        'id', 'targetType', 'targetId', 'expectedRevision', 'expectedHash',
+        'fieldPath',
+      ]),
+      replacement: finalizationJson(item.replacement),
+    })),
+    planningSuggestions: (source.planningSuggestions || []).map(item => pickDefined(
+      finalizationObject(item, 'suggestion'), ['id', 'targetId', 'message'],
+    )),
+  }
+}
+
+function finalizationReview(value) {
+  const source = finalizationObject(value, 'review')
+  if (!FINALIZATION_STATUSES.has(source.status)) {
+    throw new TypeError('Invalid finalization status')
+  }
+  let qualityReport = null
+  if (source.qualityReport !== null) {
+    const report = finalizationObject(source.qualityReport, 'quality report')
+    qualityReport = {
+      status: report.status,
+      deterministicBlocks: (report.deterministicBlocks || []).map(item => ({
+        ...pickDefined(finalizationObject(item, 'hard block'), ['code', 'message']),
+        evidence: finalizationEvidence(item.evidence ?? null),
+      })),
+      findings: (report.findings || []).map(item => ({
+        ...pickDefined(finalizationObject(item, 'finding'), [
+          'id', 'dimension', 'reason', 'suggestedAction',
+        ]),
+        evidence: finalizationEvidence(item.evidence),
+      })),
+      contentHash: finalizationHash(report.contentHash, 'quality hash'),
+    }
+  }
+  let changeSet = null
+  if (source.changeSet !== null) {
+    const item = finalizationObject(source.changeSet, 'revision')
+    changeSet = {
+      revision: item.revision,
+      contentHash: finalizationHash(item.contentHash, 'revision hash'),
+      source: item.source,
+      payload: finalizationChangeSet(item.payload),
+    }
+  }
+  const confirmation = source.confirmation === null
+    ? null
+    : pickDefined(finalizationObject(source.confirmation, 'confirmation'), [
+      'revision', 'contentHash',
+    ])
+  return {
+    attemptId: source.attemptId,
+    status: source.status,
+    candidateId: source.candidateId,
+    candidateHash: finalizationHash(source.candidateHash, 'Candidate hash'),
+    qualityReport,
+    changeSet,
+    confirmation,
+  }
+}
+
+function finalizationPrepared(value) {
+  const source = finalizationObject(value, 'prepare response')
+  return pickDefined(source, [
+    'attemptId', 'status', 'qualityStatus', 'currentRevision',
+    'currentRevisionHash', 'hardBlocks', 'replayed',
+  ])
+}
+
+function finalizationReviewed(value) {
+  return pickDefined(finalizationObject(value, 'review response'), [
+    'attemptId', 'status', 'currentRevision', 'currentRevisionHash',
+    'confirmedRevision', 'confirmedRevisionHash',
+  ])
+}
+
+function finalizationCommitted(value) {
+  const source = finalizationObject(value, 'commit response')
+  return {
+    ...pickDefined(source, [
+      'recordId', 'finalChapterId', 'canonRevision', 'planningRevisionId',
+      'planningRevision', 'replayed',
+    ]),
+    projectionHash: finalizationHash(source.projectionHash, 'projection hash'),
+    planningHash: finalizationHash(source.planningHash, 'Planning hash'),
+  }
+}
+
 export const api = {
   health: () => get('/health'),
 
@@ -2343,6 +2518,42 @@ export const api = {
         expectedWorkingDraftRevision: data.expectedWorkingDraftRevision,
         expectedContentHash: data.expectedContentHash,
       },
+    ),
+    getFinalization: async (projectId, sessionId) => finalizationReview(await get(
+      `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/finalization`,
+    )),
+    prepareFinalization: async (
+      projectId, sessionId, candidateId, data,
+    ) => finalizationPrepared(await post(
+      `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/candidates/${segment(candidateId)}/finalization/prepare`,
+      pickDefined(data, [
+        'candidateHash', 'expectedCanonRevision', 'expectedPlanningHash',
+        'expectedOutlineHash', 'idempotencyKey',
+      ]),
+      FINALIZATION_PREPARE_TIMEOUT,
+    )),
+    correctFinalization: async (projectId, sessionId, data) => (
+      finalizationReviewed(await post(
+        `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/finalization/revisions`,
+        {
+          ...pickDefined(data, ['expectedRevision', 'expectedRevisionHash']),
+          changeSet: finalizationChangeSet(data.changeSet),
+        },
+      ))
+    ),
+    confirmFinalization: async (projectId, sessionId, data) => (
+      finalizationReviewed(await post(
+        `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/finalization/confirm`,
+        pickDefined(data, ['expectedRevision', 'expectedRevisionHash']),
+      ))
+    ),
+    commitFinalization: async (projectId, sessionId, data) => (
+      finalizationCommitted(await post(
+        `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/finalization/commit`,
+        pickDefined(data, [
+          'expectedRevision', 'expectedRevisionHash', 'idempotencyKey',
+        ]),
+      ))
     ),
   },
 

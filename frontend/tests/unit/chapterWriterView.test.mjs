@@ -84,7 +84,7 @@ test('operation status is a shallow readable overlay with one auditable busy loc
   assert.match(view, /draft-operation-layer\s*\{[^}]*pointer-events:\s*none/)
   assert.match(view, /draft-operation-layer[\s\S]*?max-height:/)
   assert.match(view, /const editorDisabled = computed\(\(\) => !session\.value\)/)
-  assert.match(view, /const editorReadonly = computed\(\(\) => controller\.actionBusy\.value\)/)
+  assert.match(view, /const editorReadonly = computed\([\s\S]*?controller\.actionBusy\.value[\s\S]*?finalization\.finalized\.value/)
   assert.match(view, /plain-text-draft-editor[\s\S]*?:disabled="editorDisabled"/)
   assert.match(view, /plain-text-draft-editor[\s\S]*?:readonly="editorReadonly"/)
   assert.match(view, /plain-text-draft-editor[\s\S]*?:model-value="controller\.editorText\.value"/)
