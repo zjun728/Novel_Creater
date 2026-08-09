@@ -8,9 +8,13 @@ import pytest
 
 from backend.domain.bibles import BiblePayload
 from backend.domain.chapter_outlines import ChapterOutline
+from backend.domain.contracts import CreationContractPayload
+from backend.domain.json_contracts import canonical_hash
 from backend.domain.planning import PlanningAggregate
-from backend.domain.project_packages import PackageRecord, RECORD_FIELD_ALLOWLISTS
+from backend.domain.project_packages import PackageRecord, RECORD_FIELD_ALLOWLISTS, freeze_json_value
 from backend.domain.project_packages import ProjectPackageBusy, ProjectPackageConflict, ProjectPackageInvalid, ProjectPackageNotFound
+from backend.domain.seeds import SeedPayload
+from backend.domain.story_engines import StoryEngineOption
 from backend.repositories.project_packages import (
     INTERNAL_NON_PACKAGE_TABLES,
     PROJECT_OWNED_TABLES,
@@ -409,6 +413,175 @@ def _outline_authority_json(
     })
 
 
+def _creation_contract_authority_json(
+    *,
+    seed_revision_id: str,
+    engine_option_id: str,
+    primary_style_id: str,
+    secondary_style_id: str | None,
+    experience_card_id: str | None,
+    corpus_source_id: str | None,
+    corpus_revision_id: str | None,
+    corpus_chapter_id: str | None,
+    corpus_fragment_id: str | None,
+    binding_revision_id: str | None,
+    corpus_fragment_start: int = 0,
+    corpus_fragment_end: int = 9,
+) -> str:
+    seed = SeedPayload(
+        title="Archive",
+        genre="Fantasy",
+        logline="A keeper restores a forbidden archive.",
+        protagonist="The keeper",
+        desire="Restore the missing names.",
+        coreConflict="Each restoration wakes a threat.",
+        worldPressure="The archive is being erased.",
+        openingHook="The archive predicts the keeper's death.",
+        differentiation="Memory is a costly magic system.",
+    )
+    engine = StoryEngineOption(
+        name="Archive engine",
+        storyPromise="Each restored record reveals a larger erasure.",
+        protagonistDesire="Preserve the forgotten people.",
+        sustainedPressure="Erasure advances while the cost rises.",
+        growthDirection="The keeper learns to share authority.",
+        conflictLoop="Recover, restore, awaken, and pay.",
+        ensembleRoles=({"role": "Archivist", "purpose": "Challenge the keeper."},),
+        advantageAndCost="Records grant power but consume memory.",
+        satisfactionSources=("Recovered histories",),
+        longFormVariation=("Local, regional, and imperial archives",),
+        endingAnchor="The keeper records their own name last.",
+        risks=("Repetitive recovery beats",),
+        differentiation="Archive restoration drives every conflict.",
+    )
+    payload = CreationContractPayload(
+        schemaVersion="creation-contract-v1",
+        channelProfileKey="web-fiction",
+        genreProfileKey="fantasy",
+        qualityCharterVersion="quality-v1",
+        selectionRevision=1,
+        selectedSeed=seed,
+        seedRevisionId=seed_revision_id,
+        seedHash=canonical_hash(seed),
+        selectedEngine=engine,
+        engineOptionId=engine_option_id,
+        engineHash=canonical_hash(engine),
+        primaryStyleRef={
+            "id": primary_style_id, "revision": 2, "contentHash": "a" * 64,
+        },
+        secondaryStyleRef=None if secondary_style_id is None else {
+            "id": secondary_style_id, "revision": 3, "contentHash": "b" * 64,
+        },
+        experienceCardRefs=() if experience_card_id is None else ({
+            "id": experience_card_id, "revision": 4, "contentHash": "c" * 64,
+        },),
+        corpusSourceRefs=() if corpus_source_id is None else ({
+            "id": corpus_source_id,
+            "revisionId": corpus_revision_id,
+            "revision": 5,
+            "contentHash": "d" * 64,
+            "selectionMode": "author",
+            "fragments": ({
+                "chapterId": corpus_chapter_id,
+                "fragmentId": corpus_fragment_id,
+                "fragmentHash": "e" * 64,
+                "chapterCharStart": corpus_fragment_start,
+                "chapterCharEnd": corpus_fragment_end,
+                "referenceUse": "style",
+            },),
+            "pinnedHistoricalRevision": True,
+        },),
+        targetTotalWords=100_000,
+        expectedVolumeCount=4,
+        expectedChapterCount=40,
+        chapterWordRangePreference=(2_000, 3_000),
+        prohibitedDirections=("No effortless victory",),
+        authorNotes="Preserve character agency.",
+        modelBindingRef=None if binding_revision_id is None else {
+            "id": binding_revision_id, "revision": 6, "contentHash": "f" * 64,
+        },
+    )
+    return payload.model_dump_json()
+
+
+def _minimal_creation_contract_fixture(
+    *,
+    contract_id: str,
+    seed_id: str,
+    seed_revision_id: str,
+    engine_batch_id: str,
+    engine_option_id: str,
+    style_contract_id: str,
+    style_template_id: str,
+    revision: int = 1,
+    experience_card_id: str | None = None,
+    corpus_source_id: str | None = None,
+    corpus_revision_id: str | None = None,
+    corpus_chapter_id: str | None = None,
+    corpus_fragment_id: str | None = None,
+) -> tuple[CreationContractPayload, dict[str, list[dict[str, object]]], dict[str, object]]:
+    content_json = _creation_contract_authority_json(
+        seed_revision_id=seed_revision_id,
+        engine_option_id=engine_option_id,
+        primary_style_id=style_template_id,
+        secondary_style_id=None,
+        experience_card_id=experience_card_id,
+        corpus_source_id=corpus_source_id,
+        corpus_revision_id=corpus_revision_id,
+        corpus_chapter_id=corpus_chapter_id,
+        corpus_fragment_id=corpus_fragment_id,
+        binding_revision_id=None,
+    )
+    contract = CreationContractPayload.model_validate_json(content_json)
+    rows = {
+        "creative_seeds": [_owned_row(
+            "creative_seeds", id=seed_id, project_id="project-db",
+        )],
+        "creative_seed_revisions": [_owned_row(
+            "creative_seed_revisions", id=seed_revision_id, project_id="project-db",
+            seed_id=seed_id, revision=1, payload_json=contract.selectedSeed.model_dump_json(),
+            content_hash=contract.seedHash,
+        )],
+        "story_engine_batches": [_owned_row(
+            "story_engine_batches", id=engine_batch_id, project_id="project-db",
+            status="completed",
+        )],
+        "story_engine_options": [_owned_row(
+            "story_engine_options", id=engine_option_id, project_id="project-db",
+            batch_id=engine_batch_id, option_order=1,
+            payload_json=contract.selectedEngine.model_dump_json(),
+            content_hash=contract.engineHash,
+        )],
+        "creation_contracts": [_owned_row(
+            "creation_contracts", id=contract_id, project_id="project-db",
+            revision=revision, seed_id=seed_id, seed_revision_id=seed_revision_id,
+            seed_hash=contract.seedHash, content_json=content_json, content_hash="0" * 64,
+        )],
+        "style_contracts": [_owned_row(
+            "style_contracts", id=style_contract_id, project_id="project-db",
+            creation_contract_id=contract_id, revision=revision,
+            merged_style_json="{}", likes_json="[]", dislikes_json="[]",
+            content_hash="1" * 64,
+        )],
+        "creation_contract_engine_refs": [_owned_row(
+            "creation_contract_engine_refs", creation_contract_id=contract_id,
+            project_id="project-db", engine_option_id=engine_option_id,
+            engine_hash=contract.engineHash,
+        )],
+        "style_contract_template_refs": [_owned_row(
+            "style_contract_template_refs", style_contract_id=style_contract_id,
+            style_template_id=style_template_id, asset_revision=2,
+            asset_hash="a" * 64, role="primary", sort_order=1,
+        )],
+    }
+    extra_rows = {"FROM style_templates": [{
+        "id": style_template_id, "stable_key": "primary", "revision": 2,
+        "name": "Primary", "payload_json": "{}", "provenance_json": "{}",
+        "content_hash": "a" * 64, "status": "active", "created_at": 1,
+    }]}
+    return contract, rows, extra_rows
+
+
 class _SnapshotSession:
     def __init__(self, rows_by_table: dict[str, list[dict[str, object]]], *, busy=False, extra_rows=None):
         self.rows_by_table = rows_by_table
@@ -434,6 +607,8 @@ class _SnapshotSession:
                 return self.rows_by_table.get(table, [])
         for marker, rows in self.extra_rows.items():
             if marker in sql:
+                if isinstance(rows, dict):
+                    return rows.get(args, [])
                 return rows
         return []
 
@@ -803,37 +978,33 @@ async def test_repository_rejects_invalid_authoritative_json_without_cause() -> 
 
 @pytest.mark.asyncio
 async def test_engine_and_experience_refs_export_complete_restore_authority() -> None:
+    contract, rows, extra_rows = _minimal_creation_contract_fixture(
+        contract_id="contract-db",
+        seed_id="seed-db",
+        seed_revision_id="seed-revision-db",
+        engine_batch_id="batch-db",
+        engine_option_id="engine-db",
+        style_contract_id="style-contract-db",
+        style_template_id="style-template-db",
+        experience_card_id="experience-db",
+    )
+    rows["creation_contract_experience_refs"] = [_owned_row(
+        "creation_contract_experience_refs", creation_contract_id="contract-db",
+        experience_card_id="experience-db", asset_revision=4, asset_hash="c" * 64,
+        sort_order=1,
+    )]
+    extra_rows["FROM experience_cards"] = [{
+        "id": "experience-db", "stable_key": "mentor", "revision": 4,
+        "title": "Mentor", "category": "character", "payload_json": "{}",
+        "provenance_json": "{}", "content_hash": "c" * 64,
+        "status": "active", "created_at": 1,
+    }]
     session = _SnapshotSession(
         {
             "projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P")],
-            "creation_contracts": [_owned_row(
-                "creation_contracts", id="contract-db", project_id="project-db",
-                revision=1, content_hash="1" * 64,
-            )],
-            "story_engine_batches": [_owned_row(
-                "story_engine_batches", id="batch-db", project_id="project-db",
-                status="completed",
-            )],
-            "story_engine_options": [_owned_row(
-                "story_engine_options", id="engine-db", batch_id="batch-db",
-                option_order=1, content_hash="3" * 64,
-            )],
-            "creation_contract_engine_refs": [_owned_row(
-                "creation_contract_engine_refs", creation_contract_id="contract-db",
-                engine_option_id="engine-db", engine_hash="4" * 64,
-            )],
-            "creation_contract_experience_refs": [_owned_row(
-                "creation_contract_experience_refs", creation_contract_id="contract-db",
-                experience_card_id="experience-db", asset_revision=2, asset_hash="5" * 64,
-                sort_order=1,
-            )],
+            **rows,
         },
-        extra_rows={"FROM experience_cards": [{
-            "id": "experience-db", "stable_key": "mentor", "revision": 2,
-            "title": "Mentor", "category": "character", "payload_json": "{}",
-            "provenance_json": "{}", "content_hash": "5" * 64,
-            "status": "active", "created_at": 1,
-        }]},
+        extra_rows=extra_rows,
     )
 
     snapshot = await ProjectPackageRepository(
@@ -844,36 +1015,48 @@ async def test_engine_and_experience_refs_export_complete_restore_authority() ->
     engine = records["creation-contract-engine-ref"]
     assert engine["creationContractLogicalId"].startswith("creation-contract:")
     assert engine["storyEngineLogicalId"].startswith("story-engine-option:")
-    assert engine["contentHash"] == "4" * 64
+    assert engine["contentHash"] == contract.engineHash
     experience = records["creation-contract-experience-ref"]
     assert experience["experienceTitle"] == "Mentor"
-    assert experience["experienceRevision"] == 2
-    assert experience["contentHash"] == "5" * 64
+    assert experience["experienceRevision"] == 4
+    assert experience["contentHash"] == "c" * 64
 
 
 @pytest.mark.asyncio
 async def test_repository_freezes_referenced_corpus_revision_and_blob_descriptor() -> None:
-    content_hash = "e" * 64
-    storage_key = f"sha256/ee/{content_hash}"
+    content_hash = "d" * 64
+    storage_key = f"sha256/dd/{content_hash}"
+    _, rows, extra_rows = _minimal_creation_contract_fixture(
+        contract_id="contract-db",
+        seed_id="seed-db",
+        seed_revision_id="seed-revision-db",
+        engine_batch_id="batch-db",
+        engine_option_id="engine-db",
+        style_contract_id="style-contract-db",
+        style_template_id="style-template-db",
+        corpus_source_id="source-db",
+        corpus_revision_id="revision-db",
+        corpus_chapter_id="chapter-db",
+        corpus_fragment_id="fragment-db",
+    )
+    rows.update({
+        "creation_contract_corpus_refs": [_owned_row(
+            "creation_contract_corpus_refs", creation_contract_id="contract-db",
+            corpus_source_id="source-db", source_revision=5, source_hash="d" * 64,
+            selection_mode="full", sort_order=1,
+        )],
+        "creation_contract_corpus_fragment_refs": [_owned_row(
+            "creation_contract_corpus_fragment_refs", creation_contract_id="contract-db",
+            corpus_source_id="source-db", corpus_chapter_id="chapter-db",
+            corpus_fragment_id="fragment-db", source_revision=5, source_hash="d" * 64,
+            fragment_hash="e" * 64, chapter_char_start=0, chapter_char_end=9,
+            reference_use="style", sort_order=1,
+        )],
+    })
     session = _SnapshotSession(
         {
             "projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P")],
-            "creation_contracts": [_owned_row(
-                "creation_contracts", id="contract-db", project_id="project-db",
-                revision=1, content_hash="f" * 64,
-            )],
-            "creation_contract_corpus_refs": [_owned_row(
-                "creation_contract_corpus_refs", creation_contract_id="contract-db",
-                corpus_source_id="source-db", source_revision=2, source_hash=content_hash,
-                selection_mode="full", sort_order=1,
-            )],
-            "creation_contract_corpus_fragment_refs": [_owned_row(
-                "creation_contract_corpus_fragment_refs", creation_contract_id="contract-db",
-                corpus_source_id="source-db", corpus_chapter_id="chapter-db",
-                corpus_fragment_id="fragment-db", source_revision=2, source_hash=content_hash,
-                fragment_hash="5" * 64, chapter_char_start=0, chapter_char_end=9,
-                reference_use="background", sort_order=1,
-            )],
+            **rows,
             "reference_uses": [_owned_row(
                 "reference_uses", id="reference-use-db", project_id="project-db",
                 corpus_source_id="source-db", corpus_chapter_id="chapter-db",
@@ -881,12 +1064,13 @@ async def test_repository_freezes_referenced_corpus_revision_and_blob_descriptor
             )],
         },
         extra_rows={
+            **extra_rows,
             "JOIN corpus_source_revisions r ON r.id=c.source_revision_id": [{
-                "source_id": "source-db", "revision": 2, "content_hash": content_hash,
+                "source_id": "source-db", "revision": 5, "content_hash": "d" * 64,
             }],
             "FROM corpus_source_revisions r": [{
                 "id": "revision-db", "source_id": "source-db", "source_key": "fixture-source",
-                "revision": 2, "content_hash": content_hash, "relative_path": "fixture.txt",
+                "revision": 5, "content_hash": "d" * 64, "relative_path": "fixture.txt",
                 "display_name": "Fixture", "author": "Author", "reference_tags_json": "[]",
                 "notes": "", "provenance_json": "{}", "byte_length": 9, "encoding": "utf-8",
                 "parser_version": "p1", "normalizer_version": "n1", "fragmenter_version": "f1",
@@ -902,7 +1086,7 @@ async def test_repository_freezes_referenced_corpus_revision_and_blob_descriptor
             "FROM corpus_fragments f": [{
                 "fragment_id": "fragment-db",
                 "fragment_order": 1, "chapter_char_start": 0, "chapter_char_end": 9,
-                "normalized_text": "fragment text", "content_hash": "5" * 64,
+                "normalized_text": "fragment text", "content_hash": "e" * 64,
                 "analysis_version": "v1", "index_payload": '{"terms":[]}', "created_at": 4,
             }],
         },
@@ -919,19 +1103,249 @@ async def test_repository_freezes_referenced_corpus_revision_and_blob_descriptor
     assert snapshot.corpus_revision_records[0].data["chapters"][0]["normalizedText"] == "chapter text"
     assert snapshot.corpus_revision_records[0].data["fragments"][0]["logicalId"] == "corpus-fragment:1"
     assert "chapter-db" not in repr(snapshot.corpus_revision_records[0].to_public_dict())
-    assert snapshot.corpus_blobs == (FrozenCorpusBlob("corpus-blob:1", content_hash, 9, storage_key),)
+    assert snapshot.corpus_blobs == (FrozenCorpusBlob("corpus-blob:1", "d" * 64, 9, storage_key),)
     corpus_ref = next(record for record in snapshot.graph_records if record.entity_type == "creation-contract-corpus-ref")
     assert corpus_ref.data["corpusRevisionLogicalId"] == snapshot.corpus_revision_records[0].logical_id
-    assert corpus_ref.data["contentHash"] == content_hash
+    assert corpus_ref.data["contentHash"] == "d" * 64
     fragment_ref = next(
         record for record in snapshot.graph_records
         if record.entity_type == "creation-contract-corpus-fragment-ref"
     )
     assert fragment_ref.data["corpusRevisionLogicalId"] == snapshot.corpus_revision_records[0].logical_id
-    assert fragment_ref.data["contentHash"] == "5" * 64
+    assert fragment_ref.data["contentHash"] == "e" * 64
     reference_use = next(record for record in snapshot.graph_records if record.entity_type == "reference-use")
     assert reference_use.data["corpusRevisionLogicalId"] == snapshot.corpus_revision_records[0].logical_id
     assert "source-db" not in repr(tuple(record.to_public_dict() for record in snapshot.corpus_revision_records))
+
+
+@pytest.mark.asyncio
+async def test_creation_contract_payload_rewrites_every_frozen_database_reference() -> None:
+    raw_ids = {
+        "seed": "11111111-1111-4111-8111-111111111111",
+        "seed_revision": "22222222-2222-4222-8222-222222222222",
+        "batch": "33333333-3333-4333-8333-333333333333",
+        "engine": "44444444-4444-4444-8444-444444444444",
+        "binding": "55555555-5555-4555-8555-555555555555",
+        "contract": "66666666-6666-4666-8666-666666666666",
+        "style_contract": "77777777-7777-4777-8777-777777777777",
+        "primary_style": "88888888-8888-4888-8888-888888888888",
+        "secondary_style": "99999999-9999-4999-8999-999999999999",
+        "experience": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "corpus_source": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "corpus_revision": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        "corpus_chapter": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        "corpus_fragment": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    }
+    content_json = _creation_contract_authority_json(
+        seed_revision_id=raw_ids["seed_revision"],
+        engine_option_id=raw_ids["engine"],
+        primary_style_id=raw_ids["primary_style"],
+        secondary_style_id=raw_ids["secondary_style"],
+        experience_card_id=raw_ids["experience"],
+        corpus_source_id=raw_ids["corpus_source"],
+        corpus_revision_id=raw_ids["corpus_revision"],
+        corpus_chapter_id=raw_ids["corpus_chapter"],
+        corpus_fragment_id=raw_ids["corpus_fragment"],
+        binding_revision_id=raw_ids["binding"],
+        corpus_fragment_start=10,
+        corpus_fragment_end=110,
+    )
+    contract = CreationContractPayload.model_validate_json(content_json)
+    storage_key = f"sha256/dd/{'d' * 64}"
+    session = _SnapshotSession(
+        {
+            "projects": [_owned_row(
+                "projects", id="project-db", lifecycle_revision=7, title="P",
+            )],
+            "creative_seeds": [_owned_row(
+                "creative_seeds", id=raw_ids["seed"], project_id="project-db",
+            )],
+            "creative_seed_revisions": [_owned_row(
+                "creative_seed_revisions", id=raw_ids["seed_revision"],
+                project_id="project-db", seed_id=raw_ids["seed"], revision=1,
+                payload_json=contract.selectedSeed.model_dump_json(),
+                content_hash=contract.seedHash,
+            )],
+            "story_engine_batches": [_owned_row(
+                "story_engine_batches", id=raw_ids["batch"], project_id="project-db",
+                status="completed",
+            )],
+            "story_engine_options": [_owned_row(
+                "story_engine_options", id=raw_ids["engine"], project_id="project-db",
+                batch_id=raw_ids["batch"], option_order=1,
+                payload_json=contract.selectedEngine.model_dump_json(),
+                content_hash=contract.engineHash,
+            )],
+            "project_model_binding_revisions": [_owned_row(
+                "project_model_binding_revisions", id=raw_ids["binding"],
+                project_id="project-db", source_project_id="project-db", revision=6,
+                content_hash="f" * 64,
+            )],
+            "creation_contracts": [_owned_row(
+                "creation_contracts", id=raw_ids["contract"], project_id="project-db",
+                revision=1, seed_id=raw_ids["seed"],
+                seed_revision_id=raw_ids["seed_revision"], seed_hash=contract.seedHash,
+                binding_revision_id=raw_ids["binding"], binding_hash="f" * 64,
+                content_json=content_json, content_hash="0" * 64,
+            )],
+            "style_contracts": [_owned_row(
+                "style_contracts", id=raw_ids["style_contract"], project_id="project-db",
+                creation_contract_id=raw_ids["contract"], revision=1,
+                merged_style_json="{}", likes_json="[]", dislikes_json="[]",
+                content_hash="1" * 64,
+            )],
+            "creation_contract_engine_refs": [_owned_row(
+                "creation_contract_engine_refs", creation_contract_id=raw_ids["contract"],
+                project_id="project-db", engine_option_id=raw_ids["engine"],
+                engine_hash=contract.engineHash,
+            )],
+            "style_contract_template_refs": [
+                _owned_row(
+                    "style_contract_template_refs", style_contract_id=raw_ids["style_contract"],
+                    style_template_id=raw_ids["primary_style"], asset_revision=2,
+                    asset_hash="a" * 64, role="primary", sort_order=1,
+                ),
+                _owned_row(
+                    "style_contract_template_refs", style_contract_id=raw_ids["style_contract"],
+                    style_template_id=raw_ids["secondary_style"], asset_revision=3,
+                    asset_hash="b" * 64, role="secondary", sort_order=2,
+                ),
+            ],
+            "creation_contract_experience_refs": [_owned_row(
+                "creation_contract_experience_refs", creation_contract_id=raw_ids["contract"],
+                experience_card_id=raw_ids["experience"], asset_revision=4,
+                asset_hash="c" * 64, sort_order=1,
+            )],
+            "creation_contract_corpus_refs": [_owned_row(
+                "creation_contract_corpus_refs", creation_contract_id=raw_ids["contract"],
+                corpus_source_id=raw_ids["corpus_source"], source_revision=5,
+                source_hash="d" * 64, selection_mode="full", sort_order=1,
+            )],
+            "creation_contract_corpus_fragment_refs": [_owned_row(
+                "creation_contract_corpus_fragment_refs",
+                creation_contract_id=raw_ids["contract"],
+                corpus_source_id=raw_ids["corpus_source"],
+                corpus_chapter_id=raw_ids["corpus_chapter"],
+                corpus_fragment_id=raw_ids["corpus_fragment"], source_revision=5,
+                source_hash="d" * 64, fragment_hash="e" * 64,
+                chapter_char_start=0, chapter_char_end=9,
+                reference_use="style", sort_order=1,
+            )],
+        },
+        extra_rows={
+            "FROM style_templates": {
+                (raw_ids["primary_style"], 2, "a" * 64): [{
+                    "id": raw_ids["primary_style"], "stable_key": "primary",
+                    "revision": 2, "name": "Primary", "payload_json": "{}",
+                    "provenance_json": "{}", "content_hash": "a" * 64,
+                    "status": "active", "created_at": 1,
+                }],
+                (raw_ids["secondary_style"], 3, "b" * 64): [{
+                    "id": raw_ids["secondary_style"], "stable_key": "secondary",
+                    "revision": 3, "name": "Secondary", "payload_json": "{}",
+                    "provenance_json": "{}", "content_hash": "b" * 64,
+                    "status": "active", "created_at": 2,
+                }],
+            },
+            "FROM experience_cards": [{
+                "id": raw_ids["experience"], "stable_key": "experience",
+                "revision": 4, "title": "Experience", "category": "plot",
+                "payload_json": "{}", "provenance_json": "{}",
+                "content_hash": "c" * 64, "status": "active", "created_at": 3,
+            }],
+            "FROM corpus_source_revisions r": [{
+                "id": raw_ids["corpus_revision"], "source_id": raw_ids["corpus_source"],
+                "source_key": "fixture-source", "revision": 5, "content_hash": "d" * 64,
+                "relative_path": "fixture.txt", "display_name": "Fixture", "author": "Author",
+                "reference_tags_json": "[]", "notes": "", "provenance_json": "{}",
+                "byte_length": 9, "encoding": "utf-8", "parser_version": "p1",
+                "normalizer_version": "n1", "fragmenter_version": "f1",
+                "index_version": "i1", "status": "analyzed", "imported_at": 1,
+                "analyzed_at": 2, "created_at": 1, "blob_byte_length": 9,
+                "storage_key": storage_key,
+            }],
+            "FROM corpus_chapters c": [{
+                "chapter_id": raw_ids["corpus_chapter"], "chapter_order": 1,
+                "title": "Chapter", "raw_byte_start": 0, "raw_byte_end": 9,
+                "normalized_char_start": 0, "normalized_char_end": 9,
+                "normalized_text": "chapter", "content_hash": "2" * 64,
+                "created_at": 3,
+            }],
+            "FROM corpus_fragments f": [{
+                "fragment_id": raw_ids["corpus_fragment"], "fragment_order": 1,
+                "chapter_char_start": 0, "chapter_char_end": 300,
+                "normalized_text": "fragment", "content_hash": "e" * 64,
+                "analysis_version": "v1", "index_payload": "{}", "created_at": 4,
+            }],
+        },
+    )
+
+    snapshot = await ProjectPackageRepository(
+        pool=_SnapshotPool(session), session_factory=lambda value: value,
+    ).read_snapshot("project-db", 7)
+
+    creation = next(
+        record for record in snapshot.graph_records if record.entity_type == "creation-contract"
+    )
+    payload = creation.data["payload"]
+    graph_by_type = {record.entity_type: record for record in snapshot.graph_records}
+    assets_by_hash = {
+        record.data["contentHash"]: record for record in snapshot.frozen_asset_records
+    }
+    corpus = snapshot.corpus_revision_records[0]
+    assert payload["selectedSeed"] == freeze_json_value(contract.selectedSeed.model_dump(mode="json"))
+    assert payload["selectedEngine"] == freeze_json_value(contract.selectedEngine.model_dump(mode="json"))
+    assert payload["seedHash"] == contract.seedHash
+    assert payload["engineHash"] == contract.engineHash
+    assert payload["seedRevisionId"] == graph_by_type["creative-seed-revision"].logical_id
+    assert payload["engineOptionId"] == graph_by_type["story-engine-option"].logical_id
+    assert payload["primaryStyleRef"]["id"] == assets_by_hash["a" * 64].logical_id
+    assert payload["secondaryStyleRef"]["id"] == assets_by_hash["b" * 64].logical_id
+    assert payload["experienceCardRefs"][0]["id"] == assets_by_hash["c" * 64].logical_id
+    assert payload["corpusSourceRefs"][0]["id"] == corpus.logical_id
+    assert payload["corpusSourceRefs"][0]["revisionId"] == corpus.logical_id
+    assert payload["corpusSourceRefs"][0]["fragments"][0]["chapterId"] == corpus.data["chapters"][0]["logicalId"]
+    assert payload["corpusSourceRefs"][0]["fragments"][0]["fragmentId"] == corpus.data["fragments"][0]["logicalId"]
+    assert payload["corpusSourceRefs"][0]["fragments"][0]["chapterCharStart"] == 10
+    assert payload["corpusSourceRefs"][0]["fragments"][0]["chapterCharEnd"] == 110
+    assert corpus.data["fragments"][0]["chapterCharStart"] == 0
+    assert corpus.data["fragments"][0]["chapterCharEnd"] == 300
+    assert payload["modelBindingRef"]["id"] == graph_by_type["project-model-binding-revision"].logical_id
+    assert all(raw_id not in repr(snapshot) for raw_id in raw_ids.values())
+
+
+@pytest.mark.asyncio
+async def test_creation_contract_payload_rejects_missing_frozen_reference_without_cause() -> None:
+    missing_seed_revision_id = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+    content_json = _creation_contract_authority_json(
+        seed_revision_id=missing_seed_revision_id,
+        engine_option_id="engine-option",
+        primary_style_id="primary-style",
+        secondary_style_id="secondary-style",
+        experience_card_id="experience-card",
+        corpus_source_id="corpus-source",
+        corpus_revision_id="corpus-revision",
+        corpus_chapter_id="corpus-chapter",
+        corpus_fragment_id="corpus-fragment",
+        binding_revision_id="binding-revision",
+    )
+    session = _SnapshotSession({
+        "projects": [_owned_row(
+            "projects", id="project-db", lifecycle_revision=7, title="P",
+        )],
+        "creation_contracts": [_owned_row(
+            "creation_contracts", id="contract-db", project_id="project-db",
+            revision=1, content_json=content_json, content_hash="0" * 64,
+        )],
+    })
+
+    with pytest.raises(ProjectPackageInvalid, match="invalid package value") as raised:
+        await ProjectPackageRepository(
+            pool=_SnapshotPool(session), session_factory=lambda value: value,
+        ).read_snapshot("project-db", 7)
+
+    assert raised.value.__cause__ is None
+    assert missing_seed_revision_id not in str(raised.value)
 
 
 @pytest.mark.asyncio
@@ -1079,22 +1493,19 @@ def test_every_non_secret_classified_column_has_an_explicit_export_or_normalizat
 
 @pytest.mark.asyncio
 async def test_key_recovery_relations_are_exported_as_package_logical_ids_and_public_versions() -> None:
+    _, contract_rows, extra_rows = _minimal_creation_contract_fixture(
+        contract_id="creation-contract-db",
+        seed_id="seed-db",
+        seed_revision_id="seed-revision-db",
+        engine_batch_id="engine-batch-db",
+        engine_option_id="engine-option-db",
+        style_contract_id="style-contract-db",
+        style_template_id="style-template-db",
+        revision=2,
+    )
     session = _SnapshotSession({
         "projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P")],
-        "creative_seeds": [_owned_row("creative_seeds", id="seed-db", project_id="project-db")],
-        "creative_seed_revisions": [_owned_row(
-            "creative_seed_revisions", id="seed-revision-db", project_id="project-db",
-            seed_id="seed-db", revision=1, payload_json="{}", content_hash="1" * 64,
-        )],
-        "creation_contracts": [_owned_row(
-            "creation_contracts", id="creation-contract-db", project_id="project-db",
-            revision=2, content_hash="2" * 64,
-        )],
-        "style_contracts": [_owned_row(
-            "style_contracts", id="style-contract-db", project_id="project-db",
-            creation_contract_id="creation-contract-db", revision=2,
-            merged_style_json="{}", likes_json="[]", dislikes_json="[]", content_hash="3" * 64,
-        )],
+        **contract_rows,
         "creation_bible_revisions": [_owned_row(
             "creation_bible_revisions", id="bible-db", project_id="project-db", revision=3,
             content_json=_bible_authority_json(), content_hash="4" * 64,
@@ -1152,7 +1563,7 @@ async def test_key_recovery_relations_are_exported_as_package_logical_ids_and_pu
             chapter_outline_hash="6" * 64, chapter_num=1, content="final", content_hash="b" * 64,
             canon_revision=1, finalized_at=10,
         )],
-    })
+    }, extra_rows=extra_rows)
 
     snapshot = await ProjectPackageRepository(
         pool=_SnapshotPool(session), session_factory=lambda value: value,

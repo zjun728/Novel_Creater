@@ -11,6 +11,7 @@ from types import MappingProxyType
 
 from backend.domain.bibles import BiblePayload
 from backend.domain.chapter_outlines import ChapterOutline, DraftChapterOutline, EditableChapterOutlineContent
+from backend.domain.contracts import CreationContractPayload
 from backend.domain.planning import DraftPlanningAggregate, PlanningAggregate
 from backend.domain.project_packages import PackageRecord, RECORD_FIELD_ALLOWLISTS, ProjectPackageBusy, ProjectPackageConflict, ProjectPackageInvalid, ProjectPackageNotFound, freeze_json_value
 from backend.database import DatabaseSession
@@ -1417,6 +1418,91 @@ def _rewrite_outline_payload(
     return payload
 
 
+def _rewrite_creation_contract_payload(
+    contract: CreationContractPayload,
+    *,
+    seed_revision_ids: Mapping[tuple[object, object], str],
+    engine_option_ids: Mapping[tuple[object, object], str],
+    binding_revision_ids: Mapping[tuple[object, object, object], str],
+    frozen_asset_ids: Mapping[tuple[object, object, object], str],
+    corpus_revision_ids: Mapping[tuple[object, object, object], str],
+    corpus_revision_database_ids: Mapping[object, str],
+    corpus_chapter_ids: Mapping[tuple[str, object], str],
+    corpus_fragment_ids: Mapping[
+        tuple[str, object, object, object], tuple[str, object, object]
+    ],
+) -> dict[str, object]:
+    payload = contract.model_dump(mode="json", by_alias=True)
+
+    seed_logical_id = seed_revision_ids.get((contract.seedRevisionId, contract.seedHash))
+    engine_logical_id = engine_option_ids.get((contract.engineOptionId, contract.engineHash))
+    if seed_logical_id is None or engine_logical_id is None:
+        raise _invalid()
+    payload["seedRevisionId"] = seed_logical_id
+    payload["engineOptionId"] = engine_logical_id
+
+    def rewrite_asset_ref(ref, dumped: dict[str, object]) -> None:
+        logical_id = frozen_asset_ids.get((ref.id, ref.revision, ref.contentHash))
+        if logical_id is None:
+            raise _invalid()
+        dumped["id"] = logical_id
+
+    rewrite_asset_ref(contract.primaryStyleRef, payload["primaryStyleRef"])
+    if contract.secondaryStyleRef is not None:
+        rewrite_asset_ref(contract.secondaryStyleRef, payload["secondaryStyleRef"])
+    for ref, dumped in zip(
+        contract.experienceCardRefs, payload["experienceCardRefs"], strict=True,
+    ):
+        rewrite_asset_ref(ref, dumped)
+
+    for source, dumped_source in zip(
+        contract.corpusSourceRefs, payload["corpusSourceRefs"], strict=True,
+    ):
+        reference = (source.id, source.revision, source.contentHash)
+        revision_logical_id = corpus_revision_ids.get(reference)
+        if (
+            revision_logical_id is None
+            or corpus_revision_database_ids.get(source.revisionId) != revision_logical_id
+        ):
+            raise _invalid()
+        dumped_source["id"] = revision_logical_id
+        dumped_source["revisionId"] = revision_logical_id
+        for fragment, dumped_fragment in zip(
+            source.fragments, dumped_source["fragments"], strict=True,
+        ):
+            chapter_logical_id = corpus_chapter_ids.get((
+                revision_logical_id, fragment.chapterId,
+            ))
+            fragment_target = corpus_fragment_ids.get((
+                revision_logical_id,
+                fragment.chapterId,
+                fragment.fragmentId,
+                fragment.fragmentHash,
+            ))
+            if fragment_target is None:
+                raise _invalid()
+            fragment_logical_id, fragment_start, fragment_end = fragment_target
+            if (
+                chapter_logical_id is None
+                or not fragment_start <= fragment.chapterCharStart
+                or not fragment.chapterCharEnd <= fragment_end
+            ):
+                raise _invalid()
+            dumped_fragment["chapterId"] = chapter_logical_id
+            dumped_fragment["fragmentId"] = fragment_logical_id
+
+    if contract.modelBindingRef is not None:
+        binding_logical_id = binding_revision_ids.get((
+            contract.modelBindingRef.id,
+            contract.modelBindingRef.revision,
+            contract.modelBindingRef.contentHash,
+        ))
+        if binding_logical_id is None:
+            raise _invalid()
+        payload["modelBindingRef"]["id"] = binding_logical_id
+    return payload
+
+
 def _invalid() -> ProjectPackageInvalid:
     return ProjectPackageInvalid("invalid package value")
 
@@ -1658,6 +1744,12 @@ class ProjectPackageRepository:
                     for row in rows_by_table[table]:
                         outline_models[id(row)] = _validate_outline_payload(table, row["content_json"])
 
+                creation_contract_models: dict[int, CreationContractPayload] = {}
+                for row in rows_by_table["creation_contracts"]:
+                    creation_contract_models[id(row)] = CreationContractPayload.model_validate_json(
+                        json.dumps(_json_value(row["content_json"]), ensure_ascii=False)
+                    )
+
                 authority_payloads: dict[int, object] = {
                     row_id: _rewrite_planning_payload(model, authority_identities)
                     for row_id, model in planning_models.items()
@@ -1716,6 +1808,10 @@ class ProjectPackageRepository:
                 corpus_blobs: list[FrozenCorpusBlob] = []
                 corpus_logical_ids_by_ref: dict[tuple[object, object, object], str] = {}
                 corpus_reference_by_chapter: dict[tuple[object, object], tuple[object, object, object]] = {}
+                corpus_chapter_logical_ids: dict[tuple[str, object], str] = {}
+                corpus_fragment_logical_ids: dict[
+                    tuple[str, object, object, object], tuple[str, object, object]
+                ] = {}
                 blob_logical_ids_by_hash: dict[str, str] = {}
                 expected_corpus_columns = {
                     "id", "source_id", "source_key", "revision", "content_hash", "relative_path",
@@ -1756,8 +1852,14 @@ class ProjectPackageRepository:
                             raise _invalid()
                         corpus_reference_by_chapter[chapter_reference_key] = reference
                         corpus_chapter_count += 1
+                        chapter_logical_id = f"corpus-chapter:{corpus_chapter_count}"
+                        if (logical_id, chapter["chapter_id"]) in corpus_chapter_logical_ids:
+                            raise _invalid()
+                        corpus_chapter_logical_ids[(
+                            logical_id, chapter["chapter_id"],
+                        )] = chapter_logical_id
                         chapters_data.append({
-                            "logicalId": f"corpus-chapter:{corpus_chapter_count}",
+                            "logicalId": chapter_logical_id,
                             "chapterOrder": chapter_order, "title": chapter["title"],
                             "rawByteStart": chapter["raw_byte_start"], "rawByteEnd": chapter["raw_byte_end"],
                             "normalizedCharStart": chapter["normalized_char_start"],
@@ -1769,8 +1871,22 @@ class ProjectPackageRepository:
                             if not isinstance(fragment, Mapping) or set(fragment) != expected_fragment_columns:
                                 raise _invalid()
                             corpus_fragment_count += 1
+                            fragment_logical_id = f"corpus-fragment:{corpus_fragment_count}"
+                            fragment_reference = (
+                                logical_id,
+                                chapter["chapter_id"],
+                                fragment["fragment_id"],
+                                fragment["content_hash"],
+                            )
+                            if fragment_reference in corpus_fragment_logical_ids:
+                                raise _invalid()
+                            corpus_fragment_logical_ids[fragment_reference] = (
+                                fragment_logical_id,
+                                fragment["chapter_char_start"],
+                                fragment["chapter_char_end"],
+                            )
                             fragments_data.append({
-                                "logicalId": f"corpus-fragment:{corpus_fragment_count}",
+                                "logicalId": fragment_logical_id,
                                 "chapterOrder": chapter_order, "fragmentOrder": fragment["fragment_order"],
                                 "chapterCharStart": fragment["chapter_char_start"],
                                 "chapterCharEnd": fragment["chapter_char_end"],
@@ -1804,6 +1920,40 @@ class ProjectPackageRepository:
                         corpus_blobs.append(FrozenCorpusBlob(
                             blob_logical_id, content_hash, row["blob_byte_length"], row["storage_key"]
                         ))
+
+                seed_revision_ids = {
+                    (row["id"], row["content_hash"]): identity_maps["creative_seed_revisions"][row["id"]]
+                    for row in rows_by_table["creative_seed_revisions"]
+                }
+                engine_option_ids = {
+                    (row["id"], row["content_hash"]): identity_maps["story_engine_options"][row["id"]]
+                    for row in rows_by_table["story_engine_options"]
+                }
+                binding_revision_ids = {
+                    (row["id"], row["revision"], row["content_hash"]):
+                        identity_maps["project_model_binding_revisions"][row["id"]]
+                    for row in rows_by_table["project_model_binding_revisions"]
+                }
+                frozen_asset_ids = {
+                    (row["id"], row["revision"], row["content_hash"]):
+                        identity_maps[table][row["id"]]
+                    for table, rows in frozen_asset_rows.items()
+                    for row in rows
+                }
+                authority_payloads.update({
+                    id(row): _rewrite_creation_contract_payload(
+                        creation_contract_models[id(row)],
+                        seed_revision_ids=seed_revision_ids,
+                        engine_option_ids=engine_option_ids,
+                        binding_revision_ids=binding_revision_ids,
+                        frozen_asset_ids=frozen_asset_ids,
+                        corpus_revision_ids=corpus_logical_ids_by_ref,
+                        corpus_revision_database_ids=identity_maps["corpus_source_revisions"],
+                        corpus_chapter_ids=corpus_chapter_logical_ids,
+                        corpus_fragment_ids=corpus_fragment_logical_ids,
+                    )
+                    for row in rows_by_table["creation_contracts"]
+                })
 
                 graph_records: list[PackageRecord] = []
                 operation_records: list[PackageRecord] = []
