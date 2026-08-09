@@ -35,6 +35,11 @@ test('Phase 5 owns one narrow fake-boundary browser entrypoint', () => {
       TEST_MYSQL_HOST: '127.0.0.1', TEST_MYSQL_PORT: '33060',
       TEST_MYSQL_USER: 'root', TEST_MYSQL_PASSWORD: 'test-only',
     },
+    pytestTempLifecycle: {
+      prepare() { throw new Error('browser dispatch must not prepare pytest temp') },
+      cleanupStage() { throw new Error('browser dispatch must not clean a pytest stage') },
+      cleanupAll() {},
+    },
     spawnSyncImpl(command, args, options) {
       calls.push({ command, args, options })
       return { status: 0 }

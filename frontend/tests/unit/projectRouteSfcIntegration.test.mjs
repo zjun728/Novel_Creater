@@ -435,6 +435,9 @@ test('mounted Writer replays an active Session with GET, checks pins, and render
     async (url, options = {}) => {
       const path = new URL(String(url)).pathname
       requests.push([options.method || 'GET', path])
+      if (path.endsWith('/finalization')) {
+        return new Response('{}', { status: 404 })
+      }
       const body = path.endsWith('/chapter-outlines/current')
         ? current
         : sessionWorkspace(1)
@@ -448,6 +451,7 @@ test('mounted Writer replays an active Session with GET, checks pins, and render
     assert.deepEqual(requests, [
       ['GET', '/api/projects/project-1/chapter-outlines/current'],
       ['GET', '/api/projects/project-1/chapter-sessions/1'],
+      ['GET', '/api/projects/project-1/chapter-sessions/session-1/finalization'],
     ])
     assert.match(renderedText(mounted.root), /林砚/)
     assert.match(renderedText(mounted.root), /不可提前揭示内应/)
@@ -477,6 +481,9 @@ test('mounted Writer creates only after confirmed current authority and sends th
           headers: { 'content-type': 'application/json' },
         })
       }
+      if (path.endsWith('/finalization')) {
+        return new Response('{}', { status: 404 })
+      }
       createBody = JSON.parse(options.body)
       return new Response(JSON.stringify(sessionWorkspace(1)), {
         status: 201,
@@ -489,6 +496,7 @@ test('mounted Writer creates only after confirmed current authority and sends th
     assert.deepEqual(requests, [
       ['GET', '/api/projects/project-1/chapter-outlines/current'],
       ['POST', '/api/projects/project-1/chapter-sessions/1'],
+      ['GET', '/api/projects/project-1/chapter-sessions/session-1/finalization'],
     ])
     assert.deepEqual(createBody, {
       chapterNumber: 1,
@@ -553,6 +561,9 @@ test('mounted Writer fences a late old-route current before any old Session requ
           headers: { 'content-type': 'application/json' },
         })
       }
+      if (path.endsWith('/finalization')) {
+        return new Response('{}', { status: 404 })
+      }
       return new Response(JSON.stringify(sessionWorkspace(2)), {
         status: 201,
         headers: { 'content-type': 'application/json' },
@@ -574,6 +585,7 @@ test('mounted Writer fences a late old-route current before any old Session requ
       ['GET', '/api/projects/project-1/chapter-outlines/current'],
       ['GET', '/api/projects/project-1/chapter-outlines/current'],
       ['POST', '/api/projects/project-1/chapter-sessions/2'],
+      ['GET', '/api/projects/project-1/chapter-sessions/session-2/finalization'],
     ])
     assert.equal(
       mounted.router.currentRoute.value.fullPath,

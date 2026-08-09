@@ -46,6 +46,10 @@ async function createWriterVite() {
               "import { useChapterSessionStore } from '@/stores/chapterSessionStore'",
               'const useChapterSessionStore = () => globalThis.__writerStore',
             )
+            .replace(
+              "import FinalizationPanel from '@/components/writer/FinalizationPanel.vue'",
+              'const FinalizationPanel = { render: () => null }',
+            )
             .replace('const loading = ref(true)', 'const loading = ref(false)')
             .replaceAll('loading.value = true', 'loading.value = false')
         },

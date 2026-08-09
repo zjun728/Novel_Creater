@@ -69,6 +69,8 @@ OUTLINE_DRAFT_ID = "70000000-0000-0000-0000-000000000016"
 OUTLINE_ATTEMPT_ID = "70000000-0000-0000-0000-000000000017"
 OUTLINE_REVISION_ID = "70000000-0000-0000-0000-000000000018"
 OUTLINE_CONFIRMATION_ID = "70000000-0000-0000-0000-000000000019"
+QUALITY_REPORT_ID = "70000000-0000-0000-0000-000000000020"
+CHANGE_SET_REVISION_ID = "70000000-0000-0000-0000-000000000021"
 ENTITY_ID = "80000000-0000-0000-0000-000000000001"
 CANON_REVISION_ID = "80000000-0000-0000-0000-000000000002"
 ALIAS_ID = "80000000-0000-0000-0000-000000000004"
@@ -114,7 +116,9 @@ PRIVATE_TABLES_WITHOUT_CLONE_ROWS = (
     "chapter_sessions",
     "working_drafts",
     "draft_candidates",
+    "candidate_quality_reports",
     "finalization_change_sets",
+    "finalization_change_set_revisions",
     "finalization_records",
     "final_chapters",
     "canon_entities",
@@ -940,31 +944,78 @@ async def _insert_planning_draft_canon_and_projections(session) -> None:
         (CANDIDATE_ID, PROJECT_ID, SESSION_ID, "9" * 64, "a" * 64, NOW),
     )
     await session.execute(
-        """INSERT INTO finalization_change_sets
-           (id,project_id,draft_candidate_id,extraction_id,candidate_hash,
+        """INSERT INTO candidate_quality_reports
+           (id,project_id,chapter_session_id,draft_candidate_id,candidate_hash,
             expected_canon_revision,expected_planning_hash,
-            expected_outline_hash,payload_json,content_hash,created_at,
-            confirmed_at)
-           VALUES (%s,%s,%s,'extraction',%s,1,%s,%s,'{}',%s,%s,%s)""",
+            expected_outline_hash,policy_version,context_manifest_hash,
+            provider_id,provider_profile_revision,model_name_snapshot,status,
+            deterministic_blocks_json,findings_json,content_hash,created_at)
+           VALUES (%s,%s,%s,%s,%s,1,%s,%s,'v1',%s,NULL,NULL,NULL,
+                   'completed','[]','[]',%s,%s)""",
         (
-            CHANGE_SET_ID,
+            QUALITY_REPORT_ID,
             PROJECT_ID,
+            SESSION_ID,
             CANDIDATE_ID,
             "9" * 64,
             planning.content_hash,
             outline.content_hash,
+            "6" * 64,
+            "5" * 64,
+            NOW,
+        ),
+    )
+    await session.execute(
+        """INSERT INTO finalization_change_sets
+           (id,project_id,chapter_session_id,draft_candidate_id,
+            quality_report_id,extraction_id,idempotency_key,
+            request_fingerprint,active_slot,candidate_hash,
+            expected_canon_revision,expected_planning_hash,
+            expected_outline_hash,context_manifest_json,context_manifest_hash,
+            status,current_revision,current_revision_hash,confirmed_revision,
+            confirmed_revision_hash,created_at,updated_at,confirmed_at)
+           VALUES (%s,%s,%s,%s,%s,'extraction',%s,%s,NULL,%s,1,%s,%s,
+                   '{}',%s,'committed',1,%s,1,%s,%s,%s,%s)""",
+        (
+            CHANGE_SET_ID,
+            PROJECT_ID,
+            SESSION_ID,
+            CANDIDATE_ID,
+            QUALITY_REPORT_ID,
+            "8" * 64,
+            "4" * 64,
+            "9" * 64,
+            planning.content_hash,
+            outline.content_hash,
+            "6" * 64,
+            "7" * 64,
             "7" * 64,
             NOW,
+            NOW,
+            NOW,
+        ),
+    )
+    await session.execute(
+        """INSERT INTO finalization_change_set_revisions
+           (id,project_id,change_set_id,revision,payload_json,content_hash,
+            source,created_at)
+           VALUES (%s,%s,%s,1,'{}',%s,'extraction',%s)""",
+        (
+            CHANGE_SET_REVISION_ID,
+            PROJECT_ID,
+            CHANGE_SET_ID,
+            "7" * 64,
             NOW,
         ),
     )
     await session.execute(
         """INSERT INTO finalization_records
            (id,project_id,chapter_session_id,draft_candidate_id,change_set_id,
-            idempotency_key,candidate_hash,change_set_hash,
+            change_set_revision,idempotency_key,request_fingerprint,
+            candidate_hash,change_set_hash,
             expected_canon_revision,committed_canon_revision,
             result_payload_json,finalized_at)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,1,2,'{}',%s)""",
+           VALUES (%s,%s,%s,%s,%s,1,%s,%s,%s,%s,1,2,'{}',%s)""",
         (
             FINALIZATION_ID,
             PROJECT_ID,
@@ -972,6 +1023,7 @@ async def _insert_planning_draft_canon_and_projections(session) -> None:
             CANDIDATE_ID,
             CHANGE_SET_ID,
             "8" * 64,
+            "4" * 64,
             "9" * 64,
             "7" * 64,
             NOW,
@@ -1316,19 +1368,28 @@ async def test_cross_project_private_parent_references_are_rejected_by_family(
         (
             "draft-finalization",
             """INSERT INTO finalization_change_sets
-               (id,project_id,draft_candidate_id,extraction_id,candidate_hash,
+               (id,project_id,chapter_session_id,draft_candidate_id,
+                quality_report_id,extraction_id,idempotency_key,
+                request_fingerprint,active_slot,candidate_hash,
                 expected_canon_revision,expected_planning_hash,
-                expected_outline_hash,payload_json,content_hash,created_at,
-                confirmed_at)
-               VALUES ('99000000-0000-0000-0000-000000000003',%s,%s,
-                       'cross-extraction',%s,2,%s,%s,'{}',%s,%s,NULL)""",
+                expected_outline_hash,context_manifest_json,
+                context_manifest_hash,status,current_revision,
+                current_revision_hash,confirmed_revision,
+                confirmed_revision_hash,created_at,updated_at,confirmed_at)
+               VALUES ('99000000-0000-0000-0000-000000000003',%s,%s,%s,
+                       NULL,NULL,%s,%s,1,%s,2,%s,%s,'{}',%s,'preparing',
+                       NULL,NULL,NULL,NULL,%s,%s,NULL)""",
             (
                 CLONE_ID,
+                SESSION_ID,
                 CANDIDATE_ID,
+                "6" * 64,
+                "7" * 64,
                 "2" * 64,
                 _planning_and_outline()[0].content_hash,
                 _planning_and_outline()[1].content_hash,
                 "5" * 64,
+                NOW,
                 NOW,
             ),
             """DELETE FROM finalization_change_sets

@@ -461,7 +461,9 @@ async def install_first_final_chapter(
     outline_id = str(uuid4())
     chapter_session_id = str(uuid4())
     candidate_id = str(uuid4())
+    quality_report_id = str(uuid4())
     change_set_id = str(uuid4())
+    change_set_revision_id = str(uuid4())
     finalization_id = str(uuid4())
     final_chapter_id = str(uuid4())
     contract = await session.fetchone(
@@ -774,15 +776,53 @@ async def install_first_final_chapter(
     }
     change_set_json = canonical_json(change_set_payload)
     change_set_hash = canonical_hash(change_set_payload)
+    context_manifest_hash = canonical_hash({})
+    quality_report_hash = canonical_hash(
+        {"candidateId": candidate_id, "status": "completed"}
+    )
+    await session.execute(
+        """INSERT INTO candidate_quality_reports
+           (id,project_id,chapter_session_id,draft_candidate_id,candidate_hash,
+            expected_canon_revision,expected_planning_hash,
+            expected_outline_hash,policy_version,context_manifest_hash,
+            provider_id,provider_profile_revision,model_name_snapshot,status,
+            deterministic_blocks_json,findings_json,content_hash,created_at)
+           VALUES (%s,%s,%s,%s,%s,0,%s,%s,'v1',%s,NULL,NULL,NULL,
+                   'completed','[]','[]',%s,6)""",
+        (
+            quality_report_id, project_id, chapter_session_id, candidate_id,
+            candidate_hash, planning_hash, outline_hash,
+            context_manifest_hash, quality_report_hash,
+        ),
+    )
     await session.execute(
         """INSERT INTO finalization_change_sets
-           (id,project_id,draft_candidate_id,extraction_id,candidate_hash,
+           (id,project_id,chapter_session_id,draft_candidate_id,
+            quality_report_id,extraction_id,idempotency_key,
+            request_fingerprint,active_slot,candidate_hash,
             expected_canon_revision,expected_planning_hash,
-            expected_outline_hash,payload_json,content_hash,created_at,confirmed_at)
-           VALUES (%s,%s,%s,%s,%s,0,%s,%s,%s,%s,6,7)""",
+            expected_outline_hash,context_manifest_json,context_manifest_hash,
+            status,current_revision,current_revision_hash,confirmed_revision,
+            confirmed_revision_hash,created_at,updated_at,confirmed_at)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NULL,%s,0,%s,%s,'{}',%s,
+                   'committed',1,%s,1,%s,6,7,7)""",
         (
-            change_set_id, project_id, candidate_id, str(uuid4()),
-            candidate_hash, planning_hash, outline_hash,
+            change_set_id, project_id, chapter_session_id, candidate_id,
+            quality_report_id, str(uuid4()), canonical_hash(
+                {"chapterSessionId": chapter_session_id, "action": "prepare"}
+            ), canonical_hash(
+                {"candidateId": candidate_id, "expectedCanonRevision": 0}
+            ), candidate_hash, planning_hash, outline_hash,
+            context_manifest_hash, change_set_hash, change_set_hash,
+        ),
+    )
+    await session.execute(
+        """INSERT INTO finalization_change_set_revisions
+           (id,project_id,change_set_id,revision,payload_json,content_hash,
+            source,created_at)
+           VALUES (%s,%s,%s,1,%s,%s,'extraction',6)""",
+        (
+            change_set_revision_id, project_id, change_set_id,
             change_set_json, change_set_hash,
         ),
     )
@@ -843,13 +883,16 @@ async def install_first_final_chapter(
     await session.execute(
         """INSERT INTO finalization_records
            (id,project_id,chapter_session_id,draft_candidate_id,change_set_id,
-            idempotency_key,candidate_hash,change_set_hash,
+            change_set_revision,idempotency_key,request_fingerprint,
+            candidate_hash,change_set_hash,
             expected_canon_revision,committed_canon_revision,
             result_payload_json,finalized_at)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,0,%s,%s,7)""",
+           VALUES (%s,%s,%s,%s,%s,1,%s,%s,%s,%s,0,%s,%s,7)""",
         (
             finalization_id, project_id, chapter_session_id, candidate_id,
-            change_set_id, finalization_key, candidate_hash, change_set_hash,
+            change_set_id, finalization_key, canonical_hash(
+                {"changeSetId": change_set_id, "revision": 1}
+            ), candidate_hash, change_set_hash,
             canon_result.revision_number, finalization_result,
         ),
     )
