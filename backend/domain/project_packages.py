@@ -285,7 +285,7 @@ class PackageEntry:
     data: bytes
 
     def __post_init__(self) -> None:
-        if not isinstance(self.data, bytes):
+        if type(self.data) is not bytes:
             raise _invalid_value()
         _validate_entry_path(self.path)
 

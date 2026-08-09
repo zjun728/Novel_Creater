@@ -6,12 +6,11 @@ import math
 
 import pytest
 
+from backend.domain import project_packages as project_package_domain
+
 from backend.domain.project_packages import (
     MAX_ARCHIVE_BYTES,
-    MAX_CORPUS_BLOB_BYTES,
     MAX_ENTRY_COUNT,
-    MAX_STRUCTURED_ENTRY_BYTES,
-    MAX_TOTAL_ENTRY_BYTES,
     ManifestEntry,
     PAYLOAD_PATHS,
     PackageEntry,
@@ -37,16 +36,6 @@ def _record(entity_type: str, logical_id: str, revision: int, order: int) -> Pac
         order=order,
         data={"label": logical_id},
     )
-
-
-class _SizedBytes(bytes):
-    def __new__(cls, size: int) -> "_SizedBytes":
-        value = super().__new__(cls, b"x")
-        value._size = size
-        return value
-
-    def __len__(self) -> int:
-        return self._size
 
 
 def _snapshot(reverse: bool = False) -> dict[str, object]:
@@ -220,18 +209,22 @@ def test_canonical_line_rejects_nan_and_excessive_json_depth() -> None:
         validate_json_depth({"next": nested})
 
 
-def test_limit_guards_cover_entries_structured_blobs_totals_and_archive() -> None:
+def test_limit_guards_cover_entries_structured_blobs_totals_and_archive(monkeypatch) -> None:
     with pytest.raises(ProjectPackageTooLarge):
         enforce_package_limits([PackageEntry("project/graph.jsonl", b"x")] * (MAX_ENTRY_COUNT + 1))
+    monkeypatch.setattr(project_package_domain, "MAX_STRUCTURED_ENTRY_BYTES", 1)
     with pytest.raises(ProjectPackageTooLarge):
-        enforce_package_limits([PackageEntry("project/graph.jsonl", _SizedBytes(MAX_STRUCTURED_ENTRY_BYTES + 1))])
+        enforce_package_limits([PackageEntry("project/graph.jsonl", b"xx")])
     blob_path = "corpus/blobs/sha256/" + "a" * 64
+    monkeypatch.setattr(project_package_domain, "MAX_CORPUS_BLOB_BYTES", 1)
     with pytest.raises(ProjectPackageTooLarge):
-        enforce_package_limits([PackageEntry(blob_path, _SizedBytes(MAX_CORPUS_BLOB_BYTES + 1))])
+        enforce_package_limits([PackageEntry(blob_path, b"xx")])
+    monkeypatch.setattr(project_package_domain, "MAX_CORPUS_BLOB_BYTES", 10)
+    monkeypatch.setattr(project_package_domain, "MAX_TOTAL_ENTRY_BYTES", 3)
     with pytest.raises(ProjectPackageTooLarge):
         enforce_package_limits([
-            PackageEntry(f"corpus/blobs/sha256/{index:064x}", _SizedBytes(MAX_CORPUS_BLOB_BYTES))
-            for index in range(5)
+            PackageEntry(f"corpus/blobs/sha256/{index:064x}", b"xx")
+            for index in range(2)
         ])
     with pytest.raises(ProjectPackageTooLarge):
         validate_archive_bytes(MAX_ARCHIVE_BYTES + 1)
