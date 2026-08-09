@@ -55,9 +55,12 @@ GET  /api/project-imports/{command_id}
 **Files:**
 
 - Create: `backend/security/project_import_archives.py`
+- Create: `backend/security/private_files.py`
 - Create: `backend/domain/project_imports.py`
+- Modify: `backend/services/project_packages.py`
 - Create: `backend/tests/unit/test_project_import_archive_security.py`
 - Create: `backend/tests/unit/test_project_import_domain.py`
+- Modify: `backend/tests/unit/test_project_package_temp_cleanup.py`
 
 - [ ] **Step 1: Write the raw-envelope RED matrix.**
 
@@ -92,10 +95,12 @@ length, SHA-256, and declared limits.
 
 - [ ] **Step 4: Implement request-owned quarantine.**
 
-Add `OwnedImportQuarantine` to `backend/domain/project_imports.py`. It must create an exclusive random
-directory/file, enforce POSIX `0700/0600` or the existing Phase 6B Windows exact-SID DACL helper,
-stream at most `MAX_ARCHIVE_BYTES`, and expose idempotent retryable cleanup. Do not store the upload
-filename.
+First move the existing Phase 6B private-file permission implementation, without behavior changes,
+from `backend/services/project_packages.py` to `backend/security/private_files.py`; keep the existing
+backup permission regression green. Add `OwnedImportQuarantine` to `backend/domain/project_imports.py`.
+It must create an exclusive random directory/file, use the shared helper to enforce POSIX `0700/0600`
+or the Windows exact-SID DACL, stream at most `MAX_ARCHIVE_BYTES`, and expose idempotent retryable
+cleanup. Do not store the upload filename.
 
 - [ ] **Step 5: Run GREEN and static checks.**
 
@@ -105,7 +110,7 @@ cleaned after success, invalid input, cancellation, and injected cleanup retry.
 - [ ] **Step 6: Commit.**
 
 ```powershell
-git add backend/security/project_import_archives.py backend/domain/project_imports.py backend/tests/unit/test_project_import_archive_security.py backend/tests/unit/test_project_import_domain.py
+git add backend/security/project_import_archives.py backend/security/private_files.py backend/domain/project_imports.py backend/services/project_packages.py backend/tests/unit/test_project_import_archive_security.py backend/tests/unit/test_project_import_domain.py backend/tests/unit/test_project_package_temp_cleanup.py
 git commit -m "feat: validate phase6 project import archives"
 ```
 
