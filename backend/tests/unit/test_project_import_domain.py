@@ -58,6 +58,57 @@ async def test_cancelled_upload_remains_primary_and_cleans_owned_root(tmp_path: 
     assert list(parent.iterdir()) == []
 
 
+@pytest.mark.asyncio
+async def test_quarantine_rejects_oversized_async_iterable_chunk_before_writing(tmp_path: Path) -> None:
+    parent = tmp_path / "quarantine"
+    parent.mkdir()
+    owner = OwnedImportQuarantine.create(temp_parent=parent)
+    import backend.domain.project_imports as imports
+
+    async def oversized():
+        yield b"x" * (imports.UPLOAD_READ_CHUNK_BYTES + 1)
+
+    with pytest.raises(ProjectImportTooLarge, match="configured limit"):
+        await owner.copy_upload(oversized())
+    assert list(parent.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_quarantine_rejects_reader_ignoring_chunk_bound_before_writing(tmp_path: Path) -> None:
+    parent = tmp_path / "quarantine"
+    parent.mkdir()
+    owner = OwnedImportQuarantine.create(temp_parent=parent)
+    import backend.domain.project_imports as imports
+
+    class IgnoringReader:
+        calls = 0
+
+        async def read(self, size: int) -> bytes:
+            self.calls += 1
+            return b"x" * (imports.UPLOAD_READ_CHUNK_BYTES + 1)
+
+    reader = IgnoringReader()
+    with pytest.raises(ProjectImportTooLarge, match="configured limit"):
+        await owner.copy_upload(reader)
+    assert reader.calls == 1
+    assert list(parent.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_quarantine_preserves_arbitrary_iterator_exception_after_cleanup(tmp_path: Path) -> None:
+    parent = tmp_path / "quarantine"
+    parent.mkdir()
+    owner = OwnedImportQuarantine.create(temp_parent=parent)
+
+    async def broken():
+        raise KeyError("sentinel")
+        yield b"unused"
+
+    with pytest.raises(KeyError, match="sentinel"):
+        await owner.copy_upload(broken())
+    assert list(parent.iterdir()) == []
+
+
 def test_quarantine_permission_failure_removes_created_root(tmp_path: Path, monkeypatch) -> None:
     parent = tmp_path / "quarantine"
     parent.mkdir()
@@ -68,6 +119,32 @@ def test_quarantine_permission_failure_removes_created_root(tmp_path: Path, monk
     monkeypatch.setattr("backend.domain.project_imports.apply_private_permissions", fail)
     with pytest.raises(ProjectImportInvalid, match="invalid project import archive"):
         OwnedImportQuarantine.create(temp_parent=parent)
+    assert list(parent.iterdir()) == []
+
+
+def test_quarantine_permission_failure_retries_cleanup_before_returning(tmp_path: Path, monkeypatch) -> None:
+    parent = tmp_path / "quarantine"
+    parent.mkdir()
+    import backend.domain.project_imports as imports
+
+    def fail_permission(*args, **kwargs):
+        raise imports.PrivateFilePermissionsError("no detail")
+
+    original = imports.shutil.rmtree
+    attempts = 0
+
+    def fail_cleanup_once(path, *args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("unavailable")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(imports, "apply_private_permissions", fail_permission)
+    monkeypatch.setattr(imports.shutil, "rmtree", fail_cleanup_once)
+    with pytest.raises(ProjectImportInvalid, match="invalid project import archive"):
+        OwnedImportQuarantine.create(temp_parent=parent)
+    assert attempts >= 2
     assert list(parent.iterdir()) == []
 
 

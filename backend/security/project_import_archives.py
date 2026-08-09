@@ -15,6 +15,7 @@ from backend.domain.project_packages import (
     MAX_ARCHIVE_BYTES,
     MAX_CORPUS_BLOB_BYTES,
     MAX_ENTRY_COUNT,
+    MAX_ENTRY_PATH_BYTES,
     MAX_STRUCTURED_ENTRY_BYTES,
     MAX_TOTAL_ENTRY_BYTES,
 )
@@ -89,11 +90,25 @@ def verify_raw_zip_envelope(path: Path) -> tuple[VerifiedArchiveEntry, ...]:
             disk, cd_disk, disk_entries, entries, cd_size, cd_offset, comment_size = struct.unpack_from("<HHHHIIH", tail, eocd_at + 4)
             if comment_size != 0 or eocd_offset + 22 != size or disk or cd_disk or disk_entries != entries:
                 raise _invalid()
-            if entries == 0xFFFF or cd_size == 0xFFFFFFFF or cd_offset == 0xFFFFFFFF or any(marker in tail for marker in _ZIP64):
+            if entries == 0xFFFF or cd_size == 0xFFFFFFFF or cd_offset == 0xFFFFFFFF:
                 raise _invalid()
+            locator_offset = eocd_offset - 20
+            if locator_offset >= 0:
+                locator = _read_exact(handle, locator_offset, 20)
+                if locator[:4] == _ZIP64[1]:
+                    disk, zip64_offset, disks = struct.unpack_from("<IQI", locator, 4)
+                    if (
+                        disk == 0
+                        and disks == 1
+                        and zip64_offset < locator_offset
+                        and _read_exact(handle, zip64_offset, 4) == _ZIP64[0]
+                    ):
+                        raise _invalid()
             if entries > MAX_ENTRY_COUNT:
                 raise _too_large()
             if cd_offset > eocd_offset or cd_size != eocd_offset - cd_offset:
+                raise _invalid()
+            if cd_size > entries * (46 + MAX_ENTRY_PATH_BYTES):
                 raise _invalid()
             central = _read_exact(handle, cd_offset, cd_size)
             cursor = 0
@@ -105,7 +120,7 @@ def verify_raw_zip_envelope(path: Path) -> tuple[VerifiedArchiveEntry, ...]:
                 values = struct.unpack_from("<HHHHHHIIIHHHHHII", central, cursor + 4)
                 made_by, needed, flags, method, dos_time, dos_date, crc, compressed, uncompressed, name_size, extra_size, entry_comment_size, disk_start, _internal, external, local_offset = values
                 end = cursor + 46 + name_size + extra_size + entry_comment_size
-                if end > len(central) or (made_by >> 8) != 3 or needed != 20 or flags != 0 or method != 0 or dos_time != 0 or dos_date != _DOS_EPOCH_DATE or extra_size or entry_comment_size or disk_start or compressed != uncompressed:
+                if end > len(central) or (made_by >> 8) != 3 or needed != 20 or flags != 0 or method != 0 or dos_time != 0 or dos_date != _DOS_EPOCH_DATE or extra_size or entry_comment_size or disk_start or compressed == 0xFFFFFFFF or uncompressed == 0xFFFFFFFF or local_offset == 0xFFFFFFFF or compressed != uncompressed:
                     raise _invalid()
                 if (external >> 16) != 0o100600:
                     raise _invalid()

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterable
 from dataclasses import dataclass, field
-import asyncio
 import os
 from pathlib import Path
 import shutil
@@ -82,34 +81,34 @@ class OwnedImportQuarantine:
 
     @classmethod
     def create(cls, *, temp_parent: Path) -> "OwnedImportQuarantine":
-        created_root: Path | None = None
+        owner: OwnedImportQuarantine | None = None
         try:
             parent = Path(temp_parent).resolve(strict=True)
             if not parent.is_dir() or _is_link(parent):
                 raise _invalid()
-            created_root = Path(tempfile.mkdtemp(prefix=QUARANTINE_PREFIX, dir=parent))
-            root = created_root.resolve(strict=True)
+            root = Path(tempfile.mkdtemp(prefix=QUARANTINE_PREFIX, dir=parent)).resolve(strict=True)
             if root.parent != parent or not root.name.startswith(QUARANTINE_PREFIX) or _is_link(root):
                 raise _invalid()
+            owner = cls(root=root, _archive_path=root / QUARANTINE_FILENAME, _parent=parent)
             try:
                 apply_private_permissions(root, is_directory=True)
             except PrivateFilePermissionsError:
                 raise _invalid() from None
-            archive_path = root / QUARANTINE_FILENAME
+            archive_path = owner.archive_path
             descriptor = os.open(archive_path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
             os.close(descriptor)
             try:
                 apply_private_permissions(archive_path, is_directory=False)
             except PrivateFilePermissionsError:
                 raise _invalid() from None
-            return cls(root=root, _archive_path=archive_path, _parent=parent)
+            return owner
         except ProjectImportError:
-            if created_root is not None:
-                shutil.rmtree(created_root, ignore_errors=True)
+            if owner is not None:
+                owner._cleanup_best_effort()
             raise
-        except (OSError, RuntimeError, TypeError, ValueError):
-            if created_root is not None:
-                shutil.rmtree(created_root, ignore_errors=True)
+        except BaseException:
+            if owner is not None:
+                owner._cleanup_best_effort()
             raise _invalid() from None
 
     async def copy_upload(self, upload: AsyncIterable[bytes] | _AsyncReadableUpload) -> Path:
@@ -121,26 +120,16 @@ class OwnedImportQuarantine:
                 async for chunk in _upload_chunks(upload):
                     if type(chunk) is not bytes:
                         raise _invalid()
+                    if len(chunk) > UPLOAD_READ_CHUNK_BYTES:
+                        raise _too_large()
                     total += len(chunk)
                     if total > MAX_ARCHIVE_BYTES:
                         raise _too_large()
                     target.write(chunk)
             return self._archive_path
-        except asyncio.CancelledError:
-            try:
-                self.cleanup()
-            except Exception:
-                pass
+        except BaseException:
+            self._cleanup_best_effort()
             raise
-        except ProjectImportError:
-            self.cleanup()
-            raise
-        except (OSError, RuntimeError, TypeError, ValueError):
-            try:
-                self.cleanup()
-            except Exception:
-                pass
-            raise _invalid() from None
 
     async def store_upload(self, upload: AsyncIterable[bytes] | _AsyncReadableUpload) -> Path:
         return await self.copy_upload(upload)
@@ -167,3 +156,20 @@ class OwnedImportQuarantine:
             raise
         except (OSError, RuntimeError, ValueError):
             raise _invalid() from None
+
+    def _cleanup_best_effort(self) -> None:
+        """Retry owned cleanup without allowing a cleanup error to mask its cause."""
+
+        for _ in range(2):
+            try:
+                self.cleanup()
+                return
+            except BaseException:
+                pass
+        try:
+            if self._archive_path.exists() and not _is_link(self._archive_path):
+                self._archive_path.unlink()
+            self.root.rmdir()
+            self._cleaned = True
+        except BaseException:
+            pass
