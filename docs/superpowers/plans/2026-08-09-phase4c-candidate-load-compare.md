@@ -26,8 +26,8 @@ exactly two Candidates through visible read-only UI without fusion or new state 
 1. Add failing schema/repository tests for nullable mutually exclusive operation/Candidate
    recovery sources and `candidate_load`.
 2. Run only those tests and confirm RED.
-3. Add `source_candidate_id`, source CHECK, the post-Candidate bootstrap FK statement, v1.11,
-   and closed repository serialization.
+3. Move the existing Candidate create block before recovery, then add `source_candidate_id`,
+   source CHECK/FK, v1.11, and closed repository serialization without `ALTER TABLE`.
 4. Rerun focused tests, `py_compile`, and `git diff --check`; review and commit.
 
 ## Task 2: Implement atomic Candidate load

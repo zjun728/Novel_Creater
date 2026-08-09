@@ -760,7 +760,8 @@ def test_chapter_session_and_phase_five_placeholders_pin_planning_and_outline():
 def test_phase_4b_draft_operation_recovery_schema_is_exact_and_secret_free():
     names = created_table_names()
     assert names.index("working_drafts") < names.index("draft_operation_attempts")
-    assert names.index("draft_operation_attempts") < names.index("working_draft_revisions")
+    assert names.index("draft_operation_attempts") < names.index("draft_candidates")
+    assert names.index("draft_candidates") < names.index("working_draft_revisions")
     assert names.index("working_draft_revisions") < names.index("draft_operation_events")
 
     sessions = _table_statement("chapter_sessions")
@@ -777,7 +778,8 @@ def test_phase_4b_draft_operation_recovery_schema_is_exact_and_secret_free():
         "working_draft_revision int not null",
         "snapshot_role varchar(24) not null",
         "replacement_reason varchar(40) not null",
-        "source_operation_id char(36) not null",
+        "source_operation_id char(36) null",
+        "source_candidate_id char(36) null",
         "unique key uq_working_draft_recovery "
         "(chapter_session_id, working_draft_revision, snapshot_role)",
         "foreign key (project_id, chapter_session_id, working_draft_id) "
@@ -786,10 +788,18 @@ def test_phase_4b_draft_operation_recovery_schema_is_exact_and_secret_free():
         "foreign key (project_id, chapter_session_id, source_operation_id) "
         "references draft_operation_attempts(project_id, chapter_session_id, id) "
         "on delete cascade",
+        "foreign key (project_id, chapter_session_id, source_candidate_id) "
+        "references draft_candidates(project_id, chapter_session_id, id) "
+        "on delete cascade",
         "check (working_draft_revision > 0)",
         "check (snapshot_role in ('before','after'))",
         "check (replacement_reason in ('generate_new','rewrite_selection',"
-        "'polish_selection','expand_selection','compress_selection','undo_local'))",
+        "'polish_selection','expand_selection','compress_selection','undo_local',"
+        "'candidate_load'))",
+        "check ( (replacement_reason = 'candidate_load' "
+        "and source_operation_id is null and source_candidate_id is not null) "
+        "or (replacement_reason <> 'candidate_load' "
+        "and source_operation_id is not null and source_candidate_id is null) )",
     ):
         assert contract in revisions
     assert "uq_working_draft_revision_identity" not in revisions
@@ -797,6 +807,16 @@ def test_phase_4b_draft_operation_recovery_schema_is_exact_and_secret_free():
     assert revisions.count("unique key") == 1
     assert "foreign key (project_id) references projects(id)" not in revisions
     assert "foreign key (working_draft_id) references working_drafts(id)" not in revisions
+
+    candidates = _table_statement("draft_candidates")
+    assert (
+        "unique key uq_candidate_owner_id "
+        "(project_id, chapter_session_id, id)"
+    ) in candidates
+    assert all(
+        not statement.lower().startswith("alter table")
+        for statement in read_statements()
+    )
 
     operations = _table_statement("draft_operation_attempts")
     for contract in (

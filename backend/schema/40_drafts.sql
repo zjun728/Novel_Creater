@@ -129,6 +129,25 @@ CREATE TABLE draft_operation_attempts (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
 
+CREATE TABLE draft_candidates (
+  id CHAR(36) PRIMARY KEY,
+  project_id CHAR(36) NOT NULL,
+  chapter_session_id CHAR(36) NOT NULL,
+  working_draft_revision INT NOT NULL,
+  content LONGTEXT NOT NULL,
+  content_hash CHAR(64) NOT NULL,
+  basis_hash CHAR(64) NOT NULL,
+  provenance_json JSON NOT NULL,
+  created_at BIGINT NOT NULL,
+  UNIQUE KEY uq_candidate_identity (chapter_session_id, content_hash, basis_hash),
+  UNIQUE KEY uq_candidate_project_id (project_id, id),
+  UNIQUE KEY uq_candidate_owner_id (project_id, chapter_session_id, id),
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, chapter_session_id) REFERENCES chapter_sessions(project_id, id) ON DELETE CASCADE,
+  CHECK (working_draft_revision > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
+
 CREATE TABLE working_draft_revisions (
   id CHAR(36) PRIMARY KEY,
   project_id CHAR(36) NOT NULL,
@@ -137,7 +156,8 @@ CREATE TABLE working_draft_revisions (
   working_draft_revision INT NOT NULL,
   snapshot_role VARCHAR(24) NOT NULL,
   replacement_reason VARCHAR(40) NOT NULL,
-  source_operation_id CHAR(36) NOT NULL,
+  source_operation_id CHAR(36) NULL,
+  source_candidate_id CHAR(36) NULL,
   content LONGTEXT NOT NULL,
   content_hash CHAR(64) NOT NULL,
   created_at BIGINT NOT NULL,
@@ -147,9 +167,18 @@ CREATE TABLE working_draft_revisions (
     REFERENCES working_drafts(project_id, chapter_session_id, id) ON DELETE CASCADE,
   FOREIGN KEY (project_id, chapter_session_id, source_operation_id)
     REFERENCES draft_operation_attempts(project_id, chapter_session_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, chapter_session_id, source_candidate_id)
+    REFERENCES draft_candidates(project_id, chapter_session_id, id) ON DELETE CASCADE,
   CHECK (working_draft_revision > 0),
   CHECK (snapshot_role IN ('before','after')),
-  CHECK (replacement_reason IN ('generate_new','rewrite_selection','polish_selection','expand_selection','compress_selection','undo_local'))
+  CHECK (replacement_reason IN ('generate_new','rewrite_selection','polish_selection','expand_selection','compress_selection','undo_local','candidate_load')),
+  CHECK (
+    (replacement_reason = 'candidate_load'
+      AND source_operation_id IS NULL AND source_candidate_id IS NOT NULL)
+    OR
+    (replacement_reason <> 'candidate_load'
+      AND source_operation_id IS NOT NULL AND source_candidate_id IS NULL)
+  )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
 
@@ -173,24 +202,6 @@ CREATE TABLE draft_operation_events (
     OR (event_type IN ('delta','completed','failed','cancelled')
       AND closed_payload_json IS NOT NULL)
   )
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-;-- statement
-
-CREATE TABLE draft_candidates (
-  id CHAR(36) PRIMARY KEY,
-  project_id CHAR(36) NOT NULL,
-  chapter_session_id CHAR(36) NOT NULL,
-  working_draft_revision INT NOT NULL,
-  content LONGTEXT NOT NULL,
-  content_hash CHAR(64) NOT NULL,
-  basis_hash CHAR(64) NOT NULL,
-  provenance_json JSON NOT NULL,
-  created_at BIGINT NOT NULL,
-  UNIQUE KEY uq_candidate_identity (chapter_session_id, content_hash, basis_hash),
-  UNIQUE KEY uq_candidate_project_id (project_id, id),
-  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (project_id, chapter_session_id) REFERENCES chapter_sessions(project_id, id) ON DELETE CASCADE,
-  CHECK (working_draft_revision > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
 

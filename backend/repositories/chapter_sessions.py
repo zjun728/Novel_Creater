@@ -353,7 +353,8 @@ class ChapterSessionRepository:
         row = await session.fetchone(
             """SELECT id,project_id,chapter_session_id,working_draft_id,
                       working_draft_revision,snapshot_role,replacement_reason,
-                      source_operation_id,content,content_hash,created_at
+                      source_operation_id,source_candidate_id,content,
+                      content_hash,created_at
                  FROM working_draft_revisions
                 WHERE project_id=%s AND chapter_session_id=%s
                   AND source_operation_id=%s AND snapshot_role='before'
@@ -916,8 +917,8 @@ class ChapterSessionRepository:
             """INSERT INTO working_draft_revisions
                (id,project_id,chapter_session_id,working_draft_id,
                 working_draft_revision,snapshot_role,replacement_reason,
-                source_operation_id,content,content_hash,created_at)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                source_operation_id,source_candidate_id,content,content_hash,created_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                ON DUPLICATE KEY UPDATE id=id""",
             (
                 row["id"],
@@ -928,6 +929,7 @@ class ChapterSessionRepository:
                 row["snapshot_role"],
                 row["replacement_reason"],
                 row["source_operation_id"],
+                row.get("source_candidate_id"),
                 row["content"],
                 row["content_hash"],
                 row["created_at"],
@@ -937,7 +939,8 @@ class ChapterSessionRepository:
             return True
         existing = await session.fetchone(
             """SELECT id,working_draft_id,replacement_reason,
-                      source_operation_id,content,content_hash,created_at
+                      source_operation_id,source_candidate_id,content,
+                      content_hash,created_at
                  FROM working_draft_revisions
                  WHERE project_id=%s AND chapter_session_id=%s
                    AND working_draft_revision=%s AND snapshot_role=%s
@@ -958,6 +961,7 @@ class ChapterSessionRepository:
                     "working_draft_id",
                     "replacement_reason",
                     "source_operation_id",
+                    "source_candidate_id",
                     "content",
                     "content_hash",
                     "created_at",

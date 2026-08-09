@@ -5,7 +5,7 @@ from __future__ import annotations
 from backend.schema_manifest import manifest_hash
 
 
-EXPECTED_SCHEMA_VERSION = "writer-core-v1.10.0"
+EXPECTED_SCHEMA_VERSION = "writer-core-v1.11.0"
 _VERSION_QUERY = (
     "SELECT schema_version, manifest_hash FROM schema_metadata WHERE singleton_id=1"
 )

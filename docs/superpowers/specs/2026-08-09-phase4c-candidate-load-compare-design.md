@@ -35,14 +35,16 @@ schema advances to `writer-core-v1.11.0` with the minimum source generalization:
 
 - existing `source_operation_id` becomes nullable;
 - one nullable `source_candidate_id` column references the immutable Candidate;
+- one exact owner index `(project_id, chapter_session_id, id)` on Candidate supports a
+  cross-session-safe composite foreign key;
 - `candidate_load` is added to the existing `replacement_reason` CHECK;
 - a CHECK requires exactly one source: Candidate load uses only `source_candidate_id`; all
   existing reasons use only `source_operation_id`.
 
-Because the recovery table is created before `draft_candidates` in the exact bootstrap order,
-the Candidate foreign key is added by a manifest-owned `ALTER TABLE` statement immediately after
-the Candidate table is created. This statement is part of fresh empty-database construction; it
-is not a runtime or in-place migration.
+The existing `draft_candidates` create statement moves before the recovery table in the exact
+empty-database bootstrap order, so the composite Candidate foreign key is declared directly in
+`CREATE TABLE working_draft_revisions`. The manifest remains create-only and adds no `ALTER TABLE`,
+runtime DDL, or in-place migration.
 
 No table, migration path, compatibility path, product-database read, or runtime DDL is added.
 
