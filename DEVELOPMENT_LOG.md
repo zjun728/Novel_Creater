@@ -1,6 +1,6 @@
 # 开发日志
 
-> 只记录当前有效的决策与证据摘要。日期：`2026-08-01`。不记录密钥、DSN、原始运行日志或本地截图。
+> 只记录当前有效的决策与证据摘要。日期：`2026-08-09`。不记录密钥、DSN、原始运行日志或本地截图。
 
 ## 2026-07-18 产品主规格重置
 
@@ -185,7 +185,29 @@ missing/error/retry、IME、Tab 焦点循环、Escape 焦点恢复、全局阻�
   `docs/acceptance/2026-07-30-phase-3-story-planning.md` 与
   `docs/acceptance/2026-07-31-phase-3-immutable-boundary-alignment.md`。
 
+## 2026-08-09 Phase 4B3 Selection Tools / One-step Undo 完成
+
+- 分支：`codex/phase3d-boundary-acceptance`；功能代码验收快照：`caaeace`；源码 Schema：
+  `writer-core-v1.10.0`。
+- 交付同一纯文本编辑器中的精确选区 AI 改写、润色、扩写、缩写、独立 replacement
+  preview、局部取消保留原稿，以及最近一次未被触碰结果的一步追加式撤销。
+- 后端在任何 provider 副作用前验证 revision/hash、Unicode scalar range 与 selected-text
+  hash；完成时短事务重校验 fence/CAS，只替换目标范围并返回完整权威 WorkingDraft。
+- 没有新增表或列、同步 AI 旁路、scheduler 扩展、candidate/fusion、Canon 或 finalization
+  行为；Schema 只扩展既有 CHECK 枚举。
+- Fresh slice gates：Python/API `312 passed`，Node `190/190 passed`，Vite build
+  `2966 modules transformed`，affected MySQL `75 passed` 且 `75/75/0`，UI-only browser
+  `1/1 passed`。
+- 最终资源账本：owned process、开发端口、Phase4B3 temp、Vite `deps_temp`、test DB
+  均为 `0`；Real Provider calls `0`；Product DB reads/writes `0/0`。
+- 规格与质量审查均为 `Critical/Important/Minor = 0/0/0`；详细证据：
+  `docs/acceptance/2026-08-09-phase-4b3-selection-tools-undo.md`。
+- 本切片按精简风险门禁验收；完整 unit、364 项 MySQL、历史 Phase 4 browser 和 release
+  matrix 延期到 Phase 4 收口串行运行一次。
+- Full-draft rewrite、candidate load/compare/fusion、finalization、Canon projection、
+  download/export、real-provider quality 与 product-database readiness 仍未验收。
+
 ## 下一步
 
-唯一下一步是 Phase 4 Writer Loop。它以前序完整的 Planning 链为基础；自动门禁继续
-禁止产品数据库、真实 Provider 和 live 网站。
+唯一下一产品切片是 Phase 4C candidate load 与 two-candidate read-only comparison；
+AI fusion 延期。自动门禁继续禁止产品数据库、真实 Provider 和 live 网站。

@@ -1,6 +1,6 @@
 # 当前项目状态
 
-> 新任务或上下文压缩后先读本文件。事实日期：`2026-08-02`。
+> 新任务或上下文压缩后先读本文件。事实日期：`2026-08-09`。
 
 ## 当前权威
 
@@ -11,9 +11,11 @@
    产品、交互和写作闭环主规格。
 3. `docs/superpowers/specs/2026-07-24-phase-3-story-planning-design.md`：
    当前 Phase 3 领域设计。
-4. 当前阶段实施计划及其验收报告。
-5. `docs/testing/test-gate-policy.md`：当前测试证据分层、复用与失效规则。
-6. 本文件、`PRODUCT_DEVELOPMENT_PLAN.md` 和 `DEVELOPMENT_LOG.md`：
+4. `docs/superpowers/specs/2026-08-09-lean-product-scope-and-phase4b3-selection-tools-design.md`：
+   当前产品边界精简与 Phase 4B3 设计。
+5. 当前阶段实施计划及其验收报告。
+6. `docs/testing/test-gate-policy.md`：当前测试证据分层、复用与失效规则。
+7. 本文件、`PRODUCT_DEVELOPMENT_PLAN.md` 和 `DEVELOPMENT_LOG.md`：
    已取得的证据与下一步。
 
 旧 Writer Core 路线、phase-e shadow QA、旧 runner、旧 artifact 和其他 worktree
@@ -24,18 +26,20 @@
 - Canonical release branch：`main`。
 - Phase 2 验收链已进入 `main`，链末提交：
   `f11faad531f04250f2a987390a468dfd14bf06a3`。
-- 当前完成交付包：**Phase 3 Story Planning**、**Phase 4B1 Formal Generation** 与
-  **Phase 4B2 streaming / reconnect / cancel**（均仅注入 fake provider）。
+- 当前完成交付包：**Phase 3 Story Planning**、**Phase 4B1 Formal Generation**、
+  **Phase 4B2 streaming / reconnect / cancel** 与 **Phase 4B3 exact-selection tools /
+  one-step undo**（均仅注入 fake provider）。
 - 当前开发分支：`codex/phase3d-boundary-acceptance`。
 - Phase 3D 与 Phase 3 已完成：Future Plan/Actual Progress/Canon Projection 同 revision 只读组合与完整 Phase 3 门禁。
-- **Phase 4B2 streaming / reconnect / cancel 已验收**；尚未启动 rewrite/local tools、
-  undo 或后续 Phase 4B 切片。
+- **Phase 4B3 精确选区改写、润色、扩写、缩写、取消与一步撤销已验收**；
+  下一切片为 Phase 4C candidate load 与 two-candidate read-only comparison。
 - 交付基线：`main@e8aebd9eb851ccc64f160022984342344905cd15`。
-- 功能代码 HEAD：`abec8414cb765bdd9dbd70c62724d5f2d4fcd296`。
+- 功能代码 HEAD：`caaeace`。
 - 当前自动证据边界：Real Provider calls `0`、Product DB reads/writes `0/0`；
-  Phase 4B2 的 `generate_new` streaming、automatic reconnect 与 cancellation 仅以注入
-  fake streaming provider 验收。Rewrite/local tools、undo、full Phase 4B、real-provider
-  quality、product-database readiness、Finalization 和 Content Quality 仍未就绪。
+  Phase 4B2 `generate_new` streaming/reconnect/cancel 与 Phase 4B3 exact-selection local
+  tools/one-step undo 仅以注入 fake streaming provider 验收。Full-draft rewrite、candidate
+  load/compare/fusion、full Phase 4B、real-provider quality、product-database readiness、
+  Finalization 和 Content Quality 仍未就绪。
 
 ## Phase 2 已完成能力
 
@@ -125,6 +129,8 @@ Phase 3 acceptance 见：
 - Phase 4B2 的 streaming / reconnect / cancel 持久化 Schema、provider/runtime 与 UI：
   **已验收（仅注入 fake streaming provider）**；不宣称 full Phase 4B、真实 Provider 或
   产品数据库已完成。
+- Phase 4B3 只扩展既有 operation/replacement CHECK 枚举，没有新增表或列；精确选区四工具、
+  局部取消保留原稿与一步追加式撤销已验收（仅注入 fake streaming provider）。
 - Phase 3B 没有 Schema 变更、迁移或兼容路径。
 - Phase 3C 没有 Schema 变更、迁移或兼容路径。
 - Phase 3D 将 Candidate 依据身份纳入 `writer-core-v1.6.0`；没有 migration 或 compatibility path。
@@ -137,8 +143,8 @@ Phase 3 acceptance 见：
 
 ## 尚未完成
 
-- Phase 4B 剩余能力：rewrite/local tools、undo，以及尚未验收的改写/扩写/压缩、候选、
-  对比和融合。
+- Phase 4B/4C 剩余能力：full-draft rewrite、candidate load、two-candidate read-only
+  comparison 与后续 fusion。
 - Phase 5：质量审核、单次 `FinalizationChangeSet` 提取、整体确认、
   Canon 写入、单事务定稿和完整回滚。
 - Phase 6：小说下载、安全项目备份、预检和导入。
@@ -147,10 +153,10 @@ Phase 3 acceptance 见：
 
 ## 当前工程切片
 
-**Phase 4B2 streaming / reconnect / cancel 已仅以注入 fake streaming provider 验收**；
-当前工程切片是 Phase 4B3 selection tools 与 one-step undo，尚未验收。自动门禁继续
-禁止真实 Provider、产品数据库和 live 网站。受控 DeepSeek V3 Flash smoke 仍须用户明确批准
-和有效 token，且不是自动门禁。
+**Phase 4B3 selection tools 与 one-step undo 已仅以注入 fake streaming provider 验收**；
+当前工程切片已收口，下一产品切片是 Phase 4C candidate load 与 two-candidate read-only
+comparison，fusion 延期。自动门禁继续禁止真实 Provider、产品数据库和 live 网站。
+受控 DeepSeek V3 Flash smoke 仍须用户另行明确批准和有效 token，且不是自动门禁。
 Seed、Contract 与 Bible 的已确认内容保持永久基线；未来 Planning 只处理尚未实现的内容。
 正文定稿前对应大纲可以调整，正文定稿后大纲与事实不可修改，均以已实现和规格明确支持
 的范围为准。Setting 与知识库仍在 Phase 5 通过 Canon/Projection 落地，不在本阶段声称已实现。
