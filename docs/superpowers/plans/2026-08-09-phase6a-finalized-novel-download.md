@@ -18,6 +18,13 @@
 - Do not add PDF, EPUB, DOCX, multi-file ZIP, chapter ranges, custom templates, cancellation, or download history.
 - Run focused tests during tasks. Run the branch-wide Python/Node/MySQL/build/browser gates only after 6C at Phase 6 close.
 
+## Execution status (2026-08-10)
+
+Tasks 1–6 are implemented and committed through `0de6402`. Task 7 focused verification,
+specification review, quality review, resource audit, and acceptance record are complete. Phase 6A
+is accepted only for finalized TXT/Markdown download with disposable local data; Phase 6B backup,
+Phase 6C import, complete Phase 6, real Provider quality, and product-database readiness remain open.
+
 ## Task 1: Closed download domain and deterministic renderer
 
 **Files:**
