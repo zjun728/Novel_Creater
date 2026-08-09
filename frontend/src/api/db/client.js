@@ -54,7 +54,13 @@ async function request(method, path, body, timeoutMs = DEFAULT_TIMEOUT) {
   }
 }
 
-async function binaryRequest(path, { signal: externalSignal, timeoutMs = DEFAULT_TIMEOUT } = {}) {
+async function binaryRequest(path, {
+  method = 'GET',
+  body,
+  signal: externalSignal,
+  timeoutMs = DEFAULT_TIMEOUT,
+  includePackageSha256 = false,
+} = {}) {
   const controller = new AbortController()
   let externallyAborted = false
   const abortFromExternalSignal = () => {
@@ -69,15 +75,24 @@ async function binaryRequest(path, { signal: externalSignal, timeoutMs = DEFAULT
   const timer = setTimeout(() => controller.abort(), timeoutMs)
 
   try {
-    const response = await fetch(`${BASE}${path}`, {
-      method: 'GET',
+    const options = {
+      method,
       signal: controller.signal,
-    })
+    }
+    if (body !== undefined) {
+      options.headers = { 'Content-Type': 'application/json' }
+      options.body = JSON.stringify(body)
+    }
+    const response = await fetch(`${BASE}${path}`, options)
     if (!response.ok) throw await parseApiError(response)
-    return {
+    const result = {
       blob: await response.blob(),
       contentDisposition: response.headers.get('Content-Disposition'),
     }
+    if (includePackageSha256) {
+      result.packageSha256 = response.headers.get('X-Package-SHA256')
+    }
+    return result
   } catch (error) {
     if (controller.signal.aborted || error?.name === 'AbortError') {
       throw new ApiError({
@@ -1968,6 +1983,18 @@ function finalizationCommitted(value) {
 
 export const api = {
   health: () => get('/health'),
+
+  projectBackups: {
+    create: (projectId, expectedLifecycleRevision, options = {}) => binaryRequest(
+      `/projects/${segment(projectId)}/backup`,
+      {
+        method: 'POST',
+        body: { expectedLifecycleRevision },
+        signal: options?.signal,
+        includePackageSha256: true,
+      },
+    ),
+  },
 
   novelDownloads: {
     options: projectId => get(`/projects/${segment(projectId)}/novel-download/options`),

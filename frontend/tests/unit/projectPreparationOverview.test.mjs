@@ -235,6 +235,10 @@ test.before(async () => {
     await vite.ssrLoadModule('/src/components/projects/NovelDownloadPanel.vue')
   ).default
   DeliveryPanel.render = await clientRender('components/projects/NovelDownloadPanel.vue')
+  const BackupPanel = (
+    await vite.ssrLoadModule('/src/components/projects/ProjectBackupPanel.vue')
+  ).default
+  BackupPanel.render = await clientRender('components/projects/ProjectBackupPanel.vue')
   ArchivedOverview = (
     await vite.ssrLoadModule('/src/views/ArchivedProjectStatusView.vue')
   ).default
@@ -398,7 +402,7 @@ test('outline and writer actions navigate only to the exact server targetPath', 
   }
 })
 
-test('overview keeps its one primary next action before the secondary delivery desk', async () => {
+test('overview keeps its one primary next action before both secondary download panels', async () => {
   const html = await renderOverview(preparation({
     nextAction: 'continue_contract',
     targetPath: '/projects/project%20%2F%20%E4%B8%80/contract',
@@ -407,16 +411,39 @@ test('overview keeps its one primary next action before the secondary delivery d
   }))
   assert.equal((html.match(/class="overview-next-action"/g) || []).length, 1)
   assert.match(html, /novel-download-panel/)
+  assert.match(html, /project-backup-panel/)
   assert.ok(html.indexOf('overview-next-action') < html.indexOf('novel-download-panel'))
+  assert.ok(html.indexOf('novel-download-panel') < html.indexOf('project-backup-panel'))
 })
 
-test('archived status shares the novel delivery desk instance', async () => {
+test('active and archived views pass exact backup authority after the delivery desk', async () => {
+  const overviewSource = await readFile(
+    new URL('../../src/views/ProjectOverviewView.vue', import.meta.url),
+    'utf8',
+  )
+  const writerSource = await readFile(
+    new URL('../../src/views/ChapterWriterView.vue', import.meta.url),
+    'utf8',
+  )
   const source = await readFile(
     new URL('../../src/views/ArchivedProjectStatusView.vue', import.meta.url),
     'utf8',
   )
+  assert.match(overviewSource, /import ProjectBackupPanel/)
+  assert.match(overviewSource, /<novel-download-panel[\s\S]*<project-backup-panel/)
+  assert.match(overviewSource, /<project-backup-panel[\s\S]*:project-id="routeProject\.project\.value\.id"/)
+  assert.match(overviewSource, /:title="routeProject\.project\.value\.title"/)
+  assert.match(overviewSource, /:lifecycle-revision="routeProject\.project\.value\.lifecycleRevision"/)
+  assert.match(overviewSource, /:archived="false"/)
+  assert.match(overviewSource, /:flush-current-draft="flushCurrentDraft"/)
   assert.match(source, /import NovelDownloadPanel/)
-  assert.match(source, /<novel-download-panel[\s\S]*:project-id="project\.id"/)
+  assert.match(source, /import ProjectBackupPanel/)
+  assert.match(source, /<novel-download-panel[\s\S]*<project-backup-panel/)
+  assert.match(source, /<project-backup-panel[\s\S]*:project-id="project\.id"/)
+  assert.match(source, /:title="project\.title"/)
+  assert.match(source, /:lifecycle-revision="project\.lifecycleRevision"/)
+  assert.match(source, /:archived="true"/)
+  assert.doesNotMatch(writerSource, /ProjectBackupPanel|project-backup-panel/)
 })
 
 test('overview depends only on projectStore authority and has no browser joins', async () => {

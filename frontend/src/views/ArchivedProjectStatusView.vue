@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { NAlert, NButton } from 'naive-ui'
 
 import NovelDownloadPanel from '../components/projects/NovelDownloadPanel.vue'
+import ProjectBackupPanel from '../components/projects/ProjectBackupPanel.vue'
 import { useProjectStore } from '../stores/projectStore.js'
 import { projectBiblePath, projectContractPath } from '../router/projectRoutes.js'
 
@@ -63,6 +64,13 @@ function returnToLibrary() {
         :key="String(project.id)"
         :project-id="project.id"
         :title="project.title"
+      />
+      <project-backup-panel
+        :key="`backup:${project.id}`"
+        :project-id="project.id"
+        :title="project.title"
+        :lifecycle-revision="project.lifecycleRevision"
+        :archived="true"
       />
     </section>
   </main>
