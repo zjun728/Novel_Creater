@@ -53,6 +53,45 @@ async function request(method, path, body, timeoutMs = DEFAULT_TIMEOUT) {
     clearTimeout(timer)
   }
 }
+
+async function binaryRequest(path, { signal: externalSignal, timeoutMs = DEFAULT_TIMEOUT } = {}) {
+  const controller = new AbortController()
+  let externallyAborted = false
+  const abortFromExternalSignal = () => {
+    externallyAborted = true
+    controller.abort()
+  }
+  if (externalSignal?.aborted) {
+    abortFromExternalSignal()
+  } else {
+    externalSignal?.addEventListener?.('abort', abortFromExternalSignal, { once: true })
+  }
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+
+  try {
+    const response = await fetch(`${BASE}${path}`, {
+      method: 'GET',
+      signal: controller.signal,
+    })
+    if (!response.ok) throw await parseApiError(response)
+    return {
+      blob: await response.blob(),
+      contentDisposition: response.headers.get('Content-Disposition'),
+    }
+  } catch (error) {
+    if (controller.signal.aborted || error?.name === 'AbortError') {
+      throw new ApiError({
+        code: externallyAborted ? 'request_aborted' : 'request_timeout',
+        message: externallyAborted ? '请求已取消' : `请求超时 (${timeoutMs / 1000}s)`,
+      })
+    }
+    if (error instanceof ApiError) throw error
+    throw new ApiError()
+  } finally {
+    clearTimeout(timer)
+    externalSignal?.removeEventListener?.('abort', abortFromExternalSignal)
+  }
+}
 const get = path => request('GET', path)
 const post = (path, body, timeoutMs) => request('POST', path, body, timeoutMs)
 const put = (path, body) => request('PUT', path, body)
@@ -1929,6 +1968,20 @@ function finalizationCommitted(value) {
 
 export const api = {
   health: () => get('/health'),
+
+  novelDownloads: {
+    options: projectId => get(`/projects/${segment(projectId)}/novel-download/options`),
+    download: (projectId, selector = {}, options = {}) => {
+      const query = new URLSearchParams()
+      for (const field of ['scope', 'format', 'volumeId', 'chapterNumber']) {
+        if (selector?.[field] !== undefined) query.set(field, selector[field])
+      }
+      return binaryRequest(
+        `/projects/${segment(projectId)}/novel-download?${query.toString()}`,
+        { signal: options?.signal },
+      )
+    },
+  },
 
   projects: {
     listActive: () => get('/projects'),
