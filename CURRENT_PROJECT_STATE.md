@@ -119,7 +119,7 @@ Phase 3 acceptance 见：
 
 ## 当前 Schema 与数据库边界
 
-- 当前开发分支源码 Schema：`writer-core-v1.9.0`。
+- 当前开发分支源码 Schema：`writer-core-v1.10.0`。
 - Phase 4B1 持久化 Draft Operation / Recovery Schema 与正式 `generate_new`：
   **已验收（仅注入 fake provider）**；未完成 Phase 4B、真实 Provider 或产品数据库验收。
 - Phase 4B2 的 streaming / reconnect / cancel 持久化 Schema、provider/runtime 与 UI：
@@ -130,7 +130,7 @@ Phase 3 acceptance 见：
 - Phase 3D 将 Candidate 依据身份纳入 `writer-core-v1.6.0`；没有 migration 或 compatibility path。
 - 产品数据库现存 Schema 未读取、未重建、未验证。
 - 源码 Schema 版本不得推导为产品数据库现存版本。
-- 既有数据库只能通过显式 reinitialize 使用 `writer-core-v1.9.0`；不添加 runtime
+- 既有数据库只能通过显式 reinitialize 使用 `writer-core-v1.10.0`；不添加 runtime
   migration 或 compatibility path，也不读取产品数据库。
 - 不迁移旧数据，不保留旧 Planning 表兼容查询。
 - Phase 3 自动集成只能使用随机命名的 Disposable MySQL 测试库。
@@ -148,7 +148,7 @@ Phase 3 acceptance 见：
 ## 当前工程切片
 
 **Phase 4B2 streaming / reconnect / cancel 已仅以注入 fake streaming provider 验收**；
-当前未启动新的工程切片。Rewrite/local tools、undo 与 full Phase 4B 仍未验收。自动门禁继续
+当前工程切片是 Phase 4B3 selection tools 与 one-step undo，尚未验收。自动门禁继续
 禁止真实 Provider、产品数据库和 live 网站。受控 DeepSeek V3 Flash smoke 仍须用户明确批准
 和有效 token，且不是自动门禁。
 Seed、Contract 与 Bible 的已确认内容保持永久基线；未来 Planning 只处理尚未实现的内容。

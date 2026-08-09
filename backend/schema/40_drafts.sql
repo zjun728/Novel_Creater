@@ -107,7 +107,7 @@ CREATE TABLE draft_operation_attempts (
       AND result_working_draft_revision > base_working_draft_revision
       AND result_content_hash IS NOT NULL)
   ),
-  CHECK (operation_type = 'generate_new'),
+  CHECK (operation_type IN ('generate_new','rewrite_selection','polish_selection','expand_selection','compress_selection')),
   CHECK (status IN ('starting','running','completed','failed','cancelled','expired')),
   CHECK (
     (status IN ('starting','running') AND active_slot IS NOT NULL AND active_slot = 1
@@ -149,7 +149,7 @@ CREATE TABLE working_draft_revisions (
     REFERENCES draft_operation_attempts(project_id, chapter_session_id, id) ON DELETE CASCADE,
   CHECK (working_draft_revision > 0),
   CHECK (snapshot_role IN ('before','after')),
-  CHECK (replacement_reason IN ('generate_new'))
+  CHECK (replacement_reason IN ('generate_new','rewrite_selection','polish_selection','expand_selection','compress_selection','undo_local'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
 

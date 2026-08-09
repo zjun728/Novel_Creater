@@ -788,7 +788,8 @@ def test_phase_4b_draft_operation_recovery_schema_is_exact_and_secret_free():
         "on delete cascade",
         "check (working_draft_revision > 0)",
         "check (snapshot_role in ('before','after'))",
-        "check (replacement_reason in ('generate_new'))",
+        "check (replacement_reason in ('generate_new','rewrite_selection',"
+        "'polish_selection','expand_selection','compress_selection','undo_local'))",
     ):
         assert contract in revisions
     assert "uq_working_draft_revision_identity" not in revisions
@@ -832,7 +833,8 @@ def test_phase_4b_draft_operation_recovery_schema_is_exact_and_secret_free():
         "check (fencing_token > 0)",
         "check (base_working_draft_revision > 0)",
         "check (last_event_sequence >= 0)",
-        "check (operation_type = 'generate_new')",
+        "check (operation_type in ('generate_new','rewrite_selection',"
+        "'polish_selection','expand_selection','compress_selection'))",
         "status = 'completed' and active_slot is null "
         "and result_working_draft_revision is not null "
         "and result_content_hash is not null and failure_code is null "
@@ -860,6 +862,13 @@ def test_phase_4b_draft_operation_recovery_schema_is_exact_and_secret_free():
         "base_url",
         "prompt",
         "raw_response",
+    ):
+        assert forbidden not in operations
+    for forbidden in (
+        "selection_start",
+        "selection_end",
+        "selected_text_hash",
+        "undo_operation_id",
     ):
         assert forbidden not in operations
 
