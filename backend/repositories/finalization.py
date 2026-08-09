@@ -5,8 +5,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 import json
 
-from backend.domain.finalization import change_set_payload
-from backend.domain.json_contracts import canonical_json
+from backend.domain.finalization import (
+    FinalizationChangeSet,
+    QualityReportPayload,
+    change_set_hash,
+    change_set_payload,
+)
+from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.provider_policy import provider_is_generation_ready
 from backend.repositories.project_lifecycle import lock_active_project
 
@@ -25,6 +30,18 @@ def _decoded_object(value: object, field_name: str) -> dict[str, object]:
     if not isinstance(decoded, dict):
         raise FinalizationDataCorruption(f"persisted {field_name} is invalid")
     return dict(decoded)
+
+
+def _decoded_array(value: object, field_name: str) -> list[object]:
+    try:
+        decoded = json.loads(value) if isinstance(value, str) else value
+    except (TypeError, ValueError):
+        raise FinalizationDataCorruption(
+            f"persisted {field_name} is invalid"
+        ) from None
+    if not isinstance(decoded, list):
+        raise FinalizationDataCorruption(f"persisted {field_name} is invalid")
+    return list(decoded)
 
 
 def _canonical_json_value(value: object) -> str:
@@ -306,6 +323,204 @@ class FinalizationRepository:
             (project_id, session_id),
         )
         return None if row is None else dict(row)
+
+    async def lock_current_attempt(
+        self,
+        session,
+        project_id: str,
+        session_id: str,
+    ):
+        row = await session.fetchone(
+            """SELECT * FROM finalization_change_sets
+                WHERE project_id=%s AND chapter_session_id=%s
+                  AND active_slot=1 FOR UPDATE""",
+            (project_id, session_id),
+        )
+        return None if row is None else dict(row)
+
+    async def lock_change_set_revision(
+        self,
+        session,
+        project_id: str,
+        change_set_id: str,
+        revision: int,
+        content_hash: str,
+    ):
+        row = await session.fetchone(
+            """SELECT id,project_id,change_set_id,revision,payload_json,
+                      content_hash,source,created_at
+                 FROM finalization_change_set_revisions
+                WHERE project_id=%s AND change_set_id=%s
+                  AND revision=%s AND content_hash=%s FOR UPDATE""",
+            (project_id, change_set_id, revision, content_hash),
+        )
+        if row is None:
+            return None
+        result = dict(row)
+        payload = _decoded_object(
+            result.pop("payload_json", None), "Finalization ChangeSet",
+        )
+        try:
+            result["change_set"] = FinalizationChangeSet.model_validate(payload)
+        except (TypeError, ValueError):
+            raise FinalizationDataCorruption(
+                "persisted Finalization ChangeSet is invalid"
+            ) from None
+        if change_set_hash(result["change_set"]) != result.get("content_hash"):
+            raise FinalizationDataCorruption(
+                "persisted Finalization ChangeSet is invalid"
+            )
+        return result
+
+    async def advance_current_revision(
+        self,
+        session,
+        *,
+        project_id: str,
+        session_id: str,
+        change_set_id: str,
+        expected_revision: int,
+        expected_revision_hash: str,
+        next_revision: int,
+        next_revision_hash: str,
+        updated_at: int,
+    ) -> bool:
+        affected = await session.execute(
+            """UPDATE finalization_change_sets
+                  SET current_revision=%s,current_revision_hash=%s,updated_at=%s
+                WHERE project_id=%s AND chapter_session_id=%s AND id=%s
+                  AND status='awaiting_author' AND active_slot=1
+                  AND confirmed_revision IS NULL
+                  AND confirmed_revision_hash IS NULL
+                  AND current_revision=%s AND current_revision_hash=%s""",
+            (
+                next_revision, next_revision_hash, updated_at,
+                project_id, session_id, change_set_id,
+                expected_revision, expected_revision_hash,
+            ),
+        )
+        return affected == 1
+
+    async def confirm_current_revision(
+        self,
+        session,
+        *,
+        project_id: str,
+        session_id: str,
+        change_set_id: str,
+        revision: int,
+        revision_hash: str,
+        confirmed_at: int,
+    ) -> bool:
+        affected = await session.execute(
+            """UPDATE finalization_change_sets
+                  SET confirmed_revision=%s,confirmed_revision_hash=%s,
+                      confirmed_at=%s,updated_at=%s
+                WHERE project_id=%s AND chapter_session_id=%s AND id=%s
+                  AND status='awaiting_author' AND active_slot=1
+                  AND confirmed_revision IS NULL
+                  AND confirmed_revision_hash IS NULL
+                  AND current_revision=%s AND current_revision_hash=%s""",
+            (
+                revision, revision_hash, confirmed_at, confirmed_at,
+                project_id, session_id, change_set_id, revision, revision_hash,
+            ),
+        )
+        return affected == 1
+
+    async def read_current_view(
+        self,
+        session,
+        project_id: str,
+        session_id: str,
+    ):
+        row = await session.fetchone(
+            """SELECT attempt.id AS attempt_id,attempt.status,
+                      attempt.draft_candidate_id,attempt.candidate_hash,
+                      attempt.current_revision,attempt.current_revision_hash,
+                      attempt.confirmed_revision,attempt.confirmed_revision_hash,
+                      report.status AS quality_status,
+                      report.deterministic_blocks_json,report.findings_json,
+                      report.content_hash AS quality_content_hash,
+                      revision.payload_json,
+                      revision.source AS revision_source
+                 FROM finalization_change_sets attempt
+                 LEFT JOIN candidate_quality_reports report
+                   ON report.project_id=attempt.project_id
+                  AND report.id=attempt.quality_report_id
+                 LEFT JOIN finalization_change_set_revisions revision
+                   ON revision.project_id=attempt.project_id
+                  AND revision.change_set_id=attempt.id
+                  AND revision.revision=attempt.current_revision
+                  AND revision.content_hash=attempt.current_revision_hash
+                WHERE attempt.project_id=%s
+                  AND attempt.chapter_session_id=%s
+                ORDER BY attempt.created_at DESC,attempt.id DESC LIMIT 1""",
+            (project_id, session_id),
+        )
+        if row is None:
+            return None
+        value = dict(row)
+        report = None
+        if value.get("quality_status") is not None:
+            report_payload = {
+                "status": value["quality_status"],
+                "deterministicBlocks": _decoded_array(
+                    value.get("deterministic_blocks_json"),
+                    "quality deterministic blocks",
+                ),
+                "findings": _decoded_array(
+                    value.get("findings_json"), "quality findings",
+                ),
+            }
+            try:
+                closed_report = QualityReportPayload.model_validate(report_payload)
+            except (TypeError, ValueError):
+                raise FinalizationDataCorruption(
+                    "persisted quality report is invalid"
+                ) from None
+            public_report = closed_report.model_dump(by_alias=True, mode="json")
+            if canonical_hash(public_report) != value.get("quality_content_hash"):
+                raise FinalizationDataCorruption(
+                    "persisted quality report is invalid"
+                )
+            report = {**public_report, "contentHash": value["quality_content_hash"]}
+        change_set = None
+        if value.get("current_revision") is not None:
+            payload = _decoded_object(
+                value.get("payload_json"), "Finalization ChangeSet",
+            )
+            try:
+                closed_change_set = FinalizationChangeSet.model_validate(payload)
+            except (TypeError, ValueError):
+                raise FinalizationDataCorruption(
+                    "persisted Finalization ChangeSet is invalid"
+                ) from None
+            if change_set_hash(closed_change_set) != value.get("current_revision_hash"):
+                raise FinalizationDataCorruption(
+                    "persisted Finalization ChangeSet is invalid"
+                )
+            change_set = {
+                "revision": value["current_revision"],
+                "contentHash": value.get("current_revision_hash"),
+                "source": value.get("revision_source"),
+                "payload": change_set_payload(closed_change_set),
+            }
+        confirmation = None
+        if value.get("confirmed_revision") is not None:
+            confirmation = {
+                "revision": value["confirmed_revision"],
+                "contentHash": value.get("confirmed_revision_hash"),
+            }
+        return {
+            "attemptId": value["attempt_id"],
+            "status": value["status"],
+            "candidateId": value["draft_candidate_id"],
+            "candidateHash": value["candidate_hash"],
+            "qualityReport": report,
+            "changeSet": change_set,
+            "confirmation": confirmation,
+        }
 
     async def insert_preparing_attempt(
         self,

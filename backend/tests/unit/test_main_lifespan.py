@@ -14,7 +14,7 @@ from backend.gateways.planning_provider import PlanningProviderGateway
 from backend.gateways.chapter_outline_provider import (
     ChapterOutlineProviderGateway,
 )
-from backend.routers import chapter_outlines, planning
+from backend.routers import chapter_outlines, finalization, planning
 from backend.runtime import draft_operation_tasks
 from backend.runtime.draft_operation_tasks import DraftOperationTaskRegistry
 from backend.schema_version import SchemaMismatch
@@ -174,6 +174,16 @@ def install_lifespan_fakes(monkeypatch, verify_error=None):
         raising=False,
     )
     monkeypatch.setattr(
+        main.finalization,
+        "finalization_quality_gateway",
+        FakePlanningProviderGateway([]),
+    )
+    monkeypatch.setattr(
+        main.finalization,
+        "finalization_extraction_gateway",
+        FakePlanningProviderGateway([]),
+    )
+    monkeypatch.setattr(
         main.chapter_sessions,
         "draft_operation_task_registry",
         FakeDraftOperationTaskRegistry(),
@@ -193,6 +203,12 @@ def test_outline_generation_service_uses_the_exposed_gateway_handle():
         chapter_outlines.get_chapter_outline_generation_service()._gateway
         is chapter_outlines.chapter_outline_provider_gateway
     )
+
+
+def test_finalization_service_uses_the_exposed_gateway_handles():
+    service = finalization.get_finalization_service()
+    assert service.quality_provider is finalization.finalization_quality_gateway
+    assert service.extraction_provider is finalization.finalization_extraction_gateway
 
 
 @pytest.mark.asyncio
@@ -223,6 +239,16 @@ async def test_lifespan_starts_planning_then_outline_and_closes_in_reverse(
         NamedGateway(events, "outline"),
         raising=False,
     )
+    monkeypatch.setattr(
+        main.finalization,
+        "finalization_quality_gateway",
+        NamedGateway(events, "finalization-quality"),
+    )
+    monkeypatch.setattr(
+        main.finalization,
+        "finalization_extraction_gateway",
+        NamedGateway(events, "finalization-extraction"),
+    )
     context = main.lifespan(main.app)
 
     await context.__aenter__()
@@ -236,6 +262,10 @@ async def test_lifespan_starts_planning_then_outline_and_closes_in_reverse(
         "scheduler-start",
         "planning-start",
         "outline-start",
+        "finalization-quality-start",
+        "finalization-extraction-start",
+        "finalization-extraction-close",
+        "finalization-quality-close",
         "outline-close",
         "planning-close",
     ]

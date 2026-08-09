@@ -4,7 +4,8 @@ import json
 
 import pytest
 
-from backend.domain.finalization import FinalizationChangeSet
+from backend.domain.finalization import FinalizationChangeSet, change_set_hash
+from backend.domain.json_contracts import canonical_hash
 from backend.repositories.finalization import (
     FinalizationDataCorruption,
     FinalizationRepository,
@@ -371,4 +372,131 @@ async def test_mark_terminal_releases_active_slot_with_owner_and_state_cas():
             status="committed",
             report_id=None,
             updated_at=3,
+        )
+
+
+@pytest.mark.asyncio
+async def test_review_mutations_are_owner_scoped_revision_hash_cas():
+    repository = FinalizationRepository()
+    revision_hash = change_set_hash(_change_set())
+    session = CapturingSession(
+        rows=[{"id": "attempt-1"}, {
+            "revision": 1,
+            "content_hash": revision_hash,
+            "payload_json": json.dumps(
+                _change_set().model_dump(by_alias=True, mode="json")
+            ),
+        }],
+        execute_results=[1, 1],
+    )
+
+    attempt = await repository.lock_current_attempt(
+        session, "project-1", "session-1",
+    )
+    revision = await repository.lock_change_set_revision(
+        session, "project-1", "attempt-1", 1, revision_hash,
+    )
+    assert await repository.advance_current_revision(
+        session,
+        project_id="project-1", session_id="session-1",
+        change_set_id="attempt-1", expected_revision=1,
+        expected_revision_hash=HASH_A, next_revision=2,
+        next_revision_hash=HASH_B, updated_at=4,
+    )
+    assert await repository.confirm_current_revision(
+        session,
+        project_id="project-1", session_id="session-1",
+        change_set_id="attempt-1", revision=2,
+        revision_hash=HASH_B, confirmed_at=5,
+    )
+
+    assert attempt["id"] == "attempt-1"
+    assert revision["change_set"] == _change_set()
+    calls = [(_compact(sql), args) for sql, args in session.calls]
+    assert "active_slot=1 FOR UPDATE" in calls[0][0]
+    assert "revision=%s AND content_hash=%s FOR UPDATE" in calls[1][0]
+    assert "confirmed_revision IS NULL" in calls[2][0]
+    assert "current_revision=%s AND current_revision_hash=%s" in calls[3][0]
+    assert calls[2][1][3:6] == ("project-1", "session-1", "attempt-1")
+
+
+@pytest.mark.asyncio
+async def test_read_current_view_decodes_only_public_report_and_change_set():
+    payload = _change_set().model_dump(by_alias=True, mode="json")
+    revision_hash = change_set_hash(_change_set())
+    report_payload = {
+        "status": "completed", "deterministicBlocks": [], "findings": [],
+    }
+    report_hash = canonical_hash(report_payload)
+    session = CapturingSession(rows=[{
+        "attempt_id": "attempt-1", "status": "awaiting_author",
+        "draft_candidate_id": "candidate-1", "candidate_hash": HASH_A,
+        "quality_status": "completed",
+        "deterministic_blocks_json": "[]",
+        "findings_json": "[]",
+        "quality_content_hash": report_hash,
+        "current_revision": 1, "current_revision_hash": revision_hash,
+        "payload_json": json.dumps(payload), "revision_source": "extraction",
+        "confirmed_revision": None, "confirmed_revision_hash": None,
+    }])
+
+    result = await FinalizationRepository().read_current_view(
+        session, "project-1", "session-1",
+    )
+
+    sql, args = session.calls[0]
+    compact = _compact(sql)
+    assert "ORDER BY attempt.created_at DESC,attempt.id DESC LIMIT 1" in compact
+    assert args == ("project-1", "session-1")
+    assert result == {
+        "attemptId": "attempt-1",
+        "status": "awaiting_author",
+        "candidateId": "candidate-1",
+        "candidateHash": HASH_A,
+        "qualityReport": {
+            "status": "completed", "deterministicBlocks": [],
+            "findings": [], "contentHash": report_hash,
+        },
+        "changeSet": {
+            "revision": 1, "contentHash": revision_hash,
+            "source": "extraction", "payload": payload,
+        },
+        "confirmation": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_read_current_view_rejects_non_closed_change_set_payload():
+    session = CapturingSession(rows=[{
+        "attempt_id": "attempt-1", "status": "awaiting_author",
+        "draft_candidate_id": "candidate-1", "candidate_hash": HASH_A,
+        "quality_status": None,
+        "current_revision": 1, "current_revision_hash": HASH_A,
+        "payload_json": '{"schemaVersion":"finalization-changeset-v1"}',
+        "revision_source": "extraction",
+        "confirmed_revision": None, "confirmed_revision_hash": None,
+    }])
+
+    with pytest.raises(FinalizationDataCorruption):
+        await FinalizationRepository().read_current_view(
+            session, "project-1", "session-1",
+        )
+
+
+@pytest.mark.asyncio
+async def test_read_current_view_rejects_quality_report_hash_mismatch():
+    session = CapturingSession(rows=[{
+        "attempt_id": "attempt-1", "status": "failed",
+        "draft_candidate_id": "candidate-1", "candidate_hash": HASH_A,
+        "quality_status": "completed",
+        "deterministic_blocks_json": "[]", "findings_json": "[]",
+        "quality_content_hash": HASH_A,
+        "current_revision": None, "current_revision_hash": None,
+        "payload_json": None, "revision_source": None,
+        "confirmed_revision": None, "confirmed_revision_hash": None,
+    }])
+
+    with pytest.raises(FinalizationDataCorruption):
+        await FinalizationRepository().read_current_view(
+            session, "project-1", "session-1",
         )

@@ -27,6 +27,43 @@ async def test_finalization_preparation_queries_compile_on_disposable_schema(
             "00000000-0000-4000-8000-000000000001",
             1,
         ) is None
+        assert await repository.lock_current_attempt(
+            session,
+            "00000000-0000-4000-8000-000000000001",
+            "00000000-0000-4000-8000-000000000002",
+        ) is None
+        assert await repository.lock_change_set_revision(
+            session,
+            "00000000-0000-4000-8000-000000000001",
+            "00000000-0000-4000-8000-000000000003",
+            1,
+            "a" * 64,
+        ) is None
+        assert not await repository.advance_current_revision(
+            session,
+            project_id="00000000-0000-4000-8000-000000000001",
+            session_id="00000000-0000-4000-8000-000000000002",
+            change_set_id="00000000-0000-4000-8000-000000000003",
+            expected_revision=1,
+            expected_revision_hash="a" * 64,
+            next_revision=2,
+            next_revision_hash="b" * 64,
+            updated_at=1,
+        )
+        assert not await repository.confirm_current_revision(
+            session,
+            project_id="00000000-0000-4000-8000-000000000001",
+            session_id="00000000-0000-4000-8000-000000000002",
+            change_set_id="00000000-0000-4000-8000-000000000003",
+            revision=1,
+            revision_hash="a" * 64,
+            confirmed_at=1,
+        )
+        assert await repository.read_current_view(
+            session,
+            "00000000-0000-4000-8000-000000000001",
+            "00000000-0000-4000-8000-000000000002",
+        ) is None
         assert not await repository.mark_terminal(
             session,
             project_id="00000000-0000-4000-8000-000000000001",

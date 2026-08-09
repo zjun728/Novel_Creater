@@ -10,6 +10,8 @@ from backend.domain.finalization import FinalizationChangeSet, QualityFinding
 from backend.domain.json_contracts import canonical_hash
 from backend.gateways.finalization_provider import FinalizationProviderError
 from backend.services.finalization import (
+    ConfirmFinalization,
+    CorrectFinalization,
     FinalizationConflict,
     FinalizationService,
     PrepareFinalization,
@@ -145,6 +147,11 @@ class FakeRepository:
         self.inserted_revisions = []
         self.terminal = []
         self.published = []
+        self.current_attempt = None
+        self.current_revision = None
+        self.advanced = []
+        self.confirmed = []
+        self.view = None
 
     async def lock_project(self, session, project_id):
         return {"id": project_id}
@@ -186,6 +193,25 @@ class FakeRepository:
     async def mark_terminal(self, session, **row):
         self.terminal.append(row)
         return True
+
+    async def lock_current_attempt(self, session, project_id, session_id):
+        return self.current_attempt
+
+    async def lock_change_set_revision(
+        self, session, project_id, change_set_id, revision, content_hash,
+    ):
+        return self.current_revision
+
+    async def advance_current_revision(self, session, **row):
+        self.advanced.append(row)
+        return True
+
+    async def confirm_current_revision(self, session, **row):
+        self.confirmed.append(row)
+        return True
+
+    async def read_current_view(self, session, project_id, session_id):
+        return self.view
 
 
 class TransactionFactory:
@@ -424,3 +450,142 @@ async def test_cancellation_is_recorded_then_propagated_with_priority():
         await service.prepare(_command())
 
     assert repository.terminal[0]["status"] == "cancelled"
+
+
+def _review_service(repository):
+    transactions = TransactionFactory()
+    quality = QualityProvider(transactions)
+    extraction = ExtractionProvider(transactions)
+    service = FinalizationService(
+        transaction_factory=transactions,
+        repository=repository,
+        quality_provider=quality,
+        extraction_provider=extraction,
+        clock=lambda: NOW,
+        id_factory=lambda: "revision-row-2",
+    )
+    return service, transactions, quality, extraction
+
+
+def _awaiting_attempt():
+    change_set = _change_set()
+    command = _command()
+    context_manifest_hash = canonical_hash(
+        FinalizationService._context_manifest(command, 1, _snapshot())
+    )
+    return {
+        "id": "attempt-1",
+        "draft_candidate_id": "candidate-1",
+        "status": "awaiting_author",
+        "candidate_hash": _candidate()["content_hash"],
+        "expected_canon_revision": 0,
+        "expected_planning_hash": HASH_A,
+        "expected_outline_hash": HASH_B,
+        "current_revision": 1,
+        "current_revision_hash": canonical_hash(
+            change_set.model_dump(by_alias=True, mode="json")
+        ),
+        "confirmed_revision": None,
+        "confirmed_revision_hash": None,
+        "context_manifest_hash": context_manifest_hash,
+        "idempotency_key": command.idempotency_key,
+        "request_fingerprint": "d" * 64,
+    }
+
+
+@pytest.mark.asyncio
+async def test_author_correction_appends_one_revision_without_provider():
+    repository = FakeRepository()
+    repository.current_attempt = _awaiting_attempt()
+    service, transactions, quality, extraction = _review_service(repository)
+    corrected = _change_set().model_copy(update={"summary": "作者修正摘要。"})
+
+    result = await service.correct(CorrectFinalization(
+        project_id="project-1",
+        chapter_session_id="session-1",
+        expected_revision=1,
+        expected_revision_hash=repository.current_attempt["current_revision_hash"],
+        change_set=corrected,
+    ))
+
+    assert transactions.count == 1
+    assert quality.calls == extraction.calls == []
+    assert result.current_revision == 2
+    assert repository.inserted_revisions[0]["source"] == "author_correction"
+    assert repository.advanced[0]["expected_revision"] == 1
+
+
+@pytest.mark.asyncio
+async def test_correction_rejects_stale_or_already_confirmed_revision():
+    repository = FakeRepository()
+    repository.current_attempt = _awaiting_attempt()
+    repository.current_attempt["confirmed_revision"] = 1
+    service, _, quality, extraction = _review_service(repository)
+
+    with pytest.raises(FinalizationConflict, match="FINALIZATION_STATE_CONFLICT"):
+        await service.correct(CorrectFinalization(
+            project_id="project-1",
+            chapter_session_id="session-1",
+            expected_revision=1,
+            expected_revision_hash=repository.current_attempt["current_revision_hash"],
+            change_set=_change_set(),
+        ))
+
+    assert quality.calls == extraction.calls == []
+    assert repository.inserted_revisions == []
+
+
+@pytest.mark.asyncio
+async def test_correction_rejects_context_manifest_drift_without_provider():
+    changed = _snapshot()
+    changed["extraction_binding"] = {
+        **changed["extraction_binding"], "revision": 4,
+    }
+    repository = FakeRepository(snapshots=[changed])
+    repository.current_attempt = _awaiting_attempt()
+    service, _, quality, extraction = _review_service(repository)
+
+    with pytest.raises(FinalizationConflict, match="FINALIZATION_STATE_CONFLICT"):
+        await service.correct(CorrectFinalization(
+            project_id="project-1",
+            chapter_session_id="session-1",
+            expected_revision=1,
+            expected_revision_hash=repository.current_attempt["current_revision_hash"],
+            change_set=_change_set(),
+        ))
+
+    assert quality.calls == extraction.calls == []
+    assert repository.inserted_revisions == []
+
+
+@pytest.mark.asyncio
+async def test_confirmation_pins_exact_current_revision_without_provider_or_commit():
+    repository = FakeRepository()
+    repository.current_attempt = _awaiting_attempt()
+    repository.current_revision = {"revision": 1}
+    service, transactions, quality, extraction = _review_service(repository)
+
+    result = await service.confirm(ConfirmFinalization(
+        project_id="project-1",
+        chapter_session_id="session-1",
+        expected_revision=1,
+        expected_revision_hash=repository.current_attempt["current_revision_hash"],
+    ))
+
+    assert transactions.count == 1
+    assert quality.calls == extraction.calls == []
+    assert result.confirmed_revision == 1
+    assert repository.confirmed[0]["revision_hash"] == (
+        repository.current_attempt["current_revision_hash"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_review_returns_repository_public_view_without_provider():
+    repository = FakeRepository()
+    repository.view = {"attemptId": "attempt-1", "status": "awaiting_author"}
+    service, transactions, quality, extraction = _review_service(repository)
+
+    assert await service.get_review("project-1", "session-1") == repository.view
+    assert transactions.count == 1
+    assert quality.calls == extraction.calls == []

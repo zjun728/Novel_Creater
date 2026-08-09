@@ -74,6 +74,65 @@ class PrepareFinalization:
             raise ValueError("expected Canon revision is invalid")
 
 
+def _validate_review_identity(
+    project_id: str,
+    chapter_session_id: str,
+    expected_revision: int,
+    expected_revision_hash: str,
+) -> None:
+    if not all(
+        isinstance(value, str) and value.strip()
+        for value in (project_id, chapter_session_id)
+    ):
+        raise ValueError("finalization identity is invalid")
+    if type(expected_revision) is not int or expected_revision < 1:
+        raise ValueError("finalization revision is invalid")
+    if (
+        not isinstance(expected_revision_hash, str)
+        or len(expected_revision_hash) != _HASH_LENGTH
+        or any(
+            character not in "0123456789abcdef"
+            for character in expected_revision_hash
+        )
+    ):
+        raise ValueError("finalization hash is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class CorrectFinalization:
+    project_id: str
+    chapter_session_id: str
+    expected_revision: int
+    expected_revision_hash: str
+    change_set: FinalizationChangeSet
+
+    def __post_init__(self) -> None:
+        _validate_review_identity(
+            self.project_id,
+            self.chapter_session_id,
+            self.expected_revision,
+            self.expected_revision_hash,
+        )
+        if type(self.change_set) is not FinalizationChangeSet:
+            raise ValueError("Finalization ChangeSet is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class ConfirmFinalization:
+    project_id: str
+    chapter_session_id: str
+    expected_revision: int
+    expected_revision_hash: str
+
+    def __post_init__(self) -> None:
+        _validate_review_identity(
+            self.project_id,
+            self.chapter_session_id,
+            self.expected_revision,
+            self.expected_revision_hash,
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedFinalization:
     attempt_id: str
@@ -83,6 +142,16 @@ class PreparedFinalization:
     current_revision_hash: str | None = None
     hard_blocks: tuple[DeterministicBlock, ...] = ()
     replayed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewedFinalization:
+    attempt_id: str
+    status: str
+    current_revision: int
+    current_revision_hash: str
+    confirmed_revision: int | None = None
+    confirmed_revision_hash: str | None = None
 
 
 def _public_values(values) -> list[dict[str, object]]:
@@ -353,6 +422,186 @@ class FinalizationService:
             if not changed:
                 raise FinalizationConflict("FINALIZATION_STATE_CONFLICT")
 
+    @staticmethod
+    def _require_review_state(attempt, *, revision: int, revision_hash: str):
+        if (
+            not isinstance(attempt, dict)
+            or attempt.get("status") != "awaiting_author"
+            or attempt.get("current_revision") != revision
+            or attempt.get("current_revision_hash") != revision_hash
+            or attempt.get("confirmed_revision") is not None
+            or attempt.get("confirmed_revision_hash") is not None
+        ):
+            raise FinalizationConflict("FINALIZATION_STATE_CONFLICT")
+
+    async def _lock_review_inputs(self, session, command):
+        if await self.repository.lock_project(session, command.project_id) is None:
+            raise FinalizationConflict("FINALIZATION_NOT_FOUND")
+        attempt = await self.repository.lock_current_attempt(
+            session, command.project_id, command.chapter_session_id,
+        )
+        self._require_review_state(
+            attempt,
+            revision=command.expected_revision,
+            revision_hash=command.expected_revision_hash,
+        )
+        candidate_id = attempt.get("draft_candidate_id")
+        if not isinstance(candidate_id, str):
+            raise FinalizationConflict("FINALIZATION_STATE_CONFLICT")
+        chapter_session = await self.repository.lock_session(
+            session, command.project_id, command.chapter_session_id,
+        )
+        candidate = await self.repository.lock_candidate(
+            session, command.project_id, command.chapter_session_id, candidate_id,
+        )
+        if chapter_session is None or candidate is None:
+            raise FinalizationConflict("FINALIZATION_NOT_FOUND")
+        chapter_number = chapter_session.get("chapter_num")
+        if type(chapter_number) is not int or chapter_number < 1:
+            raise FinalizationConflict("FINALIZATION_STATE_CONFLICT")
+        current = await self.repository.lock_current_authority(
+            session, command.project_id, chapter_number,
+        )
+        snapshot = await self.repository.load_preparation_context(
+            session, command.project_id, chapter_number,
+        )
+        if current is None or not isinstance(snapshot, dict):
+            raise FinalizationConflict("FINALIZATION_STATE_CONFLICT")
+        try:
+            frozen_command = PrepareFinalization(
+                project_id=command.project_id,
+                chapter_session_id=command.chapter_session_id,
+                candidate_id=candidate_id,
+                candidate_hash=attempt.get("candidate_hash"),
+                expected_canon_revision=attempt.get("expected_canon_revision"),
+                expected_planning_hash=attempt.get("expected_planning_hash"),
+                expected_outline_hash=attempt.get("expected_outline_hash"),
+                idempotency_key=attempt.get("idempotency_key"),
+            )
+            current_manifest_hash = canonical_hash(self._context_manifest(
+                frozen_command, chapter_number, snapshot,
+            ))
+        except (TypeError, ValueError, FinalizationConflict):
+            raise FinalizationConflict("FINALIZATION_STATE_CONFLICT") from None
+        if current_manifest_hash != attempt.get("context_manifest_hash"):
+            raise FinalizationConflict("FINALIZATION_STATE_CONFLICT")
+        authority = FinalizationAuthority.model_validate({
+            "projectId": command.project_id,
+            "chapterSessionId": command.chapter_session_id,
+            "candidateId": candidate_id,
+            "candidateHash": attempt.get("candidate_hash"),
+            "expectedCanonRevision": attempt.get("expected_canon_revision"),
+            "expectedPlanningHash": attempt.get("expected_planning_hash"),
+            "expectedOutlineHash": attempt.get("expected_outline_hash"),
+            "contextManifestHash": attempt.get("context_manifest_hash", "0" * 64),
+            "idempotencyKey": attempt.get("idempotency_key", "0" * 64),
+            "requestFingerprint": attempt.get("request_fingerprint", "0" * 64),
+        })
+        blocks = run_finalization_prechecks(
+            authority,
+            session=chapter_session,
+            candidate=candidate,
+            current_authority=current,
+            reference_sources=snapshot["reference_sources"],
+            copy_check_completed=True,
+        )
+        if blocks:
+            raise FinalizationConflict("FINALIZATION_STATE_CONFLICT")
+        return attempt, candidate, snapshot
+
+    async def get_review(self, project_id: str, chapter_session_id: str):
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (project_id, chapter_session_id)
+        ):
+            raise ValueError("finalization identity is invalid")
+        async with self.transaction_factory() as session:
+            value = await self.repository.read_current_view(
+                session, project_id, chapter_session_id,
+            )
+        if value is None:
+            raise FinalizationConflict("FINALIZATION_NOT_FOUND")
+        return value
+
+    async def correct(self, command: CorrectFinalization) -> ReviewedFinalization:
+        if type(command) is not CorrectFinalization:
+            raise TypeError("command must be CorrectFinalization")
+        async with self.transaction_factory() as session:
+            attempt, candidate, snapshot = await self._lock_review_inputs(
+                session, command,
+            )
+            validate_change_set_context(
+                command.change_set,
+                candidate_content=candidate["content"],
+                canon_context=snapshot["canon_context"],
+                planning_context=snapshot["planning_context"],
+            )
+            next_revision = command.expected_revision + 1
+            next_hash = change_set_hash(command.change_set)
+            await self.repository.insert_change_set_revision(session, {
+                "id": self._id(),
+                "project_id": command.project_id,
+                "change_set_id": attempt["id"],
+                "revision": next_revision,
+                "change_set": command.change_set,
+                "content_hash": next_hash,
+                "source": ChangeSetSource.AUTHOR_CORRECTION.value,
+                "created_at": self._clock(),
+            })
+            advanced = await self.repository.advance_current_revision(
+                session,
+                project_id=command.project_id,
+                session_id=command.chapter_session_id,
+                change_set_id=attempt["id"],
+                expected_revision=command.expected_revision,
+                expected_revision_hash=command.expected_revision_hash,
+                next_revision=next_revision,
+                next_revision_hash=next_hash,
+                updated_at=self._clock(),
+            )
+            if not advanced:
+                raise FinalizationConflict("FINALIZATION_STATE_CONFLICT")
+        return ReviewedFinalization(
+            attempt_id=attempt["id"],
+            status="awaiting_author",
+            current_revision=next_revision,
+            current_revision_hash=next_hash,
+        )
+
+    async def confirm(self, command: ConfirmFinalization) -> ReviewedFinalization:
+        if type(command) is not ConfirmFinalization:
+            raise TypeError("command must be ConfirmFinalization")
+        async with self.transaction_factory() as session:
+            attempt, _, _ = await self._lock_review_inputs(session, command)
+            revision = await self.repository.lock_change_set_revision(
+                session,
+                command.project_id,
+                attempt["id"],
+                command.expected_revision,
+                command.expected_revision_hash,
+            )
+            if revision is None:
+                raise FinalizationConflict("FINALIZATION_STATE_CONFLICT")
+            confirmed = await self.repository.confirm_current_revision(
+                session,
+                project_id=command.project_id,
+                session_id=command.chapter_session_id,
+                change_set_id=attempt["id"],
+                revision=command.expected_revision,
+                revision_hash=command.expected_revision_hash,
+                confirmed_at=self._clock(),
+            )
+            if not confirmed:
+                raise FinalizationConflict("FINALIZATION_STATE_CONFLICT")
+        return ReviewedFinalization(
+            attempt_id=attempt["id"],
+            status="awaiting_author",
+            current_revision=command.expected_revision,
+            current_revision_hash=command.expected_revision_hash,
+            confirmed_revision=command.expected_revision,
+            confirmed_revision_hash=command.expected_revision_hash,
+        )
+
     async def prepare(self, command: PrepareFinalization) -> PreparedFinalization:
         if type(command) is not PrepareFinalization:
             raise TypeError("command must be PrepareFinalization")
@@ -609,8 +858,11 @@ class FinalizationService:
 
 
 __all__ = [
+    "ConfirmFinalization",
+    "CorrectFinalization",
     "FinalizationConflict",
     "FinalizationService",
     "PrepareFinalization",
     "PreparedFinalization",
+    "ReviewedFinalization",
 ]

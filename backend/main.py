@@ -23,6 +23,7 @@ from backend.routers import (
     chapter_sessions,
     contracts,
     corpus,
+    finalization,
     market_sources,
     model_bindings,
     planning,
@@ -149,6 +150,8 @@ async def lifespan(app: FastAPI):
     application_error = None
     planning_gateway_start_attempted = False
     outline_gateway_start_attempted = False
+    finalization_quality_start_attempted = False
+    finalization_extraction_start_attempted = False
     draft_registry_start_attempted = False
     shutdown_cancellations = 0
     pool_close_transferred = False
@@ -169,6 +172,10 @@ async def lifespan(app: FastAPI):
         await planning.planning_provider_gateway.start()
         outline_gateway_start_attempted = True
         await chapter_outlines.chapter_outline_provider_gateway.start()
+        finalization_quality_start_attempted = True
+        await finalization.finalization_quality_gateway.start()
+        finalization_extraction_start_attempted = True
+        await finalization.finalization_extraction_gateway.start()
         yield
     except BaseException as error:
         application_error = error
@@ -196,6 +203,44 @@ async def lifespan(app: FastAPI):
                 cleanup_errors.append(
                     DraftOperationTaskRegistryLifecycleError(
                         "Draft operation task registry lifecycle failed"
+                    )
+                )
+        if finalization_extraction_start_attempted:
+            extraction_cleanup = asyncio.create_task(
+                _close_planning_provider_gateway(
+                    finalization.finalization_extraction_gateway
+                ),
+                name="finalization-extraction-provider-close",
+            )
+            extraction_close_succeeded, observed_cancellations = (
+                await _settle_independent_cleanup(extraction_cleanup)
+            )
+            extraction_cleanup = None
+            shutdown_cancellations += observed_cancellations
+            observed_cancellations = 0
+            if not extraction_close_succeeded:
+                cleanup_errors.append(
+                    OpenAIJSONTransportLifecycleError(
+                        "OpenAI JSON transport lifecycle failed"
+                    )
+                )
+        if finalization_quality_start_attempted:
+            quality_cleanup = asyncio.create_task(
+                _close_planning_provider_gateway(
+                    finalization.finalization_quality_gateway
+                ),
+                name="finalization-quality-provider-close",
+            )
+            quality_close_succeeded, observed_cancellations = (
+                await _settle_independent_cleanup(quality_cleanup)
+            )
+            quality_cleanup = None
+            shutdown_cancellations += observed_cancellations
+            observed_cancellations = 0
+            if not quality_close_succeeded:
+                cleanup_errors.append(
+                    OpenAIJSONTransportLifecycleError(
+                        "OpenAI JSON transport lifecycle failed"
                     )
                 )
         if outline_gateway_start_attempted:
@@ -335,6 +380,7 @@ app.include_router(bibles.router, prefix="/api")
 app.include_router(planning.router, prefix="/api")
 app.include_router(chapter_outlines.router, prefix="/api")
 app.include_router(chapter_sessions.router, prefix="/api")
+app.include_router(finalization.router, prefix="/api")
 app.include_router(assets.router, prefix="/api")
 app.include_router(corpus.router, prefix="/api")
 app.include_router(canon.router, prefix="/api")
