@@ -26,6 +26,7 @@ from backend.routers import (
     finalization,
     market_sources,
     model_bindings,
+    novel_downloads,
     planning,
     projects,
     providers,
@@ -369,6 +370,7 @@ app.add_middleware(
 )
 
 app.include_router(projects.router, prefix="/api")
+app.include_router(novel_downloads.router, prefix="/api")
 app.include_router(providers.router, prefix="/api")
 app.include_router(application_settings.router, prefix="/api")
 app.include_router(model_bindings.router, prefix="/api")
