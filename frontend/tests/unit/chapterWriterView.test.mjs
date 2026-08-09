@@ -225,3 +225,25 @@ test('selection tools use the existing instruction field with a 1000-scalar loca
   assert.match(view, /\{\{ authorInstructionCount \}\} \/ \{\{ authorInstructionLimit \}\}/)
   assert.equal((view.match(/id="author-instruction"/g) || []).length, 1)
 })
+
+
+test('candidate workbench compares exactly two read-only drafts and loads explicitly', async () => {
+  const view = await source('views/ChapterWriterView.vue')
+
+  assert.match(view, /loadCandidate:\s*\(candidateId, command\)\s*=>\s*chapterSessionStore\.loadCandidate/)
+  assert.match(view, /const selectedCandidateIds = ref\(\[\]\)/)
+  assert.match(view, /const selectedCandidates = computed/)
+  assert.match(view, /selectedCandidateIds\.value\.length >= 2/)
+  assert.match(view, /watch\(candidates,[\s\S]*selectedCandidateIds\.value = selectedCandidateIds\.value\.filter/)
+  assert.match(view, /unicodeScalarLength\(String\(candidate\.content \?\? ''\)\)/)
+  assert.match(view, /candidate\.contentHash\.slice\(0, 8\)/)
+  assert.match(view, /formatCandidateTime\(candidate\.createdAt\)/)
+  assert.match(view, /@click="loadCandidate\(candidate\)"[^>]*>载入为工作稿<\/n-button>/)
+  assert.match(view, /:disabled="candidateSelectionDisabled\(candidate\.id\)"/)
+  assert.match(view, /v-if="selectedCandidates\.length === 2"[\s\S]{0,100}class="candidate-comparison"/)
+  assert.equal((view.match(/class="candidate-comparison-pane"/g) || []).length, 1)
+  assert.match(view, /<pre>\{\{ candidate\.content \}\}<\/pre>/)
+  assert.match(view, /controller\.resetContext\(\)[\s\S]{0,80}selectedCandidateIds\.value = \[\]/)
+  assert.doesNotMatch(view, /v-model[^>]*candidate\.content|contenteditable|融合候选|fusion|diff-match-patch|candidate-modal|history-drawer/)
+  assert.match(view, /workspace-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 320px/)
+})

@@ -46,6 +46,10 @@ const projectId = computed(() => String(route.params.projectId || ''))
 const chapterNumber = computed(() => Number(route.params.chapterNumber))
 const session = computed(() => chapterSessionStore.session)
 const candidates = computed(() => chapterSessionStore.candidates)
+const selectedCandidateIds = ref([])
+const selectedCandidates = computed(() => candidates.value.filter(
+  candidate => selectedCandidateIds.value.includes(candidate.id),
+))
 const confirmedOutline = computed(
   () => outlineAuthority.value?.confirmedOutline || null,
 )
@@ -67,6 +71,11 @@ const controller = createChapterWriterController({
   autosave,
   writeBusy: () => chapterSessionStore.commandBusy,
   freezeCandidate: command => chapterSessionStore.saveCandidate(projectId.value, command),
+  loadCandidate: (candidateId, command) => chapterSessionStore.loadCandidate(
+    projectId.value,
+    candidateId,
+    command,
+  ),
   createDraftOperation: command => chapterSessionStore.createDraftOperation(
     projectId.value,
     command,
@@ -135,6 +144,51 @@ const localCommandDisabled = computed(() => (
   || authorInstructionCount.value > 1_000
 ))
 
+function candidateSelected(candidateId) {
+  return selectedCandidateIds.value.includes(candidateId)
+}
+
+function candidateSelectionDisabled(candidateId) {
+  return controller.actionBusy.value
+    || chapterSessionStore.commandBusy
+    || (!candidateSelected(candidateId) && selectedCandidateIds.value.length >= 2)
+}
+
+function toggleCandidateSelection(candidateId) {
+  if (candidateSelectionDisabled(candidateId)) return
+  if (candidateSelected(candidateId)) {
+    selectedCandidateIds.value = selectedCandidateIds.value.filter(
+      value => value !== candidateId,
+    )
+    return
+  }
+  if (selectedCandidateIds.value.length >= 2) return
+  selectedCandidateIds.value = [...selectedCandidateIds.value, candidateId]
+}
+
+function candidateCharacterCount(candidate) {
+  return unicodeScalarLength(String(candidate.content ?? ''))
+}
+
+function formatCandidateTime(createdAt) {
+  const date = new Date(createdAt)
+  if (!Number.isFinite(date.getTime())) return '时间未知'
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date)
+}
+
+watch(candidates, nextCandidates => {
+  const ids = new Set(nextCandidates.map(candidate => candidate.id))
+  selectedCandidateIds.value = selectedCandidateIds.value.filter(
+    candidateId => ids.has(candidateId),
+  )
+}, { flush: 'sync' })
+
 function savedTime() {
   const now = new Date()
   return [now.getHours(), now.getMinutes(), now.getSeconds()]
@@ -152,6 +206,7 @@ watch(() => autosave.persistedRevision.value, updateLastSavedAt, { flush: 'sync'
 
 async function loadWorkspace(nextProjectId, nextChapterNumber) {
   controller.resetContext()
+  selectedCandidateIds.value = []
   lastSavedAt.value = ''
   const targetProjectId = String(nextProjectId || '')
   const targetChapterNumber = Number(nextChapterNumber)
@@ -249,6 +304,16 @@ async function saveCandidate() {
     if (!result) actionError.value = '当前工作稿未能安全暂存，请稍后重试。'
   } catch {
     actionError.value = '当前工作稿未能保存为候选，请稍后重试。'
+  }
+}
+
+async function loadCandidate(candidate) {
+  actionError.value = ''
+  try {
+    const result = await controller.loadCandidate(candidate)
+    if (!result) actionError.value = '候选稿未能安全载入，请稍后重试。'
+  } catch {
+    actionError.value = '候选稿未能安全载入，请刷新后重试。'
   }
 }
 
@@ -454,12 +519,37 @@ onBeforeUnmount(() => {
           <n-card title="候选稿" :bordered="false">
             <n-statistic label="已保存候选" :value="candidates.length" />
             <ol v-if="candidates.length" class="candidate-list">
-              <li v-for="candidate in candidates" :key="candidate.id">
-                revision {{ candidate.workingDraftRevision }}
+              <li v-for="(candidate, index) in candidates" :key="candidate.id" class="candidate-item">
+                <label class="candidate-select">
+                  <input
+                    type="checkbox"
+                    :checked="candidateSelected(candidate.id)"
+                    :disabled="candidateSelectionDisabled(candidate.id)"
+                    :aria-label="`选择候选 ${index + 1} 进行比较`"
+                    @change="toggleCandidateSelection(candidate.id)"
+                  >
+                  <strong>候选 {{ index + 1 }}</strong>
+                </label>
                 <span class="candidate-basis" :class="candidate.basisStatus === 'current' ? 'candidate-basis--current' : 'candidate-basis--stale'">{{ candidate.basisStatus === 'current' ? '依据当前小纲' : '依据旧小纲，不能定稿' }}</span>
+                <span class="candidate-meta">{{ candidateCharacterCount(candidate) }} 字 · {{ candidate.contentHash.slice(0, 8) }} · {{ formatCandidateTime(candidate.createdAt) }}</span>
+                <n-button size="tiny" secondary :disabled="commandDisabled" :loading="controller.actionBusy.value" @click="loadCandidate(candidate)">载入为工作稿</n-button>
               </li>
             </ol>
             <p v-else class="muted">暂无候选。工作稿会自动暂存，按需保存为候选。</p>
+            <section
+              v-if="selectedCandidates.length === 2"
+              class="candidate-comparison"
+              aria-label="候选稿只读比较"
+            >
+              <article
+                v-for="candidate in selectedCandidates"
+                :key="candidate.id"
+                class="candidate-comparison-pane"
+              >
+                <strong>候选 {{ candidates.findIndex(item => item.id === candidate.id) + 1 }}</strong>
+                <pre>{{ candidate.content }}</pre>
+              </article>
+            </section>
           </n-card>
         </aside>
       </section>
@@ -507,9 +597,17 @@ h1 { margin: 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: clamp(3
 .outline-summary div { display: grid; gap: 3px; }
 .outline-summary dt { color: #967548; font-size: 11px; font-weight: 800; letter-spacing: .08em; }
 .outline-summary dd { margin: 0; color: #6f6559; font-size: 13px; line-height: 1.65; }
-.candidate-list { margin: 14px 0 0; padding-left: 20px; color: #675d51; font-size: 13px; }
+.candidate-list { display: grid; gap: 10px; margin: 14px 0 0; padding: 0; color: #675d51; font-size: 13px; list-style: none; }
+.candidate-item { display: grid; gap: 7px; border: 1px solid #e1d6c4; border-radius: 9px; padding: 10px; background: #fffaf1; }
+.candidate-select { display: flex; align-items: center; gap: 8px; color: #453b31; cursor: pointer; }
+.candidate-select input { accent-color: #8b5c25; }
 .candidate-basis { display: block; margin-top: 4px; font-size: 12px; }
 .candidate-basis--current { color: #487252; }
 .candidate-basis--stale { color: #a35b42; }
+.candidate-meta { color: #8a7d6d; font-size: 11px; line-height: 1.5; }
+.candidate-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 14px; border-top: 1px solid #ddd0bc; padding-top: 14px; }
+.candidate-comparison-pane { min-width: 0; border-radius: 8px; padding: 9px; background: #f6efe2; }
+.candidate-comparison-pane > strong { color: #76552f; font-size: 11px; }
+.candidate-comparison-pane pre { overflow: auto; max-height: 260px; margin: 7px 0 0; color: #40372d; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.7 Georgia, 'Noto Serif SC', serif; }
 @media (max-width: 900px) { .workspace-grid { grid-template-columns: 1fr; } .writer-hero { align-items: flex-start; flex-direction: column; } }
 </style>
