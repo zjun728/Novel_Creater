@@ -163,6 +163,12 @@ def install_lifespan_fakes(monkeypatch, verify_error=None):
     monkeypatch.setattr(main, "verify_schema_version", fake_verify)
     monkeypatch.setattr(main, "close_pool", fake_close_pool)
     monkeypatch.setattr(
+        main.project_packages,
+        "cleanup_stale_project_package_roots",
+        lambda _temp_parent: 0,
+        raising=False,
+    )
+    monkeypatch.setattr(
         main,
         "build_market_scheduler_runtime",
         fake_build_runtime,
@@ -189,6 +195,60 @@ def install_lifespan_fakes(monkeypatch, verify_error=None):
         FakeDraftOperationTaskRegistry(),
     )
     return events
+
+
+@pytest.mark.asyncio
+async def test_lifespan_runs_one_bounded_project_package_cleanup_before_services(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+
+    def cleanup(temp_parent):
+        assert temp_parent is main.project_packages.PROJECT_PACKAGE_TEMP_PARENT
+        events.append("project-package-stale-cleanup")
+
+    monkeypatch.setattr(
+        main.project_packages,
+        "cleanup_stale_project_package_roots",
+        cleanup,
+    )
+    context = main.lifespan(main.app)
+
+    await context.__aenter__()
+    await context.__aexit__(None, None, None)
+
+    assert events.count("project-package-stale-cleanup") == 1
+    assert events.index("project-package-stale-cleanup") < events.index("verify")
+    assert events.index("project-package-stale-cleanup") < events.index(
+        "scheduler-build"
+    )
+
+
+@pytest.mark.asyncio
+async def test_lifespan_stale_cleanup_failure_logs_only_safe_code_and_still_closes_pool(
+    monkeypatch,
+    caplog,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    secret = "PRIVATE_STALE_PATH_DSN_SECRET_SENTINEL"
+
+    def fail_cleanup(_temp_parent):
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(
+        main.project_packages,
+        "cleanup_stale_project_package_roots",
+        fail_cleanup,
+    )
+    context = main.lifespan(main.app)
+
+    with caplog.at_level("WARNING", logger="backend.project_packages"):
+        await context.__aenter__()
+        await context.__aexit__(None, None, None)
+
+    assert events.count("close") == 1
+    assert "project_package_stale_cleanup_failed" in caplog.text
+    assert secret not in caplog.text
 
 
 def test_planning_generation_service_uses_the_exposed_gateway_handle():

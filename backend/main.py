@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+import logging
 import os
 from pathlib import Path
 
@@ -28,6 +29,7 @@ from backend.routers import (
     model_bindings,
     novel_downloads,
     planning,
+    project_packages,
     projects,
     providers,
     seeds,
@@ -39,6 +41,9 @@ from backend.runtime.market_scheduler import build_market_scheduler_runtime
 from backend.schema_version import verify_schema_version
 from backend.security.paths import resolve_spa_file
 from backend.security.redaction import install_error_handlers
+
+
+_project_package_logger = logging.getLogger("backend.project_packages")
 
 
 class DraftOperationTaskRegistryLifecycleError(RuntimeError):
@@ -146,6 +151,15 @@ async def lifespan(app: FastAPI):
         raise DraftOperationTaskRegistryLifecycleError(
             "Draft operation task registry lifecycle failed"
         ) from None
+
+    try:
+        project_packages.cleanup_stale_project_package_roots(
+            project_packages.PROJECT_PACKAGE_TEMP_PARENT
+        )
+    except Exception:
+        _project_package_logger.warning(
+            "project_package_stale_cleanup_failed"
+        )
 
     scheduler_runtime = None
     application_error = None
@@ -371,6 +385,7 @@ app.add_middleware(
 
 app.include_router(projects.router, prefix="/api")
 app.include_router(novel_downloads.router, prefix="/api")
+app.include_router(project_packages.router, prefix="/api")
 app.include_router(providers.router, prefix="/api")
 app.include_router(application_settings.router, prefix="/api")
 app.include_router(model_bindings.router, prefix="/api")
