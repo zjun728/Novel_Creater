@@ -2337,6 +2337,13 @@ export const api = {
         idempotencyKey: data.idempotencyKey,
       },
     ),
+    loadCandidate: (projectId, sessionId, candidateId, data) => post(
+      `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/candidates/${segment(candidateId)}/load`,
+      {
+        expectedWorkingDraftRevision: data.expectedWorkingDraftRevision,
+        expectedContentHash: data.expectedContentHash,
+      },
+    ),
   },
 
   canon: {

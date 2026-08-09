@@ -9,6 +9,7 @@ import { useChapterSessionStore } from '../../src/stores/chapterSessionStore.js'
 function workspace({
   chapterNumber = 1,
   content = '',
+  contentHash = 'a'.repeat(64),
   revision = 1,
   candidates = [],
   activeDraftOperationId = null,
@@ -39,9 +40,28 @@ function workspace({
     workingDraft: {
       id: `draft-${chapterNumber}`, projectId: 'project-1',
       chapterSessionId: sessionId,
-      revision, content, contentHash: 'a'.repeat(64),
+      revision, content, contentHash,
     },
-    candidates,
+    candidates: candidates.map((candidate, index) => ({
+      id: `candidate-${index + 1}`,
+      projectId: 'project-1',
+      chapterSessionId: sessionId,
+      workingDraftRevision: 1,
+      content: `候选正文 ${index + 1}`,
+      contentHash: 'e'.repeat(64),
+      outlineRevisionId: 'outline-revision-1',
+      outlineRevision: 3,
+      outlineHash: 'c'.repeat(64),
+      planningRevisionId: 'planning-revision-1',
+      planningRevision: 1,
+      planningHash: 'a'.repeat(64),
+      canonRevision: 0,
+      projectionRevision: 0,
+      projectionHash: 'd'.repeat(64),
+      basisStatus: 'current',
+      createdAt: 2_010_000_000_000 + index,
+      ...candidate,
+    })),
   }
 }
 
@@ -631,7 +651,7 @@ test('candidate boundary allowlists public fields and rejects non-string hashes'
       Object.keys(store.candidates[3]).sort(),
       [
         'id', 'projectId', 'chapterSessionId', 'workingDraftRevision',
-        'content', 'contentHash', 'basisStatus', ...Object.keys(basis),
+        'content', 'contentHash', 'createdAt', 'basisStatus', ...Object.keys(basis),
       ].sort(),
     )
   })
@@ -1157,5 +1177,124 @@ test('workspace reload preserves only a canonical active draft operation id and 
     const store = useChapterSessionStore()
     await assert.rejects(store.load('project-1', 1), TypeError)
     assert.equal(store.workspace, null)
+  })
+})
+
+
+test('candidate load sends exact authority and adopts only calibrated workspace', async () => {
+  const candidate = {
+    id: 'candidate-1',
+    workingDraftRevision: 1,
+    content: '候选正文甲',
+    contentHash: 'e'.repeat(64),
+  }
+  const calls = []
+  await withApiMethods([
+    [api.chapterSessions, 'get', async () => workspace({ candidates: [candidate] })],
+    [api.chapterSessions, 'loadCandidate', async (...args) => {
+      calls.push(structuredClone(args))
+      return workspace({
+        revision: 2,
+        content: candidate.content,
+        contentHash: candidate.contentHash,
+        candidates: [candidate],
+      })
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useChapterSessionStore()
+    await store.load('project-1', 1)
+
+    const result = await store.loadCandidate(
+      'project-1', candidate.id, {
+        expectedWorkingDraftRevision: 1,
+        expectedContentHash: 'a'.repeat(64),
+      },
+    )
+
+    assert.deepEqual(calls, [[
+      'project-1', 'session-1', candidate.id, {
+        expectedWorkingDraftRevision: 1,
+        expectedContentHash: 'a'.repeat(64),
+      },
+    ]])
+    assert.equal(result.workingDraft.revision, 2)
+    assert.equal(store.workingDraft.content, candidate.content)
+    assert.equal(store.candidates[0].createdAt, 2_010_000_000_000)
+    assert.equal(store.loadingCandidate, false)
+  })
+})
+
+
+test('candidate load rejects malformed authority without replacing current workspace', async () => {
+  const candidate = {
+    id: 'candidate-1', content: '候选正文甲', contentHash: 'e'.repeat(64),
+  }
+  await withApiMethods([
+    [api.chapterSessions, 'get', async () => workspace({
+      content: '当前正文', candidates: [candidate],
+    })],
+    [api.chapterSessions, 'loadCandidate', async () => workspace({
+      revision: 3,
+      content: '服务端错误拼装',
+      contentHash: 'f'.repeat(64),
+      candidates: [candidate],
+    })],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useChapterSessionStore()
+    await store.load('project-1', 1)
+
+    await assert.rejects(
+      store.loadCandidate('project-1', candidate.id, {
+        expectedWorkingDraftRevision: 1,
+        expectedContentHash: 'a'.repeat(64),
+      }),
+      /Invalid candidate load workspace/,
+    )
+
+    assert.equal(store.workingDraft.content, '当前正文')
+    assert.equal(store.error.code, 'request_failed')
+    assert.equal(store.loadingCandidate, false)
+  })
+})
+
+
+test('candidate createdAt and load identity fail closed', async () => {
+  await withApiMethods([
+    [api.chapterSessions, 'get', async () => workspace({
+      candidates: [{ id: 'candidate-1', createdAt: 'yesterday' }],
+    })],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useChapterSessionStore()
+    await assert.rejects(store.load('project-1', 1), /Invalid candidate/)
+  })
+})
+
+
+test('late candidate load is fenced before response calibration or adoption', async () => {
+  const candidate = {
+    id: 'candidate-1', content: '候选正文甲', contentHash: 'e'.repeat(64),
+  }
+  const gate = deferred()
+  await withApiMethods([
+    [api.chapterSessions, 'get', async () => workspace({ candidates: [candidate] })],
+    [api.chapterSessions, 'loadCandidate', async () => gate.promise],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useChapterSessionStore()
+    await store.load('project-1', 1)
+    const pending = store.loadCandidate('project-1', candidate.id, {
+      expectedWorkingDraftRevision: 1,
+      expectedContentHash: 'a'.repeat(64),
+    })
+    store.invalidate()
+    gate.resolve({ candidates: [{ createdAt: 'malformed-late' }] })
+
+    assert.equal(await pending, null)
+    assert.equal(store.workingDraft.revision, 1)
+    assert.equal(store.error, null)
+    assert.equal(store.loadingCandidate, false)
   })
 })

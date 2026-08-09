@@ -34,9 +34,48 @@ function unavailable(label) {
   return () => Promise.reject(new TypeError(`${label} is required`))
 }
 
+function candidateSnapshot(value) {
+  if (
+    !value
+    || typeof value.id !== 'string'
+    || !value.id
+    || typeof value.content !== 'string'
+    || typeof value.contentHash !== 'string'
+    || !CONTENT_HASH.test(value.contentHash)
+  ) throw new TypeError('candidate is required')
+  return Object.freeze({
+    id: value.id,
+    content: value.content,
+    contentHash: value.contentHash,
+  })
+}
+
+function requireCandidateLoadResult(result, candidate, authority) {
+  const sessionId = result?.session?.id
+  const draft = result?.workingDraft
+  const returnedCandidate = Array.isArray(result?.candidates)
+    ? result.candidates.find(item => item?.id === candidate.id)
+    : null
+  if (
+    typeof result?.projectId !== 'string'
+    || !result.projectId
+    || result.activeDraftOperationId !== null
+    || typeof sessionId !== 'string'
+    || !sessionId
+    || draft?.chapterSessionId !== sessionId
+    || draft?.revision !== authority.revision + 1
+    || draft?.content !== candidate.content
+    || draft?.contentHash !== candidate.contentHash
+    || returnedCandidate?.content !== candidate.content
+    || returnedCandidate?.contentHash !== candidate.contentHash
+  ) throw new TypeError('Invalid candidate load workspace')
+  return result
+}
+
 export function createChapterWriterController({
   autosave,
   freezeCandidate: freezeCandidateRequest,
+  loadCandidate: loadCandidateRequest,
   createDraftOperation,
   readDraftOperation,
   listDraftOperationEvents,
@@ -302,6 +341,38 @@ export function createChapterWriterController({
     }
   }
 
+  async function loadCandidate(candidateValue) {
+    const token = claimAction('candidate-load')
+    if (token === null) return false
+    undoEligibilityState.value = null
+    restoredSelectionState.value = null
+    try {
+      const candidate = candidateSnapshot(candidateValue)
+      if (typeof loadCandidateRequest !== 'function') {
+        throw new TypeError('loadCandidate is required')
+      }
+      if (!await flushPersistedDraft() || !isActionCurrent(token)) return false
+      const fence = {
+        editGeneration,
+        contextGeneration,
+        visibleText: autosave.text?.value,
+      }
+      const authority = persistedAuthority(autosave)
+      const result = await loadCandidateRequest(candidate.id, {
+        expectedWorkingDraftRevision: authority.revision,
+        expectedContentHash: authority.contentHash,
+      })
+      if (!isActionCurrent(token)) return null
+      const calibrated = requireCandidateLoadResult(
+        result, candidate, authority,
+      )
+      resyncIfUnchanged(calibrated, fence)
+      return calibrated
+    } finally {
+      releaseAction(token)
+    }
+  }
+
   async function generateWorkingDraft() {
     const token = claimAction('generate')
     if (token === null) return false
@@ -559,6 +630,7 @@ export function createChapterWriterController({
   return {
     beforeUnloadRisk,
     saveCandidate,
+    loadCandidate,
     generateWorkingDraft,
     retryUnknown,
     resumeDraftOperation,

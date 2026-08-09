@@ -273,6 +273,107 @@ test('candidate freeze flushes first and uses post-flush authority with one UUID
   assert.equal(state.resetCalls.length, 1)
 })
 
+test('candidate load flushes first, freezes identity, and adopts calibrated workspace', async () => {
+  const candidate = {
+    id: 'candidate-1',
+    content: '候选正文甲',
+    contentHash: FLUSHED_HASH,
+  }
+  const state = autosave({ text: '当前可见正文', revision: 4, hash: HASH })
+  const calls = []
+  state.flush = async () => {
+    calls.push('flush')
+    state.persistedRevision.value = 5
+    state.persistedHash.value = HASH
+    state.dirty.value = false
+    state.status.value = 'saved'
+    return true
+  }
+  const result = {
+    projectId: PROJECT_ID,
+    activeDraftOperationId: null,
+    session: { id: SESSION_ID },
+    workingDraft: {
+      chapterSessionId: SESSION_ID,
+      revision: 6,
+      content: candidate.content,
+      contentHash: candidate.contentHash,
+    },
+    candidates: [candidate],
+  }
+  const controller = createChapterWriterController({
+    autosave: state,
+    loadCandidate: async (candidateId, command) => {
+      calls.push(['load', candidateId, command])
+      return result
+    },
+  })
+
+  assert.equal(await controller.loadCandidate(candidate), result)
+  assert.deepEqual(calls, [
+    'flush',
+    ['load', 'candidate-1', {
+      expectedWorkingDraftRevision: 5,
+      expectedContentHash: HASH,
+    }],
+  ])
+  assert.deepEqual(state.resetCalls, [result])
+  assert.equal(controller.actionBusy.value, false)
+  assert.equal(controller.undoAvailable.value, false)
+})
+
+test('candidate load preserves editor and rejects malformed or late workspace', async () => {
+  const candidate = {
+    id: 'candidate-1', content: '候选正文甲', contentHash: FLUSHED_HASH,
+  }
+  const state = autosave({ text: '作者当前正文', revision: 4, hash: HASH })
+  const gate = deferred()
+  const started = deferred()
+  const controller = createChapterWriterController({
+    autosave: state,
+    loadCandidate: async () => {
+      started.resolve()
+      return gate.promise
+    },
+  })
+  const pending = controller.loadCandidate(candidate)
+  await started.promise
+  controller.resetContext()
+  gate.resolve({
+    projectId: PROJECT_ID,
+    activeDraftOperationId: null,
+    session: { id: SESSION_ID },
+    workingDraft: {
+      chapterSessionId: SESSION_ID,
+      revision: 5,
+      content: '错误正文',
+      contentHash: 'f'.repeat(64),
+    },
+    candidates: [candidate],
+  })
+
+  assert.equal(await pending, null)
+  assert.equal(state.text.value, '作者当前正文')
+  assert.deepEqual(state.resetCalls, [])
+
+  const malformed = createChapterWriterController({
+    autosave: state,
+    loadCandidate: async () => ({
+      workingDraft: {
+        revision: 5,
+        content: '错误正文',
+        contentHash: 'f'.repeat(64),
+      },
+      candidates: [candidate],
+    }),
+  })
+  await assert.rejects(
+    malformed.loadCandidate(candidate),
+    /Invalid candidate load workspace/,
+  )
+  assert.deepEqual(state.resetCalls, [])
+})
+
 test('streaming preview owns editorText during generation without editing autosave', async () => {
   const state = autosave({ text: '作者原正文', revision: 4, hash: HASH })
   const statusRead = deferred()

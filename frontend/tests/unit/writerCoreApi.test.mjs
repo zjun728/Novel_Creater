@@ -1222,6 +1222,13 @@ test('chapter session client separates session draft and explicit candidate writ
       apiKey: 'must-not-send',
       provider: 'must-not-send',
     })
+    await api.chapterSessions.loadCandidate(
+      'project-1', 'session-1', 'candidate/1', {
+        expectedWorkingDraftRevision: 4,
+        expectedContentHash: 'c'.repeat(64),
+        apiKey: 'must-not-send',
+      },
+    )
   })
 
   assert.deepEqual(calls.map(call => [call.options.method, new URL(call.url).pathname]), [
@@ -1229,6 +1236,7 @@ test('chapter session client separates session draft and explicit candidate writ
     ['POST', '/api/projects/project-1/chapter-sessions/1'],
     ['PUT', '/api/projects/project-1/chapter-sessions/session-1/working-draft'],
     ['POST', '/api/projects/project-1/chapter-sessions/session-1/candidates'],
+    ['POST', '/api/projects/project-1/chapter-sessions/session-1/candidates/candidate%2F1/load'],
   ])
   assert.equal(bodyOf(calls[0]), undefined)
   assert.deepEqual(bodyOf(calls[1]), {
@@ -1248,6 +1256,10 @@ test('chapter session client separates session draft and explicit candidate writ
     expectedWorkingDraftRevision: 3,
     expectedContentHash: 'b'.repeat(64),
     idempotencyKey: '11111111-1111-1111-1111-111111111111',
+  })
+  assert.deepEqual(bodyOf(calls[4]), {
+    expectedWorkingDraftRevision: 4,
+    expectedContentHash: 'c'.repeat(64),
   })
 })
 

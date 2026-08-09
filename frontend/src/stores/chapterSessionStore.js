@@ -75,6 +75,25 @@ function requireCandidateCommand(command) {
   })
 }
 
+function requireCandidateLoadCommand(command) {
+  const fields = ['expectedWorkingDraftRevision', 'expectedContentHash']
+  if (
+    !command
+    || typeof command !== 'object'
+    || Array.isArray(command)
+    || Object.keys(command).length !== fields.length
+    || fields.some(field => !Object.hasOwn(command, field))
+    || !Number.isInteger(command.expectedWorkingDraftRevision)
+    || command.expectedWorkingDraftRevision < 1
+    || typeof command.expectedContentHash !== 'string'
+    || !CONTENT_HASH.test(command.expectedContentHash)
+  ) throw new TypeError('candidate load command is required')
+  return Object.freeze({
+    expectedWorkingDraftRevision: command.expectedWorkingDraftRevision,
+    expectedContentHash: command.expectedContentHash,
+  })
+}
+
 function requireUndoCommand(command) {
   const fields = [
     'expectedWorkingDraftRevision', 'expectedContentHash', 'sourceOperationId',
@@ -118,6 +137,7 @@ const CANDIDATE_PUBLIC_FIELDS = Object.freeze([
   'workingDraftRevision',
   'content',
   'contentHash',
+  'createdAt',
 ])
 const SESSION_PUBLIC_FIELDS = Object.freeze([
   'id', 'projectId', 'planningRevisionId', 'planningRevision', 'planningHash',
@@ -160,6 +180,9 @@ function candidateBasisIsSafe(candidate) {
 
 function normalizeCandidate(candidate) {
   const source = candidate && typeof candidate === 'object' ? candidate : {}
+  if (!Number.isSafeInteger(source.createdAt) || source.createdAt < 0) {
+    throw new TypeError('Invalid candidate createdAt')
+  }
   const basisStatus = source.basisStatus
   const basisIsSafe = (
     (basisStatus === 'current' || basisStatus === 'stale')
@@ -177,6 +200,35 @@ function normalizeCandidate(candidate) {
     ...basis,
     basisStatus: basisIsSafe ? basisStatus : 'stale',
   }
+}
+
+function requireCandidateLoadWorkspace(
+  nextWorkspace,
+  current,
+  candidate,
+  command,
+) {
+  const normalized = normalizeWorkspace(nextWorkspace)
+  const returnedCandidate = normalized?.candidates?.find(
+    item => item.id === candidate.id,
+  )
+  if (
+    normalized?.projectId !== current.projectId
+    || normalized?.activeDraftOperationId !== null
+    || normalized?.session?.id !== current.session.id
+    || normalized?.workingDraft?.chapterSessionId !== current.session.id
+    || normalized?.workingDraft?.revision
+      !== command.expectedWorkingDraftRevision + 1
+    || normalized?.workingDraft?.content !== candidate.content
+    || normalized?.workingDraft?.contentHash !== candidate.contentHash
+    || !returnedCandidate
+    || returnedCandidate.projectId !== current.projectId
+    || returnedCandidate.chapterSessionId !== current.session.id
+    || returnedCandidate.content !== candidate.content
+    || returnedCandidate.contentHash !== candidate.contentHash
+    || returnedCandidate.createdAt !== candidate.createdAt
+  ) throw new TypeError('Invalid candidate load workspace')
+  return normalized
 }
 
 function normalizeWorkspace(nextWorkspace) {
@@ -236,11 +288,13 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
   const creating = ref(false)
   const savingDraft = ref(false)
   const savingCandidate = ref(false)
+  const loadingCandidate = ref(false)
   const undoingDraft = ref(false)
   const loadGuard = createLatestRequestGuard()
   const createGuard = createLatestRequestGuard()
   const draftGuard = createLatestRequestGuard()
   const candidateGuard = createLatestRequestGuard()
+  const candidateLoadGuard = createLatestRequestGuard()
   const authoritativeEntryGuard = createLatestRequestGuard()
   const undoGuard = createLatestRequestGuard()
   let stateGeneration = 0
@@ -255,11 +309,13 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     creating.value
     || savingDraft.value
     || savingCandidate.value
+    || loadingCandidate.value
     || undoingDraft.value
   ))
   const commandBusy = computed(() => (
     creating.value
     || savingCandidate.value
+    || loadingCandidate.value
     || undoingDraft.value
   ))
   const busy = computed(() => loading.value || writeBusy.value)
@@ -269,6 +325,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     creating.value = false
     savingDraft.value = false
     savingCandidate.value = false
+    loadingCandidate.value = false
     undoingDraft.value = false
   }
 
@@ -290,6 +347,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
       createGuard.invalidate()
       draftGuard.invalidate()
       candidateGuard.invalidate()
+      candidateLoadGuard.invalidate()
       authoritativeEntryGuard.invalidate()
       undoGuard.invalidate()
       workspace.value = null
@@ -703,6 +761,63 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     return { projectId: context.projectId, sessionId: current.session.id }
   }
 
+  async function loadCandidate(nextProjectId, candidateId, command) {
+    const {
+      projectId: targetProjectId,
+      chapterNumber: targetChapterNumber,
+    } = enterContext(nextProjectId, chapterNumber.value)
+    assertWriteAvailable()
+    const writeCommand = requireCandidateLoadCommand(command)
+    const current = requireWorkspace(workspace.value)
+    const candidate = current.candidates.find(item => item.id === candidateId)
+    if (
+      !candidate
+      || candidate.projectId !== targetProjectId
+      || candidate.chapterSessionId !== current.session.id
+      || typeof candidate.content !== 'string'
+      || typeof candidate.contentHash !== 'string'
+      || !CONTENT_HASH.test(candidate.contentHash)
+    ) throw new TypeError('candidate load identity is required')
+    const generation = candidateLoadGuard.begin()
+    const targetStateGeneration = stateGeneration
+    loadingCandidate.value = true
+    try {
+      const loaded = await api.chapterSessions.loadCandidate(
+        targetProjectId,
+        current.session.id,
+        candidate.id,
+        writeCommand,
+      )
+      if (!isCurrent(
+        candidateLoadGuard,
+        generation,
+        targetProjectId,
+        targetChapterNumber,
+        targetStateGeneration,
+      )) return null
+      const normalized = requireCandidateLoadWorkspace(
+        loaded, current, candidate, writeCommand,
+      )
+      acceptWorkspace(normalized)
+      return normalized
+    } catch (failure) {
+      if (isCurrent(
+        candidateLoadGuard,
+        generation,
+        targetProjectId,
+        targetChapterNumber,
+        targetStateGeneration,
+      )) error.value = publicError(failure)
+      throw failure
+    } finally {
+      if (
+        projectId.value === targetProjectId
+        && chapterNumber.value === targetChapterNumber
+        && candidateLoadGuard.isCurrent(generation)
+      ) loadingCandidate.value = false
+    }
+  }
+
   async function createDraftOperation(nextProjectId, command) {
     const context = operationContext(nextProjectId)
     return api.chapterSessions.createDraftOperation(
@@ -805,6 +920,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     createGuard.invalidate()
     draftGuard.invalidate()
     candidateGuard.invalidate()
+    candidateLoadGuard.invalidate()
     authoritativeEntryGuard.invalidate()
     undoGuard.invalidate()
     resetPendingFlags()
@@ -819,6 +935,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     creating,
     savingDraft,
     savingCandidate,
+    loadingCandidate,
     undoingDraft,
     session,
     workingDraft,
@@ -838,6 +955,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     undoLocalDraft,
     reloadCurrentWorkspace,
     saveCandidate,
+    loadCandidate,
     invalidate,
   }
 })
