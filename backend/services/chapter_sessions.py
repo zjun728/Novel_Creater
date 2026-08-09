@@ -549,7 +549,7 @@ class ChapterSessionService:
                 command.candidate_id,
             )
             if candidate is None:
-                raise ChapterSessionConflict("candidate is unavailable")
+                raise ChapterSessionNotFound("candidate is unavailable")
             content = candidate.get("content")
             content_hash = candidate.get("content_hash")
             try:

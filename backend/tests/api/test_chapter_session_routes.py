@@ -22,6 +22,8 @@ class FakeChapterSessionService:
         self.saved_content = ""
         self.saved_expected_content_hash = None
         self.candidate_commands = []
+        self.load_candidate_commands = []
+        self.load_error = None
         self.candidates = ()
         self.create_error = None
         self.active_draft_operation_id = ACTIVE_OPERATION_ID
@@ -101,10 +103,31 @@ class FakeChapterSessionService:
             projection_revision=0,
             projection_hash="d" * 64,
             basis_status="current",
+            created_at=2_010_000_000_000,
             status="drafting",
         )
         self.candidates = (candidate,)
         return CandidateSaveResult(self.workspace(), candidate.id)
+
+    async def load_candidate(self, command):
+        if self.load_error is not None:
+            raise self.load_error
+        self.load_candidate_commands.append(command)
+        candidate = next(
+            (item for item in self.candidates if item.id == command.candidate_id),
+            None,
+        )
+        if candidate is None:
+            from backend.services.chapter_sessions import ChapterSessionNotFound
+
+            raise ChapterSessionNotFound("secret candidate lookup")
+        self.draft = WorkingDraftView(
+            id="draft-1", project_id="p1", chapter_session_id="session-1",
+            revision=command.expected_working_draft_revision + 1,
+            content=candidate.content, content_hash=candidate.content_hash,
+            source_payload={"source": "candidate-load"}, status="drafting",
+        )
+        return self.workspace()
 
 
 def make_client():
@@ -375,7 +398,98 @@ def test_chapter_session_public_workspace_exports_only_candidate_basis_fields():
     assert candidate["projectionRevision"] == 0
     assert candidate["projectionHash"] == "d" * 64
     assert candidate["basisStatus"] == "current"
+    assert candidate["createdAt"] == 2_010_000_000_000
     assert "provenance" not in candidate
     assert "basisHash" not in candidate
     assert "provider" not in candidate
     assert "prompt" not in candidate
+
+
+def test_load_candidate_route_uses_exact_closed_command_and_returns_workspace():
+    client, service = make_client()
+    client.post(
+        "/api/projects/p1/chapter-sessions/session-1/candidates",
+        json={
+            "expectedWorkingDraftRevision": 1,
+            "expectedContentHash": "e3b0c442" + "0" * 56,
+            "idempotencyKey": FREEZE_KEY,
+        },
+    )
+
+    response = client.post(
+        "/api/projects/p1/chapter-sessions/session-1/candidates/candidate-1/load",
+        json={
+            "expectedWorkingDraftRevision": 1,
+            "expectedContentHash": "e3b0c442" + "0" * 56,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["workingDraft"] == {
+        "id": "draft-1",
+        "projectId": "p1",
+        "chapterSessionId": "session-1",
+        "revision": 2,
+        "content": "",
+        "contentHash": "e3b0c442" + "0" * 56,
+    }
+    assert response.json()["candidates"][0]["createdAt"] == 2_010_000_000_000
+    command = service.load_candidate_commands[0]
+    assert command.project_id == "p1"
+    assert command.chapter_session_id == "session-1"
+    assert command.candidate_id == "candidate-1"
+    assert command.expected_working_draft_revision == 1
+    assert command.expected_content_hash == "e3b0c442" + "0" * 56
+
+
+def test_load_candidate_route_rejects_unknown_or_noncanonical_body():
+    client, _ = make_client()
+    route = (
+        "/api/projects/p1/chapter-sessions/session-1/"
+        "candidates/candidate-1/load"
+    )
+    for body in (
+        {
+            "expectedWorkingDraftRevision": 1,
+            "expectedContentHash": "a" * 64,
+            "apiKey": "must-not-send",
+        },
+        {
+            "expectedWorkingDraftRevision": True,
+            "expectedContentHash": "a" * 64,
+        },
+        {
+            "expectedWorkingDraftRevision": 1,
+            "expectedContentHash": "A" * 64,
+        },
+    ):
+        response = client.post(route, json=body)
+        assert response.status_code == 422
+        assert response.json()["code"] == "ChapterSessionRequestInvalid"
+        assert "must-not-send" not in response.text
+
+
+def test_load_candidate_route_uses_fixed_missing_and_conflict_errors():
+    from backend.services.chapter_sessions import (
+        ChapterSessionConflict,
+        ChapterSessionNotFound,
+    )
+
+    client, service = make_client()
+    route = (
+        "/api/projects/p1/chapter-sessions/session-1/"
+        "candidates/cross-owner/load"
+    )
+    body = {
+        "expectedWorkingDraftRevision": 1,
+        "expectedContentHash": "a" * 64,
+    }
+    for error, expected_status, code in (
+        (ChapterSessionNotFound("secret missing candidate"), 404, "ChapterSessionNotFound"),
+        (ChapterSessionConflict("secret corrupt prose"), 409, "ChapterSessionConflict"),
+    ):
+        service.load_error = error
+        response = client.post(route, json=body)
+        assert response.status_code == expected_status
+        assert response.json()["code"] == code
+        assert "secret" not in response.text

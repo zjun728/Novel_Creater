@@ -33,6 +33,7 @@ from backend.services.chapter_sessions import (
     ChapterSessionRequestInvalid as ServiceRequestInvalid,
     ChapterSessionService,
     CreateChapterSession,
+    LoadDraftCandidate,
     SaveDraftCandidate,
     SaveWorkingDraft,
 )
@@ -142,6 +143,11 @@ class SaveCandidateBody(_StrictBody):
             r"[0-9a-f]{12}$"
         ),
     )
+
+
+class LoadCandidateBody(_StrictBody):
+    expectedWorkingDraftRevision: int = Field(ge=1)
+    expectedContentHash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class CreateDraftOperationBody(_StrictBody):
@@ -778,6 +784,7 @@ def _public_workspace(workspace):
             "projectionRevision": candidate.projection_revision,
             "projectionHash": candidate.projection_hash,
             "basisStatus": candidate.basis_status,
+            "createdAt": candidate.created_at,
         } for candidate in workspace.candidates],
     }
 
@@ -1037,3 +1044,32 @@ async def save_candidate(
     public_workspace = _public_workspace(result.workspace)
     public_workspace["savedCandidateId"] = result.saved_candidate_id
     return public_workspace
+
+
+@router.post(
+    "/projects/{pid}/chapter-sessions/{session_id}/"
+    "candidates/{candidate_id}/load"
+)
+async def load_candidate(
+    pid: str,
+    session_id: str,
+    candidate_id: str,
+    raw_body: object = Body(...),
+    service=Depends(get_chapter_session_service),
+):
+    try:
+        body = LoadCandidateBody.model_validate(raw_body)
+        workspace = await service.load_candidate(LoadDraftCandidate(
+            project_id=pid,
+            chapter_session_id=session_id,
+            candidate_id=candidate_id,
+            expected_working_draft_revision=(
+                body.expectedWorkingDraftRevision
+            ),
+            expected_content_hash=body.expectedContentHash,
+        ))
+    except ValidationError:
+        raise ChapterSessionRequestInvalid() from None
+    except Exception as error:
+        _raise_public(error)
+    return _public_workspace(workspace)

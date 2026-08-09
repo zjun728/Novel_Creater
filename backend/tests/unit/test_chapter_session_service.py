@@ -1494,7 +1494,11 @@ async def test_load_candidate_rejects_nonexclusive_or_closed_session(blocked_sta
     ("missing", "cross_owner", "corrupt", "utf8", "cas", "recovery", "upsert"),
 )
 async def test_load_candidate_fails_closed_before_publishing_invalid_state(failure):
-    from backend.services.chapter_sessions import ChapterSessionConflict, ChapterSessionService
+    from backend.services.chapter_sessions import (
+        ChapterSessionConflict,
+        ChapterSessionNotFound,
+        ChapterSessionService,
+    )
 
     repo = FakeChapterRepository()
     service = ChapterSessionService(repo, transaction_factory=tx_factory)
@@ -1521,7 +1525,12 @@ async def test_load_candidate_fails_closed_before_publishing_invalid_state(failu
     else:
         repo.reject_working_draft_upsert = True
 
-    with pytest.raises(ChapterSessionConflict):
+    expected_error = (
+        ChapterSessionNotFound
+        if failure in {"missing", "cross_owner"}
+        else ChapterSessionConflict
+    )
+    with pytest.raises(expected_error):
         await service.load_candidate(command)
 
 
