@@ -51,7 +51,7 @@ SHARED_EXCLUDED_TABLES = frozenset({
 
 INTERNAL_NON_PACKAGE_TABLES = frozenset({
     "schema_metadata", "current_state_projections", "memory_views", "arc_projections", "plot_thread_projections",
-    "projection_heads",
+    "projection_heads", "project_package_import_commands", "project_import_provenance",
 })
 
 # Each project-owned table has an intentionally direct or normalized package record identity.
@@ -1207,7 +1207,7 @@ PACKAGE_COLUMN_EXPORT_DECISION_FINGERPRINT = sha256(
     _PACKAGE_COLUMN_EXPORT_DECISION_MANIFEST.encode("utf-8")
 ).hexdigest()
 if PACKAGE_COLUMN_EXPORT_DECISION_FINGERPRINT != (
-    "15ea66b6eb6784daff215debdd202e1c82924b9902d5e868bb82c61a034fa90b"
+    "9dc2c7858fa95b05fcb3382ba53b000e5a844571ad4517db6116297a76123195"
 ):
     raise RuntimeError("project package export decisions require an explicit audit")
 
@@ -2282,6 +2282,12 @@ class ProjectPackageRepository:
                             if corpus_logical_id is None:
                                 raise _invalid()
                             data["corpusRevisionLogicalId"] = corpus_logical_id
+                            chapter_logical_id = corpus_chapter_logical_ids.get((
+                                corpus_logical_id, row["corpus_chapter_id"],
+                            ))
+                            if chapter_logical_id is None:
+                                raise _invalid()
+                            data["corpusChapterLogicalId"] = chapter_logical_id
                         elif table == "market_analyses":
                             evidence = market_evidence_by_analysis.get(row["id"])
                             if evidence is not None:

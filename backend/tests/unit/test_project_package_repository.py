@@ -90,7 +90,7 @@ def _schema_foreign_key_edges() -> dict[tuple[str, str], tuple[str, str]]:
 def test_explicit_ownership_inventory_closes_over_every_create_only_schema_table() -> None:
     schema_tables = _schema_tables()
 
-    assert len(schema_tables) == 89
+    assert len(schema_tables) == 91
     assert PROJECT_OWNED_TABLES | SHARED_EXCLUDED_TABLES | INTERNAL_NON_PACKAGE_TABLES == schema_tables
     assert PROJECT_OWNED_TABLES.isdisjoint(SHARED_EXCLUDED_TABLES)
     assert PROJECT_OWNED_TABLES.isdisjoint(INTERNAL_NON_PACKAGE_TABLES)
@@ -106,7 +106,8 @@ def test_key_tables_are_classified_by_authority_not_by_name() -> None:
     } <= SHARED_EXCLUDED_TABLES
     assert {
         "schema_metadata", "current_state_projections", "memory_views", "arc_projections",
-        "plot_thread_projections", "projection_heads",
+        "plot_thread_projections", "projection_heads", "project_package_import_commands",
+        "project_import_provenance",
     } == INTERNAL_NON_PACKAGE_TABLES
 
 
@@ -717,6 +718,59 @@ async def test_style_contract_exports_complete_authoritative_payload_without_dat
 
 
 @pytest.mark.asyncio
+async def test_historical_style_and_bible_revisions_export_their_own_logical_lineage() -> None:
+    groups = []
+    extras: dict[str, list[dict[str, object]]] = {}
+    for suffix, revision in (("one", 1), ("two", 2)):
+        contract, rows, extra = _minimal_creation_contract_fixture(
+            contract_id=f"contract-db-{suffix}", seed_id=f"seed-db-{suffix}",
+            seed_revision_id=f"seed-revision-db-{suffix}", engine_batch_id=f"batch-db-{suffix}",
+            engine_option_id=f"option-db-{suffix}", style_contract_id=f"style-db-{suffix}",
+            style_template_id="template-db", revision=revision,
+        )
+        groups.append((contract, rows, suffix, revision))
+        for query, values in extra.items():
+            extras.setdefault(query, values)
+    owned: dict[str, list[dict[str, object]]] = {
+        "projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P")]
+    }
+    for contract, rows, suffix, revision in groups:
+        for table, values in rows.items():
+            owned.setdefault(table, []).extend(values)
+        bible_payload = json.loads(_bible_authority_json())
+        for field in ("worldRules", "coreCast", "factions", "longTermConflicts", "relationshipDynamics", "continuityGuardrails", "openDesignQuestions"):
+            for item in bible_payload[field]:
+                item["id"] = f'{item["id"]}-{suffix}'
+        owned.setdefault("creation_bible_revisions", []).append(_owned_row(
+            "creation_bible_revisions", id=f"bible-db-{suffix}", project_id="project-db",
+            revision=revision, selection_revision=revision, seed_id=f"seed-db-{suffix}",
+            seed_revision_id=f"seed-revision-db-{suffix}", seed_hash=contract.seedHash,
+            contract_revision=revision, creation_contract_id=f"contract-db-{suffix}",
+            creation_hash="0" * 64, style_contract_id=f"style-db-{suffix}", style_hash="1" * 64,
+            binding_revision_id=None, binding_hash=None, policy_version="creation-bible-v1",
+            content_json=json.dumps(bible_payload), content_hash=str(revision) * 64,
+        ))
+    snapshot = await ProjectPackageRepository(
+        pool=_SnapshotPool(_SnapshotSession(owned, extra_rows=extras)), session_factory=lambda value: value,
+    ).read_snapshot("project-db", 7)
+
+    styles = sorted((item for item in snapshot.graph_records if item.entity_type == "style-contract"), key=lambda item: item.revision)
+    bibles = sorted((item for item in snapshot.graph_records if item.entity_type == "creation-bible-revision"), key=lambda item: item.revision)
+    assert len(styles) == len(bibles) == 2
+    for index, (style, bible) in enumerate(zip(styles, bibles, strict=True), 1):
+        assert style.data["creationContractLogicalId"] == f"creation-contract:{index}"
+        assert bible.data["creationContractLogicalId"] == f"creation-contract:{index}"
+        assert bible.data["styleContractLogicalId"] == f"style-contract:{index}"
+        assert bible.data["seedLogicalId"] == f"creative-seed:{index}"
+        assert bible.data["seedRevisionLogicalId"] == f"creative-seed-revision:{index}"
+        assert bible.data["selectionRevision"] == index
+        assert bible.data["contractRevision"] == index
+        assert bible.data["policyVersion"] == "creation-bible-v1"
+        assert "-db-" not in repr(style.to_public_dict())
+        assert "-db-" not in repr(bible.to_public_dict())
+
+
+@pytest.mark.asyncio
 async def test_style_contract_rejects_invalid_authoritative_json_with_fixed_error() -> None:
     session = _SnapshotSession({
         "projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P")],
@@ -1093,7 +1147,7 @@ async def test_repository_freezes_referenced_corpus_revision_and_blob_descriptor
             "reference_uses": [_owned_row(
                 "reference_uses", id="reference-use-db", project_id="project-db",
                 corpus_source_id="source-db", corpus_chapter_id="chapter-db",
-                reference_purpose="background", referenced_text_hash="6" * 64, created_at=5,
+                reference_purpose="generation", referenced_text_hash="6" * 64, created_at=5,
             )],
         },
         extra_rows={
@@ -1148,6 +1202,7 @@ async def test_repository_freezes_referenced_corpus_revision_and_blob_descriptor
     assert fragment_ref.data["contentHash"] == "e" * 64
     reference_use = next(record for record in snapshot.graph_records if record.entity_type == "reference-use")
     assert reference_use.data["corpusRevisionLogicalId"] == snapshot.corpus_revision_records[0].logical_id
+    assert reference_use.data["corpusChapterLogicalId"] == snapshot.corpus_revision_records[0].data["chapters"][0]["logicalId"]
     assert "source-db" not in repr(tuple(record.to_public_dict() for record in snapshot.corpus_revision_records))
 
 
@@ -1776,7 +1831,7 @@ def test_every_non_secret_classified_column_has_an_explicit_export_or_normalizat
         for decision in PACKAGE_COLUMN_EXPORT_DECISIONS.values()
     )
     assert PACKAGE_COLUMN_EXPORT_DECISION_FINGERPRINT == (
-        "15ea66b6eb6784daff215debdd202e1c82924b9902d5e868bb82c61a034fa90b"
+        "9dc2c7858fa95b05fcb3382ba53b000e5a844571ad4517db6116297a76123195"
     )
     assert {
         (table, column): PACKAGE_COLUMN_EXPORT_DECISIONS[(table, column)]

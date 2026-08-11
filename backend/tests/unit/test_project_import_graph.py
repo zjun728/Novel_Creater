@@ -130,3 +130,33 @@ def test_required_reference_and_terminal_state_fields_cannot_be_omitted() -> Non
         _validate_graph((contract, engine_ref))
     with pytest.raises(ProjectImportInvalid):
         _validate_graph((chapter, operation))
+
+
+def test_historical_style_and_bible_lineage_is_required_and_hash_pinned() -> None:
+    from backend.domain.json_contracts import canonical_hash
+    seed_payload = {key: "x" for key in ("title", "genre", "logline", "protagonist", "desire", "coreConflict", "worldPressure", "openingHook", "differentiation")}
+    seed_hash = canonical_hash(seed_payload)
+    contract = PackageRecord("creation-contract", "creation-contract:1", revision=2, data={"revision": 2, "selectionRevision": 1, "seedLogicalId": "creative-seed:1", "seedRevisionLogicalId": "creative-seed-revision:1", "seedHash": seed_hash, "contentHash": "a" * 64})
+    style = PackageRecord("style-contract", "style-contract:1", revision=2, data={"revision": 2, "creationContractLogicalId": contract.logical_id, "contentHash": "b" * 64})
+    seed = PackageRecord("creative-seed", "creative-seed:1", data={"label": "S"})
+    seed_revision = PackageRecord("creative-seed-revision", "creative-seed-revision:1", revision=1, data={"seedLogicalId": seed.logical_id, "revision": 1, "payload": seed_payload, "contentHash": seed_hash})
+    bible_data = {
+        "revision": 3, "selectionRevision": 1, "seedLogicalId": seed.logical_id,
+        "seedRevisionLogicalId": seed_revision.logical_id, "seedHash": seed_hash,
+        "contractRevision": 2, "creationContractLogicalId": contract.logical_id, "creationHash": "a" * 64,
+        "styleContractLogicalId": style.logical_id, "styleHash": "b" * 64,
+        "policyVersion": "creation-bible-v1", "contentHash": "d" * 64,
+    }
+    bible = PackageRecord("creation-bible-revision", "creation-bible-revision:1", revision=3, data=bible_data)
+
+    assert _validate_graph((seed, seed_revision, contract, style, bible))
+    with pytest.raises(ProjectImportInvalid):
+        _validate_graph((seed, seed_revision, contract, style, PackageRecord(
+            "creation-bible-revision", "creation-bible-revision:1", revision=3,
+            data={**bible_data, "styleHash": "e" * 64},
+        )))
+    with pytest.raises(ProjectImportInvalid):
+        _validate_graph((seed, seed_revision, contract, PackageRecord(
+            "style-contract", "style-contract:1", revision=2,
+            data={"revision": 2, "contentHash": "b" * 64},
+        ), bible))
