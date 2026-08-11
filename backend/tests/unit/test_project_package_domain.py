@@ -28,6 +28,7 @@ from backend.domain.project_packages import (
     validate_archive_bytes,
     validate_json_depth,
 )
+from backend.domain.project_import_publication import encode_provenance_batch
 
 
 def _record(entity_type: str, logical_id: str, revision: int, order: int) -> PackageRecord:
@@ -117,6 +118,43 @@ def test_records_are_immutable_and_canonical_jsonl_uses_logical_sort_key() -> No
 ])
 def test_closed_record_registry_accepts_only_minimal_label_shape(entity_type: str, logical_id: str) -> None:
     assert PackageRecord(entity_type, logical_id, data={"label": logical_id}).to_public_dict()["logicalId"] == logical_id
+
+
+def test_import_provenance_is_a_closed_record_and_keeps_inert_payload_hash() -> None:
+    record = PackageRecord(
+        "import-provenance",
+        "import-provenance:1",
+        order=1,
+        data={
+            "category": "provider-history",
+            "sourceEntityType": "provider-history",
+            "sourceLogicalId": "provider-history:4",
+            "payload": {"safe": True, "nested": {"value": 2}},
+            "contentHash": "a" * 64,
+            "createdAt": 10,
+        },
+    )
+
+    snapshot = _snapshot()
+    snapshot["operation_records"] = [record]
+    operations = next(
+        entry for entry in build_structured_entries(snapshot)
+        if entry.path == "history/operations.jsonl"
+    )
+    assert operations.data == canonical_line(record.to_public_dict())
+
+    encoded = encode_provenance_batch(
+        (record,),
+        command_id="10000000-0000-4000-8000-000000000005",
+        target_project_id="20000000-0000-4000-8000-000000000005",
+    )
+    assert encoded is not None
+    row = dict(zip(encoded.columns, encoded.rows[0], strict=True))
+    assert row["category"] == record.data["category"]
+    assert row["source_entity_type"] == record.data["sourceEntityType"]
+    assert row["source_logical_id"] == record.data["sourceLogicalId"]
+    assert row["payload_json"] == '{"nested":{"value":2},"safe":true}'
+    assert row["content_hash"] == record.data["contentHash"]
 
 
 @pytest.mark.parametrize("kwargs", [

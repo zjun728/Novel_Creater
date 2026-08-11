@@ -48,7 +48,7 @@ PROVENANCE_ENTITY_TYPES = frozenset({
     "market-analysis", "seed-inspiration-history", "asset-recommendation-history", "style-trial-history",
     "story-engine-batch", "bible-generation-history", "planning-generation-history",
     "chapter-outline-generation-history", "operation", "operation-event", "working-draft-revision",
-    "provider-history",
+    "provider-history", "import-provenance",
 })
 INVALID_ENTITY_TYPES = frozenset()
 
@@ -123,6 +123,8 @@ class ProjectPublicationPlan:
     provenance: tuple[str, ...]
     blobs: tuple[tuple[str, int], ...]
     expected_projection: Mapping[str, object]
+    package_hash: str = ""
+    manifest_hash: str = ""
 
     def __post_init__(self) -> None:
         try:
@@ -137,6 +139,8 @@ class ProjectPublicationPlan:
             or type(self.blobs) is not tuple
             or any(type(value) is not tuple or len(value) != 2 or type(value[0]) is not str or re.fullmatch(r"[0-9a-f]{64}", value[0]) is None or type(value[1]) is not int or value[1] < 0 for value in self.blobs)
             or not isinstance(self.expected_projection, Mapping)
+            or (self.package_hash != "" and re.fullmatch(r"[0-9a-f]{64}", self.package_hash) is None)
+            or (self.manifest_hash != "" and re.fullmatch(r"[0-9a-f]{64}", self.manifest_hash) is None)
         ):
             raise _invalid()
         object.__setattr__(self, "expected_projection", _freeze_publication_json(self.expected_projection))
@@ -1093,6 +1097,7 @@ def build_publication_plan(
         return ProjectPublicationPlan(
             command_id, identity_map.target_project_id, identity_map.id_map_hash,
             batches, provenance, blobs, _target_projection(rewritten, identity_map.ids),
+            package.package_hash, package.manifest_hash,
         )
     except ProjectImportInvalid:
         raise
@@ -1382,6 +1387,10 @@ _PINNED_REVISIONS: Mapping[str, tuple[tuple[str, str, str, str], ...]] = {
 }
 
 _REQUIRED_CLOSURE_FIELDS: Mapping[str, frozenset[str]] = {
+    "import-provenance": frozenset({
+        "category", "sourceEntityType", "sourceLogicalId", "payload",
+        "contentHash", "createdAt",
+    }),
     "story-engine-option": frozenset({"batchLogicalId", "selectionRevision", "contentHash"}),
     "project-contract-draft": frozenset({"baseHeadRevision", "selectionRevision", "seedRevisionLogicalId", "seedHash", "engineOptionLogicalId", "contentHash"}),
     "creation-contract": frozenset({"revision", "selectionRevision", "seedLogicalId", "seedRevisionLogicalId", "seedHash", "contentHash"}),
@@ -1475,6 +1484,22 @@ def _validate_graph(records: tuple[PackageRecord, ...]) -> dict[tuple[str, str],
                 raise _invalid()
         if record.entity_type == "operation" and "status" in record.data and record.data["status"] not in {"completed", "failed", "cancelled", "succeeded"}:
             raise _invalid()
+        if record.entity_type == "import-provenance":
+            if (
+                record.data.get("category") not in {
+                    "provider-history", "market-history",
+                    "operation-history", "unsupported-history",
+                }
+                or not isinstance(record.data.get("sourceEntityType"), str)
+                or not record.data["sourceEntityType"]
+                or not isinstance(record.data.get("sourceLogicalId"), str)
+                or not record.data["sourceLogicalId"]
+                or not isinstance(record.data.get("payload"), Mapping)
+                or not isinstance(record.data.get("contentHash"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", record.data["contentHash"]) is None
+                or type(record.data.get("createdAt")) is not int
+            ):
+                raise _invalid()
         if record.entity_type == "final-chapter" and record.data.get("canonRevision") is not None and not isinstance(record.data["canonRevision"], int):
             raise _invalid()
         if record.entity_type == "planning-revision":

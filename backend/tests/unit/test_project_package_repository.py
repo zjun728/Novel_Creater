@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
+from types import MappingProxyType
 
 import pytest
 
@@ -11,7 +12,11 @@ from backend.domain.chapter_outlines import ChapterOutline
 from backend.domain.contracts import CreationContractPayload
 from backend.domain.json_contracts import canonical_hash
 from backend.domain.planning import PlanningAggregate
-from backend.domain.project_packages import PackageRecord, RECORD_FIELD_ALLOWLISTS, freeze_json_value
+from backend.domain.project_import_plans import ProjectImportSummary, VerifiedProjectPackage, build_publication_plan
+from backend.domain.project_packages import (
+    ManifestEntry, PAYLOAD_PATHS, PackageRecord, ProjectPackageManifest,
+    RECORD_FIELD_ALLOWLISTS, freeze_json_value,
+)
 from backend.domain.project_packages import ProjectPackageBusy, ProjectPackageConflict, ProjectPackageInvalid, ProjectPackageNotFound
 from backend.domain.seeds import SeedPayload
 from backend.domain.story_engines import StoryEngineOption
@@ -1991,3 +1996,109 @@ async def test_market_analysis_exports_only_referenced_snapshot_evidence() -> No
     market_sql = next(sql for sql, _ in session.calls if "FROM market_snapshots s" in sql)
     assert "source_url" not in market_sql
     assert "SELECT *" not in market_sql.upper()
+
+
+@pytest.mark.asyncio
+async def test_import_provenance_backup_is_project_scoped_stable_and_lossless() -> None:
+    payload = {"data": {"safe": True}, "entityType": "provider-history"}
+    session = _SnapshotSession(
+        {"projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P")]},
+        extra_rows={"FROM project_import_provenance": [
+            {
+                "record_order": 2,
+                "category": "provider-history",
+                "source_entity_type": "provider-history",
+                "source_logical_id": "provider-history:9",
+                "payload_json": json.dumps(payload),
+                "content_hash": "a" * 64,
+                "created_at": 12,
+            },
+            {
+                "record_order": 1,
+                "category": "operation-history",
+                "source_entity_type": "operation",
+                "source_logical_id": "operation:3",
+                "payload_json": '{"safe":true}',
+                "content_hash": "b" * 64,
+                "created_at": 11,
+            },
+        ]},
+    )
+
+    snapshot = await ProjectPackageRepository(
+        pool=_SnapshotPool(session), session_factory=lambda value: value,
+    ).read_snapshot("project-db", 7)
+    records = tuple(
+        record for record in snapshot.operation_records
+        if record.entity_type == "import-provenance"
+    )
+
+    assert [record.logical_id for record in records] == [
+        "import-provenance:1", "import-provenance:2",
+    ]
+    assert records[0].data["payload"] == {"safe": True}
+    assert records[1].data["payload"] == payload
+    assert [record.data["contentHash"] for record in records] == ["b" * 64, "a" * 64]
+    sql, args = next(
+        (sql, args) for sql, args in session.calls
+        if "FROM project_import_provenance" in sql
+    )
+    assert "WHERE project_id=%s" in sql
+    assert "ORDER BY record_order" in sql
+    assert "SELECT *" not in sql.upper()
+    assert args == ("project-db",)
+
+    project_record = PackageRecord("project", "project:1", data={
+        "title": "Source", "genre": "test", "description": "safe",
+        "targetWords": 1000, "targetChapters": 10, "status": "drafting",
+        "currentChapter": 0, "archivedAt": None, "lifecycleRevision": 7,
+        "createdAt": 1, "updatedAt": 2,
+    })
+    package_records = (project_record, *records)
+    package = VerifiedProjectPackage(
+        Path("unused.zip"), "c" * 64, "d" * 64,
+        ProjectPackageManifest(
+            "project:1",
+            tuple(ManifestEntry(path, 0, "0" * 64) for path in sorted(PAYLOAD_PATHS)),
+            {"project": 1, "import-provenance": 2},
+        ),
+        MappingProxyType({
+            (record.entity_type, record.logical_id): record
+            for record in package_records
+        }),
+        MappingProxyType({}),
+        ProjectImportSummary(
+            "c" * 64, "d" * 64, 1, "Source", "Source（导入）",
+            MappingProxyType({"project": 1, "import-provenance": 2}), False, 0,
+        ),
+    )
+    plan = build_publication_plan(
+        package, "10000000-0000-4000-8000-000000000005", "Imported",
+    )
+    batch = next(item for item in plan.batches if item.table == "project_import_provenance")
+    imported_rows = []
+    for values in batch.rows:
+        row = dict(zip(batch.columns, values, strict=True))
+        imported_rows.append({
+            key: row[key] for key in (
+                "record_order", "category", "source_entity_type",
+                "source_logical_id", "payload_json", "content_hash", "created_at",
+            )
+        })
+    second_session = _SnapshotSession(
+        {"projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P")]},
+        extra_rows={"FROM project_import_provenance": imported_rows},
+    )
+    second = await ProjectPackageRepository(
+        pool=_SnapshotPool(second_session), session_factory=lambda value: value,
+    ).read_snapshot("project-db", 7)
+    round_trip = tuple(
+        record for record in second.operation_records
+        if record.entity_type == "import-provenance"
+    )
+    assert [record.data["payload"] for record in round_trip] == [
+        record.data["payload"] for record in records
+    ]
+    assert [record.data["contentHash"] for record in round_trip] == [
+        record.data["contentHash"] for record in records
+    ]

@@ -11,6 +11,7 @@ from uuid import UUID, uuid5
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.project_imports import ProjectImportInvalid
 from backend.domain.project_packages import PackageRecord, thaw_json_value
+from backend.security.paths import managed_corpus_storage_key
 
 
 JsonPrimitive: TypeAlias = str | int | float | bool | None
@@ -253,13 +254,14 @@ def _asset(record: PackageRecord, data: Mapping[str, object], context: Publicati
 
 def _corpus(record: PackageRecord, data: Mapping[str, object], context: PublicationEncodingContext) -> tuple[EncodedBatch, ...]:
     revision_id = context.ids[(record.entity_type, record.logical_id)]
-    source_key = _required(data, "sourceKey")
-    source_id = str(uuid5(UUID(context.command_id), f"corpus-source/{source_key}"))
+    raw_source_key = _required(data, "sourceKey")
+    source_id = str(uuid5(UUID(context.command_id), f"corpus-source/{raw_source_key}"))
+    source_key = f"import:{uuid5(UUID(context.command_id), f'corpus-source-key/{raw_source_key}')}"
     created_at = _required(data, "createdAt")
     content_hash = _required(data, "contentHash")
     revision = _required(data, "revision")
     batches = [
-        EncodedBatch("corpus_blobs", ("content_hash", "byte_length", "storage_key", "created_at"), ((content_hash, _required(data, "byteLength"), f"sha256/{content_hash}", created_at),)),
+        EncodedBatch("corpus_blobs", ("content_hash", "byte_length", "storage_key", "created_at"), ((content_hash, _required(data, "byteLength"), managed_corpus_storage_key(content_hash), created_at),)),
         EncodedBatch("corpus_sources", ("id", "source_key", "archived_at", "created_at", "updated_at"), ((source_id, source_key, None, created_at, created_at),)),
         EncodedBatch("corpus_source_revisions", (
             "id", "source_id", "revision", "content_hash", "relative_path", "display_name", "author",
@@ -925,6 +927,7 @@ _PROVENANCE_CATEGORIES: Mapping[str, str] = MappingProxyType({
     "operation": "operation-history",
     "operation-event": "operation-history",
     "working-draft-revision": "operation-history",
+    "import-provenance": "unsupported-history",
 })
 
 
@@ -933,6 +936,32 @@ def encode_provenance_batch(
 ) -> EncodedBatch | None:
     rows: list[tuple[JsonPrimitive, ...]] = []
     for record_order, record in enumerate(sorted(records, key=lambda item: (item.entity_type, item.order, item.logical_id)), 1):
+        if record.entity_type == "import-provenance":
+            category = record.data.get("category")
+            source_type = record.data.get("sourceEntityType")
+            source_logical_id = record.data.get("sourceLogicalId")
+            payload = record.data.get("payload")
+            content_hash = record.data.get("contentHash")
+            created_at = record.data.get("createdAt")
+            if (
+                category not in {"provider-history", "market-history", "operation-history", "unsupported-history"}
+                or not isinstance(source_type, str) or not source_type
+                or not isinstance(source_logical_id, str) or not source_logical_id
+                or not isinstance(content_hash, str) or len(content_hash) != 64
+                or any(character not in "0123456789abcdef" for character in content_hash)
+                or type(created_at) is not int
+            ):
+                raise _invalid()
+            try:
+                payload_json = canonical_json(thaw_json_value(payload))
+            except Exception:
+                raise _invalid() from None
+            rows.append((
+                target_project_id, command_id, record_order, category,
+                source_type, source_logical_id, payload_json, content_hash,
+                created_at,
+            ))
+            continue
         category = _PROVENANCE_CATEGORIES.get(record.entity_type)
         if category is None:
             raise _invalid()

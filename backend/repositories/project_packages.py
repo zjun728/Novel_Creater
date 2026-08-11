@@ -1796,6 +1796,23 @@ class ProjectPackageRepository:
                     raise _invalid()
                 rows_by_table[table] = rows
 
+            provenance_columns = (
+                "record_order", "category", "source_entity_type",
+                "source_logical_id", "payload_json", "content_hash", "created_at",
+            )
+            provenance_rows = tuple(await session.fetchall(
+                """SELECT record_order,category,source_entity_type,
+                          source_logical_id,payload_json,content_hash,created_at
+                   FROM project_import_provenance
+                   WHERE project_id=%s ORDER BY record_order""",
+                (project_id,),
+            ))
+            if any(
+                not isinstance(row, Mapping) or set(row) != set(provenance_columns)
+                for row in provenance_rows
+            ):
+                raise _invalid()
+
             market_evidence_by_analysis: dict[object, Mapping[str, object]] = {}
             for analysis_id, snapshot_id, snapshot_hash in sorted({
                 (row["market_analysis_id"], row["market_snapshot_id"], row["market_snapshot_hash"])
@@ -2185,6 +2202,24 @@ class ProjectPackageRepository:
                 operation_records: list[PackageRecord] = []
                 provider_history_records: list[PackageRecord] = []
                 counts: dict[str, int] = {}
+                for row in sorted(provenance_rows, key=lambda item: item["record_order"]):
+                    record_order = row["record_order"]
+                    if type(record_order) is not int or record_order <= 0:
+                        raise _invalid()
+                    operation_records.append(PackageRecord(
+                        "import-provenance",
+                        f"import-provenance:{record_order}",
+                        order=record_order,
+                        data={
+                            "category": row["category"],
+                            "sourceEntityType": row["source_entity_type"],
+                            "sourceLogicalId": row["source_logical_id"],
+                            "payload": _json_value(row["payload_json"]),
+                            "contentHash": row["content_hash"],
+                            "createdAt": row["created_at"],
+                        },
+                    ))
+                    counts["import-provenance"] = counts.get("import-provenance", 0) + 1
                 for table in sorted(PROJECT_OWNED_TABLES):
                     record_type = PROJECT_TABLE_RECORD_TYPES[table]
                     allowlist = RECORD_FIELD_ALLOWLISTS[record_type]

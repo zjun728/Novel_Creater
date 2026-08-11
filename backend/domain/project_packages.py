@@ -101,6 +101,7 @@ RECORD_FIELD_ALLOWLISTS: Mapping[str, frozenset[str]] = MappingProxyType({
     "canon-event": frozenset({"label", "canonRevisionLogicalId", "revisionNumber", "eventOrder", "entityLogicalId", "factKind", "fieldPath", "value", "evidence", "effectiveStartChapter", "effectiveEndChapter", "assertionOperator", "valueCardinality", "confirmationStatus", "createdAt"}),
     "reference-use": frozenset({"label", "chapterLogicalId", "candidateLogicalId", "corpusRevisionLogicalId", "corpusChapterLogicalId", "locationStart", "locationEnd", "referencePurpose", "referencedTextHash", "createdAt"}),
     "provider-history": frozenset({"label", "providerName", "modelName", "taskKey", "bindingRevisionLogicalId", "bindingHash", "operationLogicalId"}),
+    "import-provenance": frozenset({"category", "sourceEntityType", "sourceLogicalId", "payload", "contentHash", "createdAt"}),
     "asset": frozenset({"label", "assetKind", "stableKey", "revision", "name", "category", "payload", "provenance", "contentHash", "status", "createdAt"}),
     "corpus-revision": frozenset({"label", "sourceKey", "revision", "relativePath", "displayName", "author", "referenceTags", "notes", "provenance", "contentHash", "byteLength", "encoding", "parserVersion", "normalizerVersion", "fragmenterVersion", "indexVersion", "status", "importedAt", "analyzedAt", "createdAt", "chapters", "fragments"}),
 })
