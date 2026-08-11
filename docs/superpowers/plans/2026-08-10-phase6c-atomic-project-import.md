@@ -371,26 +371,28 @@ Acceptance evidence (2026-08-11):
 **Files:**
 
 - Create: `backend/services/project_imports.py`
+- Modify: `backend/repositories/project_imports.py`
 - Create: `backend/tests/unit/test_project_import_staging.py`
 - Create: `backend/tests/unit/test_project_import_service.py`
+- Modify: `backend/tests/unit/test_project_import_repository.py`
 - Create: `backend/tests/integration/test_project_import_recovery_mysql.py`
 - Modify: `backend/main.py`
 - Modify: `backend/tests/unit/test_main_lifespan.py`
 
-- [ ] **Step 1: Write file fault RED matrix.**
+- [x] **Step 1: Write file fault RED matrix.**
 
 Cover missing/short/hash-mismatched source blob, stage write failure, ACL failure, existing matching
 target reuse, existing mismatched target conflict, `os.replace` failure, cancellation, disconnect,
 quarantine cleanup retry, stage cleanup retry, and command-created unreferenced blob cleanup. Never
 delete a pre-existing/shared/referenced blob.
 
-- [ ] **Step 2: Implement command-owned staging.**
+- [x] **Step 2: Implement command-owned staging.**
 
 Use a private command quarantine and `.project-import-staging/<commandId>`. Write the canonical
 relative staging manifest before promotion. Reuse the existing managed corpus content-addressed path
 functions and Phase 6B ACL postcondition helpers.
 
-- [ ] **Step 3: Implement the orchestration service.**
+- [x] **Step 3: Implement the orchestration service.**
 
 Expose `ProjectImportService.preflight(upload) -> ProjectImportSummary`,
 `import_project(upload, request: ImportProjectRequest) -> ProjectImportCommandView`, and
@@ -399,13 +401,13 @@ Expose `ProjectImportService.preflight(upload) -> ProjectImportSummary`,
 `import_project` re-preflights exact bytes, reserves/acquires the same command, builds the plan,
 stages/promotes blobs, then invokes one publication transaction. `CancelledError` remains primary.
 
-- [ ] **Step 4: Implement bounded startup reconciliation.**
+- [x] **Step 4: Implement bounded startup reconciliation.**
 
 Inspect at most 32 expired Phase 6C roots. Delete only terminal roots or command-created blobs proven
 unreferenced by `corpus_blobs`. Never resume without exact package bytes and never scan unrelated temp
 or corpus files.
 
-- [ ] **Step 5: Run service/recovery GREEN and commit.**
+- [x] **Step 5: Run service/recovery GREEN and commit.**
 
 Run Task 6 unit/integration/lifespan tests with owned roots; require DB/file/temp residue zero. Commit:
 
@@ -413,6 +415,21 @@ Run Task 6 unit/integration/lifespan tests with owned roots; require DB/file/tem
 git add backend/services/project_imports.py backend/tests/unit/test_project_import_staging.py backend/tests/unit/test_project_import_service.py backend/tests/integration/test_project_import_recovery_mysql.py backend/main.py backend/tests/unit/test_main_lifespan.py
 git commit -m "feat: stage and recover atomic project imports"
 ```
+
+Acceptance evidence (2026-08-11):
+
+- Staging uses private command roots, a canonical manifest, production managed corpus paths, and
+  cross-process per-digest claims with same-volume atomic no-overwrite installation.
+- Crash-recovery manifest decisions are separate from runtime installed ownership, so a failed command
+  cannot delete a later winner's same-digest blob; cleanup never removes pre-existing or referenced data.
+- Recovery selects at most 32 eligible commands in the database, takes a row-lock/CAS fence, compares
+  disk and database manifests exactly, validates blob tuples, and removes only exact-owner claims.
+- Preflight and staging exits use bounded validated cleanup retries while preserving `CancelledError`
+  and the original primary failure. Import publication remains a single caller-owned transaction.
+- Specification review after closure: `C/I/M = 0/0/0`; quality review after closure: `C/I/M = 0/0/0`.
+- Main-controller fresh verification: `224 passed`; disposable MySQL `created=1`, `cleaned=1`,
+  `remaining=0`; `py_compile`, `SELECT *`, formatting, `git diff --check`, and temp residue passed/zero.
+- Code commit: `5e343da` (`feat: stage and recover atomic project imports`).
 
 ## Task 7: Closed API and fixed public errors
 
