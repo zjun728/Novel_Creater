@@ -296,20 +296,22 @@ Acceptance evidence (2026-08-11):
 **Files:**
 
 - Modify: `backend/repositories/project_imports.py`
+- Modify: `backend/domain/project_import_plans.py`
+- Modify: `backend/domain/project_import_publication.py`
 - Modify: `backend/domain/project_packages.py`
 - Modify: `backend/repositories/project_packages.py`
 - Modify: `backend/tests/unit/test_project_package_domain.py`
 - Modify: `backend/tests/unit/test_project_package_repository.py`
 - Create: `backend/tests/integration/test_project_import_publication_mysql.py`
 
-- [ ] **Step 1: Write atomic publication RED tests.**
+- [x] **Step 1: Write atomic publication RED tests.**
 
 On disposable MySQL, inject failure before every insert batch, Projection rebuild, Projection compare,
 command success update, and commit. Each failure must leave zero target project rows and a fixed
 command outcome. Success must publish exactly one project and one succeeded command in the same
 commit. Same command replay must not duplicate any row.
 
-- [ ] **Step 2: Implement explicit foreign-key-ordered writer.**
+- [x] **Step 2: Implement explicit foreign-key-ordered writer.**
 
 Add:
 
@@ -327,19 +329,19 @@ async def publish_project(self, session, plan: ProjectPublicationPlan, *, now: i
 The transaction factory owns commit/rollback. `_insert_static_batch` resolves SQL only from a frozen
 code-owned table-plan registry.
 
-- [ ] **Step 3: Normalize and persist inert provenance.**
+- [x] **Step 3: Normalize and persist inert provenance.**
 
 Insert one `project_import_provenance` row per safe Provider/market/operation/unsupported-history
 record. Quality findings may remain formal with Provider fields null. Never insert fake Provider
 profiles or executable old idempotency/lease values.
 
-- [ ] **Step 4: Extend Phase 6B backup round-trip.**
+- [x] **Step 4: Extend Phase 6B backup round-trip.**
 
 Add a closed `import-provenance` package record. Backup reads only provenance owned by the project and
 emits category/source type/source logical id/payload/content hash in stable order. A backup→import→
 backup unit fixture must retain each provenance payload/content hash unchanged.
 
-- [ ] **Step 5: Run integration GREEN and commit.**
+- [x] **Step 5: Run integration GREEN and commit.**
 
 Run package focused tests plus `test_project_import_publication_mysql.py`; require DB ledger zero,
 `py_compile`, `SELECT *` scan zero, and `git diff --check`. Commit:
@@ -348,6 +350,21 @@ Run package focused tests plus `test_project_import_publication_mysql.py`; requi
 git add backend/repositories/project_imports.py backend/domain/project_packages.py backend/repositories/project_packages.py backend/tests/unit/test_project_package_domain.py backend/tests/unit/test_project_package_repository.py backend/tests/integration/test_project_import_publication_mysql.py
 git commit -m "feat: atomically publish imported project authority"
 ```
+
+Acceptance evidence (2026-08-11):
+
+- Publication locks and revalidates the staged command fingerprint, owner, lease, title, package,
+  manifest, and id-map fences before writing; phase and success updates retain the same fences.
+- Static batches are inserted in foreign-key order inside the caller-owned transaction. Injected failures
+  before batches, Projection rebuild/compare, success marking, and commit leave zero target-project rows.
+- Corpus source keys are command-scoped. Existing content-addressed blobs are locked and reused only
+  when hash, byte length, and the production managed storage key all match; mismatches fail closed.
+- `import-provenance` is closed, project-scoped, inert, and preserves payload/content hash across the
+  backup-to-import-plan-to-backup round trip without restoring Provider, lease, or idempotency authority.
+- Specification review: `C/I/M = 0/0/0`; quality review after closure: `C/I/M = 0/0/0`.
+- Main-controller fresh verification: `307 passed`; disposable MySQL `created=18`, `cleaned=18`,
+  `remaining=0`; `py_compile`, `SELECT *`, formatting, `git diff --check`, and temp residue passed/zero.
+- Code commit: `b898369` (`feat: atomically publish imported project authority`).
 
 ## Task 6: Blob staging, promotion, cleanup, and import orchestration
 
