@@ -42,7 +42,6 @@ CREATE TABLE project_package_import_commands (
   )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
-
 CREATE TABLE project_import_provenance (
   project_id CHAR(36) NOT NULL,
   command_id CHAR(36) NOT NULL,
@@ -63,4 +62,3 @@ CREATE TABLE project_import_provenance (
   CHECK (JSON_VALID(payload_json))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
-
