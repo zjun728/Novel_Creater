@@ -21,6 +21,16 @@ def _invalid() -> ProjectImportInvalid:
     return ProjectImportInvalid("invalid project import archive")
 
 
+def corpus_source_target_id(command_id: str, source_key: str) -> str:
+    """Return the target-local identity used by every reconstructed corpus source row."""
+    try:
+        if not isinstance(source_key, str) or not source_key:
+            raise ValueError
+        return str(uuid5(UUID(command_id), f"corpus-source/{source_key}"))
+    except (TypeError, ValueError, AttributeError):
+        raise _invalid() from None
+
+
 @dataclass(frozen=True, slots=True)
 class EncodedBatch:
     table: str
@@ -417,7 +427,7 @@ def _canon_event(record: PackageRecord, data: Mapping[str, object], context: Pub
 
 def _chapter(record: PackageRecord, data: Mapping[str, object], context: PublicationEncodingContext) -> tuple[EncodedBatch, ...]:
     columns = ("id", "project_id", "planning_revision_id", "planning_revision", "planning_hash", "story_block_id", "story_block_revision", "story_block_hash", "chapter_outline_revision_id", "chapter_outline_revision", "chapter_outline_hash", "chapter_num", "expected_canon_revision", "status", "draft_operation_fencing_token", "active_draft_operation_id", "created_at", "finalized_at")
-    row = (context.ids[(record.entity_type, record.logical_id)], context.target_project_id, _required(data, "planningRevisionLogicalId"), _required(data, "planningRevision"), _required(data, "planningHash"), _required(data, "storyBlockLogicalId"), _required(data, "storyBlockRevision"), _required(data, "storyBlockHash"), _required(data, "outlineRevisionLogicalId"), _required(data, "chapterOutlineRevision"), _required(data, "chapterOutlineHash"), _required(data, "chapterNumber"), _required(data, "expectedCanonRevision"), _required(data, "status"), None, None, _required(data, "createdAt"), _nullable(data, "finalizedAt"))
+    row = (context.ids[(record.entity_type, record.logical_id)], context.target_project_id, _required(data, "planningRevisionLogicalId"), _required(data, "planningRevision"), _required(data, "planningHash"), _required(data, "storyBlockLogicalId"), _required(data, "storyBlockRevision"), _required(data, "storyBlockHash"), _required(data, "outlineRevisionLogicalId"), _required(data, "chapterOutlineRevision"), _required(data, "chapterOutlineHash"), _required(data, "chapterNumber"), _required(data, "expectedCanonRevision"), _required(data, "status"), 0, None, _required(data, "createdAt"), _nullable(data, "finalizedAt"))
     return (EncodedBatch("chapter_sessions", columns, (row,)),)
 
 
@@ -427,12 +437,8 @@ def _working_draft(record: PackageRecord, data: Mapping[str, object], context: P
 
 
 def _draft_candidate(record: PackageRecord, data: Mapping[str, object], context: PublicationEncodingContext) -> tuple[EncodedBatch, ...]:
-    drafts = [item for (kind, _), item in context.rewritten.items() if kind == "working-draft" and item.get("chapterLogicalId") == data.get("chapterLogicalId")]
-    if len(drafts) != 1:
-        raise _invalid()
-    basis = {"chapterId": data.get("chapterLogicalId"), "workingDraftRevision": drafts[0].get("revision")}
     columns = ("id", "project_id", "chapter_session_id", "working_draft_revision", "content", "content_hash", "basis_hash", "provenance_json", "created_at")
-    row = (context.ids[(record.entity_type, record.logical_id)], context.target_project_id, _required(data, "chapterLogicalId"), _required(drafts[0], "revision"), _required(data, "content"), _required(data, "contentHash"), canonical_hash(basis), "{}", _required(data, "createdAt"))
+    row = (context.ids[(record.entity_type, record.logical_id)], context.target_project_id, _required(data, "chapterLogicalId"), _required(data, "workingDraftRevision"), _required(data, "content"), _required(data, "contentHash"), _required(data, "basisHash"), _json_value(data, "provenance"), _required(data, "createdAt"))
     return (EncodedBatch("draft_candidates", columns, (row,)),)
 
 
@@ -467,7 +473,11 @@ def _change_set(record: PackageRecord, data: Mapping[str, object], context: Publ
         for item in context.records.values()
     )
     status = "committed" if committed else "awaiting_author"
-    row = (context.ids[(record.entity_type, record.logical_id)], context.target_project_id, _required(data, "chapterLogicalId"), _required(data, "candidateLogicalId"), quality_id, None, _derived_hash(context, "finalization-change-set/idempotency", authority), _derived_hash(context, "finalization-change-set/request", authority), None, _required(data, "candidateHash"), _required(chapter, "expectedCanonRevision"), _required(quality[0], "expectedPlanningHash"), _required(quality[0], "expectedOutlineHash"), canonical_json(manifest), canonical_hash(manifest), status, _required(latest, "revision"), _required(latest, "contentHash"), _required(latest, "revision") if data.get("confirmedAt") is not None else None, _required(latest, "contentHash") if data.get("confirmedAt") is not None else None, _required(data, "createdAt"), _required(data, "updatedAt"), _nullable(data, "confirmedAt"))
+    extraction_id = str(uuid5(
+        UUID(context.command_id),
+        f"finalization-extraction/{record.logical_id}",
+    ))
+    row = (context.ids[(record.entity_type, record.logical_id)], context.target_project_id, _required(data, "chapterLogicalId"), _required(data, "candidateLogicalId"), quality_id, extraction_id, _derived_hash(context, "finalization-change-set/idempotency", authority), _derived_hash(context, "finalization-change-set/request", authority), None, _required(data, "candidateHash"), _required(chapter, "expectedCanonRevision"), _required(quality[0], "expectedPlanningHash"), _required(quality[0], "expectedOutlineHash"), canonical_json(manifest), canonical_hash(manifest), status, _required(latest, "revision"), _required(latest, "contentHash"), _required(latest, "revision") if data.get("confirmedAt") is not None else None, _required(latest, "contentHash") if data.get("confirmedAt") is not None else None, _required(data, "createdAt"), _required(data, "updatedAt"), _nullable(data, "confirmedAt"))
     return (EncodedBatch("finalization_change_sets", columns, (row,)),)
 
 
@@ -496,15 +506,19 @@ def _creation_contract(record: PackageRecord, data: Mapping[str, object], contex
     if not isinstance(batch_logical, str):
         raise _invalid()
     binding_ref = payload.get("modelBindingRef")
-    style_refs = [payload.get("primaryStyleRef")]
+    style_refs = [("primary", payload.get("primaryStyleRef"))]
     if payload.get("secondaryStyleRef") is not None:
-        style_refs.append(payload.get("secondaryStyleRef"))
+        style_refs.append(("secondary", payload.get("secondaryStyleRef")))
     manifest = {
         "schemaVersion": "contract-reference-manifest-v1",
         "seedRef": {"id": data.get("seedLogicalId"), "revisionId": data.get("seedRevisionLogicalId"), "contentHash": data.get("seedHash")},
         "engineRef": {"id": engine_id, "batchId": context.ids.get(("story-engine-batch", batch_logical)), "contentHash": payload.get("engineHash")},
         "bindingRef": thaw_json_value(binding_ref) if binding_ref is not None else None,
-        "styleRefs": [thaw_json_value(item) for item in style_refs],
+        "styleRefs": [
+            {"role": role, **thaw_json_value(item)}
+            for role, item in style_refs
+            if isinstance(item, Mapping)
+        ],
         "experienceCardRefs": thaw_json_value(payload.get("experienceCardRefs")),
         "corpusSourceRefs": thaw_json_value(payload.get("corpusSourceRefs")),
     }
@@ -523,36 +537,80 @@ def _engine_ref(record: PackageRecord, data: Mapping[str, object], context: Publ
     return (EncodedBatch("creation_contract_engine_refs", columns, ((_required(data, "creationContractLogicalId"), context.target_project_id, _required(data, "storyEngineLogicalId"), _required(data, "contentHash")),)),)
 
 
-def _asset_by_name(context: PublicationEncodingContext, name: object, revision: object) -> tuple[str, Mapping[str, object]]:
-    found = [(context.ids[key], value) for key, value in context.rewritten.items() if key[0] == "asset" and value.get("name") == name and value.get("revision") == revision]
+def _asset_by_name(
+    context: PublicationEncodingContext,
+    name: object,
+    revision: object,
+    content_hash: object,
+    expected_kind: str,
+) -> tuple[str, Mapping[str, object]]:
+    found = [
+        (context.ids[key], value)
+        for key, value in context.rewritten.items()
+        if key[0] == "asset"
+        and value.get("assetKind") == expected_kind
+        and value.get("name") == name
+        and value.get("revision") == revision
+        and value.get("contentHash") == content_hash
+    ]
     if len(found) != 1:
         raise _invalid()
     return found[0]
 
 
 def _template_ref(record: PackageRecord, data: Mapping[str, object], context: PublicationEncodingContext) -> tuple[EncodedBatch, ...]:
-    asset_id, asset = _asset_by_name(context, data.get("templateName"), data.get("templateRevision"))
+    asset_id, asset = _asset_by_name(
+        context, data.get("templateName"), data.get("templateRevision"),
+        data.get("contentHash"), "style-template",
+    )
     style_key, style = _record_by_target_id(context, "style-contract", data.get("styleContractLogicalId"))
     creation = _record_by_target_id(context, "creation-contract", style.get("creationContractLogicalId"))[1]
     payload = creation.get("payload")
     if not isinstance(payload, Mapping):
         raise _invalid()
-    primary = payload.get("primaryStyleRef")
-    role = "primary" if isinstance(primary, Mapping) and primary.get("id") == asset_id else "secondary"
+    linked = [
+        ("primary", payload.get("primaryStyleRef")),
+        ("secondary", payload.get("secondaryStyleRef")),
+    ]
+    linked = [(role, value) for role, value in linked if isinstance(value, Mapping)]
+    if record.order < 1 or record.order > len(linked):
+        raise _invalid()
+    role, expected = linked[record.order - 1]
+    if any(expected.get(field) != actual for field, actual in (
+        ("id", asset_id), ("revision", data.get("templateRevision")),
+        ("contentHash", data.get("contentHash")),
+    )):
+        raise _invalid()
     columns = ("style_contract_id", "role", "style_template_id", "asset_revision", "asset_hash", "sort_order")
     style_id = context.ids[style_key]
     return (EncodedBatch("style_contract_template_refs", columns, ((style_id, role, asset_id, _required(asset, "revision"), _required(asset, "contentHash"), record.order),)),)
 
 
 def _experience_ref(record: PackageRecord, data: Mapping[str, object], context: PublicationEncodingContext) -> tuple[EncodedBatch, ...]:
-    asset_id, asset = _asset_by_name(context, data.get("experienceTitle"), data.get("experienceRevision"))
+    asset_id, asset = _asset_by_name(
+        context, data.get("experienceTitle"), data.get("experienceRevision"),
+        data.get("contentHash"), "experience-card",
+    )
+    creation = _record_by_target_id(
+        context, "creation-contract", data.get("creationContractLogicalId"),
+    )[1]
+    payload = creation.get("payload")
+    refs = payload.get("experienceCardRefs") if isinstance(payload, Mapping) else None
+    if not isinstance(refs, list) or record.order < 1 or record.order > len(refs):
+        raise _invalid()
+    expected = refs[record.order - 1]
+    if not isinstance(expected, Mapping) or any(expected.get(field) != actual for field, actual in (
+        ("id", asset_id), ("revision", data.get("experienceRevision")),
+        ("contentHash", data.get("contentHash")),
+    )):
+        raise _invalid()
     columns = ("creation_contract_id", "experience_card_id", "asset_revision", "asset_hash", "sort_order")
     return (EncodedBatch("creation_contract_experience_refs", columns, ((_required(data, "creationContractLogicalId"), asset_id, _required(asset, "revision"), _required(asset, "contentHash"), record.order),)),)
 
 
 def _corpus_parts(context: PublicationEncodingContext, revision_id: object) -> tuple[str, Mapping[str, object]]:
     _key, corpus = _record_by_target_id(context, "corpus-revision", revision_id)
-    source_id = str(uuid5(UUID(context.command_id), f"corpus-source/{_required(corpus, 'sourceKey')}"))
+    source_id = corpus_source_target_id(context.command_id, _required(corpus, "sourceKey"))
     return source_id, corpus
 
 
@@ -560,6 +618,7 @@ def _contract_corpus_source(
     context: PublicationEncodingContext,
     data: Mapping[str, object],
 ) -> tuple[Mapping[str, object], tuple[Mapping[str, object], ...]]:
+    source_id, _corpus = _corpus_parts(context, data.get("corpusRevisionLogicalId"))
     creation = _record_by_target_id(context, "creation-contract", data.get("creationContractLogicalId"))[1]
     payload = creation.get("payload")
     if not isinstance(payload, Mapping):
@@ -570,7 +629,7 @@ def _contract_corpus_source(
     source_matches = [
         source for source in sources
         if isinstance(source, Mapping)
-        and source.get("id") == data.get("corpusRevisionLogicalId")
+        and source.get("id") == source_id
         and source.get("revisionId") == data.get("corpusRevisionLogicalId")
     ]
     if len(source_matches) != 1:
@@ -598,7 +657,7 @@ def _corpus_fragment_ref(record: PackageRecord, data: Mapping[str, object], cont
     if record.order < 1 or record.order > len(ordered):
         raise _invalid()
     authority_fragment = ordered[record.order - 1]
-    if authority.get("id") != data.get("corpusRevisionLogicalId"):
+    if authority.get("id") != source_id or authority.get("revisionId") != data.get("corpusRevisionLogicalId"):
         raise _invalid()
     fragments = corpus.get("fragments")
     if not isinstance(fragments, list):
@@ -613,10 +672,17 @@ def _corpus_fragment_ref(record: PackageRecord, data: Mapping[str, object], cont
         raise _invalid()
     chapter = chapter_matches[0]
     columns = ("creation_contract_id", "corpus_source_id", "source_revision", "source_hash", "corpus_chapter_id", "corpus_fragment_id", "fragment_hash", "chapter_char_start", "chapter_char_end", "reference_use", "sort_order")
+    selected_start = authority_fragment.get("chapterCharStart")
+    selected_end = authority_fragment.get("chapterCharEnd")
+    fragment_start = fragment.get("chapterCharStart")
+    fragment_end = fragment.get("chapterCharEnd")
     if (
         authority_fragment.get("fragmentHash") != fragment.get("contentHash")
-        or authority_fragment.get("chapterCharStart") != fragment.get("chapterCharStart")
-        or authority_fragment.get("chapterCharEnd") != fragment.get("chapterCharEnd")
+        or fragment.get("chapterOrder") != chapter.get("chapterOrder")
+        or any(type(value) is not int for value in (
+            selected_start, selected_end, fragment_start, fragment_end,
+        ))
+        or not fragment_start <= selected_start < selected_end <= fragment_end
     ):
         raise _invalid()
     row = (_required(data, "creationContractLogicalId"), source_id, _required(corpus, "revision"), _required(corpus, "contentHash"), _required(chapter, "logicalId"), _required(fragment, "logicalId"), _required(fragment, "contentHash"), _required(authority_fragment, "chapterCharStart"), _required(authority_fragment, "chapterCharEnd"), _required(authority_fragment, "referenceUse"), record.order)
@@ -670,11 +736,17 @@ def _reference_use(record: PackageRecord, data: Mapping[str, object], context: P
 
 def _contract_confirmation(record: PackageRecord, data: Mapping[str, object], context: PublicationEncodingContext) -> tuple[EncodedBatch, ...]:
     creation_key, creation = _record_by_target_id(context, "creation-contract", data.get("creationContractLogicalId"))
-    style_key, _style = _record_by_target_id(context, "style-contract", data.get("styleContractLogicalId"))
+    style_key, style = _record_by_target_id(context, "style-contract", data.get("styleContractLogicalId"))
     payload = creation.get("payload")
     if not isinstance(payload, Mapping):
         raise _invalid()
-    authority = {"logicalId": record.logical_id, "contentHash": data.get("contentHash")}
+    authority = {
+        "logicalId": record.logical_id,
+        "selectionRevision": data.get("selectionRevision"),
+        "resultRevision": data.get("resultRevision"),
+        "creationHash": creation.get("contentHash"),
+        "styleHash": style.get("contentHash"),
+    }
     columns = ("id", "project_id", "selection_revision", "idempotency_key", "request_hash", "status", "creation_contract_id", "style_contract_id", "result_revision", "public_error_code", "created_at", "completed_at")
     row = (context.ids[(record.entity_type, record.logical_id)], context.target_project_id, _required(data, "selectionRevision"), _derived_hash(context, "contract-confirmation/idempotency", authority), _derived_hash(context, "contract-confirmation/request", authority), "succeeded", context.ids[creation_key], context.ids[style_key], _required(data, "resultRevision"), None, _required(data, "createdAt"), _required(data, "completedAt"))
     return (EncodedBatch("contract_confirmation_requests", columns, (row,)),)

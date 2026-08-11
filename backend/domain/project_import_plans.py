@@ -25,7 +25,8 @@ from backend.security.project_package_paths import CORPUS_BLOB_RE
 from backend.domain.project_import_publication import (
     PUBLICATION_TABLE_ORDER as _PUBLICATION_TABLE_ORDER,
     STATIC_TABLE_COLUMNS as _IMPORT_TABLE_COLUMNS,
-    _RECORD_ENCODERS, _SPECIAL_RECORD_HANDLERS, encode_provenance_batch, encode_publication_batches,
+    _RECORD_ENCODERS, _SPECIAL_RECORD_HANDLERS, corpus_source_target_id,
+    encode_provenance_batch, encode_publication_batches,
 )
 
 
@@ -200,7 +201,11 @@ def _definition(item: object, kind: str, ids: Mapping[tuple[str, str], str]) -> 
     return item
 
 
-def _rewrite_creation_contract(payload: dict[str, object], ids: Mapping[tuple[str, str], str]) -> None:
+def _rewrite_creation_contract(
+    payload: dict[str, object],
+    ids: Mapping[tuple[str, str], str],
+    corpus_source_ids: Mapping[str, str],
+) -> None:
     _slot(payload, "seedRevisionId", ("creative-seed-revision",), ids)
     _slot(payload, "engineOptionId", ("story-engine-option",), ids)
     for field, optional in (("primaryStyleRef", False), ("secondaryStyleRef", True)):
@@ -217,7 +222,10 @@ def _rewrite_creation_contract(payload: dict[str, object], ids: Mapping[tuple[st
     for source in payload.get("corpusSourceRefs", []):
         if not isinstance(source, dict):
             raise _invalid()
-        _slot(source, "id", ("corpus-revision",), ids)
+        logical_id = source.get("id")
+        if logical_id != source.get("revisionId") or logical_id not in corpus_source_ids:
+            raise _invalid()
+        source["id"] = corpus_source_ids[logical_id]
         _slot(source, "revisionId", ("corpus-revision",), ids)
         for fragment in source.get("fragments", []):
             if not isinstance(fragment, dict):
@@ -231,7 +239,11 @@ def _rewrite_creation_contract(payload: dict[str, object], ids: Mapping[tuple[st
         _slot(binding, "id", ("project-model-binding-revision",), ids)
 
 
-def _rewrite_contract_draft(payload: dict[str, object], ids: Mapping[tuple[str, str], str]) -> None:
+def _rewrite_contract_draft(
+    payload: dict[str, object],
+    ids: Mapping[tuple[str, str], str],
+    corpus_source_ids: Mapping[str, str],
+) -> None:
     """Rewrite the frozen authority slots of the persisted ContractDraftPayload."""
     _slot(payload, "seedRevisionId", ("creative-seed-revision",), ids)
     _slot(payload, "engineOptionId", ("story-engine-option",), ids)
@@ -248,7 +260,10 @@ def _rewrite_contract_draft(payload: dict[str, object], ids: Mapping[tuple[str, 
     for source in payload.get("corpusSourceRefs") or []:
         if not isinstance(source, dict):
             raise _invalid()
-        _slot(source, "id", ("corpus-revision",), ids)
+        logical_id = source.get("id")
+        if logical_id != source.get("revisionId") or logical_id not in corpus_source_ids:
+            raise _invalid()
+        source["id"] = corpus_source_ids[logical_id]
         _slot(source, "revisionId", ("corpus-revision",), ids)
         for fragment in source.get("fragments", []):
             if not isinstance(fragment, dict):
@@ -386,6 +401,7 @@ def _rewrite_finalization(payload: dict[str, object], ids: Mapping[tuple[str, st
 def _rewrite_record_data(
     record: PackageRecord,
     ids: Mapping[tuple[str, str], str],
+    corpus_source_ids: Mapping[str, str],
 ) -> dict[str, object]:
     """Rewrite only declared identity slots; prose and byte-backed content are opaque."""
     try:
@@ -395,11 +411,17 @@ def _rewrite_record_data(
         for field, targets in _REFS.get(record.entity_type, {}).items():
             optional = field in _OPTIONAL_REF_FIELDS.get(record.entity_type, frozenset())
             _slot(data, field, tuple(sorted(targets)), ids, optional=optional)
+        if record.entity_type == "draft-candidate":
+            provenance = data.get("provenance")
+            if not isinstance(provenance, dict):
+                raise _invalid()
+            _slot(provenance, "outlineRevisionId", ("chapter-outline-revision",), ids)
+            _slot(provenance, "planningRevisionId", ("planning-revision",), ids)
         payload = data.get("payload")
         if record.entity_type == "project-contract-draft" and isinstance(payload, dict):
-            _rewrite_contract_draft(payload, ids)
+            _rewrite_contract_draft(payload, ids, corpus_source_ids)
         elif record.entity_type == "creation-contract" and isinstance(payload, dict):
-            _rewrite_creation_contract(payload, ids)
+            _rewrite_creation_contract(payload, ids, corpus_source_ids)
         elif record.entity_type == "planning-draft" and isinstance(payload, dict):
             if payload.get("schemaVersion") == "planning-v1":
                 _rewrite_planning(payload, ids)
@@ -633,6 +655,7 @@ def _authority_hash(entity_type: str, data: dict[str, object]) -> str | None:
 def _rewrite_records(
     package: VerifiedProjectPackage,
     identity_map: ImportIdentityMap,
+    command_id: str,
 ) -> dict[tuple[str, str], dict[str, object]]:
     rewritten: dict[tuple[str, str], dict[str, object]] = {}
     records = tuple(sorted(package.graph_index.values(), key=record_sort_key))
@@ -640,10 +663,19 @@ def _rewrite_records(
     from backend.domain.json_contracts import canonical_hash
     from backend.domain.model_bindings import BindingItem, BindingRevision, TASK_KEYS
 
+    corpus_source_ids: dict[str, str] = {}
+    for record in records:
+        if record.entity_type != "corpus-revision":
+            continue
+        source_key = record.data.get("sourceKey")
+        if not isinstance(source_key, str) or not source_key:
+            raise _invalid()
+        corpus_source_ids[record.logical_id] = corpus_source_target_id(command_id, source_key)
+
     for record in records:
         if record.entity_type in PROVENANCE_ENTITY_TYPES:
             continue
-        data = _rewrite_record_data(record, identity_map.ids)
+        data = _rewrite_record_data(record, identity_map.ids, corpus_source_ids)
         if record.entity_type == "project-model-binding-item":
             data.update({"resolutionStatus": "unbound", "providerId": None, "providerName": None, "modelName": None})
             item = BindingItem(task_key=data["taskKey"], resolution_status="unbound")
@@ -829,6 +861,37 @@ def _rewrite_records(
             raise _invalid()
         data["contentHash"] = _target_projection(rewritten, identity_map.ids, revision=revision_number)["contentHash"]
 
+    # Candidate basis is historical authority: preserve its pinned revisions while
+    # repairing only the rewritten authority ids and downstream hashes.
+    for record in records:
+        if record.entity_type != "draft-candidate":
+            continue
+        data = rewritten[(record.entity_type, record.logical_id)]
+        provenance = data.get("provenance")
+        source_provenance = record.data.get("provenance")
+        if not isinstance(provenance, dict) or not isinstance(source_provenance, Mapping):
+            raise _invalid()
+        outline_logical_id = source_provenance.get("outlineRevisionId")
+        planning_logical_id = source_provenance.get("planningRevisionId")
+        outline = rewritten.get(("chapter-outline-revision", outline_logical_id)) if isinstance(outline_logical_id, str) else None
+        planning = rewritten.get(("planning-revision", planning_logical_id)) if isinstance(planning_logical_id, str) else None
+        projection_revision = provenance.get("projectionRevision")
+        if (
+            outline is None or planning is None
+            or not isinstance(outline.get("contentHash"), str)
+            or not isinstance(planning.get("contentHash"), str)
+            or type(projection_revision) is not int
+        ):
+            raise _invalid()
+        provenance["outlineHash"] = outline["contentHash"]
+        provenance["planningHash"] = planning["contentHash"]
+        provenance["projectionHash"] = _target_projection(
+            rewritten, identity_map.ids, revision=projection_revision,
+        )["contentHash"]
+        data["basisHash"] = canonical_hash({
+            key: provenance[key] for key in _CANDIDATE_BASIS_KEYS
+        })
+
     # The commit receipt is downstream of both rewritten Planning and rewritten Canon.
     for record in records:
         if record.entity_type != "finalization-record":
@@ -872,12 +935,18 @@ def _validate_publication_references(package: VerifiedProjectPackage) -> None:
                 for kind in target_types
             ):
                 raise _invalid()
+        if record.entity_type == "draft-candidate":
+            _validate_candidate_basis(record.data, package.graph_index)
         for reference_field, target_type, revision_field, hash_field in _PINNED_REVISIONS.get(record.entity_type, ()):
             reference = record.data.get(reference_field)
             target = package.graph_index.get((target_type, reference)) if isinstance(reference, str) else None
             if target is None:
                 raise _invalid()
-            if revision_field in record.data and record.data[revision_field] != target.data.get("revision", target.revision):
+            if revision_field in record.data and record.data[revision_field] != _confirmation_target_revision(
+                record.entity_type,
+                target_type,
+                target,
+            ):
                 raise _invalid()
             if hash_field in record.data and record.data[hash_field] != target.data.get("contentHash"):
                 raise _invalid()
@@ -908,6 +977,13 @@ def _validate_source_hashes(package: VerifiedProjectPackage) -> None:
                     raise ValueError
     except Exception:
         raise _invalid() from None
+
+
+_TYPED_EMBEDDED_ENTITY_TYPES = frozenset({
+    "planning-draft", "planning-revision", "project-bible-draft",
+    "creation-bible-revision", "finalization-change-set-revision",
+    "candidate-quality",
+})
 
 
 def _publication_embedded_identities(record: PackageRecord) -> tuple[tuple[str, str], ...]:
@@ -1052,7 +1128,7 @@ def build_publication_plan(
                     derived_identities.setdefault(("story-engine-batch", batch_id), None)
         identities.extend(identity for identity in derived_identities if identity not in set(identities))
         identity_map = build_import_identity_map(command_id, identities)
-        rewritten = _rewrite_records(package, identity_map)
+        rewritten = _rewrite_records(package, identity_map, command_id)
         from backend.domain.json_contracts import canonical_json
         from backend.domain.model_bindings import TASK_KEYS
 
@@ -1323,6 +1399,8 @@ _REFS: Mapping[str, Mapping[str, frozenset[str]]] = {
     "project-contract-head": {"creationContractLogicalId": frozenset({"creation-contract"}), "styleContractLogicalId": frozenset({"style-contract"})},
     "contract-confirmation": {"creationContractLogicalId": frozenset({"creation-contract"}), "styleContractLogicalId": frozenset({"style-contract"})},
     "creation-contract-engine-ref": {"creationContractLogicalId": frozenset({"creation-contract"}), "storyEngineLogicalId": frozenset({"story-engine-option"})},
+    "style-contract-template-ref": {"styleContractLogicalId": frozenset({"style-contract"})},
+    "creation-contract-experience-ref": {"creationContractLogicalId": frozenset({"creation-contract"})},
     "creation-contract-corpus-ref": {"creationContractLogicalId": frozenset({"creation-contract"}), "corpusRevisionLogicalId": frozenset({"corpus-revision"})},
     "creation-contract-corpus-fragment-ref": {"creationContractLogicalId": frozenset({"creation-contract"}), "corpusRevisionLogicalId": frozenset({"corpus-revision"})},
     "project-bible-head": {"bibleRevisionLogicalId": frozenset({"creation-bible-revision"})},
@@ -1386,6 +1464,77 @@ _PINNED_REVISIONS: Mapping[str, tuple[tuple[str, str, str, str], ...]] = {
     "final-chapter": (("planningRevisionLogicalId", "planning-revision", "planningRevision", "planningHash"), ("outlineRevisionLogicalId", "chapter-outline-revision", "chapterOutlineRevision", "chapterOutlineHash")),
 }
 
+
+def _confirmation_target_revision(
+    record_type: str,
+    target_type: str,
+    target: PackageRecord,
+) -> object:
+    revision_field = {
+        ("bible-confirmation", "project-bible-draft"): "draftVersion",
+        ("planning-confirmation", "planning-draft"): "draftRevision",
+        ("chapter-outline-confirmation", "chapter-outline-draft"): "draftRevision",
+    }.get((record_type, target_type), "revision")
+    return target.data.get(revision_field, target.revision)
+
+
+_CANDIDATE_BASIS_KEYS = (
+    "schemaVersion", "outlineRevisionId", "outlineRevision", "outlineHash",
+    "planningRevisionId", "planningRevision", "planningHash", "canonRevision",
+    "projectionRevision", "projectionHash",
+)
+_CANDIDATE_PROVENANCE_KEYS = frozenset({
+    "source", "workingDraftRevision", *_CANDIDATE_BASIS_KEYS,
+})
+
+
+def _validate_candidate_basis(
+    data: Mapping[str, object],
+    index: Mapping[tuple[str, str], PackageRecord],
+) -> Mapping[str, object]:
+    from backend.domain.json_contracts import canonical_hash
+
+    provenance = data.get("provenance")
+    if (
+        not isinstance(provenance, Mapping)
+        or set(provenance) != _CANDIDATE_PROVENANCE_KEYS
+        or provenance.get("source") != "explicit-save-candidate"
+        or type(data.get("workingDraftRevision")) is not int
+        or data["workingDraftRevision"] < 1
+        or provenance.get("workingDraftRevision") != data["workingDraftRevision"]
+        or provenance.get("schemaVersion") != "draft-candidate-basis-v1"
+    ):
+        raise _invalid()
+    for field, minimum in (
+        ("outlineRevision", 1), ("planningRevision", 1),
+        ("canonRevision", 0), ("projectionRevision", 0),
+    ):
+        if type(provenance.get(field)) is not int or provenance[field] < minimum:
+            raise _invalid()
+    for field in ("outlineHash", "planningHash", "projectionHash"):
+        if not isinstance(provenance.get(field), str) or re.fullmatch(r"[0-9a-f]{64}", provenance[field]) is None:
+            raise _invalid()
+    for field, kind, revision_field, hash_field in (
+        ("outlineRevisionId", "chapter-outline-revision", "outlineRevision", "outlineHash"),
+        ("planningRevisionId", "planning-revision", "planningRevision", "planningHash"),
+    ):
+        logical_id = provenance.get(field)
+        target = index.get((kind, logical_id)) if isinstance(logical_id, str) else None
+        if (
+            target is None
+            or provenance[revision_field] != target.data.get("revision", target.revision)
+            or provenance[hash_field] != target.data.get("contentHash")
+        ):
+            raise _invalid()
+    basis = {key: provenance[key] for key in _CANDIDATE_BASIS_KEYS}
+    if (
+        not isinstance(data.get("basisHash"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", data["basisHash"]) is None
+        or data["basisHash"] != canonical_hash(basis)
+    ):
+        raise _invalid()
+    return basis
+
 _REQUIRED_CLOSURE_FIELDS: Mapping[str, frozenset[str]] = {
     "import-provenance": frozenset({
         "category", "sourceEntityType", "sourceLogicalId", "payload",
@@ -1395,6 +1544,8 @@ _REQUIRED_CLOSURE_FIELDS: Mapping[str, frozenset[str]] = {
     "project-contract-draft": frozenset({"baseHeadRevision", "selectionRevision", "seedRevisionLogicalId", "seedHash", "engineOptionLogicalId", "contentHash"}),
     "creation-contract": frozenset({"revision", "selectionRevision", "seedLogicalId", "seedRevisionLogicalId", "seedHash", "contentHash"}),
     "style-contract": frozenset({"revision", "creationContractLogicalId", "contentHash"}),
+    "style-contract-template-ref": frozenset({"templateName", "templateRevision", "contentHash"}),
+    "creation-contract-experience-ref": frozenset({"experienceTitle", "experienceRevision", "contentHash"}),
     "creation-bible-revision": frozenset({
         "revision", "selectionRevision", "seedLogicalId", "seedRevisionLogicalId", "seedHash",
         "contractRevision", "creationContractLogicalId", "creationHash", "styleContractLogicalId", "styleHash",
@@ -1403,12 +1554,13 @@ _REQUIRED_CLOSURE_FIELDS: Mapping[str, frozenset[str]] = {
     "project-bible-draft": frozenset({"baseHeadRevision", "selectionRevision", "seedLogicalId", "seedRevisionLogicalId", "seedHash", "contractRevision", "creationContractLogicalId", "creationHash", "styleContractLogicalId", "styleHash", "policyVersion", "contentHash"}),
     "planning-draft": frozenset({"baseHeadRevision", "selectionRevision", "seedLogicalId", "seedRevisionLogicalId", "seedHash", "contractRevision", "creationContractLogicalId", "creationHash", "styleContractLogicalId", "styleHash", "bibleRevision", "bibleRevisionLogicalId", "bibleHash", "contentHash"}),
     "chapter-outline-draft": frozenset({"chapterNumber", "baseHeadRevision", "planningRevisionLogicalId", "planningRevision", "planningHash", "canonRevision", "projectionRevision", "projectionHash", "contentHash"}),
-    "contract-confirmation": frozenset({"selectionRevision", "creationContractLogicalId", "styleContractLogicalId", "resultRevision", "contentHash"}),
+    "contract-confirmation": frozenset({"selectionRevision", "creationContractLogicalId", "styleContractLogicalId", "resultRevision"}),
     "bible-confirmation": frozenset({"selectionRevision", "contractRevision", "creationContractLogicalId", "creationHash", "styleContractLogicalId", "styleHash", "draftLogicalId", "draftVersion", "draftHash", "bibleRevisionLogicalId", "resultRevision", "contentHash"}),
     "planning-confirmation": frozenset({"draftLogicalId", "draftRevision", "draftHash", "expectedHeadRevision", "planningRevisionLogicalId", "resultRevision", "contentHash"}),
     "chapter-outline-confirmation": frozenset({"chapterNumber", "draftLogicalId", "draftRevision", "draftHash", "expectedHeadRevision", "planningRevisionLogicalId", "planningRevision", "planningHash", "canonRevision", "projectionRevision", "projectionHash", "outlineRevisionLogicalId", "resultRevision", "contentHash"}),
     "planning-revision": frozenset({"revision", "contentHash", "seedLogicalId", "seedRevisionLogicalId", "seedHash", "creationContractLogicalId", "creationHash", "styleContractLogicalId", "styleHash", "bibleRevisionLogicalId", "bibleHash"}),
     "chapter": frozenset({"planningRevisionLogicalId", "planningRevision", "planningHash", "outlineRevisionLogicalId", "chapterOutlineRevision", "chapterOutlineHash", "storyBlockLogicalId", "storyBlockRevision", "storyBlockHash"}),
+    "draft-candidate": frozenset({"workingDraftRevision", "basisHash", "provenance"}),
     "final-chapter": frozenset({"finalizationRecordLogicalId", "planningRevisionLogicalId", "planningRevision", "planningHash", "outlineRevisionLogicalId", "chapterOutlineRevision", "chapterOutlineHash", "candidateLogicalId", "contentHash", "canonRevision"}),
     "corpus-revision": frozenset({"contentHash", "byteLength", "chapters", "fragments"}),
     "reference-use": frozenset({"chapterLogicalId", "candidateLogicalId", "corpusRevisionLogicalId", "corpusChapterLogicalId"}),
@@ -1436,6 +1588,8 @@ VALIDATORS: Mapping[str, RecordValidator] = MappingProxyType({
 
 
 def _embedded_identities(record: PackageRecord) -> set[tuple[str, str]]:
+    if record.entity_type in _TYPED_EMBEDDED_ENTITY_TYPES:
+        return set(_publication_embedded_identities(record))
     found: set[tuple[str, str]] = set()
 
     def visit(value: object) -> None:
@@ -1484,6 +1638,8 @@ def _validate_graph(records: tuple[PackageRecord, ...]) -> dict[tuple[str, str],
                 raise _invalid()
         if record.entity_type == "operation" and "status" in record.data and record.data["status"] not in {"completed", "failed", "cancelled", "succeeded"}:
             raise _invalid()
+        if record.entity_type == "draft-candidate":
+            _validate_candidate_basis(record.data, index)
         if record.entity_type == "import-provenance":
             if (
                 record.data.get("category") not in {
@@ -1531,7 +1687,7 @@ def _validate_graph(records: tuple[PackageRecord, ...]) -> dict[tuple[str, str],
             target = index.get((target_type, reference)) if isinstance(reference, str) else None
             if target is None:
                 raise _invalid()
-            target_revision = target.data.get("revision", target.revision)
+            target_revision = _confirmation_target_revision(record.entity_type, target_type, target)
             if revision_field in record.data and record.data[revision_field] != target_revision:
                 raise _invalid()
             if hash_field in record.data and record.data[hash_field] != target.data.get("contentHash"):
@@ -1550,12 +1706,12 @@ def _validate_graph(records: tuple[PackageRecord, ...]) -> dict[tuple[str, str],
         (record for record in records if record.entity_type == "canon-revision"),
         key=lambda record: record.data.get("revisionNumber", -1),
     )
-    for expected, revision in enumerate(canon_revisions, start=1):
+    for expected, revision in enumerate(canon_revisions):
         number = revision.data.get("revisionNumber")
         parent = revision.data.get("parentRevisionNumber")
         source_type = revision.data.get("sourceType")
         source_id = revision.data.get("sourceLogicalId")
-        if type(number) is not int or number != expected or parent != (expected - 1 if expected > 1 else 0):
+        if type(number) is not int or number != expected or parent != (expected - 1 if expected > 0 else 0):
             raise _invalid()
         if source_type == "finalization":
             if not isinstance(source_id, str) or ("finalization-change-set", source_id) not in index:

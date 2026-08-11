@@ -1836,7 +1836,7 @@ def test_every_non_secret_classified_column_has_an_explicit_export_or_normalizat
         for decision in PACKAGE_COLUMN_EXPORT_DECISIONS.values()
     )
     assert PACKAGE_COLUMN_EXPORT_DECISION_FINGERPRINT == (
-        "9dc2c7858fa95b05fcb3382ba53b000e5a844571ad4517db6116297a76123195"
+        "67383ba721bd03d14b40d87214c489c46223bc4c2b708f586823fea508292c9f"
     )
     assert {
         (table, column): PACKAGE_COLUMN_EXPORT_DECISIONS[(table, column)]
@@ -1858,6 +1858,14 @@ def test_every_non_secret_classified_column_has_an_explicit_export_or_normalizat
     }
 
 
+@pytest.mark.parametrize(
+    "table",
+    ("creation_contracts", "style_contracts", "creation_bible_revisions"),
+)
+def test_confirmed_authority_timestamp_exports_as_created_at(table: str) -> None:
+    assert PACKAGE_COLUMN_EXPORT_DECISIONS[(table, "confirmed_at")] == "createdAt"
+
+
 @pytest.mark.asyncio
 async def test_key_recovery_relations_are_exported_as_package_logical_ids_and_public_versions() -> None:
     _, contract_rows, extra_rows = _minimal_creation_contract_fixture(
@@ -1870,6 +1878,12 @@ async def test_key_recovery_relations_are_exported_as_package_logical_ids_and_pu
         style_template_id="style-template-db",
         revision=2,
     )
+    candidate_basis = {
+        "schemaVersion": "draft-candidate-basis-v1",
+        "outlineRevisionId": "outline-db", "outlineRevision": 5, "outlineHash": "6" * 64,
+        "planningRevisionId": "planning-db", "planningRevision": 4, "planningHash": "5" * 64,
+        "canonRevision": 0, "projectionRevision": 0, "projectionHash": "7" * 64,
+    }
     session = _SnapshotSession({
         "projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P")],
         **contract_rows,
@@ -1905,7 +1919,13 @@ async def test_key_recovery_relations_are_exported_as_package_logical_ids_and_pu
         )],
         "draft_candidates": [_owned_row(
             "draft_candidates", id="candidate-db", project_id="project-db",
-            chapter_session_id="chapter-db", content="candidate", content_hash="9" * 64,
+            chapter_session_id="chapter-db", working_draft_revision=1,
+            content="candidate", content_hash="9" * 64,
+            basis_hash=canonical_hash(candidate_basis),
+            provenance_json=json.dumps({
+                "source": "explicit-save-candidate", "workingDraftRevision": 1,
+                **candidate_basis,
+            }),
         )],
         "draft_operation_attempts": [_owned_row(
             "draft_operation_attempts", id="operation-db", project_id="project-db",
@@ -1952,6 +1972,25 @@ async def test_key_recovery_relations_are_exported_as_package_logical_ids_and_pu
     assert {"workingDraftLogicalId", "chapterLogicalId", "candidateLogicalId", "operationLogicalId"} <= set(working_revision)
     final_chapter = by_type["final-chapter"].data
     assert {"chapterLogicalId", "candidateLogicalId", "planningRevisionLogicalId", "outlineRevisionLogicalId", "finalizationRecordLogicalId"} <= set(final_chapter)
+    candidate = by_type["draft-candidate"].data
+    assert candidate["workingDraftRevision"] == 1
+    assert candidate["provenance"] == {
+        "source": "explicit-save-candidate", "workingDraftRevision": 1,
+        **{
+            **candidate_basis,
+            "outlineRevisionId": "chapter-outline-revision:1",
+            "planningRevisionId": "planning-revision:1",
+        },
+    }
+    assert candidate["basisHash"] == canonical_hash({
+        key: candidate["provenance"][key]
+        for key in (
+            "schemaVersion", "outlineRevisionId", "outlineRevision", "outlineHash",
+            "planningRevisionId", "planningRevision", "planningHash", "canonRevision",
+            "projectionRevision", "projectionHash",
+        )
+    })
+    assert "outline-db" not in repr(candidate) and "planning-db" not in repr(candidate)
 
 
 @pytest.mark.asyncio

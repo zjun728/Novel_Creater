@@ -13,6 +13,7 @@ from backend.domain.bibles import BiblePayload
 from backend.domain.chapter_outlines import ChapterOutline, DraftChapterOutline, EditableChapterOutlineContent
 from backend.domain.contracts import CreationContractPayload
 from backend.domain.finalization import FinalizationChangeSet, QualityFinding, change_set_payload
+from backend.domain.json_contracts import canonical_hash
 from backend.domain.planning import DraftPlanningAggregate, PlanningAggregate
 from backend.domain.project_packages import PackageRecord, RECORD_FIELD_ALLOWLISTS, ProjectPackageBusy, ProjectPackageConflict, ProjectPackageInvalid, ProjectPackageNotFound, freeze_json_value
 from backend.database import DatabaseSession
@@ -1162,8 +1163,17 @@ def _logical_field_name(table: str, column: str, allowlist: frozenset[str]) -> s
 
 
 def _column_export_decision(table: str, column: str, category: str) -> str:
+    if column == "confirmed_at" and table in {
+        "creation_contracts", "style_contracts", "creation_bible_revisions",
+    }:
+        return "createdAt"
     allowlist = RECORD_FIELD_ALLOWLISTS[PROJECT_TABLE_RECORD_TYPES[table]]
     explicit = {
+        ("bible_confirmation_requests", "result_hash"): "contentHash",
+        ("planning_confirmation_requests", "planning_draft_id"): "draftLogicalId",
+        ("planning_confirmation_requests", "result_hash"): "contentHash",
+        ("chapter_outline_confirmation_requests", "chapter_outline_draft_id"): "draftLogicalId",
+        ("chapter_outline_confirmation_requests", "result_hash"): "contentHash",
         ("creation_contract_engine_refs", "engine_hash"): "contentHash",
         ("creation_contract_engine_refs", "engine_option_id"): "storyEngineLogicalId",
         ("style_contract_template_refs", "asset_hash"): "contentHash",
@@ -1207,7 +1217,7 @@ PACKAGE_COLUMN_EXPORT_DECISION_FINGERPRINT = sha256(
     _PACKAGE_COLUMN_EXPORT_DECISION_MANIFEST.encode("utf-8")
 ).hexdigest()
 if PACKAGE_COLUMN_EXPORT_DECISION_FINGERPRINT != (
-    "9dc2c7858fa95b05fcb3382ba53b000e5a844571ad4517db6116297a76123195"
+    "67383ba721bd03d14b40d87214c489c46223bc4c2b708f586823fea508292c9f"
 ):
     raise RuntimeError("project package export decisions require an explicit audit")
 
@@ -2224,6 +2234,31 @@ class ProjectPackageRepository:
                     record_type = PROJECT_TABLE_RECORD_TYPES[table]
                     allowlist = RECORD_FIELD_ALLOWLISTS[record_type]
                     for row, logical_id in zip(rows_by_table[table], logical_ids_by_table[table], strict=True):
+                        if table in {
+                            "contract_confirmation_requests", "bible_confirmation_requests",
+                            "planning_confirmation_requests", "chapter_outline_confirmation_requests",
+                        } and row["status"] not in {"succeeded"}:
+                            payload = {
+                                "status": row["status"],
+                                "createdAt": row["created_at"],
+                                "completedAt": row["completed_at"],
+                            }
+                            record_order = max((item.order for item in operation_records), default=0) + 1
+                            operation_records.append(PackageRecord(
+                                "import-provenance", f"import-provenance:{record_order}",
+                                order=record_order, data={
+                                    "category": "unsupported-history",
+                                    "sourceEntityType": record_type,
+                                    "sourceLogicalId": logical_id,
+                                    "payload": payload,
+                                    "contentHash": sha256(json.dumps(
+                                        payload, sort_keys=True, separators=(",", ":"),
+                                    ).encode("utf-8")).hexdigest(),
+                                    "createdAt": row["created_at"],
+                                },
+                            ))
+                            counts["import-provenance"] = counts.get("import-provenance", 0) + 1
+                            continue
                         data: dict[str, object] = {}
                         for column, category in PROJECT_TABLE_COLUMN_POLICIES[table].items():
                             if category in {"derived", "excluded_sensitive_operational"}:
@@ -2281,7 +2316,45 @@ class ProjectPackageRepository:
                                 continue
                             raise _invalid()
 
-                        if table == "style_contracts":
+                        if table == "draft_candidates":
+                            provenance = _json_value(row["provenance_json"])
+                            basis_keys = {
+                                "schemaVersion", "outlineRevisionId", "outlineRevision", "outlineHash",
+                                "planningRevisionId", "planningRevision", "planningHash", "canonRevision",
+                                "projectionRevision", "projectionHash",
+                            }
+                            if (
+                                not isinstance(provenance, dict)
+                                or set(provenance) != {"source", "workingDraftRevision", *basis_keys}
+                                or provenance.get("source") != "explicit-save-candidate"
+                                or provenance.get("workingDraftRevision") != row["working_draft_revision"]
+                            ):
+                                raise _invalid()
+                            source_basis = {key: provenance[key] for key in basis_keys}
+                            if row["basis_hash"] != canonical_hash(source_basis):
+                                raise _invalid()
+                            outline = next((
+                                item for item in rows_by_table["chapter_outline_revisions"]
+                                if item["id"] == provenance["outlineRevisionId"]
+                            ), None)
+                            planning = next((
+                                item for item in rows_by_table["planning_revisions"]
+                                if item["id"] == provenance["planningRevisionId"]
+                            ), None)
+                            if (
+                                outline is None or planning is None
+                                or provenance["outlineRevision"] != outline["revision"]
+                                or provenance["outlineHash"] != outline["content_hash"]
+                                or provenance["planningRevision"] != planning["revision"]
+                                or provenance["planningHash"] != planning["content_hash"]
+                            ):
+                                raise _invalid()
+                            provenance["outlineRevisionId"] = identity_maps["chapter_outline_revisions"][outline["id"]]
+                            provenance["planningRevisionId"] = identity_maps["planning_revisions"][planning["id"]]
+                            data["workingDraftRevision"] = row["working_draft_revision"]
+                            data["provenance"] = provenance
+                            data["basisHash"] = canonical_hash({key: provenance[key] for key in basis_keys})
+                        elif table == "style_contracts":
                             data["payload"] = {
                                 "mergedStyle": _json_value(row["merged_style_json"]),
                                 "likes": _json_value(row["likes_json"]),

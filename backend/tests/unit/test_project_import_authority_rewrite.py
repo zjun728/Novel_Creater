@@ -7,7 +7,7 @@ from hashlib import sha256
 from pathlib import Path
 import re
 from types import MappingProxyType
-from uuid import UUID
+from uuid import UUID, uuid5
 
 import pytest
 
@@ -31,6 +31,7 @@ from backend.domain.project_import_plans import (
     FORMAL_ENTITY_TYPES,
     RECONSTRUCTED_ENTITY_TYPES,
 )
+from backend.domain.project_packages import thaw_json_value
 from backend.domain.project_packages import ManifestEntry, PackageRecord, PAYLOAD_PATHS, ProjectPackageManifest
 from backend.domain.project_imports import ProjectImportInvalid
 from backend.domain.project_import_publication import PUBLICATION_TABLE_ORDER, STATIC_TABLE_COLUMNS, encode_publication_batches
@@ -204,6 +205,19 @@ def test_typed_visitors_never_rewrite_logical_looking_prose_or_its_hash(entity_t
         },
     }[entity_type]
     data = {**reference_fields, "content": "project:1", "contentHash": "a" * 64}
+    if entity_type == "draft-candidate":
+        data.update({
+            "workingDraftRevision": 1, "basisHash": "b" * 64,
+            "provenance": {
+                "source": "explicit-save-candidate", "workingDraftRevision": 1,
+                "schemaVersion": "draft-candidate-basis-v1",
+                "outlineRevisionId": "chapter-outline-revision:1", "outlineRevision": 1,
+                "outlineHash": "c" * 64,
+                "planningRevisionId": "planning-revision:1", "planningRevision": 1,
+                "planningHash": "d" * 64, "canonRevision": 0,
+                "projectionRevision": 0, "projectionHash": "e" * 64,
+            },
+        })
     record = PackageRecord(entity_type, f"{entity_type}:1", data=data)
     ids = {
         (kind, logical_id): str(UUID(int=index + 1))
@@ -214,7 +228,7 @@ def test_typed_visitors_never_rewrite_logical_looking_prose_or_its_hash(entity_t
         ))
     }
 
-    rewritten = _rewrite_record_data(record, ids)
+    rewritten = _rewrite_record_data(record, ids, {})
 
     assert rewritten["content"] == "project:1"
     assert rewritten["contentHash"] == "a" * 64
@@ -227,7 +241,7 @@ def test_typed_visitor_rejects_dangling_and_wrong_typed_slot_without_echo() -> N
     })
     for ids in ({}, {("project", "chapter:1"): str(UUID(int=1))}):
         with pytest.raises(Exception, match="^invalid project import archive$") as raised:
-            _rewrite_record_data(record, ids)
+            _rewrite_record_data(record, ids, {})
         assert raised.value.__cause__ is None
         assert "chapter:1" not in str(raised.value)
 
@@ -551,7 +565,7 @@ def test_finalization_receipt_requires_exact_production_shape_and_rewrites_typed
         ("finalization-change-set", "finalization-change-set:1"): str(UUID(int=35)),
     }
 
-    rewritten = _rewrite_record_data(record, ids)
+    rewritten = _rewrite_record_data(record, ids, {})
 
     assert rewritten["resultPayload"] == {
         "finalChapterId": ids[("final-chapter", "final-chapter:1")],
@@ -566,7 +580,7 @@ def test_finalization_receipt_requires_exact_production_shape_and_rewrites_typed
         "resultPayload": {**dict(record.data["resultPayload"]), "extra": "project:1"},
     })
     with pytest.raises(Exception, match="^invalid project import archive$") as raised:
-        _rewrite_record_data(malformed, ids)
+        _rewrite_record_data(malformed, ids, {})
     assert raised.value.__cause__ is None
     assert "project:1" not in str(raised.value)
 
@@ -725,6 +739,7 @@ def test_production_planning_then_outline_topology_rehashes_target_authorities()
     identity_map = build_import_identity_map(COMMAND_ID, identities)
     rewritten = _rewrite_records(
         _package((planning_record, outline_record, canon_revision, canon_event, receipt_record)), identity_map,
+        COMMAND_ID,
     )
     target_planning = rewritten[(planning_record.entity_type, planning_record.logical_id)]
     target_outline = rewritten[(outline_record.entity_type, outline_record.logical_id)]
@@ -769,18 +784,20 @@ def test_full_production_model_package_builds_closed_publication_plan() -> None:
         "endingAnchor": "ending", "risks": ("risk",), "differentiation": "different",
     })
     placeholder = "11111111-1111-4111-8111-111111111111"
+    style_asset_hash = canonical_hash({"voice": "clear"})
+    experience_asset_hash = canonical_hash({"lesson": "keep"})
     contract_model = CreationContractPayload.model_validate({
         "schemaVersion": "creation-contract-v1", "channelProfileKey": "channel-v1",
         "genreProfileKey": "genre-v1", "qualityCharterVersion": "quality-v1", "selectionRevision": 1,
         "selectedSeed": seed, "seedRevisionId": placeholder, "seedHash": canonical_hash(seed),
         "selectedEngine": engine, "engineOptionId": placeholder, "engineHash": canonical_hash(engine),
-        "primaryStyleRef": {"id": placeholder, "revision": 1, "contentHash": "a" * 64},
-        "experienceCardRefs": (), "corpusSourceRefs": ({
+        "primaryStyleRef": {"id": placeholder, "revision": 1, "contentHash": style_asset_hash},
+        "experienceCardRefs": ({"id": placeholder, "revision": 1, "contentHash": experience_asset_hash},), "corpusSourceRefs": ({
             "id": placeholder, "revisionId": placeholder, "revision": 1,
             "contentHash": "c" * 64, "selectionMode": "author",
             "fragments": ({"chapterId": placeholder, "fragmentId": placeholder,
-                           "fragmentHash": "f" * 64, "chapterCharStart": 0,
-                           "chapterCharEnd": 7, "referenceUse": "structure"},),
+                           "fragmentHash": "f" * 64, "chapterCharStart": 1,
+                           "chapterCharEnd": 6, "referenceUse": "structure"},),
             "pinnedHistoricalRevision": False,
         },), "targetTotalWords": 100_000,
         "expectedVolumeCount": 4, "expectedChapterCount": 50,
@@ -790,6 +807,7 @@ def test_full_production_model_package_builds_closed_publication_plan() -> None:
     contract_payload["seedRevisionId"] = "creative-seed-revision:1"
     contract_payload["engineOptionId"] = "story-engine-option:1"
     contract_payload["primaryStyleRef"]["id"] = "asset:1"
+    contract_payload["experienceCardRefs"][0]["id"] = "asset:2"
     contract_payload["corpusSourceRefs"][0]["id"] = "corpus-revision:1"
     contract_payload["corpusSourceRefs"][0]["revisionId"] = "corpus-revision:1"
     contract_payload["corpusSourceRefs"][0]["fragments"][0]["chapterId"] = "corpus-chapter:2"
@@ -896,10 +914,14 @@ def test_full_production_model_package_builds_closed_publication_plan() -> None:
     contract_draft["primaryStyleRef"]["id"] = "asset:1"
     contract_draft["modelBindingRef"]["id"] = binding_revision.logical_id
     records.extend([
-        PackageRecord("asset", "asset:1", revision=1, data={"assetKind": "style-template", "stableKey": "style", "revision": 1, "name": "Style", "payload": {"voice": "clear"}, "provenance": {}, "contentHash": canonical_hash({"voice": "clear"}), "status": "active", "createdAt": 2}),
+        PackageRecord("asset", "asset:1", revision=1, data={"assetKind": "style-template", "stableKey": "style", "revision": 1, "name": "Style", "payload": {"voice": "clear"}, "provenance": {}, "contentHash": style_asset_hash, "status": "active", "createdAt": 2}),
+        PackageRecord("asset", "asset:2", revision=1, data={"assetKind": "experience-card", "stableKey": "experience", "revision": 1, "name": "Experience", "category": "plot_organization", "payload": {"lesson": "keep"}, "provenance": {}, "contentHash": experience_asset_hash, "status": "active", "createdAt": 2}),
+        PackageRecord("asset", "asset:3", revision=1, data={"assetKind": "style-template", "stableKey": "other-style", "revision": 1, "name": "Other Style", "payload": {"voice": "other"}, "provenance": {}, "contentHash": canonical_hash({"voice": "other"}), "status": "active", "createdAt": 2}),
         PackageRecord("project-contract-draft", "project-contract-draft:1", revision=1, data={"revision": 1, "baseHeadRevision": 0, "selectionRevision": 1, "seedRevisionLogicalId": "creative-seed-revision:1", "seedHash": canonical_hash(seed), "engineOptionLogicalId": "story-engine-option:1", "payload": contract_draft, "contentHash": canonical_hash(contract_draft_model), "updatedAt": 3}),
         PackageRecord("creation-contract", "creation-contract:1", revision=1, data={"revision": 1, "selectionRevision": 1, "seedLogicalId": "creative-seed:1", "seedRevisionLogicalId": "creative-seed-revision:1", "seedHash": canonical_hash(seed), "bindingRevisionLogicalId": binding_revision.logical_id, "bindingHash": "7" * 64, "payload": contract_payload, "contentHash": "5" * 64, "createdAt": 3}),
         PackageRecord("style-contract", "style-contract:1", revision=1, data={"revision": 1, "creationContractLogicalId": "creation-contract:1", "payload": {"mergedStyle": {"voice": "clear"}, "likes": ["clarity"], "dislikes": ["noise"]}, "contentHash": "4" * 64, "createdAt": 3}),
+        PackageRecord("style-contract-template-ref", "style-contract-template-ref:1", order=1, data={"styleContractLogicalId": "style-contract:1", "templateName": "Style", "templateRevision": 1, "contentHash": style_asset_hash}),
+        PackageRecord("creation-contract-experience-ref", "creation-contract-experience-ref:1", order=1, data={"creationContractLogicalId": "creation-contract:1", "experienceTitle": "Experience", "experienceRevision": 1, "contentHash": experience_asset_hash}),
         PackageRecord("project-contract-head", "project-contract-head:1", revision=2, data={"revision": 2, "creationContractLogicalId": "creation-contract:2", "styleContractLogicalId": "style-contract:2", "contentHash": "4" * 64, "updatedAt": 3}),
         PackageRecord("contract-confirmation", "contract-confirmation:1", data={"status": "succeeded", "selectionRevision": 1, "creationContractLogicalId": "creation-contract:1", "styleContractLogicalId": "style-contract:1", "resultRevision": 1, "contentHash": "5" * 64, "createdAt": 3, "completedAt": 3}),
         PackageRecord("creation-bible-revision", "creation-bible-revision:1", revision=1, data={"revision": 1, "selectionRevision": 1, "seedLogicalId": "creative-seed:1", "seedRevisionLogicalId": "creative-seed-revision:1", "seedHash": canonical_hash(seed), "contractRevision": 1, "creationContractLogicalId": "creation-contract:1", "creationHash": "5" * 64, "styleContractLogicalId": "style-contract:1", "styleHash": "4" * 64, "bindingRevisionLogicalId": binding_revision.logical_id, "bindingHash": "7" * 64, "policyVersion": "creation-bible-v1", "payload": bible_payload, "contentHash": canonical_bible_hash(bible), "createdAt": 4}),
@@ -907,7 +929,7 @@ def test_full_production_model_package_builds_closed_publication_plan() -> None:
         PackageRecord("project-bible-draft", "project-bible-draft:1", revision=1, data={"revision": 1, "baseHeadRevision": 0, "selectionRevision": 1, "seedLogicalId": "creative-seed:1", "seedRevisionLogicalId": "creative-seed-revision:1", "seedHash": canonical_hash(seed), "contractRevision": 1, "creationContractLogicalId": "creation-contract:1", "creationHash": "5" * 64, "styleContractLogicalId": "style-contract:1", "styleHash": "4" * 64, "bindingRevisionLogicalId": binding_revision.logical_id, "bindingHash": "7" * 64, "policyVersion": "creation-bible-v1", "payload": bible_payload, "contentHash": canonical_bible_hash(bible), "updatedAt": 4}),
         PackageRecord("bible-confirmation", "bible-confirmation:1", data={"status": "succeeded", "selectionRevision": 1, "contractRevision": 1, "creationContractLogicalId": "creation-contract:1", "creationHash": "5" * 64, "styleContractLogicalId": "style-contract:1", "styleHash": "4" * 64, "draftLogicalId": "project-bible-draft:1", "draftVersion": 1, "draftHash": canonical_bible_hash(bible), "bibleRevisionLogicalId": "creation-bible-revision:1", "resultRevision": 1, "contentHash": canonical_bible_hash(bible), "createdAt": 4, "completedAt": 4}),
         PackageRecord("planning-draft", "planning-draft:1", revision=1, data={"revision": 1, "baseHeadRevision": 0, "selectionRevision": 1, "seedLogicalId": "creative-seed:1", "seedRevisionLogicalId": "creative-seed-revision:1", "seedHash": canonical_hash(seed), "contractRevision": 1, "creationContractLogicalId": "creation-contract:1", "creationHash": "5" * 64, "styleContractLogicalId": "style-contract:1", "styleHash": "4" * 64, "bibleRevision": 1, "bibleRevisionLogicalId": "creation-bible-revision:1", "bibleHash": canonical_bible_hash(bible), "payload": planning_draft.model_dump(mode="json", by_alias=True), "contentHash": canonical_hash(planning_draft), "updatedAt": 5}),
-        PackageRecord("planning-draft", "planning-draft:2", revision=2, data={"revision": 2, "baseHeadRevision": 1, "selectionRevision": 1, "seedLogicalId": "creative-seed:1", "seedRevisionLogicalId": "creative-seed-revision:1", "seedHash": canonical_hash(seed), "contractRevision": 2, "creationContractLogicalId": "creation-contract:2", "creationHash": "5" * 64, "styleContractLogicalId": "style-contract:2", "styleHash": "4" * 64, "bibleRevision": 2, "bibleRevisionLogicalId": "creation-bible-revision:2", "bibleHash": canonical_bible_hash(bible), "payload": planning.model_dump(mode="json", by_alias=True), "contentHash": planning.content_hash, "updatedAt": 5}),
+        PackageRecord("planning-draft", "planning-draft:2", revision=1, data={"draftRevision": 2, "baseHeadRevision": 1, "selectionRevision": 1, "seedLogicalId": "creative-seed:1", "seedRevisionLogicalId": "creative-seed-revision:1", "seedHash": canonical_hash(seed), "contractRevision": 2, "creationContractLogicalId": "creation-contract:2", "creationHash": "5" * 64, "styleContractLogicalId": "style-contract:2", "styleHash": "4" * 64, "bibleRevision": 2, "bibleRevisionLogicalId": "creation-bible-revision:2", "bibleHash": canonical_bible_hash(bible), "payload": planning.model_dump(mode="json", by_alias=True), "contentHash": planning.content_hash, "updatedAt": 5}),
         PackageRecord("planning-revision", "planning-revision:1", revision=1, data={"revision": 1, "parentRevision": 0, "selectionRevision": 1, "seedLogicalId": "creative-seed:1", "seedRevisionLogicalId": "creative-seed-revision:1", "seedHash": canonical_hash(seed), "contractRevision": 1, "creationContractLogicalId": "creation-contract:1", "creationHash": "5" * 64, "styleContractLogicalId": "style-contract:1", "styleHash": "4" * 64, "bibleRevision": 1, "bibleRevisionLogicalId": "creation-bible-revision:1", "bibleHash": canonical_bible_hash(bible), "payload": planning.model_dump(mode="json", by_alias=True), "contentHash": planning.content_hash, "createdAt": 5}),
         PackageRecord("project-planning-head", "project-planning-head:1", data={"revision": 2, "planningRevisionLogicalId": "planning-revision:2", "contentHash": planning.content_hash, "updatedAt": 5}),
         PackageRecord("planning-confirmation", "planning-confirmation:1", data={"status": "succeeded", "draftLogicalId": "planning-draft:1", "draftRevision": 1, "draftHash": canonical_hash(planning_draft), "expectedHeadRevision": 0, "planningRevisionLogicalId": "planning-revision:1", "resultRevision": 1, "contentHash": planning.content_hash, "createdAt": 5, "completedAt": 5}),
@@ -919,7 +941,27 @@ def test_full_production_model_package_builds_closed_publication_plan() -> None:
         PackageRecord("chapter-outline-confirmation", "chapter-outline-confirmation:1", data={"status": "succeeded", "chapterNumber": 1, "draftLogicalId": "chapter-outline-draft:1", "draftRevision": 1, "draftHash": canonical_hash(editable_outline), "expectedHeadRevision": 0, "planningRevisionLogicalId": "planning-revision:1", "planningRevision": 1, "planningHash": planning.content_hash, "canonRevision": 0, "projectionRevision": 0, "projectionHash": "9" * 64, "outlineRevisionLogicalId": "chapter-outline-revision:1", "resultRevision": 1, "contentHash": outline.content_hash, "createdAt": 6, "completedAt": 6}),
         PackageRecord("chapter", "chapter:1", data={"planningRevisionLogicalId": "planning-revision:1", "planningRevision": 1, "planningHash": planning.content_hash, "storyBlockLogicalId": "story-block:1", "storyBlockRevision": 1, "storyBlockHash": block.content_hash, "outlineRevisionLogicalId": "chapter-outline-revision:1", "chapterOutlineRevision": 1, "chapterOutlineHash": outline.content_hash, "chapterNumber": 1, "expectedCanonRevision": 0, "status": "final", "createdAt": 7, "finalizedAt": 10}),
         PackageRecord("working-draft", "working-draft:1", revision=1, data={"chapterLogicalId": "chapter:1", "revision": 1, "content": working_text, "contentHash": working_hash, "updatedAt": 7}),
-        PackageRecord("draft-candidate", "draft-candidate:1", data={"chapterLogicalId": "chapter:1", "content": candidate_text, "contentHash": candidate_hash, "createdAt": 8}),
+        PackageRecord("draft-candidate", "draft-candidate:1", data={
+            "chapterLogicalId": "chapter:1", "workingDraftRevision": 1,
+            "content": candidate_text, "contentHash": candidate_hash,
+            "basisHash": canonical_hash({
+                "schemaVersion": "draft-candidate-basis-v1",
+                "outlineRevisionId": "chapter-outline-revision:1", "outlineRevision": 1,
+                "outlineHash": outline.content_hash,
+                "planningRevisionId": "planning-revision:1", "planningRevision": 1,
+                "planningHash": planning.content_hash, "canonRevision": 0,
+                "projectionRevision": 0, "projectionHash": "9" * 64,
+            }),
+            "provenance": {
+                "source": "explicit-save-candidate", "workingDraftRevision": 1,
+                "schemaVersion": "draft-candidate-basis-v1",
+                "outlineRevisionId": "chapter-outline-revision:1", "outlineRevision": 1,
+                "outlineHash": outline.content_hash,
+                "planningRevisionId": "planning-revision:1", "planningRevision": 1,
+                "planningHash": planning.content_hash, "canonRevision": 0,
+                "projectionRevision": 0, "projectionHash": "9" * 64,
+            }, "createdAt": 8,
+        }),
         PackageRecord("reference-use", "reference-use:1", data={"chapterLogicalId": "chapter:1", "candidateLogicalId": "draft-candidate:1", "corpusRevisionLogicalId": "corpus-revision:1", "corpusChapterLogicalId": "corpus-chapter:2", "locationStart": 7, "locationEnd": 14, "referencePurpose": "generation", "referencedTextHash": "e" * 64, "createdAt": 8}),
         PackageRecord("candidate-quality", "candidate-quality:1", data={"chapterLogicalId": "chapter:1", "candidateLogicalId": "draft-candidate:1", "candidateHash": candidate_hash, "expectedCanonRevision": 0, "expectedPlanningHash": planning.content_hash, "expectedOutlineHash": outline.content_hash, "policyVersion": "quality-v1", "contextManifestHash": "3" * 64, "modelName": "remote-model", **quality.model_dump(mode="json", by_alias=True), "contentHash": canonical_hash(quality.model_dump(mode="json", by_alias=True)), "createdAt": 8}),
         PackageRecord("finalization-change-set", "finalization-change-set:1", data={"chapterLogicalId": "chapter:1", "candidateLogicalId": "draft-candidate:1", "status": "confirmed", "candidateHash": candidate_hash, "contentHash": change_set_hash(change_set), "createdAt": 9, "updatedAt": 9, "confirmedAt": 9}),
@@ -943,6 +985,8 @@ def test_full_production_model_package_builds_closed_publication_plan() -> None:
     records.extend([
         PackageRecord("creation-contract", "creation-contract:2", revision=2, data={"revision": 2, "selectionRevision": 1, "seedLogicalId": "creative-seed:1", "seedRevisionLogicalId": "creative-seed-revision:1", "seedHash": canonical_hash(seed), "bindingRevisionLogicalId": binding_revision.logical_id, "bindingHash": "7" * 64, "payload": json.loads(json.dumps(contract_payload)), "contentHash": "5" * 64, "createdAt": 3}),
         PackageRecord("style-contract", "style-contract:2", revision=2, data={"revision": 2, "creationContractLogicalId": "creation-contract:2", "payload": {"mergedStyle": {"voice": "clear"}, "likes": ["clarity"], "dislikes": ["noise"]}, "contentHash": "4" * 64, "createdAt": 3}),
+        PackageRecord("style-contract-template-ref", "style-contract-template-ref:2", order=1, data={"styleContractLogicalId": "style-contract:2", "templateName": "Style", "templateRevision": 1, "contentHash": style_asset_hash}),
+        PackageRecord("creation-contract-experience-ref", "creation-contract-experience-ref:2", order=1, data={"creationContractLogicalId": "creation-contract:2", "experienceTitle": "Experience", "experienceRevision": 1, "contentHash": experience_asset_hash}),
         PackageRecord("creation-bible-revision", "creation-bible-revision:2", revision=2, data={"revision": 2, "selectionRevision": 1, "seedLogicalId": "creative-seed:1", "seedRevisionLogicalId": "creative-seed-revision:1", "seedHash": canonical_hash(seed), "contractRevision": 2, "creationContractLogicalId": "creation-contract:2", "creationHash": "5" * 64, "styleContractLogicalId": "style-contract:2", "styleHash": "4" * 64, "bindingRevisionLogicalId": binding_revision.logical_id, "bindingHash": "7" * 64, "policyVersion": "creation-bible-v1", "payload": json.loads(json.dumps(bible_payload)), "contentHash": canonical_bible_hash(bible), "createdAt": 4}),
         PackageRecord("planning-revision", "planning-revision:2", revision=2, data={"revision": 2, "parentRevision": 1, "selectionRevision": 1, "seedLogicalId": "creative-seed:1", "seedRevisionLogicalId": "creative-seed-revision:1", "seedHash": canonical_hash(seed), "contractRevision": 2, "creationContractLogicalId": "creation-contract:2", "creationHash": "5" * 64, "styleContractLogicalId": "style-contract:2", "styleHash": "4" * 64, "bibleRevision": 2, "bibleRevisionLogicalId": "creation-bible-revision:2", "bibleHash": canonical_bible_hash(bible), "payload": planning.model_dump(mode="json", by_alias=True), "contentHash": planning.content_hash, "createdAt": 5}),
         PackageRecord("chapter-outline-revision", "chapter-outline-revision:2", revision=2, data={"chapterNumber": 1, "revision": 2, "planningRevisionLogicalId": "planning-revision:2", "payload": outline_two, "contentHash": outline.content_hash, "createdAt": 6}),
@@ -975,6 +1019,68 @@ def test_full_production_model_package_builds_closed_publication_plan() -> None:
     with pytest.raises(ProjectImportInvalid, match="invalid project import archive"):
         build_publication_plan(_package(tuple(bad_records)), COMMAND_ID, "Imported")
 
+    contract_index = next(index for index, record in enumerate(records) if record.logical_id == "creation-contract:1")
+    for mutation in (
+        {"chapterCharStart": -1},
+        {"chapterCharEnd": 8},
+        {"chapterCharStart": 4, "chapterCharEnd": 4},
+        {"chapterCharStart": 5, "chapterCharEnd": 4},
+        {"fragmentHash": "0" * 64},
+        {"fragmentId": "corpus-fragment:1", "fragmentHash": "e" * 64},
+    ):
+        payload = thaw_json_value(records[contract_index].data["payload"])
+        payload["corpusSourceRefs"][0]["fragments"][0].update(mutation)
+        bad_records = [*records]
+        bad_records[contract_index] = replace(
+            records[contract_index],
+            data={**records[contract_index].data, "payload": payload},
+        )
+        with pytest.raises(ProjectImportInvalid, match="invalid project import archive"):
+            build_publication_plan(_package(tuple(bad_records)), COMMAND_ID, "Imported")
+
+    corpus_index = next(index for index, record in enumerate(records) if record.logical_id == "corpus-revision:1")
+    other_corpus = replace(
+        records[corpus_index],
+        logical_id="corpus-revision:2",
+        data={
+            **records[corpus_index].data,
+            "sourceKey": "other-source",
+            "contentHash": "0" * 64,
+            "chapters": [],
+            "fragments": [],
+        },
+    )
+    for mismatched_source in ("corpus-revision:2", "asset:1"):
+        payload = thaw_json_value(records[contract_index].data["payload"])
+        payload["corpusSourceRefs"][0]["id"] = mismatched_source
+        bad_records = [*records, other_corpus]
+        bad_records[contract_index] = replace(
+            records[contract_index],
+            data={**records[contract_index].data, "payload": payload},
+        )
+        with pytest.raises(ProjectImportInvalid, match="invalid project import archive"):
+            build_publication_plan(_package(tuple(bad_records)), COMMAND_ID, "Imported")
+
+    frozen_ref_cases = (
+        ("style-contract-template-ref:1", {"templateName": "Experience"}, None),
+        ("style-contract-template-ref:1", {"contentHash": "0" * 64}, None),
+        ("style-contract-template-ref:1", {"templateName": "Other Style", "contentHash": canonical_hash({"voice": "other"})}, None),
+        ("style-contract-template-ref:1", {}, 2),
+        ("creation-contract-experience-ref:1", {"experienceTitle": "Style"}, None),
+        ("creation-contract-experience-ref:1", {"contentHash": "0" * 64}, None),
+        ("creation-contract-experience-ref:1", {}, 2),
+    )
+    for logical_id, mutation, order in frozen_ref_cases:
+        ref_index = next(index for index, record in enumerate(records) if record.logical_id == logical_id)
+        bad_records = [*records]
+        bad_records[ref_index] = replace(
+            records[ref_index],
+            order=records[ref_index].order if order is None else order,
+            data={**records[ref_index].data, **mutation},
+        )
+        with pytest.raises(ProjectImportInvalid, match="invalid project import archive"):
+            build_publication_plan(_package(tuple(bad_records)), COMMAND_ID, "Imported")
+
     plan = build_publication_plan(_package(tuple(records)), COMMAND_ID, "Imported")
     _assert_plan_foreign_keys_exist(plan)
     tables = {batch.table: batch for batch in plan.batches}
@@ -999,17 +1105,65 @@ def test_full_production_model_package_builds_closed_publication_plan() -> None:
     assert (row("candidate_quality_reports")["provider_id"], row("candidate_quality_reports")["provider_profile_revision"], row("candidate_quality_reports")["model_name_snapshot"]) == (None, None, None)
     assert row("working_drafts")["content"] == working_text and row("working_drafts")["content_hash"] == working_hash
     assert row("draft_candidates")["content"] == candidate_text and row("draft_candidates")["content_hash"] == candidate_hash
+    candidate_row = row("draft_candidates")
+    candidate_provenance = json.loads(candidate_row["provenance_json"])
+    candidate_basis = {
+        key: candidate_provenance[key] for key in (
+            "schemaVersion", "outlineRevisionId", "outlineRevision", "outlineHash",
+            "planningRevisionId", "planningRevision", "planningHash", "canonRevision",
+            "projectionRevision", "projectionHash",
+        )
+    }
+    assert candidate_row["working_draft_revision"] == 1
+    assert candidate_row["basis_hash"] == canonical_hash(candidate_basis)
+    assert candidate_provenance["source"] == "explicit-save-candidate"
+    assert candidate_provenance["workingDraftRevision"] == 1
+    assert candidate_provenance["planningRevisionId"] == row("planning_revisions")["id"]
+    assert candidate_provenance["outlineRevisionId"] == row("chapter_outline_revisions")["id"]
+    from backend.services.chapter_sessions import ChapterSessionService
+    candidate_view = object.__new__(ChapterSessionService)._candidate_view({
+        "id": candidate_row["id"], "project_id": plan.target_project_id,
+        "chapter_session_id": candidate_row["chapter_session_id"],
+        "working_draft_revision": candidate_row["working_draft_revision"],
+        "content": candidate_row["content"], "content_hash": candidate_row["content_hash"],
+        "basis_hash": candidate_row["basis_hash"], "provenance": candidate_provenance,
+        "created_at": candidate_row["created_at"], "effective_status": "drafting",
+    }, {
+        "chapter_outline_revision_id": candidate_provenance["outlineRevisionId"],
+        "chapter_outline_revision": candidate_provenance["outlineRevision"],
+        "chapter_outline_hash": candidate_provenance["outlineHash"],
+        "planning_revision_id": candidate_provenance["planningRevisionId"],
+        "planning_revision": candidate_provenance["planningRevision"],
+        "planning_hash": candidate_provenance["planningHash"],
+    })
+    assert candidate_view.basis_status == "current"
     assert row("corpus_source_revisions")["content_hash"] == "c" * 64 and row("corpus_source_revisions")["byte_length"] == 14
     assert row("corpus_chapters")["normalized_text"] == "project:1" and row("corpus_fragments")["normalized_text"] == "project:1"
     assert all(item["selection_mode"] == "author" for item in _rows(plan, "creation_contract_corpus_refs"))
+    assert all(item["role"] == "primary" and item["sort_order"] == 1 for item in _rows(plan, "style_contract_template_refs"))
+    assert all(item["sort_order"] == 1 for item in _rows(plan, "creation_contract_experience_refs"))
     fragment_ref_rows = _rows(plan, "creation_contract_corpus_fragment_refs")
     assert all(item["reference_use"] == "structure" for item in fragment_ref_rows)
+    assert all(item["chapter_char_start"] == 1 and item["chapter_char_end"] == 6 for item in fragment_ref_rows)
     assert all(item["corpus_chapter_id"] == _rows(plan, "corpus_chapters")[1]["id"] for item in fragment_ref_rows)
     assert all(item["corpus_fragment_id"] == _rows(plan, "corpus_fragments")[1]["id"] for item in fragment_ref_rows)
     assert row("reference_uses")["corpus_chapter_id"] == _rows(plan, "corpus_chapters")[1]["id"]
     for table, id_column in (("creation_contracts", "id"), ("creation_bible_revisions", "id"), ("planning_revisions", "id"), ("chapter_outline_revisions", "id"), ("finalization_change_set_revisions", "id"), ("candidate_quality_reports", "id"), ("canon_events", "id")):
         assert str(UUID(row(table)[id_column])) == row(table)[id_column]
     target_contract = CreationContractPayload.model_validate(json.loads(row("creation_contracts")["content_json"]), strict=False)
+    corpus_source = row("corpus_sources")
+    corpus_revision = row("corpus_source_revisions")
+    corpus_relation = _rows(plan, "creation_contract_corpus_refs")[0]
+    target_source_ref = target_contract.corpusSourceRefs[0]
+    assert target_source_ref.id == corpus_source["id"] == corpus_relation["corpus_source_id"]
+    assert target_source_ref.revisionId == corpus_revision["id"]
+    assert target_source_ref.id != target_source_ref.revisionId
+    assert all(
+        item["corpus_source_id"] == target_source_ref.id
+        for item in _rows(plan, "creation_contract_corpus_fragment_refs")
+    )
+    reference_manifest = json.loads(row("creation_contracts")["reference_manifest_json"])
+    assert [item["role"] for item in reference_manifest["styleRefs"]] == ["primary"]
     target_bible = BiblePayload.model_validate(json.loads(row("creation_bible_revisions")["content_json"]), strict=False)
     target_planning = json.loads(row("planning_revisions")["content_json"])
     target_outline = json.loads(row("chapter_outline_revisions")["content_json"])
@@ -1101,6 +1255,44 @@ def test_full_production_model_package_builds_closed_publication_plan() -> None:
     target_story_block = next(item for item in target_planning["storyBlocks"] if item["id"] == row("chapter_sessions")["story_block_id"])
     assert row("chapter_sessions")["story_block_revision"] == target_story_block["revision"]
     assert row("chapter_sessions")["story_block_hash"] == target_story_block["contentHash"]
+    chapter_session = row("chapter_sessions")
+    assert type(chapter_session["draft_operation_fencing_token"]) is int
+    assert chapter_session["draft_operation_fencing_token"] == 0
+    chapter_record = next(record for record in records if record.entity_type == "chapter")
+    assert "draftOperationFencingToken" not in chapter_record.data
+    assert "activeDraftOperationId" not in chapter_record.data
+    drafts_ddl = (Path(__file__).parents[2] / "schema" / "40_drafts.sql").read_text(encoding="utf-8")
+    assert re.search(
+        r"draft_operation_fencing_token BIGINT NOT NULL DEFAULT 0",
+        drafts_ddl,
+    )
+    change_set_row = row("finalization_change_sets")
+    extraction_id = change_set_row["extraction_id"]
+    assert extraction_id == str(uuid5(
+        UUID(COMMAND_ID),
+        "finalization-extraction/finalization-change-set:1",
+    ))
+    assert str(UUID(extraction_id)) == extraction_id
+    assert change_set_row["status"] == "committed"
+    assert change_set_row["active_slot"] is None
+    assert all(change_set_row[field] is not None for field in (
+        "quality_report_id", "extraction_id", "current_revision",
+        "current_revision_hash", "confirmed_revision",
+        "confirmed_revision_hash", "confirmed_at",
+    ))
+    assert "extractionLogicalId" not in next(
+        record for record in records if record.logical_id == "finalization-change-set:1"
+    ).data
+    assert all(batch.table != "finalization_extractions" for batch in plan.batches)
+    repeated_plan = build_publication_plan(_package(tuple(records)), COMMAND_ID, "Imported")
+    repeated_extraction = _rows(repeated_plan, "finalization_change_sets")[0]["extraction_id"]
+    other_plan = build_publication_plan(
+        _package(tuple(records)), "48ca226b-7199-4cc4-a3e9-98c6993b17c3", "Imported",
+    )
+    other_extraction = _rows(other_plan, "finalization_change_sets")[0]["extraction_id"]
+    assert repeated_extraction == extraction_id
+    assert str(UUID(other_extraction)) == other_extraction
+    assert other_extraction != extraction_id
     assert all(str(UUID(item.id)) == item.id for item in target_quality.findings)
     assert row("chapter_outline_revisions")["planning_hash"] == row("planning_revisions")["content_hash"]
     target_receipt = json.loads(row("finalization_records")["result_payload_json"])

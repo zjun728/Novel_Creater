@@ -86,7 +86,10 @@ RECORD_FIELD_ALLOWLISTS: Mapping[str, frozenset[str]] = MappingProxyType({
     "chapter": frozenset({"label", "chapterNumber", "planningRevisionLogicalId", "planningRevision", "planningHash", "outlineRevisionLogicalId", "chapterOutlineRevision", "chapterOutlineHash", "storyBlockLogicalId", "storyBlockRevision", "storyBlockHash", "expectedCanonRevision", "status", "finalizedAt", "createdAt", "updatedAt"}),
     "working-draft": frozenset({"label", "chapterLogicalId", "revision", "content", "contentHash", "updatedAt"}),
     "operation": frozenset({"label", "chapterLogicalId", "operationKind", "status", "requestFingerprint", "resultHash", "createdAt", "completedAt"}),
-    "draft-candidate": frozenset({"label", "chapterLogicalId", "candidateOrder", "content", "contentHash", "createdAt"}),
+    "draft-candidate": frozenset({
+        "label", "chapterLogicalId", "candidateOrder", "workingDraftRevision",
+        "content", "contentHash", "basisHash", "provenance", "createdAt",
+    }),
     "working-draft-revision": frozenset({"label", "workingDraftLogicalId", "chapterLogicalId", "candidateLogicalId", "operationLogicalId", "revision", "content", "contentHash", "replacementReason", "snapshotRole", "createdAt"}),
     "operation-event": frozenset({"label", "operationLogicalId", "sequence", "eventType", "contentHash", "createdAt"}),
     "candidate-freeze": frozenset({"label", "chapterLogicalId", "candidateLogicalId", "requestFingerprint", "createdAt"}),
