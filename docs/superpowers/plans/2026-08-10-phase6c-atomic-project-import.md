@@ -189,19 +189,19 @@ git commit -m "feat: preflight deterministic project packages"
 - Create: `backend/tests/unit/test_project_import_repository.py`
 - Create: `backend/tests/integration/test_project_import_commands_mysql.py`
 
-- [ ] **Step 1: Write the schema RED.**
+- [x] **Step 1: Write the schema RED.**
 
 Assert the schema adds exactly the two tables from the design, no `projects.visibility`, and advances
 `EXPECTED_SCHEMA_VERSION` from `writer-core-v1.12.0` to `writer-core-v1.13.0`. Assert closed status/
 phase/category checks, unique command/idempotency/target identities, project/command provenance
 ownership, JSON validity, positive record order, and no Provider/market/operation foreign key.
 
-- [ ] **Step 2: Write command idempotency RED tests.**
+- [x] **Step 2: Write command idempotency RED tests.**
 
 Cover reserve same key+fingerprint, key conflict, command conflict, lease acquire/renew/expiry, fixed
 failure, success result, and safe public view. Repository SQL must be explicit and parameterized.
 
-- [ ] **Step 3: Implement schema and repository.**
+- [x] **Step 3: Implement schema and repository.**
 
 Expose `ProjectImportRepository.reserve_command`, `acquire_lease`, `mark_failed`, and `read_command`
 with the exact request/result types locked in the design. Every state transition uses one explicit
@@ -210,12 +210,17 @@ conditional update followed by one exact read.
 Store only relative staging manifest entries. Fixed exceptions must use `from None` and never include
 ids, fingerprints, SQL, title, or path.
 
-- [ ] **Step 4: Run disposable MySQL GREEN.**
+- [x] **Step 4: Run disposable MySQL GREEN.**
 
 Run the schema unit tests plus `test_project_import_commands_mysql.py`. Expected ledger:
 created count equal to cleaned count, `remaining=0`, and no product DB access.
 
-- [ ] **Step 5: Commit.**
+- [x] **Step 5: Commit.**
+
+Acceptance evidence (2026-08-11): the complete Task 3 unit and disposable-MySQL slice passed
+96/96. Disposable databases reported `created=4 cleaned=4 remaining=0`; fresh `py_compile` and
+`git diff --check` passed. Spec and quality reviews both closed at C/I/M 0/0/0. No Provider,
+product database, live site, API, UI, or product data was used.
 
 ```powershell
 git add backend/schema/80_project_imports.sql backend/schema_version.py backend/repositories/project_imports.py backend/tests/unit/test_project_import_schema.py backend/tests/unit/test_project_import_repository.py backend/tests/integration/test_project_import_commands_mysql.py
