@@ -107,6 +107,68 @@ async function binaryRequest(path, {
     externalSignal?.removeEventListener?.('abort', abortFromExternalSignal)
   }
 }
+
+async function projectImportRequest(path, {
+  method = 'GET',
+  form,
+  signal: externalSignal,
+  timeoutMs = DEFAULT_TIMEOUT,
+} = {}) {
+  const controller = new AbortController()
+  let externallyAborted = false
+  const abortFromExternalSignal = () => {
+    externallyAborted = true
+    controller.abort()
+  }
+  if (externalSignal?.aborted) abortFromExternalSignal()
+  else externalSignal?.addEventListener?.('abort', abortFromExternalSignal, { once: true })
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const options = { method, signal: controller.signal }
+    if (form !== undefined) options.body = form
+    const response = await fetch(`${BASE}${path}`, options)
+    if (!response.ok) throw await parseApiError(response)
+    const text = await response.text()
+    if (!text) return null
+    try {
+      return JSON.parse(text)
+    } catch {
+      throw new ApiError({
+        status: response.status,
+        code: 'invalid_response',
+        message: '服务返回了无效响应',
+      })
+    }
+  } catch (error) {
+    if (controller.signal.aborted || error?.name === 'AbortError') {
+      throw new ApiError({
+        code: externallyAborted ? 'request_aborted' : 'request_timeout',
+        message: externallyAborted ? '请求已取消' : `请求超时 (${timeoutMs / 1000}s)`,
+      })
+    }
+    if (error instanceof ApiError) throw error
+    throw new ApiError()
+  } finally {
+    clearTimeout(timer)
+    externalSignal?.removeEventListener?.('abort', abortFromExternalSignal)
+  }
+}
+
+function projectImportFile(value) {
+  if (typeof File === 'undefined' || !(value instanceof File)) {
+    throw new TypeError('project import requires a File')
+  }
+  return value
+}
+
+function projectImportForm(file, fields = {}) {
+  const form = new FormData()
+  form.append('file', projectImportFile(file))
+  for (const field of ['commandId', 'idempotencyKey', 'expectedPackageHash', 'newTitle']) {
+    if (Object.hasOwn(fields, field)) form.append(field, String(fields[field]))
+  }
+  return form
+}
 const get = path => request('GET', path)
 const post = (path, body, timeoutMs) => request('POST', path, body, timeoutMs)
 const put = (path, body) => request('PUT', path, body)
@@ -1993,6 +2055,21 @@ export const api = {
         signal: options?.signal,
         includePackageSha256: true,
       },
+    ),
+  },
+
+  projectImports: {
+    preflight: (file, options = {}) => projectImportRequest(
+      '/project-imports/preflight',
+      { method: 'POST', form: projectImportForm(file), signal: options?.signal },
+    ),
+    publish: (file, command, options = {}) => projectImportRequest(
+      '/project-imports',
+      { method: 'POST', form: projectImportForm(file, command), signal: options?.signal },
+    ),
+    get: (commandId, options = {}) => projectImportRequest(
+      `/project-imports/${segment(commandId)}`,
+      { signal: options?.signal },
     ),
   },
 
