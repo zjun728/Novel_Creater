@@ -232,29 +232,34 @@ git commit -m "feat: persist recoverable project import commands"
 **Files:**
 
 - Modify: `backend/domain/project_import_plans.py`
+- Create: `backend/domain/project_import_publication.py`
+- Modify: `backend/domain/project_packages.py`
+- Modify: `backend/repositories/project_packages.py`
+- Modify: `backend/tests/unit/test_project_import_graph.py`
+- Modify: `backend/tests/unit/test_project_package_repository.py`
 - Create: `backend/tests/unit/test_project_import_identity.py`
 - Create: `backend/tests/unit/test_project_import_authority_rewrite.py`
 
-- [ ] **Step 1: Write UUIDv5 and collision RED tests.**
+- [x] **Step 1: Write UUIDv5 and collision RED tests.**
 
 Require `UUIDv5(UUID(commandId), entityType + "/" + logicalId)` for every database-backed record,
 stable target project id, sorted canonical `idMapHash`, same-command equality, different-command
 difference, and fail-closed duplicate input/output/unknown identity.
 
-- [ ] **Step 2: Write full typed-authority RED fixtures.**
+- [x] **Step 2: Write full typed-authority RED fixtures.**
 
 Use nonempty production Seed, StoryEngine, CreationContract, Bible, Planning, Outline,
 FinalizationChangeSet, QualityFinding, receipt, Canon, and Projection fixtures. Assert every raw
 package logical id is rewritten through the typed registry, all JSON hashes and dependent relational
 hashes are recalculated in topological order, and prose/Candidate/corpus byte hashes stay unchanged.
 
-- [ ] **Step 3: Reconstruct all binding revisions unbound.**
+- [x] **Step 3: Reconstruct all binding revisions unbound.**
 
 For each imported binding revision, emit exactly `TASK_KEYS` in canonical order with null Provider
 fields and recalculated item/revision hashes. Rewrite CreationContract model-binding refs and every
 dependent contract/planning reference hash. The imported head remains Not Ready.
 
-- [ ] **Step 4: Emit an immutable publication plan.**
+- [x] **Step 4: Emit an immutable publication plan.**
 
 Implement immutable `ImportInsertBatch(table, columns, rows)`,
 `ProjectPublicationPlan(command_id, target_project_id, id_map_hash, batches, provenance, blobs,
@@ -264,7 +269,7 @@ expected_projection)`, and
 Batch tables/columns are selected only from static allowlists. Values are immutable JSON primitives;
 no SQL string or table name comes from the package.
 
-- [ ] **Step 5: Add dangling/type/extra/hash failure matrix and commit.**
+- [x] **Step 5: Add dangling/type/extra/hash failure matrix and commit.**
 
 Run Task 2 and Task 4 focused tests; assert all fixed failures have no cause/value echo. Commit:
 
@@ -272,6 +277,19 @@ Run Task 2 and Task 4 focused tests; assert all fixed failures have no cause/val
 git add backend/domain/project_import_plans.py backend/tests/unit/test_project_import_identity.py backend/tests/unit/test_project_import_authority_rewrite.py
 git commit -m "feat: plan deterministic project import publication"
 ```
+
+Acceptance evidence (2026-08-11):
+
+- Production-shaped coverage includes multi-revision Contract/Style/Bible/Planning/Outline history,
+  multiple drafts and confirmations, typed draft unions, and cross-pin fail-closed mutations.
+- Publication batches use static real-schema columns and foreign-key order; imported binding revisions
+  contain exactly `TASK_KEYS`, remain unbound, and are Not Ready.
+- Canon/Projection, Planning/Outline, Finalization/Quality/receipt, corpus, and historical lineage hashes
+  are rebuilt or preserved according to their authority boundary; prose and corpus bytes remain unchanged.
+- Specification review: `C/I/M = 0/0/0`; quality review after closure: `C/I/M = 0/0/0`.
+- Main-controller fresh verification: `287 passed`; `py_compile`, tracked/untracked formatting,
+  `git diff --check`, and task temp residue all passed/zero.
+- Code commit: `a6c1cf0` (`feat: plan deterministic project import publication`).
 
 ## Task 5: Provenance round-trip and atomic MySQL publication
 
