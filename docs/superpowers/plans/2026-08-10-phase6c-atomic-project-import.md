@@ -440,29 +440,44 @@ Acceptance evidence (2026-08-11):
 - Create: `backend/tests/api/test_project_import_routes.py`
 - Modify: `backend/tests/api/test_route_inventory.py`
 
-- [ ] **Step 1: Write route inventory and multipart RED tests.**
+- [x] **Step 1: Write route inventory and multipart RED tests.**
 
 Require exactly the three routes, one file, exact form fields, strict UUID/key/hash/title validation,
 bounded upload, DI override, and zero service call for malformed requests.
 
-- [ ] **Step 2: Write fixed result/error tests.**
+- [x] **Step 2: Write fixed result/error tests.**
 
 Map invalid/too-large/sensitive/conflict/not-found/integrity to closed public responses. Test
 `CancelledError`, disconnect cleanup, same-command success/replay, running/retryRequired/failed GET,
 and no package/body/path/id leakage.
 
-- [ ] **Step 3: Implement router and register it.**
+- [x] **Step 3: Implement router and register it.**
 
 The router streams multipart upload through the service; it never calls `await upload.read()` without
 a size-bound chunk loop. Responses use `private, no-store` and `nosniff`.
 
-- [ ] **Step 4: Run API focused GREEN and commit.**
+- [x] **Step 4: Run API focused GREEN and commit.**
 
 ```powershell
 python -m pytest -q backend/tests/api/test_project_import_routes.py backend/tests/api/test_route_inventory.py backend/tests/unit/test_main_lifespan.py
 git add backend/routers/project_imports.py backend/main.py backend/tests/api/test_project_import_routes.py backend/tests/api/test_route_inventory.py
 git commit -m "feat: expose strict project import API"
 ```
+
+Acceptance evidence (2026-08-11):
+
+- Exactly three closed routes are registered. Multipart input requires one file and the exact fields;
+  UUID, key, hash, and title validation rejects malformed requests before any service call.
+- The router drives `python-multipart` directly from `request.stream()`, enforcing aggregate, file,
+  field, and header limits while maintaining an exact part ledger and owned quarantine handles.
+- Oversize and huge-field inputs fail before the service; partial disconnect and cancellation preserve
+  their primary exceptions while closing all request-owned handles and roots.
+- Public result/error shapes are fixed and private (`private, no-store`, `nosniff`) without package,
+  body, path, identifier, or internal exception leakage.
+- Specification review after closure: `C/I/M = 0/0/0`; quality review: `C/I/M = 0/0/0`.
+- Main-controller fresh verification: `80 passed`; `py_compile`, unbounded-read scan, formatting,
+  `git diff --check`, and task temp residue passed/zero.
+- Code commit: `6fb92a4` (`feat: expose strict project import API`).
 
 ## Task 8: Frontend import controller and Project Library UI
 
