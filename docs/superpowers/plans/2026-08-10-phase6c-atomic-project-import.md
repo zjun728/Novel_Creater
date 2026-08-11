@@ -125,14 +125,14 @@ git commit -m "feat: validate phase6 project import archives"
 - Create: `backend/tests/unit/test_project_import_graph.py`
 - Modify: `backend/domain/project_imports.py`
 
-- [ ] **Step 1: Write canonical package RED tests.**
+- [x] **Step 1: Write canonical package RED tests.**
 
 Use a real `build_archive()` package and mutations. Require exact manifest/version/hash/count/entry
 agreement, canonical JSON re-encoding, one LF, duplicate-key rejection, closed record fields,
 deterministic order, unique `(entityType, logicalId)`, valid typed logical references, revision/head/
 Canon/finalized pins, corpus graph closure, and Projection validation closure.
 
-- [ ] **Step 2: Freeze complete record classification in RED.**
+- [x] **Step 2: Freeze complete record classification in RED.**
 
 Define the expected classification test:
 
@@ -150,7 +150,7 @@ The formal set covers safe creative authority. Reconstructed covers bindings, as
 and Projection. Provenance covers Provider/market/operation evidence and operation-dependent recovery.
 Active/non-v1 states are invalid. Zero type may remain unclassified.
 
-- [ ] **Step 3: Implement strict streaming readers.**
+- [x] **Step 3: Implement strict streaming readers.**
 
 Implement immutable `VerifiedProjectPackage(archive_path, package_hash, manifest_hash, manifest,
 graph_index, entry_index, summary)` and
@@ -159,13 +159,17 @@ graph_index, entry_index, summary)` and
 Use duplicate-key rejecting JSON loads, existing package dataclasses/allowlists, and exact canonical
 byte comparison. Parse JSONL line-by-line; never `extractall` and never trust a member path.
 
-- [ ] **Step 4: Implement graph validation and safe summary.**
+- [x] **Step 4: Implement graph validation and safe summary.**
 
 Build type-specific reference rules and validate every record before returning the source/proposed
 title and counts. `proposedTitle` is source title plus a fixed `（导入）` suffix, trimmed to 200 chars.
 No content payload is returned by the summary.
 
-- [ ] **Step 5: Run GREEN, fuzzed mutations, and commit.**
+- [x] **Step 5: Run GREEN, fuzzed mutations, and commit.**
+
+Acceptance evidence (2026-08-11): Task 2 focused tests passed 28/28; the complete Task 1–2
+import unit slice passed 94/94. Fresh `py_compile` and `git diff --check` passed, owned test
+temporary roots were removed, and no database, Provider, network, API, UI, or product data was used.
 
 Run Task 1–2 focused tests, `py_compile`, and `git diff --check`, then commit:
 
