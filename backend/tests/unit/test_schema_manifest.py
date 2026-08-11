@@ -27,6 +27,7 @@ EXPECTED_FRAGMENTS = (
     "50_canon.sql",
     "60_projections.sql",
     "70_corpus.sql",
+    "80_project_imports.sql",
 )
 
 EXPECTED_TABLES = {
@@ -119,6 +120,8 @@ EXPECTED_TABLES = {
     "plot_thread_projections",
     "projection_heads",
     "reference_uses",
+    "project_package_import_commands",
+    "project_import_provenance",
 }
 
 
@@ -147,7 +150,7 @@ def _raw_table_statement(table_name: str) -> str:
 def test_manifest_has_exact_ordered_fragments_and_tables():
     assert FRAGMENTS == EXPECTED_FRAGMENTS
     assert set(created_table_names()) == EXPECTED_TABLES
-    assert len(created_table_names()) == len(EXPECTED_TABLES) == 89
+    assert len(created_table_names()) == len(EXPECTED_TABLES) == 91
     assert set(created_table_names()).isdisjoint(
         {"task_model_bindings", "task_model_binding_items", "contract_asset_refs"}
     )

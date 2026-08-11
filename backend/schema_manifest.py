@@ -21,6 +21,7 @@ FRAGMENTS = (
     "50_canon.sql",
     "60_projections.sql",
     "70_corpus.sql",
+    "80_project_imports.sql",
 )
 STATEMENT_DELIMITER = ";-- statement"
 _STATEMENT_SPLIT = re.compile(
