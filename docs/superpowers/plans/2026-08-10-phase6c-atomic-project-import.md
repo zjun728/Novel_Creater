@@ -492,30 +492,30 @@ Acceptance evidence (2026-08-11):
 - Create: `frontend/tests/unit/projectImportPanel.test.mjs`
 - Modify: `frontend/tests/unit/projectLibraryViews.test.mjs`
 
-- [ ] **Step 1: Write binary/multipart API RED tests.**
+- [x] **Step 1: Write binary/multipart API RED tests.**
 
 Assert preflight sends only File; import sends File plus exact command/idempotency/hash/title; GET is
 the only recovery call. Abort/listener/timer cleanup and fixed `ApiError` mapping must match existing
 binary boundaries without reading file body for display.
 
-- [ ] **Step 2: Write controller RED tests.**
+- [x] **Step 2: Write controller RED tests.**
 
 Cover select→preflight summary→editable title→single import, double-click fence, fixed five phases,
 same File/identifiers on retry, network unknown→GET, running poll, retryRequired repost, failed outcome,
 success navigation, dispose/abort generation fence, and no Cancel.
 
-- [ ] **Step 3: Implement the controller.**
+- [x] **Step 3: Implement the controller.**
 
 The controller owns one selected File and one command identity until selection changes or succeeds.
 It uses the existing operation store/beforeunload boundary and never parses the ZIP client-side.
 
-- [ ] **Step 4: Implement the compact Project Library panel.**
+- [x] **Step 4: Implement the compact Project Library panel.**
 
 Place `导入项目备份` in the library header. Show only file name, safe summary/counts, proposed title,
 Provider Not Ready warning, fixed error, and the one import action. No destination selector, merge,
 overwrite, archive toggle, Provider selector, payload preview, second confirmation, or cancel action.
 
-- [ ] **Step 5: Run focused Node tests and build, then commit.**
+- [x] **Step 5: Run focused Node tests and build, then commit.**
 
 ```powershell
 node --test frontend/tests/unit/projectImportApi.test.mjs frontend/tests/unit/projectImportController.test.mjs frontend/tests/unit/projectImportPanel.test.mjs frontend/tests/unit/projectLibraryViews.test.mjs frontend/tests/unit/appFeedback.test.mjs
@@ -523,6 +523,21 @@ npm --prefix frontend run build
 git add frontend/src/api/db/client.js frontend/src/application/project/projectImportController.js frontend/src/components/projects/ProjectImportPanel.vue frontend/src/views/ProjectLibraryView.vue frontend/tests/unit/projectImportApi.test.mjs frontend/tests/unit/projectImportController.test.mjs frontend/tests/unit/projectImportPanel.test.mjs frontend/tests/unit/projectLibraryViews.test.mjs
 git commit -m "feat: add project backup import flow"
 ```
+
+Acceptance evidence (2026-08-11):
+
+- The API sends the selected `File` without reading it for display; preflight/import multipart fields
+  are closed, command recovery is GET-only, and abort timers/listeners are always released.
+- The controller owns one File and command identity across unknown-result GET recovery, running polls,
+  retry-required reposts, known failures, and navigation retries; no cancel action is exposed.
+- Terminal success ends its own blocking operation before guarded navigation. Vue NavigationFailure is
+  fail-closed, and File/identity are cleared only after real navigation succeeds.
+- The compact Project Library panel follows the existing refined editorial-tool design system and shows
+  only safe singular `chapter`/`asset` counts, proposed title, Provider Not Ready, fixed error, and one action.
+- Specification review after closure: `C/I/M = 0/0/0`; quality review after closure: `C/I/M = 0/0/0`.
+- Main-controller fresh verification: `45 passed`; production Vite build transformed `2978 modules`
+  with zero warnings; formatting, `git diff --check`, and task temp residue passed/zero.
+- Code commit: `f2a260f` (`feat: add project backup import flow`).
 
 ## Task 9: Disposable browser acceptance
 
