@@ -225,6 +225,34 @@ async def test_lifespan_runs_one_bounded_project_package_cleanup_before_services
 
 
 @pytest.mark.asyncio
+async def test_lifespan_runs_bounded_project_import_reconciliation_after_schema(
+    monkeypatch, tmp_path,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+
+    async def reconcile(*, managed_corpus_root, connection_factory, transaction_factory):
+        assert managed_corpus_root == managed
+        assert connection_factory is main.connection
+        assert transaction_factory is main.transaction
+        events.append("project-import-reconcile")
+        return 0
+
+    monkeypatch.setattr(main, "MANAGED_CORPUS_ROOT", managed)
+    monkeypatch.setattr(
+        main.project_import_service, "reconcile_project_import_staging", reconcile,
+    )
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+    await context.__aexit__(None, None, None)
+
+    assert events.count("project-import-reconcile") == 1
+    assert events.index("verify") < events.index("project-import-reconcile")
+    assert events.index("project-import-reconcile") < events.index("scheduler-build")
+
+
+@pytest.mark.asyncio
 async def test_lifespan_stale_cleanup_failure_logs_only_safe_code_and_still_closes_pool(
     monkeypatch,
     caplog,

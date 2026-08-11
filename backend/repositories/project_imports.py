@@ -61,6 +61,13 @@ class ProjectImportCommandView:
     public_error_code: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class ProjectImportRecoveryCommand:
+    command_id: str
+    status: str
+    staging_manifest_json: str
+
+
 def _is_duplicate_key_error(exc: Exception) -> bool:
     errno = getattr(exc, "errno", None)
     if errno == 1062:
@@ -121,6 +128,100 @@ async def _fetchone(session, sql: str, args):
 class ProjectImportRepository:
     async def _publication_checkpoint(self, point: str) -> None:
         """Test seam for proving transaction rollback at publication boundaries."""
+
+    async def persist_staging_manifest(
+        self, session, *, command_id: str, request_fingerprint: str,
+        owner_token: str, manifest_json: str, now_ms: int,
+    ) -> None:
+        affected = await _execute(
+            session,
+            """UPDATE project_package_import_commands
+               SET phase='staged',staging_manifest_json=%s,updated_at=%s
+               WHERE id=%s AND request_fingerprint=%s AND status='running'
+                 AND owner_token=%s AND lease_expires_at>%s""",
+            (manifest_json, now_ms, command_id, request_fingerprint,
+             owner_token, now_ms),
+        )
+        if affected != 1:
+            raise ProjectImportCommandStateConflict()
+
+    async def list_recovery_commands(
+        self, session, *, now_ms: int, limit: int = 32,
+    ) -> tuple[ProjectImportRecoveryCommand, ...]:
+        if type(now_ms) is not int or type(limit) is not int or not 1 <= limit <= 32:
+            raise ProjectImportCommandStateConflict()
+        try:
+            rows = await session.fetchall(
+                """SELECT id,status,staging_manifest_json
+                   FROM project_package_import_commands
+                   WHERE staging_manifest_json IS NOT NULL
+                     AND (status IN ('succeeded','failed')
+                          OR (status='running' AND lease_expires_at<=%s))
+                   ORDER BY updated_at,id LIMIT %s""",
+                (now_ms, limit),
+            )
+            return tuple(ProjectImportRecoveryCommand(
+                row["id"], row["status"],
+                row["staging_manifest_json"] if isinstance(row["staging_manifest_json"], str)
+                else json.dumps(row["staging_manifest_json"], ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            ) for row in rows)
+        except ProjectImportCommandStateConflict:
+            raise
+        except Exception:
+            raise ProjectImportPersistenceError() from None
+
+    async def corpus_blob_is_referenced(self, session, *, content_hash: str) -> bool:
+        row = await _fetchone(
+            session, "SELECT content_hash FROM corpus_blobs WHERE content_hash=%s",
+            (content_hash,),
+        )
+        return row is not None
+
+    async def fence_recovery_command(
+        self, session, *, candidate: ProjectImportRecoveryCommand, now_ms: int,
+    ) -> ProjectImportRecoveryCommand | None:
+        """Lock and, for an expired runner, CAS it terminal before file recovery."""
+        try:
+            row = await session.fetchone(
+                """SELECT id,status,lease_expires_at,staging_manifest_json
+                   FROM project_package_import_commands WHERE id=%s FOR UPDATE""",
+                (candidate.command_id,),
+            )
+            if row is None:
+                return None
+            manifest = (
+                row["staging_manifest_json"]
+                if isinstance(row["staging_manifest_json"], str)
+                else json.dumps(row["staging_manifest_json"], ensure_ascii=False,
+                                sort_keys=True, separators=(",", ":"))
+            )
+            if manifest != candidate.staging_manifest_json:
+                return None
+            if row["status"] in {"succeeded", "failed"}:
+                return ProjectImportRecoveryCommand(row["id"], row["status"], manifest)
+            if (
+                row["status"] != "running"
+                or type(row["lease_expires_at"]) is not int
+                or row["lease_expires_at"] > now_ms
+            ):
+                return None
+            affected = await session.execute(
+                """UPDATE project_package_import_commands
+                   SET status='failed',phase='failed',owner_token=NULL,
+                       lease_expires_at=NULL,public_error_code=%s,
+                       updated_at=%s,completed_at=%s
+                   WHERE id=%s AND status='running' AND lease_expires_at<=%s
+                     AND staging_manifest_json=%s""",
+                (_PUBLIC_ERROR_CODE, now_ms, now_ms, candidate.command_id,
+                 now_ms, candidate.staging_manifest_json),
+            )
+            if affected != 1:
+                return None
+            return ProjectImportRecoveryCommand(
+                candidate.command_id, "failed", candidate.staging_manifest_json,
+            )
+        except Exception:
+            raise ProjectImportPersistenceError() from None
 
     async def _lock_publication_command(
         self, session, plan: ProjectPublicationPlan, now: int,

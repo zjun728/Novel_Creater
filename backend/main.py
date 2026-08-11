@@ -11,7 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.database import close_pool, connection
+from backend.database import close_pool, connection, transaction
+from backend.config import MANAGED_CORPUS_ROOT
 from backend.gateways.openai_json_transport import (
     OpenAIJSONTransportLifecycleError,
 )
@@ -41,9 +42,11 @@ from backend.runtime.market_scheduler import build_market_scheduler_runtime
 from backend.schema_version import verify_schema_version
 from backend.security.paths import resolve_spa_file
 from backend.security.redaction import install_error_handlers
+from backend.services import project_imports as project_import_service
 
 
 _project_package_logger = logging.getLogger("backend.project_packages")
+_project_import_logger = logging.getLogger("backend.project_imports")
 
 
 class DraftOperationTaskRegistryLifecycleError(RuntimeError):
@@ -178,6 +181,19 @@ async def lifespan(app: FastAPI):
     try:
         async with connection() as session:
             await verify_schema_version(session)
+        if MANAGED_CORPUS_ROOT is not None:
+            try:
+                await project_import_service.reconcile_project_import_staging(
+                    managed_corpus_root=MANAGED_CORPUS_ROOT,
+                    connection_factory=connection,
+                    transaction_factory=transaction,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _project_import_logger.warning(
+                    "project_import_startup_reconciliation_failed"
+                )
         draft_registry_start_attempted = True
         await chapter_sessions.draft_operation_task_registry.start()
         scheduler_runtime = build_market_scheduler_runtime()

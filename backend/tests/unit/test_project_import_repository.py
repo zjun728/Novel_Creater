@@ -12,6 +12,7 @@ from backend.repositories.project_imports import (
     ProjectImportPersistenceError,
     ProjectImportCommandStateConflict,
     ProjectImportCommandView,
+    ProjectImportRecoveryCommand,
     ProjectImportRepository,
 )
 
@@ -34,6 +35,76 @@ class RecordingSession:
     async def fetchone(self, sql, args=None):
         self.calls.append(("fetchone", sql, args))
         return self.row
+
+    async def fetchall(self, sql, args=None):
+        self.calls.append(("fetchall", sql, args))
+        return self.row if isinstance(self.row, list) else []
+
+
+@pytest.mark.asyncio
+async def test_recovery_query_is_db_bounded_and_returns_only_manifest_authority():
+    manifest = '{"blobs":[],"commandId":"' + COMMAND_ID + '","idMapHash":"' + "b" * 64 + '"}'
+    session = RecordingSession([{
+        "id": COMMAND_ID, "status": "failed", "staging_manifest_json": manifest,
+    }])
+    commands = await ProjectImportRepository().list_recovery_commands(
+        session, now_ms=100, limit=32,
+    )
+    assert commands[0].staging_manifest_json == manifest
+    _, sql, args = session.calls[0]
+    compact = " ".join(sql.lower().split())
+    assert "limit %s" in compact
+    assert "lease_expires_at<=%s" in compact
+    assert "select *" not in compact
+    assert args == (100, 32)
+
+
+@pytest.mark.asyncio
+async def test_staging_manifest_write_is_fenced_by_owner_fingerprint_and_lease():
+    session = RecordingSession(affected=1)
+    await ProjectImportRepository().persist_staging_manifest(
+        session, command_id=COMMAND_ID, request_fingerprint=FINGERPRINT,
+        owner_token="30000000-0000-4000-8000-000000000001",
+        manifest_json='{"blobs":[]}', now_ms=100,
+    )
+    _, sql, args = session.calls[0]
+    compact = " ".join(sql.lower().split())
+    assert "owner_token=%s" in compact and "lease_expires_at>%s" in compact
+    assert args[-4:] == (COMMAND_ID, FINGERPRINT, "30000000-0000-4000-8000-000000000001", 100)
+
+
+@pytest.mark.asyncio
+async def test_expired_recovery_takes_row_lock_and_cas_fence_before_cleanup():
+    manifest = '{"blobs":[],"commandId":"' + COMMAND_ID + '","idMapHash":"' + "b" * 64 + '"}'
+    candidate = ProjectImportRecoveryCommand(COMMAND_ID, "running", manifest)
+    session = RecordingSession({
+        "id": COMMAND_ID, "status": "running", "lease_expires_at": 100,
+        "staging_manifest_json": manifest,
+    })
+    fenced = await ProjectImportRepository().fence_recovery_command(
+        session, candidate=candidate, now_ms=100,
+    )
+    assert fenced is not None and fenced.status == "failed"
+    _, lock_sql, _ = session.calls[0]
+    _, update_sql, update_args = session.calls[1]
+    assert "for update" in " ".join(lock_sql.lower().split())
+    compact = " ".join(update_sql.lower().split())
+    assert "status='running'" in compact and "lease_expires_at<=%s" in compact
+    assert update_args[-3:] == (COMMAND_ID, 100, manifest)
+
+
+@pytest.mark.asyncio
+async def test_recovery_fence_loses_to_fresh_runtime_lease_without_mutation():
+    manifest = '{"blobs":[],"commandId":"' + COMMAND_ID + '","idMapHash":"' + "b" * 64 + '"}'
+    candidate = ProjectImportRecoveryCommand(COMMAND_ID, "running", manifest)
+    session = RecordingSession({
+        "id": COMMAND_ID, "status": "running", "lease_expires_at": 101,
+        "staging_manifest_json": manifest,
+    })
+    assert await ProjectImportRepository().fence_recovery_command(
+        session, candidate=candidate, now_ms=100,
+    ) is None
+    assert [kind for kind, _, _ in session.calls] == ["fetchone"]
 
 
 def _row(**changes):
