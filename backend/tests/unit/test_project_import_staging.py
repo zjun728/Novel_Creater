@@ -623,6 +623,141 @@ async def test_claim_infrastructure_failures_are_fixed_persistence_errors(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["fdopen", "write", "flush", "close"])
+async def test_incomplete_claim_write_failures_leave_no_residue(
+    tmp_path, monkeypatch, failure,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    package, plan, digest = _package(tmp_path, b"shared")
+    staging = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    claim_parent = staging.root.parent / project_imports.CLAIM_DIRECTORY
+    claim = claim_parent / digest
+    real_fdopen = project_imports.os.fdopen
+
+    class FaultyClaimWriter:
+        def __init__(self, descriptor, *args, **kwargs):
+            self._target = real_fdopen(descriptor, *args, **kwargs)
+
+        @property
+        def closed(self):
+            return self._target.closed
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _type, _value, _traceback):
+            self.close()
+
+        def write(self, value):
+            if failure == "write":
+                self._target.write(value[:3])
+                raise OSError("secret claim owner")
+            return self._target.write(value)
+
+        def flush(self):
+            if failure == "flush":
+                self._target.flush()
+                raise OSError("secret claim owner")
+            return self._target.flush()
+
+        def close(self):
+            if failure == "close":
+                raise OSError("secret claim owner")
+            return self._target.close()
+
+    def fail_claim_owner(descriptor, *args, **kwargs):
+        if failure == "fdopen":
+            raise OSError("secret claim owner")
+        return FaultyClaimWriter(descriptor, *args, **kwargs)
+
+    monkeypatch.setattr(project_imports.os, "fdopen", fail_claim_owner)
+    try:
+        with pytest.raises(ProjectImportPersistenceError) as caught:
+            await staging._acquire_claim(staging.blobs[0])
+        assert not claim.exists()
+        assert not claim_parent.exists()
+    finally:
+        staging.cleanup_root()
+
+    assert caught.value.args == ("project import persistence failed",)
+    assert caught.value.__cause__ is None
+    assert not staging.root.exists()
+    assert not claim.exists()
+    assert not claim_parent.exists()
+
+
+@pytest.mark.asyncio
+async def test_incomplete_claim_cleanup_never_deletes_atomic_replacement(
+    tmp_path, monkeypatch,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    package, plan, digest = _package(tmp_path, b"shared")
+    staging = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    claim_parent = staging.root.parent / project_imports.CLAIM_DIRECTORY
+    claim = claim_parent / digest
+    replacement = claim_parent / "winner.new"
+    # A later attempt for the same command id is still a different filesystem object.
+    winner = COMMAND
+    real_fdopen = project_imports.os.fdopen
+
+    class ReplacingClaimWriter:
+        def __init__(self, descriptor, *args, **kwargs):
+            self._target = real_fdopen(descriptor, *args, **kwargs)
+
+        @property
+        def closed(self):
+            return self._target.closed
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _type, _value, _traceback):
+            self.close()
+
+        def write(self, value):
+            self._target.write(value[:3])
+            self._target.close()
+            replacement.write_text(winner, encoding="ascii")
+            project_imports.os.replace(replacement, claim)
+            raise OSError("secret claim owner")
+
+        def flush(self):
+            return self._target.flush()
+
+        def close(self):
+            return self._target.close()
+
+    monkeypatch.setattr(
+        project_imports.os, "fdopen",
+        lambda descriptor, *args, **kwargs: ReplacingClaimWriter(
+            descriptor, *args, **kwargs,
+        ),
+    )
+    try:
+        with pytest.raises(ProjectImportPersistenceError) as caught:
+            await staging._acquire_claim(staging.blobs[0])
+        assert claim.read_text("ascii") == winner
+    finally:
+        if claim.exists():
+            claim.unlink()
+        if claim_parent.exists():
+            claim_parent.rmdir()
+        staging.cleanup_root()
+
+    assert caught.value.args == ("project import persistence failed",)
+    assert caught.value.__cause__ is None
+    assert not staging.root.exists()
+
+
+@pytest.mark.asyncio
 async def test_claim_parent_file_is_persistence_failure_without_contention_wait(
     tmp_path, monkeypatch,
 ):

@@ -262,9 +262,10 @@ class ProjectImportStaging:
             await _claim_sleep(min(delay, remaining))
             delay = min(delay * 2, CLAIM_MAX_BACKOFF_SECONDS)
 
-        def cleanup_created_claim() -> None:
+        def cleanup_created_claim(created_identity: os.stat_result) -> None:
             try:
-                if claim.is_file() and not claim.is_symlink() and claim.read_text("ascii") == self.command_id:
+                current_identity = os.stat(claim, follow_symlinks=False)
+                if os.path.samestat(created_identity, current_identity):
                     claim.unlink()
             except BaseException:
                 pass
@@ -275,17 +276,19 @@ class ProjectImportStaging:
             except BaseException:
                 pass
 
-        def cleanup_failed_attempt(*, claim_created: bool, parent_created: bool) -> None:
-            if claim_created:
-                cleanup_created_claim()
-            if parent_created or claim_created:
+        def cleanup_failed_attempt(
+            *, created_identity: os.stat_result | None, parent_created: bool,
+        ) -> None:
+            if created_identity is not None:
+                cleanup_created_claim(created_identity)
+            if parent_created or created_identity is not None:
                 cleanup_empty_claim_parent()
 
         while True:
             if attempted and _claim_monotonic() >= deadline:
                 raise ProjectImportCommandStateConflict() from None
             attempted = True
-            created = False
+            created_identity = None
             try:
                 parent_created = False
                 try:
@@ -303,23 +306,48 @@ class ProjectImportStaging:
                 except FileExistsError:
                     await wait_for_retry()
                     continue
-                created = True
-                with os.fdopen(descriptor, "w", encoding="ascii") as output:
+                created_identity = os.fstat(descriptor)
+                output = None
+                try:
+                    output = os.fdopen(descriptor, "w", encoding="ascii")
                     output.write(self.command_id)
+                    output.flush()
+                    output.close()
+                except BaseException:
+                    if output is not None:
+                        try:
+                            output.close()
+                        except BaseException:
+                            pass
+                    try:
+                        open_identity = os.fstat(descriptor)
+                        if os.path.samestat(created_identity, open_identity):
+                            os.close(descriptor)
+                    except OSError:
+                        pass
+                    raise
                 apply_private_permissions(claim, is_directory=False)
                 return claim
             except FileNotFoundError:
-                cleanup_failed_attempt(claim_created=created, parent_created=parent_created)
+                cleanup_failed_attempt(
+                    created_identity=created_identity, parent_created=parent_created,
+                )
                 await wait_for_retry()
                 continue
             except ProjectImportPersistenceError:
-                cleanup_failed_attempt(claim_created=created, parent_created=parent_created)
+                cleanup_failed_attempt(
+                    created_identity=created_identity, parent_created=parent_created,
+                )
                 raise
             except (OSError, PrivateFilePermissionsError, RuntimeError, ValueError):
-                cleanup_failed_attempt(claim_created=created, parent_created=parent_created)
+                cleanup_failed_attempt(
+                    created_identity=created_identity, parent_created=parent_created,
+                )
                 raise ProjectImportPersistenceError() from None
             except BaseException:
-                cleanup_failed_attempt(claim_created=created, parent_created=parent_created)
+                cleanup_failed_attempt(
+                    created_identity=created_identity, parent_created=parent_created,
+                )
                 raise
 
     def _release_claim(self, claim: Path) -> None:
