@@ -2501,18 +2501,34 @@ class ProjectPackageRepository:
         except (KeyError, TypeError, ValueError, UnicodeError, ProjectPackageInvalid):
             raise _invalid() from None
         finally:
-            cleanup_failed = False
+            cleanup_flow_control: BaseException | None = None
+            cleanup_regular_failed = False
+            cleanup_failure_count = 0
             rollback = getattr(raw, "rollback", None)
             if rollback is not None:
                 try:
                     await rollback()
-                except BaseException:
-                    cleanup_failed = True
+                except BaseException as error:
+                    cleanup_failure_count += 1
+                    if isinstance(error, Exception):
+                        cleanup_regular_failed = True
+                    else:
+                        cleanup_flow_control = error
             try:
                 self._pool.release(raw)
-            except BaseException:
-                cleanup_failed = True
-            if cleanup_failed:
-                if snapshot_completed:
+            except BaseException as error:
+                cleanup_failure_count += 1
+                if isinstance(error, Exception):
+                    cleanup_regular_failed = True
+                elif cleanup_flow_control is None:
+                    cleanup_flow_control = error
+            if cleanup_failure_count:
+                if not snapshot_completed:
+                    _logger.warning("project_package_repository_cleanup_failed")
+                elif cleanup_flow_control is not None:
+                    if cleanup_failure_count > 1:
+                        _logger.warning("project_package_repository_cleanup_failed")
+                    raise cleanup_flow_control from None
+                elif cleanup_regular_failed:
+                    _logger.warning("project_package_repository_cleanup_failed")
                     raise _invalid() from None
-                _logger.warning("project_package_repository_cleanup_failed")
