@@ -304,21 +304,23 @@ class ProjectImportStaging:
                 descriptor = os.open(
                     temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
                 )
-                output = None
                 try:
                     output = os.fdopen(descriptor, "w", encoding="ascii")
+                except BaseException:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
+                    raise
+                descriptor = None
+                try:
                     output.write(self.command_id)
                     output.flush()
                     output.close()
                 except BaseException:
-                    if output is not None:
-                        try:
-                            output.close()
-                        except BaseException:
-                            pass
                     try:
-                        os.close(descriptor)
-                    except OSError:
+                        output.close()
+                    except BaseException:
                         pass
                     raise
                 apply_private_permissions(temporary, is_directory=False)

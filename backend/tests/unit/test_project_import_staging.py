@@ -689,6 +689,7 @@ async def test_incomplete_claim_write_failures_leave_no_residue(
         def close(self):
             public_claim_was_visible.append(claim.exists())
             if failure == "close":
+                self._target.close()
                 raise OSError("secret claim owner")
             return self._target.close()
 
@@ -714,6 +715,82 @@ async def test_incomplete_claim_write_failures_leave_no_residue(
     assert not staging.root.exists()
     assert not claim.exists()
     assert not claim_parent.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["write", "flush", "close"])
+async def test_claim_writer_failure_never_closes_reused_unrelated_descriptor(
+    tmp_path, monkeypatch, failure,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    package, plan, _ = _package(tmp_path, b"shared")
+    staging = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    unrelated = tmp_path / "unrelated"
+    real_fdopen = project_imports.os.fdopen
+    reused_descriptor = None
+
+    class FaultyClaimWriter:
+        def __init__(self, descriptor, *args, **kwargs):
+            self._descriptor = descriptor
+            self._target = real_fdopen(descriptor, *args, **kwargs)
+            self._failed = False
+
+        def fail_after_reuse(self):
+            nonlocal reused_descriptor
+            if self._failed:
+                return
+            self._failed = True
+            self._target.close()
+            reused_descriptor = project_imports.os.open(
+                unrelated,
+                project_imports.os.O_WRONLY
+                | project_imports.os.O_CREAT
+                | project_imports.os.O_EXCL,
+                0o600,
+            )
+            assert reused_descriptor == self._descriptor
+            raise OSError("secret claim owner")
+
+        def write(self, value):
+            if failure == "write":
+                self.fail_after_reuse()
+            return self._target.write(value)
+
+        def flush(self):
+            if failure == "flush":
+                self.fail_after_reuse()
+            return self._target.flush()
+
+        def close(self):
+            if failure == "close":
+                self.fail_after_reuse()
+            self._target.close()
+
+    monkeypatch.setattr(
+        project_imports.os,
+        "fdopen",
+        lambda descriptor, *args, **kwargs: FaultyClaimWriter(
+            descriptor, *args, **kwargs,
+        ),
+    )
+    try:
+        with pytest.raises(ProjectImportPersistenceError):
+            await staging._acquire_claim(staging.blobs[0])
+        assert reused_descriptor is not None
+        project_imports.os.write(reused_descriptor, b"unrelated")
+    finally:
+        if reused_descriptor is not None:
+            try:
+                project_imports.os.close(reused_descriptor)
+            except OSError:
+                pass
+        staging.cleanup_root()
+
+    assert unrelated.read_bytes() == b"unrelated"
 
 
 @pytest.mark.asyncio
