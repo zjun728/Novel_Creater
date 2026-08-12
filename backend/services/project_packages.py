@@ -150,11 +150,10 @@ def cleanup_stale_project_package_roots(
             return 0
         cutoff = (time.time() if now is None else now) - STALE_AFTER_SECONDS
         examined = 0
-        owned_candidates = (
-            candidate for candidate in parent.iterdir() if candidate.name.startswith(TEMP_PREFIX)
-        )
-        for candidate in islice(owned_candidates, STALE_SCAN_LIMIT):
+        for candidate in islice(parent.iterdir(), STALE_SCAN_LIMIT):
             examined += 1
+            if not candidate.name.startswith(TEMP_PREFIX):
+                continue
             try:
                 metadata = candidate.lstat()
                 if (

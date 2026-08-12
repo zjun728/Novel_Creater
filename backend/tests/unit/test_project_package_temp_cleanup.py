@@ -55,6 +55,43 @@ def test_startup_cleanup_is_prefix_age_and_scan_bounded(tmp_path: Path) -> None:
     assert any(path.name.startswith(TEMP_PREFIX) for path in parent.iterdir())
 
 
+def test_stale_cleanup_consumes_only_first_32_immediate_children(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    parent = tmp_path / "temp"
+    parent.mkdir()
+    resolved_parent = parent.resolve()
+    children = [parent / f"unowned-{index:02d}" for index in range(32)]
+    owned_after_limit = parent / f"{TEMP_PREFIX}after-limit"
+    children.append(owned_after_limit)
+    for child in children:
+        child.mkdir()
+        os.utime(child, (0, 0))
+
+    original_iterdir = Path.iterdir
+    consumed = 0
+
+    def bounded_iterdir(path):
+        if path != resolved_parent:
+            return original_iterdir(path)
+
+        def iterator():
+            nonlocal consumed
+            for child in children:
+                consumed += 1
+                if consumed > 32:
+                    raise AssertionError("scanner consumed beyond its immediate-child limit")
+                yield child
+
+        return iterator()
+
+    monkeypatch.setattr(Path, "iterdir", bounded_iterdir)
+
+    assert cleanup_stale_project_package_roots(parent, now=200_000.0) == 32
+    assert consumed == 32
+    assert owned_after_limit.exists()
+
+
 def test_stale_cleanup_continues_after_candidate_failure_and_logs_fixed_warning(
     tmp_path: Path, monkeypatch, caplog,
 ) -> None:
