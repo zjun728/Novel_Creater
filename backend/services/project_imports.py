@@ -254,23 +254,27 @@ class ProjectImportStaging:
         while True:
             created = False
             try:
-                claim_parent.mkdir(exist_ok=True)
+                try:
+                    claim_parent.mkdir(exist_ok=True)
+                except (OSError, RuntimeError, ValueError):
+                    raise _invalid() from None
+                if claim_parent.is_symlink() or not claim_parent.is_dir():
+                    raise _invalid()
                 apply_private_permissions(claim_parent, is_directory=True)
                 try:
                     descriptor = os.open(claim, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                except FileNotFoundError:
+                except (FileExistsError, FileNotFoundError):
+                    remaining = deadline - _claim_monotonic()
+                    if remaining <= 0:
+                        raise ProjectImportCommandStateConflict() from None
+                    await _claim_sleep(min(delay, remaining))
+                    delay = min(delay * 2, CLAIM_MAX_BACKOFF_SECONDS)
                     continue
                 created = True
                 with os.fdopen(descriptor, "w", encoding="ascii") as output:
                     output.write(self.command_id)
                 apply_private_permissions(claim, is_directory=False)
                 return claim
-            except FileExistsError:
-                remaining = deadline - _claim_monotonic()
-                if remaining <= 0:
-                    raise ProjectImportCommandStateConflict() from None
-                await _claim_sleep(min(delay, remaining))
-                delay = min(delay * 2, CLAIM_MAX_BACKOFF_SECONDS)
             except BaseException:
                 if created:
                     try:

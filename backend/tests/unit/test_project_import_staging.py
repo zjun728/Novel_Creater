@@ -121,9 +121,14 @@ async def test_link_failure_leaves_no_claim_of_target_creation(tmp_path, monkeyp
         package, plan, managed_corpus_root=managed, command_id=COMMAND,
     )
     monkeypatch.setattr(project_imports.os, "link", lambda *_: (_ for _ in ()).throw(OSError()))
-    with pytest.raises(OSError):
-        await staging.promote(lambda _: None)
+    try:
+        with pytest.raises(OSError):
+            await staging.promote(lambda _: None)
+    finally:
+        staging.cleanup_root()
     assert not managed_corpus_blob_path(managed, digest).exists()
+    assert not staging.root.exists()
+    assert not (staging.root.parent / project_imports.CLAIM_DIRECTORY).exists()
 
 
 @pytest.mark.asyncio
@@ -163,6 +168,7 @@ async def test_same_digest_waits_for_delayed_manifest_winner_and_leaves_no_resid
     )
     manifest_started = asyncio.Event()
     release_manifest = asyncio.Event()
+    wait_rounds = 0
     link_calls = 0
     real_link = project_imports.os.link
 
@@ -175,15 +181,21 @@ async def test_same_digest_waits_for_delayed_manifest_winner_and_leaves_no_resid
         link_calls += 1
         return real_link(source, destination)
 
+    async def controlled_sleep(_delay):
+        nonlocal wait_rounds
+        wait_rounds += 1
+        if wait_rounds == 65:
+            release_manifest.set()
+        await asyncio.sleep(0)
+
     monkeypatch.setattr(project_imports.os, "link", counted_link)
+    monkeypatch.setattr(project_imports, "_claim_sleep", controlled_sleep)
     first_task = asyncio.create_task(first.promote(delayed_manifest))
     await manifest_started.wait()
     second_task = asyncio.create_task(second.promote(lambda _value: None))
-    await asyncio.sleep(0)
-    assert not second_task.done()
-    release_manifest.set()
     await asyncio.gather(first_task, second_task)
 
+    assert wait_rounds >= 65
     assert link_calls == 1
     assert sorted((first.blobs[0].created, second.blobs[0].created)) == [False, True]
     first.cleanup_root()
@@ -202,13 +214,14 @@ async def test_claim_wait_uses_exact_monotonic_deadline_and_capped_backoff(
     managed = tmp_path / "managed"
     managed.mkdir()
     package, plan, digest = _package(tmp_path, b"shared")
-    staging = project_imports.ProjectImportStaging.stage(
+    owner = project_imports.ProjectImportStaging.stage(
         package, plan, managed_corpus_root=managed, command_id=COMMAND,
     )
-    claim_parent = staging.root.parent / project_imports.CLAIM_DIRECTORY
-    claim_parent.mkdir()
-    claim = claim_parent / digest
-    claim.write_text("another-command", encoding="ascii")
+    waiter = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed,
+        command_id="22222222-2222-4222-8222-222222222222",
+    )
+    claim = await owner._acquire_claim(owner.blobs[0])
     now = 100.0
     sleeps = []
 
@@ -222,18 +235,101 @@ async def test_claim_wait_uses_exact_monotonic_deadline_and_capped_backoff(
 
     monkeypatch.setattr(project_imports, "_claim_monotonic", monotonic)
     monkeypatch.setattr(project_imports, "_claim_sleep", sleep)
-    with pytest.raises(ProjectImportCommandStateConflict):
-        await staging._acquire_claim(staging.blobs[0])
+    try:
+        with pytest.raises(ProjectImportCommandStateConflict):
+            await waiter._acquire_claim(waiter.blobs[0])
+    finally:
+        owner._release_claim(claim)
+        owner.cleanup_root()
+        waiter.cleanup_root()
 
     assert sleeps[:6] == pytest.approx([0.01, 0.02, 0.04, 0.08, 0.16, 0.25])
     assert max(sleeps) == pytest.approx(0.25)
     assert sum(sleeps) == pytest.approx(30.0)
     assert now == pytest.approx(130.0)
-    assert claim.read_text("ascii") == "another-command"
+    assert not claim.exists()
+    assert not owner.root.exists()
+    assert not waiter.root.exists()
+    assert not claim.parent.exists()
 
-    claim.unlink()
-    claim_parent.rmdir()
-    staging.cleanup_root()
+
+@pytest.mark.asyncio
+async def test_claim_parent_disappearance_obeys_exact_deadline_and_backoff(
+    tmp_path, monkeypatch,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    package, plan, _ = _package(tmp_path, b"shared")
+    staging = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    now = 100.0
+    sleeps = []
+    attempts = 0
+    real_open = project_imports.os.open
+
+    def monotonic():
+        return now
+
+    async def sleep(delay):
+        nonlocal now
+        sleeps.append(delay)
+        now += delay
+
+    def disappearing_parent(path, flags, mode=0o777):
+        nonlocal attempts
+        if Path(path).parent.name == project_imports.CLAIM_DIRECTORY:
+            attempts += 1
+            if attempts > 1_000:
+                raise AssertionError("claim recreation bypassed deadline")
+            Path(path).parent.rmdir()
+            raise FileNotFoundError()
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr(project_imports, "_claim_monotonic", monotonic)
+    monkeypatch.setattr(project_imports, "_claim_sleep", sleep)
+    monkeypatch.setattr(project_imports.os, "open", disappearing_parent)
+    try:
+        with pytest.raises(ProjectImportCommandStateConflict):
+            await staging._acquire_claim(staging.blobs[0])
+    finally:
+        staging.cleanup_root()
+
+    assert sleeps[:6] == pytest.approx([0.01, 0.02, 0.04, 0.08, 0.16, 0.25])
+    assert max(sleeps) == pytest.approx(0.25)
+    assert sum(sleeps) == pytest.approx(30.0)
+    assert now == pytest.approx(130.0)
+    assert not staging.root.exists()
+    assert not (staging.root.parent / project_imports.CLAIM_DIRECTORY).exists()
+
+
+@pytest.mark.asyncio
+async def test_claim_parent_file_fails_immediately_without_contention_wait(
+    tmp_path, monkeypatch,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    package, plan, _ = _package(tmp_path, b"shared")
+    staging = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    claim_parent = staging.root.parent / project_imports.CLAIM_DIRECTORY
+    claim_parent.write_text("not-a-directory", encoding="ascii")
+
+    async def unexpected_sleep(_delay):
+        raise AssertionError("malformed claim parent was treated as contention")
+
+    monkeypatch.setattr(project_imports, "_claim_sleep", unexpected_sleep)
+    try:
+        with pytest.raises(ProjectImportInvalid):
+            await staging._acquire_claim(staging.blobs[0])
+    finally:
+        claim_parent.unlink()
+        staging.cleanup_root()
+
+    assert not staging.root.exists()
 
 
 @pytest.mark.asyncio
@@ -242,30 +338,91 @@ async def test_claim_wait_cancellation_preserves_existing_owner(tmp_path, monkey
     managed = tmp_path / "managed"
     managed.mkdir()
     package, plan, digest = _package(tmp_path, b"shared")
-    staging = project_imports.ProjectImportStaging.stage(
+    owner = project_imports.ProjectImportStaging.stage(
         package, plan, managed_corpus_root=managed, command_id=COMMAND,
     )
-    claim_parent = staging.root.parent / project_imports.CLAIM_DIRECTORY
-    claim_parent.mkdir()
-    claim = claim_parent / digest
-    claim.write_text("another-command", encoding="ascii")
+    waiter = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed,
+        command_id="22222222-2222-4222-8222-222222222222",
+    )
+    manifest_started = asyncio.Event()
+    release_manifest = asyncio.Event()
     sleeping = asyncio.Event()
+
+    async def delayed_manifest(_value):
+        manifest_started.set()
+        await release_manifest.wait()
 
     async def sleep(_delay):
         sleeping.set()
         await asyncio.Event().wait()
 
     monkeypatch.setattr(project_imports, "_claim_sleep", sleep)
-    acquisition = asyncio.create_task(staging._acquire_claim(staging.blobs[0]))
+    owner_task = asyncio.create_task(owner.promote(delayed_manifest))
+    await manifest_started.wait()
+    acquisition = asyncio.create_task(waiter.promote(lambda _value: None))
     await sleeping.wait()
     acquisition.cancel()
     with pytest.raises(asyncio.CancelledError):
         await acquisition
-    assert claim.read_text("ascii") == "another-command"
+    claim = owner.root.parent / project_imports.CLAIM_DIRECTORY / digest
+    assert claim.read_text("ascii") == COMMAND
+    release_manifest.set()
+    await owner_task
+    owner.cleanup_root()
+    waiter.cleanup_root()
+    assert not owner.root.exists()
+    assert not waiter.root.exists()
+    assert not claim.parent.exists()
 
-    claim.unlink()
-    claim_parent.rmdir()
-    staging.cleanup_root()
+
+@pytest.mark.asyncio
+async def test_persist_failure_outer_cleanup_leaves_no_claim_or_root(tmp_path, monkeypatch):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    package, plan, _ = _package(tmp_path, b"shared")
+    staging = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+
+    async def fail_persist(_value):
+        raise RuntimeError("injected")
+
+    try:
+        with pytest.raises(RuntimeError, match="injected"):
+            await staging.promote(fail_persist)
+    finally:
+        staging.cleanup_root()
+
+    assert not staging.root.exists()
+    assert not (staging.root.parent / project_imports.CLAIM_DIRECTORY).exists()
+
+
+@pytest.mark.asyncio
+async def test_destination_conflict_outer_cleanup_leaves_no_claim_or_root(
+    tmp_path, monkeypatch,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    package, plan, digest = _package(tmp_path, b"shared")
+    staging = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    destination = managed_corpus_blob_path(managed, digest)
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(b"evil")
+
+    try:
+        with pytest.raises(ProjectImportCommandStateConflict):
+            await staging.promote(lambda _value: None)
+    finally:
+        staging.cleanup_root()
+
+    assert destination.read_bytes() == b"evil"
+    assert not staging.root.exists()
+    assert not (staging.root.parent / project_imports.CLAIM_DIRECTORY).exists()
 
 
 @pytest.mark.asyncio
