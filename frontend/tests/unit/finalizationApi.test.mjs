@@ -95,6 +95,16 @@ test('getFinalization maps only the closed empty projection to null', async () =
   const responses = [
     { state: 'empty' },
     { state: 'empty', unexpected: true },
+    {
+      state: 'empty',
+      attemptId: 'attempt-1',
+      status: 'cancelled',
+      candidateId: 'candidate-1',
+      candidateHash: HASH,
+      qualityReport: null,
+      changeSet: null,
+      confirmation: null,
+    },
   ]
   global.fetch = async () => jsonResponse(responses.shift())
   try {
@@ -102,6 +112,10 @@ test('getFinalization maps only the closed empty projection to null', async () =
     assert.equal(
       await api.chapterSessions.getFinalization('project-1', 'session-1'),
       null,
+    )
+    await assert.rejects(
+      api.chapterSessions.getFinalization('project-1', 'session-1'),
+      TypeError,
     )
     await assert.rejects(
       api.chapterSessions.getFinalization('project-1', 'session-1'),
