@@ -8,7 +8,6 @@ from hashlib import sha256
 import json
 import logging
 import re
-import sys
 from types import MappingProxyType
 
 from backend.domain.bibles import BiblePayload
@@ -1787,6 +1786,7 @@ class ProjectPackageRepository:
     async def read_snapshot(self, project_id: str, expected_lifecycle_revision: int) -> ProjectPackageSnapshot:
         raw = await self._pool.acquire()
         session = self._session_factory(raw)
+        snapshot_completed = False
         try:
             await session.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             await session.execute("START TRANSACTION READ ONLY, WITH CONSISTENT SNAPSHOT")
@@ -2481,7 +2481,7 @@ class ProjectPackageRepository:
                         hashes.append(content_hash)
                     projection_validation[name] = {"count": len(hashes), "hashes": tuple(hashes)}
 
-                return ProjectPackageSnapshot(
+                snapshot = ProjectPackageSnapshot(
                     source_project_logical_id=identity_maps["projects"].get(project_id, ""),
                     lifecycle_revision=expected_lifecycle_revision,
                     graph_records=tuple(graph_records),
@@ -2494,12 +2494,13 @@ class ProjectPackageRepository:
                     referenced_secret_values=tuple(referenced_secret_values),
                     counts=counts,
                 )
+                snapshot_completed = True
+                return snapshot
             except (KeyError, TypeError, ValueError, UnicodeError, ProjectPackageInvalid):
                 raise _invalid() from None
         except (KeyError, TypeError, ValueError, UnicodeError, ProjectPackageInvalid):
             raise _invalid() from None
         finally:
-            primary_error = sys.exception()
             cleanup_failed = False
             rollback = getattr(raw, "rollback", None)
             if rollback is not None:
@@ -2512,6 +2513,6 @@ class ProjectPackageRepository:
             except BaseException:
                 cleanup_failed = True
             if cleanup_failed:
-                if primary_error is None:
+                if snapshot_completed:
                     raise _invalid() from None
                 _logger.warning("project_package_repository_cleanup_failed")

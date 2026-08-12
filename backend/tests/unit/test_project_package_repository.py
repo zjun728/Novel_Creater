@@ -756,6 +756,32 @@ async def test_read_snapshot_cleanup_preserves_primary_outcome_and_sanitizes_cle
 
 
 @pytest.mark.asyncio
+async def test_read_snapshot_success_does_not_inherit_callers_handled_exception_as_primary(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session = _CleanupMatrixSession("success", rollback_fails=True)
+    repository = ProjectPackageRepository(
+        pool=_CleanupMatrixPool(session, release_fails=False),
+        session_factory=lambda value: value,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="backend.project_packages"):
+        try:
+            raise LookupError("caller-sensitive-context")
+        except LookupError:
+            with pytest.raises(ProjectPackageInvalid, match=r"^invalid package value$") as raised:
+                await repository.read_snapshot("project-db", 7)
+
+    assert raised.value.__cause__ is None
+    assert session.calls[-2:] == [("ROLLBACK", None), ("RELEASE", None)]
+    assert [
+        record for record in caplog.records
+        if record.name == "backend.project_packages"
+    ] == []
+    assert "caller-sensitive-context" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_repository_materializes_every_owned_plan_and_returns_secret_free_public_records() -> None:
     secret = "SECRET_SENTINEL_MUST_STAY_PRIVATE"
     session = _SnapshotSession({
