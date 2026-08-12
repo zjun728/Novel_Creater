@@ -461,6 +461,39 @@ async def test_permanent_cleanup_failure_keeps_ordinary_primary_and_one_fixed_wa
 
 
 @pytest.mark.asyncio
+async def test_cleanup_warning_sink_failure_cannot_replace_ordinary_primary(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    primary = ProjectPackageIntegrity("fixed primary")
+    owners: list[ProjectPackageTempOwner] = []
+    original_cleanup = ProjectPackageTempOwner.cleanup
+
+    def fail_zip(*_args, **_kwargs):
+        raise primary
+
+    def fail_cleanup(owner):
+        owners.append(owner)
+        raise RuntimeError("cleanup failed")
+
+    def fail_warning(_event):
+        raise SystemExit("logging unavailable")
+
+    monkeypatch.setattr(ProjectPackageTempOwner, "cleanup", fail_cleanup)
+    monkeypatch.setattr("backend.services.project_packages._logger.warning", fail_warning)
+    service = _service(tmp_path, _snapshot(), zip_writer=fail_zip)
+
+    with pytest.raises(ProjectPackageIntegrity) as captured:
+        await service.create_backup("project-db", 7)
+
+    assert captured.value is primary
+    assert len(owners) == 2
+
+    monkeypatch.setattr(ProjectPackageTempOwner, "cleanup", original_cleanup)
+    original_cleanup(owners[-1])
+    assert list((tmp_path / "temp").iterdir()) == []
+
+
+@pytest.mark.asyncio
 async def test_handoff_cleanup_covers_cancel_and_background_duplicate(tmp_path: Path) -> None:
     package = await _service(tmp_path, _snapshot()).create_backup("project-db", 7)
 

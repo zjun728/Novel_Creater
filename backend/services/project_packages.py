@@ -51,6 +51,13 @@ _PRIVATE_PERMISSIONS_ERROR = "project package private permissions are unavailabl
 _logger = logging.getLogger("backend.project_packages")
 
 
+def _safe_warning(event: str) -> None:
+    try:
+        _logger.warning(event)
+    except BaseException:
+        pass
+
+
 def _is_link(path: Path) -> bool:
     metadata = path.lstat()
     return stat.S_ISLNK(metadata.st_mode) or bool(
@@ -150,10 +157,11 @@ def cleanup_stale_project_package_roots(
             return 0
         cutoff = (time.time() if now is None else now) - STALE_AFTER_SECONDS
         examined = 0
-        for candidate in islice(parent.iterdir(), STALE_SCAN_LIMIT):
+        owned_candidates = (
+            candidate for candidate in parent.iterdir() if candidate.name.startswith(TEMP_PREFIX)
+        )
+        for candidate in islice(owned_candidates, STALE_SCAN_LIMIT):
             examined += 1
-            if not candidate.name.startswith(TEMP_PREFIX):
-                continue
             try:
                 metadata = candidate.lstat()
                 if (
@@ -167,11 +175,11 @@ def cleanup_stale_project_package_roots(
                     continue
                 shutil.rmtree(resolved)
             except (OSError, RuntimeError, ValueError):
-                _logger.warning("project_package_stale_candidate_cleanup_failed")
+                _safe_warning("project_package_stale_candidate_cleanup_failed")
                 continue
         return examined
     except (OSError, RuntimeError, TypeError, ValueError):
-        _logger.warning("project_package_stale_scan_failed")
+        _safe_warning("project_package_stale_scan_failed")
         return 0
 
 
@@ -358,7 +366,7 @@ def _cleanup_owned_temp_after_failure(owner: ProjectPackageTempOwner) -> None:
             return
         except BaseException:
             if attempt == 1:
-                _logger.warning("project_package_service_cleanup_failed")
+                _safe_warning("project_package_service_cleanup_failed")
 
 
 class ProjectPackageService:
