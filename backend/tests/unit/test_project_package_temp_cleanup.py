@@ -55,6 +55,62 @@ def test_startup_cleanup_is_prefix_age_and_scan_bounded(tmp_path: Path) -> None:
     assert any(path.name.startswith(TEMP_PREFIX) for path in parent.iterdir())
 
 
+def test_stale_cleanup_continues_after_candidate_failure_and_logs_fixed_warning(
+    tmp_path: Path, monkeypatch, caplog,
+) -> None:
+    parent = tmp_path / "temp"
+    parent.mkdir()
+    candidates = [parent / f"{TEMP_PREFIX}{index}" for index in range(3)]
+    for candidate in candidates:
+        candidate.mkdir()
+        os.utime(candidate, (0, 0))
+    original_rmtree = __import__("shutil").rmtree
+
+    def fail_first(candidate):
+        if Path(candidate).name == candidates[0].name:
+            raise OSError("PRIVATE_STALE_CANDIDATE_SECRET")
+        original_rmtree(candidate)
+
+    monkeypatch.setattr("backend.services.project_packages.shutil.rmtree", fail_first)
+    with caplog.at_level("WARNING", logger="backend.project_packages"):
+        examined = cleanup_stale_project_package_roots(parent, now=200_000.0)
+
+    assert examined == 3
+    assert candidates[0].exists()
+    assert not candidates[1].exists()
+    assert not candidates[2].exists()
+    records = [record for record in caplog.records if record.name == "backend.project_packages"]
+    assert [record.getMessage() for record in records] == [
+        "project_package_stale_candidate_cleanup_failed"
+    ]
+    assert records[0].args == ()
+    assert "PRIVATE_STALE_CANDIDATE_SECRET" not in caplog.text
+
+
+def test_stale_cleanup_parent_scan_failure_logs_only_fixed_warning(
+    tmp_path: Path, monkeypatch, caplog,
+) -> None:
+    parent = tmp_path / "temp"
+    parent.mkdir()
+    original_iterdir = Path.iterdir
+
+    def fail_owned_parent(path):
+        if path == parent.resolve():
+            raise OSError("PRIVATE_STALE_PARENT_SECRET")
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", fail_owned_parent)
+    with caplog.at_level("WARNING", logger="backend.project_packages"):
+        assert cleanup_stale_project_package_roots(parent, now=200_000.0) == 0
+
+    records = [record for record in caplog.records if record.name == "backend.project_packages"]
+    assert [record.getMessage() for record in records] == [
+        "project_package_stale_scan_failed"
+    ]
+    assert records[0].args == ()
+    assert "PRIVATE_STALE_PARENT_SECRET" not in caplog.text
+
+
 class _FailingRepository:
     async def read_snapshot(self, project_id, revision):
         raise ProjectPackageIntegrity("repository failed safely")

@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from itertools import islice
+import logging
 import os
 from pathlib import Path
 import re
@@ -47,6 +48,7 @@ STALE_AFTER_SECONDS = 24 * 60 * 60
 STALE_SCAN_LIMIT = 32
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _PRIVATE_PERMISSIONS_ERROR = "project package private permissions are unavailable"
+_logger = logging.getLogger("backend.project_packages")
 
 
 def _is_link(path: Path) -> bool:
@@ -166,9 +168,11 @@ def cleanup_stale_project_package_roots(
                     continue
                 shutil.rmtree(resolved)
             except (OSError, RuntimeError, ValueError):
+                _logger.warning("project_package_stale_candidate_cleanup_failed")
                 continue
         return examined
     except (OSError, RuntimeError, TypeError, ValueError):
+        _logger.warning("project_package_stale_scan_failed")
         return 0
 
 
@@ -348,6 +352,16 @@ def cleanup_project_package_file(package: ProjectPackageFile) -> None:
     package.cleanup()
 
 
+def _cleanup_owned_temp_after_failure(owner: ProjectPackageTempOwner) -> None:
+    for attempt in range(2):
+        try:
+            owner.cleanup()
+            return
+        except BaseException:
+            if attempt == 1:
+                _logger.warning("project_package_service_cleanup_failed")
+
+
 class ProjectPackageService:
     def __init__(
         self,
@@ -400,7 +414,7 @@ class ProjectPackageService:
                 cleanup=cleanup,
             )
         except BaseException:
-            owner.cleanup()
+            _cleanup_owned_temp_after_failure(owner)
             raise
 
 
