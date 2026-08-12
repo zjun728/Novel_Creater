@@ -29,6 +29,7 @@ from backend.repositories.project_imports import (
     MAX_IMPORT_LEASE_MS,
     ProjectImportCommandStateConflict,
     ProjectImportCommandView,
+    ProjectImportPersistenceError,
     ProjectImportRepository,
 )
 from backend.security.paths import (
@@ -251,37 +252,74 @@ class ProjectImportStaging:
         claim = claim_parent / item.content_hash
         deadline = _claim_monotonic() + CLAIM_WAIT_SECONDS
         delay = CLAIM_INITIAL_BACKOFF_SECONDS
+        attempted = False
+
+        async def wait_for_retry() -> None:
+            nonlocal delay
+            remaining = deadline - _claim_monotonic()
+            if remaining <= 0:
+                raise ProjectImportCommandStateConflict() from None
+            await _claim_sleep(min(delay, remaining))
+            delay = min(delay * 2, CLAIM_MAX_BACKOFF_SECONDS)
+
+        def cleanup_created_claim() -> None:
+            try:
+                if claim.is_file() and not claim.is_symlink() and claim.read_text("ascii") == self.command_id:
+                    claim.unlink()
+            except BaseException:
+                pass
+
+        def cleanup_empty_claim_parent() -> None:
+            try:
+                claim_parent.rmdir()
+            except BaseException:
+                pass
+
+        def cleanup_failed_attempt(*, claim_created: bool, parent_created: bool) -> None:
+            if claim_created:
+                cleanup_created_claim()
+            if parent_created or claim_created:
+                cleanup_empty_claim_parent()
+
         while True:
+            if attempted and _claim_monotonic() >= deadline:
+                raise ProjectImportCommandStateConflict() from None
+            attempted = True
             created = False
             try:
+                parent_created = False
                 try:
-                    claim_parent.mkdir(exist_ok=True)
-                except (OSError, RuntimeError, ValueError):
-                    raise _invalid() from None
+                    claim_parent.mkdir(exist_ok=False)
+                    parent_created = True
+                except FileExistsError:
+                    pass
                 if claim_parent.is_symlink() or not claim_parent.is_dir():
-                    raise _invalid()
-                apply_private_permissions(claim_parent, is_directory=True)
+                    claim_parent.lstat()
+                    raise ProjectImportPersistenceError()
+                if parent_created:
+                    apply_private_permissions(claim_parent, is_directory=True)
                 try:
                     descriptor = os.open(claim, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                except (FileExistsError, FileNotFoundError):
-                    remaining = deadline - _claim_monotonic()
-                    if remaining <= 0:
-                        raise ProjectImportCommandStateConflict() from None
-                    await _claim_sleep(min(delay, remaining))
-                    delay = min(delay * 2, CLAIM_MAX_BACKOFF_SECONDS)
+                except FileExistsError:
+                    await wait_for_retry()
                     continue
                 created = True
                 with os.fdopen(descriptor, "w", encoding="ascii") as output:
                     output.write(self.command_id)
                 apply_private_permissions(claim, is_directory=False)
                 return claim
+            except FileNotFoundError:
+                cleanup_failed_attempt(claim_created=created, parent_created=parent_created)
+                await wait_for_retry()
+                continue
+            except ProjectImportPersistenceError:
+                cleanup_failed_attempt(claim_created=created, parent_created=parent_created)
+                raise
+            except (OSError, PrivateFilePermissionsError, RuntimeError, ValueError):
+                cleanup_failed_attempt(claim_created=created, parent_created=parent_created)
+                raise ProjectImportPersistenceError() from None
             except BaseException:
-                if created:
-                    try:
-                        if claim.is_file() and not claim.is_symlink() and claim.read_text("ascii") == self.command_id:
-                            claim.unlink()
-                    except BaseException:
-                        pass
+                cleanup_failed_attempt(claim_created=created, parent_created=parent_created)
                 raise
 
     def _release_claim(self, claim: Path) -> None:

@@ -7,7 +7,10 @@ import zipfile
 import pytest
 
 from backend.domain.project_imports import ProjectImportInvalid
-from backend.repositories.project_imports import ProjectImportCommandStateConflict
+from backend.repositories.project_imports import (
+    ProjectImportCommandStateConflict,
+    ProjectImportPersistenceError,
+)
 from backend.security.paths import managed_corpus_blob_path
 from backend.services import project_imports
 from backend.services.project_imports import ProjectImportService
@@ -305,7 +308,322 @@ async def test_claim_parent_disappearance_obeys_exact_deadline_and_backoff(
 
 
 @pytest.mark.asyncio
-async def test_claim_parent_file_fails_immediately_without_contention_wait(
+async def test_claim_deadline_is_rechecked_after_sleep_before_released_claim_can_open(
+    tmp_path, monkeypatch,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    package, plan, digest = _package(tmp_path, b"shared")
+    owner = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    waiter = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed,
+        command_id="22222222-2222-4222-8222-222222222222",
+    )
+    claim = await owner._acquire_claim(owner.blobs[0])
+    real_open = project_imports.os.open
+    now = 100.0
+    claim_open_attempts = 0
+
+    def monotonic():
+        return now
+
+    def counted_open(path, flags, mode=0o777):
+        nonlocal claim_open_attempts
+        if Path(path) == claim:
+            claim_open_attempts += 1
+        return real_open(path, flags, mode)
+
+    async def overshooting_sleep(_delay):
+        nonlocal now
+        now = 131.0
+        owner._release_claim(claim)
+
+    monkeypatch.setattr(project_imports, "_claim_monotonic", monotonic)
+    monkeypatch.setattr(project_imports, "_claim_sleep", overshooting_sleep)
+    monkeypatch.setattr(project_imports.os, "open", counted_open)
+    try:
+        with pytest.raises(ProjectImportCommandStateConflict):
+            await waiter._acquire_claim(waiter.blobs[0])
+    finally:
+        if claim.exists():
+            if claim.read_text("ascii") == waiter.command_id:
+                waiter._release_claim(claim)
+            else:
+                owner._release_claim(claim)
+        owner.cleanup_root()
+        waiter.cleanup_root()
+
+    assert claim_open_attempts == 1
+    assert not owner.root.exists()
+    assert not waiter.root.exists()
+    assert not claim.parent.exists()
+
+
+@pytest.mark.asyncio
+async def test_claim_keeps_one_immediate_attempt_before_deadline_checks(
+    tmp_path, monkeypatch,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    package, plan, _ = _package(tmp_path, b"shared")
+    staging = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    ticks = iter((100.0, 130.0))
+    monkeypatch.setattr(project_imports, "_claim_monotonic", lambda: next(ticks))
+
+    claim = await staging._acquire_claim(staging.blobs[0])
+    staging._release_claim(claim)
+    staging.cleanup_root()
+
+    assert not staging.root.exists()
+    assert not claim.parent.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parent_exists", [False, True])
+async def test_claim_parent_acl_runs_once_only_when_parent_is_new(
+    tmp_path, monkeypatch, parent_exists,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    package, plan, _ = _package(tmp_path, b"shared")
+    staging = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    claim_parent = staging.root.parent / project_imports.CLAIM_DIRECTORY
+    if parent_exists:
+        claim_parent.mkdir()
+    parent_acl_calls = 0
+
+    def count_acl(path, *, is_directory):
+        nonlocal parent_acl_calls
+        if Path(path) == claim_parent:
+            parent_acl_calls += 1
+
+    monkeypatch.setattr(project_imports, "apply_private_permissions", count_acl)
+    claim = await staging._acquire_claim(staging.blobs[0])
+    staging._release_claim(claim)
+    staging.cleanup_root()
+
+    assert parent_acl_calls == (0 if parent_exists else 1)
+    assert not staging.root.exists()
+    assert not claim_parent.exists()
+
+
+@pytest.mark.asyncio
+async def test_claim_contention_does_not_repeat_acl_on_stable_existing_parent(
+    tmp_path, monkeypatch,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    package, plan, _ = _package(tmp_path, b"shared")
+    owner = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    waiter = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed,
+        command_id="22222222-2222-4222-8222-222222222222",
+    )
+    claim = await owner._acquire_claim(owner.blobs[0])
+    now = 100.0
+    parent_acl_calls = 0
+
+    def monotonic():
+        return now
+
+    async def sleep(delay):
+        nonlocal now
+        now += delay
+
+    def count_acl(path, *, is_directory):
+        nonlocal parent_acl_calls
+        if Path(path) == claim.parent:
+            parent_acl_calls += 1
+
+    monkeypatch.setattr(project_imports, "_claim_monotonic", monotonic)
+    monkeypatch.setattr(project_imports, "_claim_sleep", sleep)
+    monkeypatch.setattr(project_imports, "apply_private_permissions", count_acl)
+    try:
+        with pytest.raises(ProjectImportCommandStateConflict):
+            await waiter._acquire_claim(waiter.blobs[0])
+    finally:
+        owner._release_claim(claim)
+        owner.cleanup_root()
+        waiter.cleanup_root()
+
+    assert parent_acl_calls == 0
+    assert not owner.root.exists()
+    assert not waiter.root.exists()
+    assert not claim.parent.exists()
+
+
+@pytest.mark.asyncio
+async def test_claim_parent_disappearance_between_mkdir_and_validation_uses_bounded_wait(
+    tmp_path, monkeypatch,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    package, plan, _ = _package(tmp_path, b"shared")
+    staging = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    claim_parent = staging.root.parent / project_imports.CLAIM_DIRECTORY
+    real_is_symlink = project_imports.Path.is_symlink
+    now = 100.0
+    sleeps = []
+
+    def disappear_before_validation(path):
+        if path == claim_parent and path.exists():
+            path.rmdir()
+        return real_is_symlink(path)
+
+    def monotonic():
+        return now
+
+    async def sleep(delay):
+        nonlocal now
+        sleeps.append(delay)
+        now += delay
+
+    monkeypatch.setattr(project_imports.Path, "is_symlink", disappear_before_validation)
+    monkeypatch.setattr(project_imports, "_claim_monotonic", monotonic)
+    monkeypatch.setattr(project_imports, "_claim_sleep", sleep)
+    try:
+        with pytest.raises(ProjectImportCommandStateConflict):
+            await staging._acquire_claim(staging.blobs[0])
+    finally:
+        staging.cleanup_root()
+
+    assert sum(sleeps) == pytest.approx(project_imports.CLAIM_WAIT_SECONDS)
+    assert now == pytest.approx(130.0)
+    assert not staging.root.exists()
+    assert not claim_parent.exists()
+
+
+@pytest.mark.asyncio
+async def test_claim_parent_disappearance_after_create_before_acl_uses_bounded_wait(
+    tmp_path, monkeypatch,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    package, plan, digest = _package(tmp_path, b"shared")
+    staging = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    claim_parent = staging.root.parent / project_imports.CLAIM_DIRECTORY
+    claim = claim_parent / digest
+    now = 100.0
+    sleeps = []
+
+    def monotonic():
+        return now
+
+    async def sleep(delay):
+        nonlocal now
+        sleeps.append(delay)
+        now += delay
+
+    def disappear_before_acl(path, *, is_directory):
+        if Path(path) == claim:
+            claim.unlink()
+            claim_parent.rmdir()
+            raise FileNotFoundError()
+
+    monkeypatch.setattr(project_imports, "_claim_monotonic", monotonic)
+    monkeypatch.setattr(project_imports, "_claim_sleep", sleep)
+    monkeypatch.setattr(project_imports, "apply_private_permissions", disappear_before_acl)
+    try:
+        with pytest.raises(ProjectImportCommandStateConflict):
+            await staging._acquire_claim(staging.blobs[0])
+    finally:
+        staging.cleanup_root()
+
+    assert sum(sleeps) == pytest.approx(project_imports.CLAIM_WAIT_SECONDS)
+    assert now == pytest.approx(130.0)
+    assert not staging.root.exists()
+    assert not claim_parent.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure", ["mkdir", "file", "symlink", "parent_acl", "claim_acl"],
+)
+async def test_claim_infrastructure_failures_are_fixed_persistence_errors(
+    tmp_path, monkeypatch, failure,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    package, plan, digest = _package(tmp_path, b"shared")
+    staging = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    claim_parent = staging.root.parent / project_imports.CLAIM_DIRECTORY
+    claim = claim_parent / digest
+
+    if failure == "mkdir":
+        real_mkdir = project_imports.Path.mkdir
+
+        def fail_mkdir(path, *args, **kwargs):
+            if path == claim_parent:
+                raise PermissionError("secret mkdir path")
+            return real_mkdir(path, *args, **kwargs)
+
+        monkeypatch.setattr(project_imports.Path, "mkdir", fail_mkdir)
+    elif failure == "file":
+        claim_parent.write_text("malformed", encoding="ascii")
+    elif failure == "symlink":
+        claim_parent.mkdir()
+        real_is_symlink = project_imports.Path.is_symlink
+        monkeypatch.setattr(
+            project_imports.Path, "is_symlink",
+            lambda path: path == claim_parent or real_is_symlink(path),
+        )
+    else:
+        acl_target = claim_parent if failure == "parent_acl" else claim
+
+        def fail_acl(path, *, is_directory):
+            if Path(path) == acl_target:
+                raise project_imports.PrivateFilePermissionsError("secret acl path")
+
+        monkeypatch.setattr(project_imports, "apply_private_permissions", fail_acl)
+
+    try:
+        with pytest.raises(ProjectImportPersistenceError) as caught:
+            await staging._acquire_claim(staging.blobs[0])
+        if failure in ("mkdir", "parent_acl", "claim_acl"):
+            assert not claim.exists()
+            assert not claim_parent.exists()
+    finally:
+        if failure == "symlink" and claim_parent.exists():
+            claim_parent.rmdir()
+        elif claim_parent.exists() or claim_parent.is_symlink():
+            if claim_parent.is_dir() and not claim_parent.is_symlink():
+                for child in claim_parent.iterdir():
+                    child.unlink()
+                claim_parent.rmdir()
+            else:
+                claim_parent.unlink()
+        staging.cleanup_root()
+
+    assert caught.value.args == ("project import persistence failed",)
+    assert caught.value.__cause__ is None
+    assert not isinstance(caught.value, ProjectImportInvalid)
+    assert not staging.root.exists()
+    assert not claim_parent.exists()
+
+
+@pytest.mark.asyncio
+async def test_claim_parent_file_is_persistence_failure_without_contention_wait(
     tmp_path, monkeypatch,
 ):
     _no_acl(monkeypatch)
@@ -323,7 +641,7 @@ async def test_claim_parent_file_fails_immediately_without_contention_wait(
 
     monkeypatch.setattr(project_imports, "_claim_sleep", unexpected_sleep)
     try:
-        with pytest.raises(ProjectImportInvalid):
+        with pytest.raises(ProjectImportPersistenceError):
             await staging._acquire_claim(staging.blobs[0])
     finally:
         claim_parent.unlink()
