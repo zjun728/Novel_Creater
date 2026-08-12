@@ -149,7 +149,7 @@ def cleanup_stale_project_package_roots(
     *,
     now: float | None = None,
 ) -> int:
-    """Examine at most 32 immediate children and remove only stale owned-prefix roots."""
+    """Examine at most 32 owned-prefix immediate children and remove stale roots."""
 
     try:
         parent = Path(temp_parent).resolve(strict=True)
