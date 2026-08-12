@@ -528,8 +528,13 @@ class FinalizationService:
             value = await self.repository.read_current_view(
                 session, project_id, chapter_session_id,
             )
-        if value is None:
-            raise FinalizationConflict("FINALIZATION_NOT_FOUND")
+            if value is None:
+                chapter_session = await self.repository.lock_session(
+                    session, project_id, chapter_session_id,
+                )
+                if chapter_session is None:
+                    raise FinalizationConflict("FINALIZATION_NOT_FOUND")
+                return {"state": "empty"}
         return value
 
     async def correct(self, command: CorrectFinalization) -> ReviewedFinalization:
