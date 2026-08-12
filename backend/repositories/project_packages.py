@@ -6,7 +6,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from hashlib import sha256
 import json
+import logging
 import re
+import sys
 from types import MappingProxyType
 
 from backend.domain.bibles import BiblePayload
@@ -18,6 +20,9 @@ from backend.domain.planning import DraftPlanningAggregate, PlanningAggregate
 from backend.domain.project_packages import PackageRecord, RECORD_FIELD_ALLOWLISTS, ProjectPackageBusy, ProjectPackageConflict, ProjectPackageInvalid, ProjectPackageNotFound, freeze_json_value
 from backend.database import DatabaseSession
 from backend.security.paths import UnsafeLocalPath, managed_corpus_storage_key
+
+
+_logger = logging.getLogger("backend.project_packages")
 
 
 PROJECT_OWNED_TABLES = frozenset({
@@ -2494,7 +2499,19 @@ class ProjectPackageRepository:
         except (KeyError, TypeError, ValueError, UnicodeError, ProjectPackageInvalid):
             raise _invalid() from None
         finally:
+            primary_error = sys.exception()
+            cleanup_failed = False
             rollback = getattr(raw, "rollback", None)
             if rollback is not None:
-                await rollback()
-            self._pool.release(raw)
+                try:
+                    await rollback()
+                except BaseException:
+                    cleanup_failed = True
+            try:
+                self._pool.release(raw)
+            except BaseException:
+                cleanup_failed = True
+            if cleanup_failed:
+                if primary_error is None:
+                    raise _invalid() from None
+                _logger.warning("project_package_repository_cleanup_failed")
