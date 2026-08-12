@@ -203,3 +203,25 @@ test('project backup timeout does not change other binary request timeouts', asy
     global.clearTimeout = originalClearTimeout
   }
 })
+
+test('project backup timeout does not change JSON or import request timeouts', async () => {
+  const originalFetch = global.fetch
+  const originalSetTimeout = global.setTimeout
+  const originalClearTimeout = global.clearTimeout
+  const delays = []
+  global.setTimeout = (_callback, delay) => {
+    delays.push(delay)
+    return { delay }
+  }
+  global.clearTimeout = () => {}
+  global.fetch = async () => response({ text: '{}' })
+  try {
+    await api.health()
+    await api.projectImports.preflight(new File(['package'], 'project.zip'))
+    assert.deepEqual(delays, [30_000, 30_000])
+  } finally {
+    global.fetch = originalFetch
+    global.setTimeout = originalSetTimeout
+    global.clearTimeout = originalClearTimeout
+  }
+})

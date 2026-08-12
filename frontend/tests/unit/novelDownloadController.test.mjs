@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { createPinia, setActivePinia } from 'pinia'
 
 import { createNovelDownloadController } from '../../src/application/downloads/novelDownloadController.js'
+import { createOperationStore } from '../../src/stores/operationStore.js'
 
 const OPTIONS = Object.freeze({
   available: true, reason: null, formats: ['txt', 'markdown'], volumes: [], chapters: [],
@@ -121,17 +123,19 @@ test('a revoke failure cannot leave the operation or busy state behind', async (
   assert.equal(item.controller.busy.value, false)
 })
 
-test('a finish failure clears busy state, uses fixed error copy, and permits retry', async () => {
-  let finishes = 0
+test('a transient real-store finish failure clears the blocker and permits retry', async () => {
   let downloads = 0
+  setActivePinia(createPinia())
+  const operationStore = createOperationStore(`download-cleanup-${Date.now()}`)()
+  const realFinish = operationStore.finish.bind(operationStore)
+  let finishes = 0
+  operationStore.finish = operationId => {
+    finishes += 1
+    if (finishes === 1) throw new Error('private store detail')
+    return realFinish(operationId)
+  }
   const item = harness({
-    operationStore: {
-      start: () => `op-${downloads + 1}`,
-      finish: () => {
-        finishes += 1
-        if (finishes === 1) throw new Error('private store detail')
-      },
-    },
+    operationStore,
     api: { novelDownloads: {
       options: async () => OPTIONS,
       download: async () => {
@@ -144,8 +148,43 @@ test('a finish failure clears busy state, uses fixed error copy, and permits ret
   await assert.rejects(() => item.controller.download('p', selector), /private store detail/)
   assert.equal(item.controller.busy.value, false)
   assert.equal(item.controller.error.value, '下载失败，请重试。')
+  assert.equal(operationStore.blocking, false)
+  assert.equal(finishes, 2)
   assert.equal(await item.controller.download('p', selector), true)
   assert.equal(downloads, 2)
+})
+
+test('finish cleanup failure never replaces an API or revoke failure', async () => {
+  const primaryApiFailure = new Error('primary api failure')
+  const primaryRevokeFailure = new Error('primary revoke failure')
+  const finishFailure = new Error('finish cleanup failure')
+  const finishOnce = () => {
+    let calls = 0
+    return {
+      start: () => 'op-1',
+      finish: () => {
+        calls += 1
+        if (calls === 1) throw finishFailure
+      },
+    }
+  }
+
+  const apiItem = harness({
+    operationStore: finishOnce(),
+    api: { novelDownloads: {
+      options: async () => OPTIONS,
+      download: async () => { throw primaryApiFailure },
+    } },
+  })
+  await apiItem.controller.loadOptions('p')
+  await assert.rejects(() => apiItem.controller.download('p', selector), primaryApiFailure)
+
+  const revokeItem = harness({
+    operationStore: finishOnce(),
+    revokeObjectURL: () => { throw primaryRevokeFailure },
+  })
+  await revokeItem.controller.loadOptions('p')
+  await assert.rejects(() => revokeItem.controller.download('p', selector), primaryRevokeFailure)
 })
 
 test('disposal aborts an internal request and fences its late result', async () => {
@@ -191,7 +230,53 @@ test('disposing an option load fences its late result', async () => {
   assert.equal(controller.options.value, null)
 })
 
-test('disposing an abort-aware request finishes its owned operation exactly once', async () => {
+test('disposing fences late option and download rejections without public errors', async () => {
+  const optionPending = deferred()
+  const optionItem = harness({ api: { novelDownloads: {
+    options: async () => optionPending.promise,
+    download: async () => { throw new Error('not used') },
+  } } })
+  const loading = optionItem.controller.loadOptions('p')
+  optionItem.controller.dispose()
+  optionPending.reject(new Error('late option failure'))
+  assert.equal(await loading, false)
+  assert.equal(optionItem.controller.error.value, '')
+
+  const downloadPending = deferred()
+  const downloadItem = harness({ api: { novelDownloads: {
+    options: async () => OPTIONS,
+    download: async () => downloadPending.promise,
+  } } })
+  await downloadItem.controller.loadOptions('p')
+  const running = downloadItem.controller.download('p', selector)
+  downloadItem.controller.dispose()
+  downloadPending.reject(new Error('late download failure'))
+  assert.equal(await running, false)
+  assert.equal(downloadItem.controller.error.value, '')
+})
+
+test('dispose clears loading and busy even when abort throws', async () => {
+  const pending = deferred()
+  const item = harness({
+    abortControllerFactory: () => ({
+      signal: {},
+      abort: () => { throw new Error('abort failure') },
+    }),
+    api: { novelDownloads: {
+      options: async () => OPTIONS,
+      download: async () => pending.promise,
+    } },
+  })
+  await item.controller.loadOptions('p')
+  const running = item.controller.download('p', selector)
+  assert.throws(() => item.controller.dispose(), /abort failure/)
+  assert.equal(item.controller.loading.value, false)
+  assert.equal(item.controller.busy.value, false)
+  pending.resolve({ blob: new Blob(['late']), contentDisposition: null })
+  assert.equal(await running, false)
+})
+
+test('disposing an abort-aware request fences rejection and finishes its owned operation exactly once', async () => {
   const { controller, operations, saved, revoked } = harness({ api: { novelDownloads: {
     options: async () => OPTIONS,
     download: async (_projectId, _selector, { signal }) => new Promise((_resolve, reject) => {
@@ -201,7 +286,7 @@ test('disposing an abort-aware request finishes its owned operation exactly once
   await controller.loadOptions('p')
   const running = controller.download('p', selector)
   controller.dispose()
-  await assert.rejects(running)
+  assert.equal(await running, false)
   assert.equal(operations.filter(item => Array.isArray(item) && item[0] === 'finish').length, 1)
   assert.deepEqual(saved, [])
   assert.deepEqual(revoked, [])
