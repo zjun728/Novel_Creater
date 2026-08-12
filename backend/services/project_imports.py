@@ -262,11 +262,11 @@ class ProjectImportStaging:
             await _claim_sleep(min(delay, remaining))
             delay = min(delay * 2, CLAIM_MAX_BACKOFF_SECONDS)
 
-        def cleanup_created_claim(created_identity: os.stat_result) -> None:
+        def cleanup_temporary_claim(temporary: Path | None) -> None:
+            if temporary is None:
+                return
             try:
-                current_identity = os.stat(claim, follow_symlinks=False)
-                if os.path.samestat(created_identity, current_identity):
-                    claim.unlink()
+                temporary.unlink()
             except BaseException:
                 pass
 
@@ -277,18 +277,17 @@ class ProjectImportStaging:
                 pass
 
         def cleanup_failed_attempt(
-            *, created_identity: os.stat_result | None, parent_created: bool,
+            *, temporary: Path | None, parent_created: bool,
         ) -> None:
-            if created_identity is not None:
-                cleanup_created_claim(created_identity)
-            if parent_created or created_identity is not None:
+            cleanup_temporary_claim(temporary)
+            if parent_created or temporary is not None:
                 cleanup_empty_claim_parent()
 
         while True:
             if attempted and _claim_monotonic() >= deadline:
                 raise ProjectImportCommandStateConflict() from None
             attempted = True
-            created_identity = None
+            temporary = None
             try:
                 parent_created = False
                 try:
@@ -301,12 +300,10 @@ class ProjectImportStaging:
                     raise ProjectImportPersistenceError()
                 if parent_created:
                     apply_private_permissions(claim_parent, is_directory=True)
-                try:
-                    descriptor = os.open(claim, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                except FileExistsError:
-                    await wait_for_retry()
-                    continue
-                created_identity = os.fstat(descriptor)
+                temporary = claim_parent / f".{item.content_hash}.{uuid4().hex}.tmp"
+                descriptor = os.open(
+                    temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
+                )
                 output = None
                 try:
                     output = os.fdopen(descriptor, "w", encoding="ascii")
@@ -320,33 +317,41 @@ class ProjectImportStaging:
                         except BaseException:
                             pass
                     try:
-                        open_identity = os.fstat(descriptor)
-                        if os.path.samestat(created_identity, open_identity):
-                            os.close(descriptor)
+                        os.close(descriptor)
                     except OSError:
                         pass
                     raise
-                apply_private_permissions(claim, is_directory=False)
+                apply_private_permissions(temporary, is_directory=False)
+                try:
+                    os.link(temporary, claim)
+                except FileExistsError:
+                    cleanup_failed_attempt(
+                        temporary=temporary, parent_created=parent_created,
+                    )
+                    temporary = None
+                    await wait_for_retry()
+                    continue
+                cleanup_temporary_claim(temporary)
                 return claim
             except FileNotFoundError:
                 cleanup_failed_attempt(
-                    created_identity=created_identity, parent_created=parent_created,
+                    temporary=temporary, parent_created=parent_created,
                 )
                 await wait_for_retry()
                 continue
             except ProjectImportPersistenceError:
                 cleanup_failed_attempt(
-                    created_identity=created_identity, parent_created=parent_created,
+                    temporary=temporary, parent_created=parent_created,
                 )
                 raise
             except (OSError, PrivateFilePermissionsError, RuntimeError, ValueError):
                 cleanup_failed_attempt(
-                    created_identity=created_identity, parent_created=parent_created,
+                    temporary=temporary, parent_created=parent_created,
                 )
                 raise ProjectImportPersistenceError() from None
             except BaseException:
                 cleanup_failed_attempt(
-                    created_identity=created_identity, parent_created=parent_created,
+                    temporary=temporary, parent_created=parent_created,
                 )
                 raise
 

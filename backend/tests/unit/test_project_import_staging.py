@@ -123,7 +123,15 @@ async def test_link_failure_leaves_no_claim_of_target_creation(tmp_path, monkeyp
     staging = project_imports.ProjectImportStaging.stage(
         package, plan, managed_corpus_root=managed, command_id=COMMAND,
     )
-    monkeypatch.setattr(project_imports.os, "link", lambda *_: (_ for _ in ()).throw(OSError()))
+    destination = managed_corpus_blob_path(managed, digest)
+    real_link = project_imports.os.link
+
+    def fail_blob_link(source, target):
+        if Path(target) == destination:
+            raise OSError()
+        return real_link(source, target)
+
+    monkeypatch.setattr(project_imports.os, "link", fail_blob_link)
     try:
         with pytest.raises(OSError):
             await staging.promote(lambda _: None)
@@ -173,6 +181,8 @@ async def test_same_digest_waits_for_delayed_manifest_winner_and_leaves_no_resid
     release_manifest = asyncio.Event()
     wait_rounds = 0
     link_calls = 0
+    claim_collisions = 0
+    claim = first.root.parent / project_imports.CLAIM_DIRECTORY / digest
     real_link = project_imports.os.link
 
     async def delayed_manifest(_value):
@@ -180,9 +190,16 @@ async def test_same_digest_waits_for_delayed_manifest_winner_and_leaves_no_resid
         await release_manifest.wait()
 
     def counted_link(source, destination):
-        nonlocal link_calls
-        link_calls += 1
-        return real_link(source, destination)
+        nonlocal claim_collisions, link_calls
+        if Path(destination) == managed_corpus_blob_path(managed, digest):
+            link_calls += 1
+        try:
+            return real_link(source, destination)
+        except FileExistsError:
+            if Path(destination) == claim:
+                claim_collisions += 1
+                assert claim.read_text("ascii") == COMMAND
+            raise
 
     async def controlled_sleep(_delay):
         nonlocal wait_rounds
@@ -199,6 +216,7 @@ async def test_same_digest_waits_for_delayed_manifest_winner_and_leaves_no_resid
     await asyncio.gather(first_task, second_task)
 
     assert wait_rounds >= 65
+    assert claim_collisions >= 65
     assert link_calls == 1
     assert sorted((first.blobs[0].created, second.blobs[0].created)) == [False, True]
     first.cleanup_root()
@@ -323,18 +341,18 @@ async def test_claim_deadline_is_rechecked_after_sleep_before_released_claim_can
         command_id="22222222-2222-4222-8222-222222222222",
     )
     claim = await owner._acquire_claim(owner.blobs[0])
-    real_open = project_imports.os.open
+    real_link = project_imports.os.link
     now = 100.0
     claim_open_attempts = 0
 
     def monotonic():
         return now
 
-    def counted_open(path, flags, mode=0o777):
+    def counted_link(source, destination):
         nonlocal claim_open_attempts
-        if Path(path) == claim:
+        if Path(destination) == claim:
             claim_open_attempts += 1
-        return real_open(path, flags, mode)
+        return real_link(source, destination)
 
     async def overshooting_sleep(_delay):
         nonlocal now
@@ -343,7 +361,7 @@ async def test_claim_deadline_is_rechecked_after_sleep_before_released_claim_can
 
     monkeypatch.setattr(project_imports, "_claim_monotonic", monotonic)
     monkeypatch.setattr(project_imports, "_claim_sleep", overshooting_sleep)
-    monkeypatch.setattr(project_imports.os, "open", counted_open)
+    monkeypatch.setattr(project_imports.os, "link", counted_link)
     try:
         with pytest.raises(ProjectImportCommandStateConflict):
             await waiter._acquire_claim(waiter.blobs[0])
@@ -533,8 +551,8 @@ async def test_claim_parent_disappearance_after_create_before_acl_uses_bounded_w
         now += delay
 
     def disappear_before_acl(path, *, is_directory):
-        if Path(path) == claim:
-            claim.unlink()
+        if not is_directory:
+            Path(path).unlink()
             claim_parent.rmdir()
             raise FileNotFoundError()
 
@@ -589,10 +607,11 @@ async def test_claim_infrastructure_failures_are_fixed_persistence_errors(
             lambda path: path == claim_parent or real_is_symlink(path),
         )
     else:
-        acl_target = claim_parent if failure == "parent_acl" else claim
-
         def fail_acl(path, *, is_directory):
-            if Path(path) == acl_target:
+            if (
+                (failure == "parent_acl" and Path(path) == claim_parent)
+                or (failure == "claim_acl" and not is_directory)
+            ):
                 raise project_imports.PrivateFilePermissionsError("secret acl path")
 
         monkeypatch.setattr(project_imports, "apply_private_permissions", fail_acl)
@@ -637,6 +656,7 @@ async def test_incomplete_claim_write_failures_leave_no_residue(
     claim_parent = staging.root.parent / project_imports.CLAIM_DIRECTORY
     claim = claim_parent / digest
     real_fdopen = project_imports.os.fdopen
+    public_claim_was_visible = []
 
     class FaultyClaimWriter:
         def __init__(self, descriptor, *args, **kwargs):
@@ -653,23 +673,27 @@ async def test_incomplete_claim_write_failures_leave_no_residue(
             self.close()
 
         def write(self, value):
+            public_claim_was_visible.append(claim.exists())
             if failure == "write":
                 self._target.write(value[:3])
                 raise OSError("secret claim owner")
             return self._target.write(value)
 
         def flush(self):
+            public_claim_was_visible.append(claim.exists())
             if failure == "flush":
                 self._target.flush()
                 raise OSError("secret claim owner")
             return self._target.flush()
 
         def close(self):
+            public_claim_was_visible.append(claim.exists())
             if failure == "close":
                 raise OSError("secret claim owner")
             return self._target.close()
 
     def fail_claim_owner(descriptor, *args, **kwargs):
+        public_claim_was_visible.append(claim.exists())
         if failure == "fdopen":
             raise OSError("secret claim owner")
         return FaultyClaimWriter(descriptor, *args, **kwargs)
@@ -685,13 +709,15 @@ async def test_incomplete_claim_write_failures_leave_no_residue(
 
     assert caught.value.args == ("project import persistence failed",)
     assert caught.value.__cause__ is None
+    assert public_claim_was_visible
+    assert not any(public_claim_was_visible)
     assert not staging.root.exists()
     assert not claim.exists()
     assert not claim_parent.exists()
 
 
 @pytest.mark.asyncio
-async def test_incomplete_claim_cleanup_never_deletes_atomic_replacement(
+async def test_identity_check_then_unlink_never_deletes_atomic_replacement(
     tmp_path, monkeypatch,
 ):
     _no_acl(monkeypatch)
@@ -741,6 +767,9 @@ async def test_incomplete_claim_cleanup_never_deletes_atomic_replacement(
             descriptor, *args, **kwargs,
         ),
     )
+    # Reproduce the TOCTOU: identity validation observes the old object, then a
+    # later winner replaces it before the path-based unlink executes.
+    monkeypatch.setattr(project_imports.os.path, "samestat", lambda *_args: True)
     try:
         with pytest.raises(ProjectImportPersistenceError) as caught:
             await staging._acquire_claim(staging.blobs[0])
@@ -755,6 +784,39 @@ async def test_incomplete_claim_cleanup_never_deletes_atomic_replacement(
     assert caught.value.args == ("project import persistence failed",)
     assert caught.value.__cause__ is None
     assert not staging.root.exists()
+
+
+@pytest.mark.asyncio
+async def test_claim_acl_is_applied_before_publication(tmp_path, monkeypatch):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    package, plan, digest = _package(tmp_path, b"shared")
+    staging = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    claim_parent = staging.root.parent / project_imports.CLAIM_DIRECTORY
+    claim = claim_parent / digest
+    file_acl_targets = []
+
+    def inspect_acl(path, *, is_directory):
+        if not is_directory:
+            file_acl_targets.append(Path(path))
+            assert Path(path) != claim
+            assert not claim.exists()
+            assert Path(path).read_text("ascii") == COMMAND
+
+    monkeypatch.setattr(project_imports, "apply_private_permissions", inspect_acl)
+    acquired = await staging._acquire_claim(staging.blobs[0])
+    try:
+        assert acquired == claim
+        assert claim.read_text("ascii") == COMMAND
+        assert len(file_acl_targets) == 1
+    finally:
+        staging._release_claim(claim)
+        staging.cleanup_root()
+
+    assert not claim_parent.exists()
 
 
 @pytest.mark.asyncio
