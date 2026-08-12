@@ -118,6 +118,7 @@ git commit -m "fix: represent empty finalization review explicitly"
 
 **Files:**
 - Modify: `frontend/src/api/db/client.js:1971-2026`
+- Modify: `frontend/src/application/writer/finalizationController.js:107-125`
 - Test: `frontend/tests/unit/finalizationApi.test.mjs`
 - Test: `frontend/tests/unit/finalizationController.test.mjs:161-173`
 
