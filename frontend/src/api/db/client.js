@@ -1,13 +1,15 @@
 /** Writer Core product API client. */
 
 import { ApiError, parseApiError } from './api-error.js'
+import { unicodeScalarLength } from '../../utils/unicodeScalarText.js'
 
 const BASE = (import.meta.env?.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api').replace(/\/+$/, '')
 const DEFAULT_TIMEOUT = 30000
-const CHAPTER_DRAFT_GENERATION_TIMEOUT = 1_200_000
+const DRAFT_OPERATION_TIMEOUT = 1_200_000
 const BIBLE_GENERATION_TIMEOUT = 210_000
 const PLANNING_GENERATION_TIMEOUT = 210_000
 const CHAPTER_OUTLINE_GENERATION_TIMEOUT = 210_000
+const FINALIZATION_PREPARE_TIMEOUT = 1_210_000
 
 async function request(method, path, body, timeoutMs = DEFAULT_TIMEOUT) {
   const controller = new AbortController()
@@ -16,10 +18,12 @@ async function request(method, path, body, timeoutMs = DEFAULT_TIMEOUT) {
   try {
     const options = {
       method,
-      headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
     }
-    if (body !== undefined) options.body = JSON.stringify(body)
+    if (body !== undefined) {
+      options.headers = { 'Content-Type': 'application/json' }
+      options.body = JSON.stringify(body)
+    }
 
     const response = await fetch(`${BASE}${path}`, options)
     if (!response.ok) {
@@ -48,6 +52,122 @@ async function request(method, path, body, timeoutMs = DEFAULT_TIMEOUT) {
   } finally {
     clearTimeout(timer)
   }
+}
+
+async function binaryRequest(path, {
+  method = 'GET',
+  body,
+  signal: externalSignal,
+  timeoutMs = DEFAULT_TIMEOUT,
+  includePackageSha256 = false,
+} = {}) {
+  const controller = new AbortController()
+  let externallyAborted = false
+  const abortFromExternalSignal = () => {
+    externallyAborted = true
+    controller.abort()
+  }
+  if (externalSignal?.aborted) {
+    abortFromExternalSignal()
+  } else {
+    externalSignal?.addEventListener?.('abort', abortFromExternalSignal, { once: true })
+  }
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+
+  try {
+    const options = {
+      method,
+      signal: controller.signal,
+    }
+    if (body !== undefined) {
+      options.headers = { 'Content-Type': 'application/json' }
+      options.body = JSON.stringify(body)
+    }
+    const response = await fetch(`${BASE}${path}`, options)
+    if (!response.ok) throw await parseApiError(response)
+    const result = {
+      blob: await response.blob(),
+      contentDisposition: response.headers.get('Content-Disposition'),
+    }
+    if (includePackageSha256) {
+      result.packageSha256 = response.headers.get('X-Package-SHA256')
+    }
+    return result
+  } catch (error) {
+    if (controller.signal.aborted || error?.name === 'AbortError') {
+      throw new ApiError({
+        code: externallyAborted ? 'request_aborted' : 'request_timeout',
+        message: externallyAborted ? '请求已取消' : `请求超时 (${timeoutMs / 1000}s)`,
+      })
+    }
+    if (error instanceof ApiError) throw error
+    throw new ApiError()
+  } finally {
+    clearTimeout(timer)
+    externalSignal?.removeEventListener?.('abort', abortFromExternalSignal)
+  }
+}
+
+async function projectImportRequest(path, {
+  method = 'GET',
+  form,
+  signal: externalSignal,
+  timeoutMs = DEFAULT_TIMEOUT,
+} = {}) {
+  const controller = new AbortController()
+  let externallyAborted = false
+  const abortFromExternalSignal = () => {
+    externallyAborted = true
+    controller.abort()
+  }
+  if (externalSignal?.aborted) abortFromExternalSignal()
+  else externalSignal?.addEventListener?.('abort', abortFromExternalSignal, { once: true })
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const options = { method, signal: controller.signal }
+    if (form !== undefined) options.body = form
+    const response = await fetch(`${BASE}${path}`, options)
+    if (!response.ok) throw await parseApiError(response)
+    const text = await response.text()
+    if (!text) return null
+    try {
+      return JSON.parse(text)
+    } catch {
+      throw new ApiError({
+        status: response.status,
+        code: 'invalid_response',
+        message: '服务返回了无效响应',
+      })
+    }
+  } catch (error) {
+    if (controller.signal.aborted || error?.name === 'AbortError') {
+      throw new ApiError({
+        code: externallyAborted ? 'request_aborted' : 'request_timeout',
+        message: externallyAborted ? '请求已取消' : `请求超时 (${timeoutMs / 1000}s)`,
+      })
+    }
+    if (error instanceof ApiError) throw error
+    throw new ApiError()
+  } finally {
+    clearTimeout(timer)
+    externalSignal?.removeEventListener?.('abort', abortFromExternalSignal)
+  }
+}
+
+function projectImportFile(value) {
+  if (typeof File === 'undefined' || !(value instanceof File)) {
+    throw new TypeError('project import requires a File')
+  }
+  return value
+}
+
+function projectImportForm(file, fields = {}) {
+  const form = new FormData()
+  form.append('file', projectImportFile(file))
+  for (const field of ['commandId', 'idempotencyKey', 'expectedPackageHash', 'newTitle']) {
+    if (Object.hasOwn(fields, field)) form.append(field, String(fields[field]))
+  }
+  return form
 }
 const get = path => request('GET', path)
 const post = (path, body, timeoutMs) => request('POST', path, body, timeoutMs)
@@ -232,6 +352,107 @@ function planningDraftContent(value) {
         ),
       })),
     })),
+  }
+}
+
+function planningActualProgressItem(value) {
+  const invalid = () => {
+    throw new TypeError('Invalid Planning actual progress response')
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) invalid()
+
+  const revisionNumber = value.revisionNumber
+  const subjectKey = value.subjectKey
+  const entityId = value.entityId
+  const fieldPath = value.fieldPath
+  const publicValue = planningProgressValue(value.value)
+  const contentHash = value.contentHash
+  if (
+    !Number.isInteger(revisionNumber)
+    || revisionNumber <= 0
+    || !planningProgressText(subjectKey)
+    || !(entityId === null || planningProgressText(entityId))
+    || !planningProgressText(fieldPath)
+    || !fieldPath.startsWith('plot.')
+    || fieldPath.slice('plot.'.length).length === 0
+    || publicValue === INVALID_PLANNING_PROGRESS_VALUE
+    || typeof contentHash !== 'string'
+    || !/^[a-f0-9]{64}$/u.test(contentHash)
+  ) invalid()
+
+  return {
+    revisionNumber,
+    subjectKey,
+    entityId,
+    fieldPath,
+    value: publicValue,
+    contentHash,
+  }
+}
+
+function planningProgressText(value) {
+  return (
+    typeof value === 'string'
+    && value.length > 0
+    && value === value.trim()
+    && hasValidUnicode(value)
+  )
+}
+
+const INVALID_PLANNING_PROGRESS_VALUE = Symbol('invalid-planning-progress-value')
+
+function planningProgressValue(value, ancestors = new WeakSet()) {
+  if (typeof value === 'string') return value
+  if (value === null || typeof value === 'boolean') return value
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (!value || typeof value !== 'object' || ancestors.has(value)) {
+    return INVALID_PLANNING_PROGRESS_VALUE
+  }
+  ancestors.add(value)
+  try {
+    if (Array.isArray(value)) {
+      const copied = value.map(item => planningProgressValue(item, ancestors))
+      return copied.includes(INVALID_PLANNING_PROGRESS_VALUE)
+        ? INVALID_PLANNING_PROGRESS_VALUE
+        : copied
+    }
+    if (Object.getPrototypeOf(value) !== Object.prototype) {
+      return INVALID_PLANNING_PROGRESS_VALUE
+    }
+    const copied = {}
+    for (const key of Object.keys(value)) {
+      const item = planningProgressValue(value[key], ancestors)
+      if (item === INVALID_PLANNING_PROGRESS_VALUE) {
+        return INVALID_PLANNING_PROGRESS_VALUE
+      }
+      Object.defineProperty(copied, key, {
+        value: item,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      })
+    }
+    return copied
+  } catch {
+    return INVALID_PLANNING_PROGRESS_VALUE
+  } finally {
+    ancestors.delete(value)
+  }
+}
+
+function planningStateResponse(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('Invalid Planning actual progress response')
+  }
+  const actualProgress = value.actualProgress === undefined
+    ? []
+    : value.actualProgress
+  if (!Array.isArray(actualProgress)) {
+    throw new TypeError('Invalid Planning actual progress response')
+  }
+  return {
+    ...value,
+    actualProgress: actualProgress.map(planningActualProgressItem),
   }
 }
 
@@ -1111,6 +1332,480 @@ function chapterOutlineOperationResponse(value, expectedOperationId) {
   }
 }
 
+const DRAFT_OPERATION_STATUSES = new Set([
+  'starting', 'running', 'completed', 'failed', 'cancelled', 'expired',
+])
+const DRAFT_OPERATION_FAILURE_CODES = new Set([
+  'DraftProviderFailed', 'DraftProviderResultInvalid',
+])
+const DRAFT_OPERATION_MAX_BASE_REVISION = 2_147_483_646
+const DRAFT_OPERATION_MAX_RESULT_REVISION = 2_147_483_647
+const DRAFT_OPERATION_SENSITIVE_KEYS = new Set([
+  'prompt', 'messages', 'provider', 'model', 'apikey', 'baseurl', 'debug',
+  'responsebody',
+])
+const DRAFT_OPERATION_GENERATE_COMMAND_FIELDS = [
+  'operationType', 'expectedWorkingDraftRevision', 'expectedContentHash',
+  'idempotencyKey', 'authorInstruction',
+]
+const DRAFT_OPERATION_LOCAL_COMMAND_FIELDS = [
+  ...DRAFT_OPERATION_GENERATE_COMMAND_FIELDS,
+  'startOffset', 'endOffset', 'selectedTextHash',
+]
+const LOCAL_DRAFT_OPERATION_TYPES = new Set([
+  'rewrite_selection', 'polish_selection',
+  'expand_selection', 'compress_selection',
+])
+const DRAFT_OPERATION_RESPONSE_FIELDS = [
+  'id', 'projectId', 'chapterSessionId', 'operationType', 'status',
+  'partialOutput', 'partialOutputHash', 'partialOutputScalars',
+  'lastEventSequence', 'resultWorkingDraftRevision', 'resultContentHash',
+  'resultSelectionStart', 'resultSelectionEnd',
+  'failureCode', 'model',
+]
+const DRAFT_OPERATION_MODEL_FIELDS = ['providerId', 'modelName']
+const DRAFT_OPERATION_EVENT_ENVELOPE_FIELDS = [
+  'operationId', 'events', 'lastEventSequence', 'nextAfter', 'hasMore',
+]
+const DRAFT_OPERATION_EVENT_BASE_FIELDS = ['sequence', 'type', 'createdAt']
+const DRAFT_OPERATION_MAX_EVENTS = 2_048
+const DRAFT_OPERATION_MAX_EVENT_CURSOR = 2_147_483_647
+const DRAFT_OPERATION_MAX_PARTIAL_SCALARS = 100_000
+
+function draftOperationObject(value, label) {
+  if (
+    !value
+    || typeof value !== 'object'
+    || Array.isArray(value)
+    || (Object.getPrototypeOf(value) !== Object.prototype
+      && Object.getPrototypeOf(value) !== null)
+  ) {
+    throw new TypeError(`Invalid draft operation ${label}`)
+  }
+  return value
+}
+
+function draftOperationUuid(value, label) {
+  if (
+    typeof value !== 'string'
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value)
+  ) {
+    throw new TypeError(`Invalid draft operation ${label}`)
+  }
+  return value
+}
+
+function draftOperationHash(value, label) {
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) {
+    throw new TypeError(`Invalid draft operation ${label}`)
+  }
+  return value
+}
+
+function hasSensitiveDraftOperationKey(value, ancestors = new WeakSet()) {
+  if (!value || typeof value !== 'object') return false
+  if (ancestors.has(value)) return true
+  ancestors.add(value)
+  try {
+    for (const key of Object.keys(value)) {
+      const normalized = key.replace(/[^a-z0-9]/gi, '').toLowerCase()
+      if (DRAFT_OPERATION_SENSITIVE_KEYS.has(normalized)) return true
+      if (hasSensitiveDraftOperationKey(value[key], ancestors)) return true
+    }
+    return false
+  } finally {
+    ancestors.delete(value)
+  }
+}
+
+function draftOperationCommand(value) {
+  const source = draftOperationObject(value, 'command')
+  const local = LOCAL_DRAFT_OPERATION_TYPES.has(source.operationType)
+  const fields = local
+    ? DRAFT_OPERATION_LOCAL_COMMAND_FIELDS
+    : DRAFT_OPERATION_GENERATE_COMMAND_FIELDS
+  if (
+    hasSensitiveDraftOperationKey(source)
+    || Object.keys(source).length !== fields.length
+    || fields.some(field => !Object.hasOwn(source, field))
+    || (!local && source.operationType !== 'generate_new')
+    || !Number.isInteger(source.expectedWorkingDraftRevision)
+    || source.expectedWorkingDraftRevision < 1
+    || source.expectedWorkingDraftRevision > DRAFT_OPERATION_MAX_BASE_REVISION
+    || typeof source.authorInstruction !== 'string'
+    || unicodeScalarLength(source.authorInstruction) > (local ? 1000 : 2000)
+    || (local && (
+      !Number.isInteger(source.startOffset)
+      || source.startOffset < 0
+      || source.startOffset >= DRAFT_OPERATION_MAX_PARTIAL_SCALARS
+      || !Number.isInteger(source.endOffset)
+      || source.endOffset <= source.startOffset
+      || source.endOffset > DRAFT_OPERATION_MAX_PARTIAL_SCALARS
+    ))
+  ) {
+    throw new TypeError('Invalid draft operation command')
+  }
+  const command = {
+    operationType: source.operationType,
+    expectedWorkingDraftRevision: source.expectedWorkingDraftRevision,
+    expectedContentHash: draftOperationHash(
+      source.expectedContentHash,
+      'expected content hash',
+    ),
+    idempotencyKey: draftOperationUuid(source.idempotencyKey, 'idempotency key'),
+    authorInstruction: source.authorInstruction,
+  }
+  if (local) {
+    command.startOffset = source.startOffset
+    command.endOffset = source.endOffset
+    command.selectedTextHash = draftOperationHash(
+      source.selectedTextHash,
+      'selected text hash',
+    )
+  }
+  return Object.freeze(command)
+}
+
+function undoLocalDraftCommand(value) {
+  const source = draftOperationObject(value, 'undo command')
+  const fields = [
+    'expectedWorkingDraftRevision', 'expectedContentHash', 'sourceOperationId',
+  ]
+  if (
+    hasSensitiveDraftOperationKey(source)
+    || Object.keys(source).length !== fields.length
+    || fields.some(field => !Object.hasOwn(source, field))
+    || !Number.isInteger(source.expectedWorkingDraftRevision)
+    || source.expectedWorkingDraftRevision < 1
+    || source.expectedWorkingDraftRevision > DRAFT_OPERATION_MAX_BASE_REVISION
+  ) throw new TypeError('Invalid draft operation undo command')
+  return Object.freeze({
+    expectedWorkingDraftRevision: source.expectedWorkingDraftRevision,
+    expectedContentHash: draftOperationHash(
+      source.expectedContentHash,
+      'expected content hash',
+    ),
+    sourceOperationId: draftOperationUuid(
+      source.sourceOperationId,
+      'source operation id',
+    ),
+  })
+}
+
+function draftOperationResponse(value, expected = {}) {
+  const source = draftOperationObject(value, 'response')
+  if (
+    Object.keys(source).length !== DRAFT_OPERATION_RESPONSE_FIELDS.length
+    || DRAFT_OPERATION_RESPONSE_FIELDS.some(field => !Object.hasOwn(source, field))
+  ) throw new TypeError('Invalid draft operation response')
+  const operationId = draftOperationUuid(source.id, 'id')
+  const projectId = draftOperationUuid(source.projectId, 'project id')
+  const chapterSessionId = draftOperationUuid(source.chapterSessionId, 'session id')
+  const status = source.status
+  const sequence = source.lastEventSequence
+  const partialOutput = source.partialOutput
+  const partialOutputHash = source.partialOutputHash
+  const partialOutputScalars = source.partialOutputScalars
+  const revision = source.resultWorkingDraftRevision
+  const resultHash = source.resultContentHash
+  const selectionStart = source.resultSelectionStart
+  const selectionEnd = source.resultSelectionEnd
+  const failureCode = source.failureCode
+  const local = LOCAL_DRAFT_OPERATION_TYPES.has(source.operationType)
+  const sourceModel = draftOperationObject(source.model, 'model')
+  if (
+    Object.keys(sourceModel).length !== DRAFT_OPERATION_MODEL_FIELDS.length
+    || DRAFT_OPERATION_MODEL_FIELDS.some(field => !Object.hasOwn(sourceModel, field))
+  ) throw new TypeError('Invalid draft operation response')
+  const providerId = publicPlanningLabel(sourceModel.providerId)
+  const modelName = publicPlanningLabel(sourceModel.modelName)
+  if (
+    (expected.operationId && operationId !== expected.operationId)
+    || (expected.projectId && projectId !== expected.projectId)
+    || (expected.sessionId && chapterSessionId !== expected.sessionId)
+    || (!local && source.operationType !== 'generate_new')
+    || (expected.operationType && source.operationType !== expected.operationType)
+    || !DRAFT_OPERATION_STATUSES.has(status)
+    || !Number.isInteger(sequence)
+    || sequence < 1
+    || sequence > DRAFT_OPERATION_MAX_EVENTS
+    || (
+      (status === 'starting' || status === 'running' || status === 'expired')
+      && sequence > DRAFT_OPERATION_MAX_EVENTS - 1
+    )
+    || typeof partialOutput !== 'string'
+    || !Number.isInteger(partialOutputScalars)
+    || partialOutputScalars < 0
+    || partialOutputScalars > DRAFT_OPERATION_MAX_PARTIAL_SCALARS
+    || unicodeScalarLength(partialOutput) !== partialOutputScalars
+    || !providerId
+    || !modelName
+  ) {
+    throw new TypeError('Invalid draft operation response')
+  }
+  draftOperationHash(partialOutputHash, 'partial output hash')
+  if (
+    (status === 'starting' && (
+      sequence !== 1 || partialOutput !== '' || partialOutputScalars !== 0
+    ))
+    || (status === 'running' && sequence === 1 && (
+      partialOutput !== '' || partialOutputScalars !== 0
+    ))
+  ) throw new TypeError('Invalid draft operation response')
+  if (status === 'completed') {
+    if (
+      sequence < 2
+      || !Number.isInteger(revision)
+      || revision < 1
+      || revision > DRAFT_OPERATION_MAX_RESULT_REVISION
+      || (
+        expected.expectedBaseRevision !== undefined
+        && revision !== expected.expectedBaseRevision + 1
+      )
+      || failureCode !== null
+      || partialOutput === ''
+      || (!local && (
+        partialOutput !== partialOutput.trim()
+        || resultHash !== partialOutputHash
+      ))
+      || (local && (
+        !Number.isInteger(selectionStart)
+        || selectionStart < 0
+        || !Number.isInteger(selectionEnd)
+        || selectionEnd !== selectionStart + partialOutputScalars
+        || selectionEnd > DRAFT_OPERATION_MAX_PARTIAL_SCALARS
+        || (
+          expected.selectionStart !== undefined
+          && selectionStart !== expected.selectionStart
+        )
+      ))
+    ) throw new TypeError('Invalid draft operation response')
+    draftOperationHash(resultHash, 'result content hash')
+  } else if (status === 'cancelled') {
+    const hasResult = revision !== null || resultHash !== null
+    if (
+      sequence < 2
+      || failureCode !== null
+      || (!local && partialOutput !== partialOutput.trim())
+      || (local && hasResult)
+      || (!local && (revision === null) !== (resultHash === null))
+      || (!local && Boolean(partialOutput) !== hasResult)
+      || (!local && hasResult && (
+        !Number.isInteger(revision)
+        || revision < 1
+        || revision > DRAFT_OPERATION_MAX_RESULT_REVISION
+        || (
+          expected.expectedBaseRevision !== undefined
+          && revision !== expected.expectedBaseRevision + 1
+        )
+      ))
+    ) throw new TypeError('Invalid draft operation response')
+    if (!local && hasResult) {
+      draftOperationHash(resultHash, 'result content hash')
+      if (resultHash !== partialOutputHash) {
+        throw new TypeError('Invalid draft operation response')
+      }
+    }
+  } else if (status === 'failed') {
+    if (
+      sequence < 2
+      || revision !== null
+      || resultHash !== null
+      || !DRAFT_OPERATION_FAILURE_CODES.has(failureCode)
+    ) throw new TypeError('Invalid draft operation response')
+  } else if (revision !== null || resultHash !== null || failureCode !== null) {
+    throw new TypeError('Invalid draft operation response')
+  }
+  if ((!local || status !== 'completed') && (
+    selectionStart !== null || selectionEnd !== null
+  )) throw new TypeError('Invalid draft operation response')
+  const model = Object.freeze({ providerId, modelName })
+  return Object.freeze({
+    id: operationId,
+    projectId,
+    chapterSessionId,
+    operationType: source.operationType,
+    status,
+    lastEventSequence: sequence,
+    partialOutput,
+    partialOutputHash,
+    partialOutputScalars,
+    resultWorkingDraftRevision: revision,
+    resultContentHash: resultHash,
+    resultSelectionStart: selectionStart,
+    resultSelectionEnd: selectionEnd,
+    failureCode,
+    model,
+  })
+}
+
+function draftOperationEventsResponse(value, expectedOperationId, afterSequence) {
+  const source = draftOperationObject(value, 'events response')
+  if (
+    hasSensitiveDraftOperationKey(source)
+    || Object.keys(source).length !== DRAFT_OPERATION_EVENT_ENVELOPE_FIELDS.length
+    || DRAFT_OPERATION_EVENT_ENVELOPE_FIELDS.some(field => !Object.hasOwn(source, field))
+    || draftOperationUuid(source.operationId, 'id') !== expectedOperationId
+    || !Array.isArray(source.events)
+    || source.events.length > 100
+    || !Number.isInteger(source.lastEventSequence)
+    || source.lastEventSequence < 1
+    || source.lastEventSequence > DRAFT_OPERATION_MAX_EVENTS
+    || !Number.isInteger(source.nextAfter)
+    || source.nextAfter < afterSequence
+    || source.nextAfter > DRAFT_OPERATION_MAX_EVENT_CURSOR
+    || typeof source.hasMore !== 'boolean'
+  ) throw new TypeError('Invalid draft operation events response')
+  const expectedEventCount = Math.min(
+    100,
+    Math.max(0, source.lastEventSequence - afterSequence),
+  )
+  if (source.events.length !== expectedEventCount) {
+    throw new TypeError('Invalid draft operation events response')
+  }
+  let lastPartialScalars = afterSequence === 0 ? 0 : null
+  const events = source.events.map((event, index) => {
+    const item = draftOperationObject(event, 'event')
+    const sequence = item.sequence
+    if (
+      !Number.isInteger(sequence)
+      || sequence < 1
+      || sequence > DRAFT_OPERATION_MAX_EVENTS
+      || sequence !== afterSequence + index + 1
+      || typeof item.type !== 'string'
+      || !Number.isInteger(item.createdAt)
+      || item.createdAt < 0
+    ) throw new TypeError('Invalid draft operation event')
+    const result = { sequence, type: item.type, createdAt: item.createdAt }
+    if (sequence === 1) {
+      if (
+        item.type !== 'started'
+        || Object.keys(item).length !== DRAFT_OPERATION_EVENT_BASE_FIELDS.length
+      ) throw new TypeError('Invalid draft operation event')
+    } else if (item.type === 'delta') {
+      const fields = [
+        ...DRAFT_OPERATION_EVENT_BASE_FIELDS,
+        'text', 'partialOutputHash', 'partialOutputScalars',
+      ]
+      const textScalars = typeof item.text === 'string'
+        ? unicodeScalarLength(item.text)
+        : -1
+      if (
+        Object.keys(item).length !== fields.length
+        || fields.some(field => !Object.hasOwn(item, field))
+        || textScalars < 1
+        || !Number.isInteger(item.partialOutputScalars)
+        || item.partialOutputScalars < textScalars
+        || item.partialOutputScalars > DRAFT_OPERATION_MAX_PARTIAL_SCALARS
+        || (
+          lastPartialScalars !== null
+          && item.partialOutputScalars !== lastPartialScalars + textScalars
+        )
+      ) throw new TypeError('Invalid draft operation event')
+      result.text = item.text
+      result.partialOutputHash = draftOperationHash(
+        item.partialOutputHash,
+        'event partial output hash',
+      )
+      result.partialOutputScalars = item.partialOutputScalars
+      lastPartialScalars = item.partialOutputScalars
+    } else if (item.type === 'heartbeat') {
+      if (Object.keys(item).length !== DRAFT_OPERATION_EVENT_BASE_FIELDS.length) {
+        throw new TypeError('Invalid draft operation event')
+      }
+    } else if (item.type === 'completed') {
+      const fields = [
+        ...DRAFT_OPERATION_EVENT_BASE_FIELDS,
+        'resultWorkingDraftRevision', 'resultContentHash',
+      ]
+      if (
+        Object.keys(item).length !== fields.length
+        || fields.some(field => !Object.hasOwn(item, field))
+        || !Number.isInteger(item.resultWorkingDraftRevision)
+        || item.resultWorkingDraftRevision < 1
+        || item.resultWorkingDraftRevision > DRAFT_OPERATION_MAX_RESULT_REVISION
+      ) throw new TypeError('Invalid draft operation event')
+      result.resultWorkingDraftRevision = item.resultWorkingDraftRevision
+      result.resultContentHash = draftOperationHash(
+        item.resultContentHash,
+        'event result content hash',
+      )
+    } else if (item.type === 'failed') {
+      const fields = [...DRAFT_OPERATION_EVENT_BASE_FIELDS, 'failureCode']
+      if (
+        Object.keys(item).length !== fields.length
+        || fields.some(field => !Object.hasOwn(item, field))
+        || !DRAFT_OPERATION_FAILURE_CODES.has(item.failureCode)
+      ) {
+        throw new TypeError('Invalid draft operation event')
+      }
+      result.failureCode = item.failureCode
+    } else if (item.type === 'cancelled') {
+      const fields = [
+        ...DRAFT_OPERATION_EVENT_BASE_FIELDS,
+        'resultWorkingDraftRevision', 'resultContentHash',
+      ]
+      const revision = item.resultWorkingDraftRevision
+      const resultHash = item.resultContentHash
+      if (
+        Object.keys(item).length !== fields.length
+        || fields.some(field => !Object.hasOwn(item, field))
+        || (revision === null) !== (resultHash === null)
+        || (revision !== null && (
+          !Number.isInteger(revision)
+          || revision < 1
+          || revision > DRAFT_OPERATION_MAX_RESULT_REVISION
+        ))
+      ) throw new TypeError('Invalid draft operation event')
+      if (resultHash !== null) {
+        draftOperationHash(resultHash, 'event result content hash')
+      }
+      result.resultWorkingDraftRevision = revision
+      result.resultContentHash = resultHash
+    } else {
+      throw new TypeError('Invalid draft operation event')
+    }
+    return Object.freeze(result)
+  })
+  const terminalIndex = events.findIndex(event => (
+    event.type === 'completed' || event.type === 'failed' || event.type === 'cancelled'
+  ))
+  const expectedNextAfter = events.length
+    ? events[events.length - 1].sequence
+    : afterSequence
+  if (
+    source.nextAfter !== expectedNextAfter
+    || source.hasMore !== (source.nextAfter < source.lastEventSequence)
+    || (
+      events.length > 0
+      && events[events.length - 1].sequence === DRAFT_OPERATION_MAX_EVENTS
+      && terminalIndex !== events.length - 1
+    )
+    || (terminalIndex !== -1 && (
+      terminalIndex !== events.length - 1
+      || events[terminalIndex].sequence !== source.lastEventSequence
+    ))
+  ) throw new TypeError('Invalid draft operation events response')
+  return Object.freeze({
+    operationId: expectedOperationId,
+    events: Object.freeze(events),
+    lastEventSequence: source.lastEventSequence,
+    nextAfter: source.nextAfter,
+    hasMore: source.hasMore,
+  })
+}
+
+function draftOperationAfterSequence(value) {
+  if (
+    !Number.isInteger(value)
+    || value < 0
+    || value > DRAFT_OPERATION_MAX_EVENT_CURSOR
+  ) {
+    throw new TypeError('Invalid draft operation event cursor')
+  }
+  return value
+}
+
 function bibleCloneSource(value = {}) {
   const hasDraftId = value?.sourceDraftId !== undefined && value.sourceDraftId !== null
   const hasRevision = value?.sourceRevision !== undefined && value.sourceRevision !== null
@@ -1174,8 +1869,223 @@ function queryString(params = {}) {
   return result ? `?${result}` : ''
 }
 
+const FINALIZATION_HASH = /^[a-f0-9]{64}$/u
+const FINALIZATION_STATUSES = new Set([
+  'preparing', 'awaiting_author', 'committing', 'committed',
+  'invalidated', 'cancelled', 'failed',
+])
+
+function finalizationObject(value, label) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError(`Invalid finalization ${label}`)
+  }
+  return value
+}
+
+function finalizationHash(value, label) {
+  if (typeof value !== 'string' || !FINALIZATION_HASH.test(value)) {
+    throw new TypeError(`Invalid finalization ${label}`)
+  }
+  return value
+}
+
+function finalizationEvidence(value) {
+  if (value === null) return null
+  const source = finalizationObject(value, 'evidence')
+  return pickDefined(source, [
+    'startScalar', 'endScalar', 'excerptHash', 'confidence', 'rationale',
+  ])
+}
+
+function finalizationJson(value, ancestors = new WeakSet()) {
+  if (value === null || ['string', 'boolean'].includes(typeof value)) return value
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (!value || typeof value !== 'object' || ancestors.has(value)) {
+    throw new TypeError('Invalid finalization JSON value')
+  }
+  ancestors.add(value)
+  try {
+    if (Array.isArray(value)) {
+      return value.map(item => finalizationJson(item, ancestors))
+    }
+    if (![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+      throw new TypeError('Invalid finalization JSON value')
+    }
+    const result = {}
+    for (const [key, item] of Object.entries(value)) {
+      if (/api.?key|authorization|password|secret|token|dsn|raw.?provider/iu.test(key)) {
+        throw new TypeError('Invalid finalization JSON value')
+      }
+      Object.defineProperty(result, key, {
+        value: finalizationJson(item, ancestors),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      })
+    }
+    return result
+  } finally {
+    ancestors.delete(value)
+  }
+}
+
+function finalizationChangeSet(value) {
+  const source = finalizationObject(value, 'ChangeSet')
+  const evidenceItem = (item, fields) => ({
+    ...pickDefined(finalizationObject(item, 'ChangeSet item'), fields),
+    evidence: finalizationEvidence(item.evidence),
+  })
+  return {
+    ...pickDefined(source, ['schemaVersion', 'title', 'summary']),
+    existingEntityIds: [...(Array.isArray(source.existingEntityIds) ? source.existingEntityIds : [])],
+    entities: (source.entities || []).map(item => pickDefined(
+      finalizationObject(item, 'entity'), ['id', 'entityType', 'canonicalName'],
+    )),
+    aliases: (source.aliases || []).map(item => pickDefined(
+      finalizationObject(item, 'alias'), ['id', 'entityId', 'alias'],
+    )),
+    canonEvents: (source.canonEvents || []).map(item => ({
+      ...evidenceItem(item, [
+        'id', 'entityId', 'factKind', 'fieldPath', 'effectiveStartChapter',
+        'effectiveEndChapter', 'assertionOperator', 'valueCardinality',
+      ]),
+      value: finalizationJson(item.value),
+    })),
+    storyProgressEvents: (source.storyProgressEvents || []).map(item => (
+      evidenceItem(item, ['id', 'targetType', 'targetId', 'status'])
+    )),
+    planningPatches: (source.planningPatches || []).map(item => ({
+      ...evidenceItem(item, [
+        'id', 'targetType', 'targetId', 'expectedRevision', 'expectedHash',
+        'fieldPath',
+      ]),
+      replacement: finalizationJson(item.replacement),
+    })),
+    planningSuggestions: (source.planningSuggestions || []).map(item => pickDefined(
+      finalizationObject(item, 'suggestion'), ['id', 'targetId', 'message'],
+    )),
+  }
+}
+
+function finalizationReview(value) {
+  const source = finalizationObject(value, 'review')
+  if (!FINALIZATION_STATUSES.has(source.status)) {
+    throw new TypeError('Invalid finalization status')
+  }
+  let qualityReport = null
+  if (source.qualityReport !== null) {
+    const report = finalizationObject(source.qualityReport, 'quality report')
+    qualityReport = {
+      status: report.status,
+      deterministicBlocks: (report.deterministicBlocks || []).map(item => ({
+        ...pickDefined(finalizationObject(item, 'hard block'), ['code', 'message']),
+        evidence: finalizationEvidence(item.evidence ?? null),
+      })),
+      findings: (report.findings || []).map(item => ({
+        ...pickDefined(finalizationObject(item, 'finding'), [
+          'id', 'dimension', 'reason', 'suggestedAction',
+        ]),
+        evidence: finalizationEvidence(item.evidence),
+      })),
+      contentHash: finalizationHash(report.contentHash, 'quality hash'),
+    }
+  }
+  let changeSet = null
+  if (source.changeSet !== null) {
+    const item = finalizationObject(source.changeSet, 'revision')
+    changeSet = {
+      revision: item.revision,
+      contentHash: finalizationHash(item.contentHash, 'revision hash'),
+      source: item.source,
+      payload: finalizationChangeSet(item.payload),
+    }
+  }
+  const confirmation = source.confirmation === null
+    ? null
+    : pickDefined(finalizationObject(source.confirmation, 'confirmation'), [
+      'revision', 'contentHash',
+    ])
+  return {
+    attemptId: source.attemptId,
+    status: source.status,
+    candidateId: source.candidateId,
+    candidateHash: finalizationHash(source.candidateHash, 'Candidate hash'),
+    qualityReport,
+    changeSet,
+    confirmation,
+  }
+}
+
+function finalizationPrepared(value) {
+  const source = finalizationObject(value, 'prepare response')
+  return pickDefined(source, [
+    'attemptId', 'status', 'qualityStatus', 'currentRevision',
+    'currentRevisionHash', 'hardBlocks', 'replayed',
+  ])
+}
+
+function finalizationReviewed(value) {
+  return pickDefined(finalizationObject(value, 'review response'), [
+    'attemptId', 'status', 'currentRevision', 'currentRevisionHash',
+    'confirmedRevision', 'confirmedRevisionHash',
+  ])
+}
+
+function finalizationCommitted(value) {
+  const source = finalizationObject(value, 'commit response')
+  return {
+    ...pickDefined(source, [
+      'recordId', 'finalChapterId', 'canonRevision', 'planningRevisionId',
+      'planningRevision', 'replayed',
+    ]),
+    projectionHash: finalizationHash(source.projectionHash, 'projection hash'),
+    planningHash: finalizationHash(source.planningHash, 'Planning hash'),
+  }
+}
+
 export const api = {
   health: () => get('/health'),
+
+  projectBackups: {
+    create: (projectId, expectedLifecycleRevision, options = {}) => binaryRequest(
+      `/projects/${segment(projectId)}/backup`,
+      {
+        method: 'POST',
+        body: { expectedLifecycleRevision },
+        signal: options?.signal,
+        includePackageSha256: true,
+      },
+    ),
+  },
+
+  projectImports: {
+    preflight: (file, options = {}) => projectImportRequest(
+      '/project-imports/preflight',
+      { method: 'POST', form: projectImportForm(file), signal: options?.signal },
+    ),
+    publish: (file, command, options = {}) => projectImportRequest(
+      '/project-imports',
+      { method: 'POST', form: projectImportForm(file, command), signal: options?.signal },
+    ),
+    get: (commandId, options = {}) => projectImportRequest(
+      `/project-imports/${segment(commandId)}`,
+      { signal: options?.signal },
+    ),
+  },
+
+  novelDownloads: {
+    options: projectId => get(`/projects/${segment(projectId)}/novel-download/options`),
+    download: (projectId, selector = {}, options = {}) => {
+      const query = new URLSearchParams()
+      for (const field of ['scope', 'format', 'volumeId', 'chapterNumber']) {
+        if (selector?.[field] !== undefined) query.set(field, selector[field])
+      }
+      return binaryRequest(
+        `/projects/${segment(projectId)}/novel-download?${query.toString()}`,
+        { signal: options?.signal },
+      )
+    },
+  },
 
   projects: {
     listActive: () => get('/projects'),
@@ -1535,7 +2445,9 @@ export const api = {
   },
 
   planning: {
-    get: projectId => get(`/projects/${segment(projectId)}/planning`),
+    get: async projectId => planningStateResponse(await get(
+      `/projects/${segment(projectId)}/planning`,
+    )),
     history: projectId => get(`/projects/${segment(projectId)}/planning/history`),
     createDraft: (projectId, data) => post(
       `/projects/${segment(projectId)}/planning/drafts`,
@@ -1687,20 +2599,118 @@ export const api = {
       `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/working-draft`,
       {
         expectedRevision: data.expectedRevision,
+        expectedContentHash: data.expectedContentHash,
         content: data.content,
       },
     ),
-    generateWorkingDraft: (projectId, sessionId, data) => post(
-      `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/generate-working-draft`,
-      {
-        expectedWorkingDraftRevision: data.expectedWorkingDraftRevision,
-        authorInstruction: data.authorInstruction,
-      },
-      CHAPTER_DRAFT_GENERATION_TIMEOUT,
-    ),
+    createDraftOperation: async (projectId, sessionId, command) => {
+      const normalizedProjectId = draftOperationUuid(projectId, 'project id')
+      const normalizedSessionId = draftOperationUuid(sessionId, 'session id')
+      const body = draftOperationCommand(command)
+      return draftOperationResponse(await post(
+        `/projects/${segment(normalizedProjectId)}/chapter-sessions/${segment(normalizedSessionId)}/draft-operations`,
+        body,
+        DRAFT_OPERATION_TIMEOUT,
+      ), {
+        projectId: normalizedProjectId,
+        sessionId: normalizedSessionId,
+        expectedBaseRevision: body.expectedWorkingDraftRevision,
+        operationType: body.operationType,
+        selectionStart: body.startOffset,
+      })
+    },
+    readDraftOperation: async (projectId, sessionId, operationId) => {
+      const normalizedProjectId = draftOperationUuid(projectId, 'project id')
+      const normalizedSessionId = draftOperationUuid(sessionId, 'session id')
+      const normalizedOperationId = draftOperationUuid(operationId, 'id')
+      return draftOperationResponse(await get(
+        `/projects/${segment(normalizedProjectId)}/chapter-sessions/${segment(normalizedSessionId)}/draft-operations/${segment(normalizedOperationId)}`,
+      ), {
+        projectId: normalizedProjectId,
+        sessionId: normalizedSessionId,
+        operationId: normalizedOperationId,
+      })
+    },
+    listDraftOperationEvents: async (projectId, sessionId, operationId, afterSequence) => {
+      const normalizedProjectId = draftOperationUuid(projectId, 'project id')
+      const normalizedSessionId = draftOperationUuid(sessionId, 'session id')
+      const normalizedOperationId = draftOperationUuid(operationId, 'id')
+      const after = draftOperationAfterSequence(afterSequence)
+      return draftOperationEventsResponse(await get(
+        `/projects/${segment(normalizedProjectId)}/chapter-sessions/${segment(normalizedSessionId)}/draft-operations/${segment(normalizedOperationId)}/events?after=${after}`,
+      ), normalizedOperationId, after)
+    },
+    cancelDraftOperation: async (projectId, sessionId, operationId) => {
+      const normalizedProjectId = draftOperationUuid(projectId, 'project id')
+      const normalizedSessionId = draftOperationUuid(sessionId, 'session id')
+      const normalizedOperationId = draftOperationUuid(operationId, 'id')
+      return draftOperationResponse(await post(
+        `/projects/${segment(normalizedProjectId)}/chapter-sessions/${segment(normalizedSessionId)}/draft-operations/${segment(normalizedOperationId)}/cancel`,
+      ), {
+        projectId: normalizedProjectId,
+        sessionId: normalizedSessionId,
+        operationId: normalizedOperationId,
+      })
+    },
+    undoLocalDraft: async (projectId, sessionId, command) => {
+      const normalizedProjectId = draftOperationUuid(projectId, 'project id')
+      const normalizedSessionId = draftOperationUuid(sessionId, 'session id')
+      const body = undoLocalDraftCommand(command)
+      return post(
+        `/projects/${segment(normalizedProjectId)}/chapter-sessions/${segment(normalizedSessionId)}/working-draft/undo`,
+        body,
+      )
+    },
     saveCandidate: (projectId, sessionId, data) => post(
       `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/candidates`,
-      { expectedWorkingDraftRevision: data.expectedWorkingDraftRevision },
+      {
+        expectedWorkingDraftRevision: data.expectedWorkingDraftRevision,
+        expectedContentHash: data.expectedContentHash,
+        idempotencyKey: data.idempotencyKey,
+      },
+    ),
+    loadCandidate: (projectId, sessionId, candidateId, data) => post(
+      `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/candidates/${segment(candidateId)}/load`,
+      {
+        expectedWorkingDraftRevision: data.expectedWorkingDraftRevision,
+        expectedContentHash: data.expectedContentHash,
+      },
+    ),
+    getFinalization: async (projectId, sessionId) => finalizationReview(await get(
+      `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/finalization`,
+    )),
+    prepareFinalization: async (
+      projectId, sessionId, candidateId, data,
+    ) => finalizationPrepared(await post(
+      `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/candidates/${segment(candidateId)}/finalization/prepare`,
+      pickDefined(data, [
+        'candidateHash', 'expectedCanonRevision', 'expectedPlanningHash',
+        'expectedOutlineHash', 'idempotencyKey',
+      ]),
+      FINALIZATION_PREPARE_TIMEOUT,
+    )),
+    correctFinalization: async (projectId, sessionId, data) => (
+      finalizationReviewed(await post(
+        `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/finalization/revisions`,
+        {
+          ...pickDefined(data, ['expectedRevision', 'expectedRevisionHash']),
+          changeSet: finalizationChangeSet(data.changeSet),
+        },
+      ))
+    ),
+    confirmFinalization: async (projectId, sessionId, data) => (
+      finalizationReviewed(await post(
+        `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/finalization/confirm`,
+        pickDefined(data, ['expectedRevision', 'expectedRevisionHash']),
+      ))
+    ),
+    commitFinalization: async (projectId, sessionId, data) => (
+      finalizationCommitted(await post(
+        `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/finalization/commit`,
+        pickDefined(data, [
+          'expectedRevision', 'expectedRevisionHash', 'idempotencyKey',
+        ]),
+      ))
     ),
   },
 

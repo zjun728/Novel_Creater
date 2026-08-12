@@ -456,6 +456,202 @@ function workspaceStore() {
   })
 }
 
+async function renderActualProgressPanel(vite) {
+  const Panel = await vite.ssrLoadModule('/src/components/planning/ActualProgressPanel.vue')
+  Panel.default.render = await clientRender('components/planning/ActualProgressPanel.vue')
+}
+
+test('mounted actual progress panel separates read-only Canon facts from future planning', async () => {
+  const vite = await createPlanningVite()
+  try {
+    const Panel = await vite.ssrLoadModule('/src/components/planning/ActualProgressPanel.vue')
+    Panel.default.render = await clientRender('components/planning/ActualProgressPanel.vue')
+    const panelState = reactive({
+      items: [],
+      status: {
+        canonRevision: 0,
+        projectionRevision: 0,
+        contentHash: 'a'.repeat(64),
+        synchronized: true,
+      },
+    })
+    const Harness = defineComponent({
+      setup: () => () => h(Panel.default, panelState),
+    })
+    const root = node('root')
+    const app = renderer.createApp(Harness)
+    const warnings = []
+    app.config.warnHandler = message => { warnings.push(String(message)) }
+    app.provide(ssrContextKey, { modules: new Set() })
+    app.mount(root)
+    await flush()
+
+    assert.match(text(root), /正文已发生/)
+    assert.match(text(root), /尚无已定稿事实/)
+    assert.doesNotMatch(text(root), /标记完成|同步记忆|手工进度/)
+
+    panelState.status = {
+      canonRevision: 4,
+      projectionRevision: 3,
+      contentHash: 'b'.repeat(64),
+      synchronized: false,
+    }
+    await flush()
+    assert.match(text(root), /正文事实正在重建，暂不展示实际进度/)
+
+    panelState.status = {
+      canonRevision: 4,
+      projectionRevision: 4,
+      contentHash: 'b'.repeat(64),
+      synchronized: true,
+    }
+    panelState.items = [{
+      revisionNumber: 4,
+      subjectKey: '__global__',
+      entityId: null,
+      fieldPath: 'plot.gunpowder',
+      value: { status: 'old', evidence: ['第一章', { chapter: 1 }] },
+      contentHash: 'b'.repeat(64),
+    }]
+    await flush()
+    assert.match(text(root), /Canon R4/)
+    assert.match(text(root), /Projection R4/)
+    assert.match(text(root), /plot\.gunpowder/)
+    assert.match(text(root), /"status":"old"/)
+    assert.match(text(root), /"chapter":1/)
+    panelState.items = [{
+      revisionNumber: 4,
+      subjectKey: 'a:b',
+      entityId: 'c',
+      fieldPath: 'plot.gunpowder',
+      value: { status: 'first' },
+      contentHash: 'b'.repeat(64),
+    }, {
+      revisionNumber: 4,
+      subjectKey: 'a',
+      entityId: 'b:c',
+      fieldPath: 'plot.gunpowder',
+      value: { status: 'second' },
+      contentHash: 'b'.repeat(64),
+    }]
+    await flush()
+    panelState.items = [...panelState.items].reverse()
+    await flush()
+    assert.equal(warnings.some(message => /duplicate keys/i.test(message)), false)
+    assert.match(text(root), /"status":"first"/)
+    assert.match(text(root), /"status":"second"/)
+    assert.equal(walk(root).some(item => (
+      ['button', 'input', 'checkbox', 'textarea', 'select'].includes(item.type)
+      || item.props.contenteditable != null
+    )), false)
+    const contents = await readFile(source('components/planning/ActualProgressPanel.vue'), 'utf8')
+    assert.doesNotMatch(contents, /defineEmits|@(click|input|change|submit|drag)/)
+    app.unmount()
+  } finally {
+    await vite.close()
+  }
+})
+
+test('mounted PlanningWorkspace renders future planning and Canon facts in one tree', async () => {
+  const vite = await createPlanningVite()
+  const originalDocument = global.document
+  try {
+    const body = node('body')
+    global.document = {
+      activeElement: null,
+      querySelector: selector => selector === 'body' ? body : null,
+    }
+    const [Workspace, Volume, Plot, Drawer] = await Promise.all([
+      vite.ssrLoadModule('/src/components/planning/PlanningWorkspace.vue'),
+      vite.ssrLoadModule('/src/components/planning/VolumeEditor.vue'),
+      vite.ssrLoadModule('/src/components/planning/PlotEditor.vue'),
+      vite.ssrLoadModule('/src/components/planning/PlanningHistoryDrawer.vue'),
+    ])
+    Workspace.default.render = await clientRender('components/planning/PlanningWorkspace.vue')
+    await renderActualProgressPanel(vite)
+    Volume.default.render = await clientRender('components/planning/VolumeEditor.vue')
+    Plot.default.render = await clientRender('components/planning/PlotEditor.vue')
+    Drawer.default.render = await clientRender('components/planning/PlanningHistoryDrawer.vue')
+    const store = workspaceStore()
+    const controller = createPlanningWorkspaceController({ store, projectId: () => 'A' })
+    const root = node('root')
+    const app = renderer.createApp(Workspace.default, { store, controller, activeTab: 'volumes' })
+    app.provide(ssrContextKey, { modules: new Set() })
+    app.mount(root)
+    await flush()
+
+    assert.match(text(root), /未来规划/)
+    assert.match(text(root), /正文已发生/)
+    assert.match(text(root), /尚无已定稿事实/)
+    assert.equal(walk(root).filter(item => item.props.class === 'actual-progress-panel').length, 1)
+    app.unmount()
+  } finally {
+    global.document = originalDocument
+    await vite.close()
+  }
+})
+
+test('mounted PlanningWorkspace re-entry force-refreshes a same-project cached outline', async () => {
+  const vite = await createPlanningVite()
+  const originalDocument = global.document
+  try {
+    const body = node('body')
+    global.document = {
+      activeElement: null,
+      querySelector: selector => selector === 'body' ? body : null,
+    }
+    const [Workspace, Volume, Plot, Drawer] = await Promise.all([
+      vite.ssrLoadModule('/src/components/planning/PlanningWorkspace.vue'),
+      vite.ssrLoadModule('/src/components/planning/VolumeEditor.vue'),
+      vite.ssrLoadModule('/src/components/planning/PlotEditor.vue'),
+      vite.ssrLoadModule('/src/components/planning/PlanningHistoryDrawer.vue'),
+    ])
+    Workspace.default.render = await clientRender('components/planning/PlanningWorkspace.vue')
+    await renderActualProgressPanel(vite)
+    Volume.default.render = await clientRender('components/planning/VolumeEditor.vue')
+    Plot.default.render = await clientRender('components/planning/PlotEditor.vue')
+    Drawer.default.render = await clientRender('components/planning/PlanningHistoryDrawer.vue')
+
+    const store = workspaceStore()
+    store.projectId = 'A'
+    store.outlineState = {
+      projectId: 'A',
+      activeSession: null,
+      capabilities: { createDraft: false },
+    }
+    const outlineLoads = []
+    store.ensureOutlineLoaded = async (projectId, options) => {
+      outlineLoads.push({ projectId, options })
+      return store.outlineState
+    }
+    const controller = createPlanningWorkspaceController({
+      store,
+      projectId: () => 'A',
+    })
+
+    for (let entry = 0; entry < 2; entry += 1) {
+      const root = node('root')
+      const app = renderer.createApp(Workspace.default, {
+        store,
+        controller,
+        activeTab: 'volumes',
+      })
+      app.provide(ssrContextKey, { modules: new Set() })
+      app.mount(root)
+      await flush()
+      app.unmount()
+    }
+
+    assert.deepEqual(outlineLoads, [
+      { projectId: 'A', options: { force: true } },
+      { projectId: 'A', options: { force: true } },
+    ])
+  } finally {
+    global.document = originalDocument
+    await vite.close()
+  }
+})
+
 async function createPlanningVite() {
   return createServer({
     configFile: false,
@@ -485,6 +681,7 @@ test('mounted workspace locks editor mutations for every busy or recovery state 
       vite.ssrLoadModule('/src/components/planning/PlanningHistoryDrawer.vue'),
     ])
     Workspace.default.render = await clientRender('components/planning/PlanningWorkspace.vue')
+    await renderActualProgressPanel(vite)
     Volume.default.render = await clientRender('components/planning/VolumeEditor.vue')
     Plot.default.render = await clientRender('components/planning/PlotEditor.vue')
     Drawer.default.render = await clientRender('components/planning/PlanningHistoryDrawer.vue')
@@ -555,6 +752,7 @@ test('mounted story-block workspace edits through one controller, supports physi
       vite.ssrLoadModule('/src/components/planning/PlanningHistoryDrawer.vue'),
     ])
     Workspace.default.render = await clientRender('components/planning/PlanningWorkspace.vue')
+    await renderActualProgressPanel(vite)
     StoryBlock.default.render = await clientRender('components/planning/StoryBlockEditor.vue')
     Volume.default.render = await clientRender('components/planning/VolumeEditor.vue')
     Plot.default.render = await clientRender('components/planning/PlotEditor.vue')
@@ -694,6 +892,7 @@ test('real story-block SSR and mounted controls expose only referenced retired p
       vite.ssrLoadModule('/src/components/planning/PlanningHistoryDrawer.vue'),
     ])
     Workspace.default.render = await clientRender('components/planning/PlanningWorkspace.vue')
+    await renderActualProgressPanel(vite)
     StoryBlock.default.render = await clientRender('components/planning/StoryBlockEditor.vue')
     Volume.default.render = await clientRender('components/planning/VolumeEditor.vue')
     Plot.default.render = await clientRender('components/planning/PlotEditor.vue')
@@ -811,6 +1010,7 @@ test('archived future plan uses one canonical DTO normalizer in real SSR and mou
       vite.ssrLoadModule('/src/components/planning/PlanningHistoryDrawer.vue'),
     ])
     Workspace.default.render = await clientRender('components/planning/PlanningWorkspace.vue')
+    await renderActualProgressPanel(vite)
     StoryBlock.default.render = await clientRender('components/planning/StoryBlockEditor.vue')
     Volume.default.render = await clientRender('components/planning/VolumeEditor.vue')
     Plot.default.render = await clientRender('components/planning/PlotEditor.vue')
@@ -935,6 +1135,7 @@ test('pending recovery stays visible, keyboard-actionable and disabled only whil
       vite.ssrLoadModule('/src/components/planning/PlanningHistoryDrawer.vue'),
     ])
     Workspace.default.render = await clientRender('components/planning/PlanningWorkspace.vue')
+    await renderActualProgressPanel(vite)
     Volume.default.render = await clientRender('components/planning/VolumeEditor.vue')
     Plot.default.render = await clientRender('components/planning/PlotEditor.vue')
     Drawer.default.render = await clientRender('components/planning/PlanningHistoryDrawer.vue')
@@ -1045,6 +1246,7 @@ test('mounted route preserves instructions across tabs, cancels project leave, t
     ])
     Page.default.render = await clientRender('views/ProjectPlanningView.vue')
     Workspace.default.render = await clientRender('components/planning/PlanningWorkspace.vue')
+    await renderActualProgressPanel(vite)
     OutlineWorkspace.default.render = await clientRender(
       'components/planning/ChapterOutlineWorkspace.vue',
     )
@@ -1507,6 +1709,7 @@ test('mounted outline selectors are locked to the active story hierarchy and cas
       hasCriticalRecovery: ref(false),
       readOnly: ref(false),
       editable: ref(true),
+      canAdjustOutline: ref(false),
       canCreateDraft: ref(false),
       canSave: ref(true),
       canGenerate: ref(false),
@@ -1545,7 +1748,7 @@ test('mounted outline selectors are locked to the active story hierarchy and cas
       true,
     )
     assert.equal(
-      byButtonText(root, '预览并确认小纲').props.disabled,
+      byButtonText(root, '采用小纲').props.disabled,
       true,
     )
 

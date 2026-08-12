@@ -41,6 +41,66 @@ export function assertSafeBrowserSource(source, options = {}) {
   analyzeBrowserSource(source, options.sourceName)
 }
 
+export function collectBrowserTestDeclarations(source, sourceName) {
+  const program = parseBrowserSourceAst(source, sourceName)
+  const declarations = []
+  walkAst(program, null, null, node => {
+    if (node.type !== 'CallExpression') return
+    const testCall = testCallModifiers(node.callee)
+    if (testCall === null) return
+    const title = getStaticString(node.arguments[0])
+    const callback = testDeclarationCallback(node.arguments)
+    const requiresDeclaration = testCall.modifiers.length === 0 || testCall.modifiers.includes('only')
+    if (requiresDeclaration) {
+      if (title === null) throw new Error('browser test declaration requires a static title')
+      if (!callback) throw new Error('browser test declaration must have a callback')
+    } else if (isRuntimeTestAnnotation(testCall.modifiers, node.arguments, title)) {
+      return
+    } else {
+      if (title === null) throw new Error('browser test declaration requires a static title')
+      if (!callback) throw new Error('browser test declaration must have a callback')
+    }
+    if (testCall.hasDynamicModifier) throw new Error('browser test declaration modifier must be static')
+    declarations.push({
+      title,
+      modifiers: testCall.modifiers,
+      bodySource: callback.functionNode ? source.slice(callback.functionNode.body.start, callback.functionNode.body.end) : '',
+      calls: callback.functionNode ? collectExecutedCallNames(callback.functionNode.body) : new Set(),
+    })
+  })
+  return declarations
+}
+
+export function collectBrowserFunctionGraph(source, sourceName) {
+  const program = parseBrowserSourceAst(source, sourceName)
+  const functions = new Map()
+  walkAst(program, null, null, node => {
+    const named = namedFunctionNode(node)
+    if (!named) return
+    if (functions.has(named.name)) throw new Error('duplicate browser helper function: ' + named.name)
+    functions.set(named.name, {
+      bodySource: source.slice(named.functionNode.body.start, named.functionNode.body.end),
+      calls: collectDirectCallNames(named.functionNode.body),
+    })
+  })
+  return functions
+}
+
+function parseBrowserSourceAst(source, sourceName) {
+  if (typeof source !== 'string') throw new TypeError('browser source must be a string')
+  try {
+    return parse(source, {
+      allowAwaitOutsideFunction: true,
+      createImportExpressions: true,
+      plugins: ['dynamicImport', 'importAttributes', 'jsx', 'topLevelAwait', 'typescript'],
+      sourceType: 'unambiguous',
+    }).program
+  } catch (error) {
+    const location = sourceName ? ' in ' + sourceName : ''
+    throw new Error('invalid browser source' + location + ': ' + error.message)
+  }
+}
+
 export function assertSafeBrowserGraph(entry, readSource) {
   if (typeof entry !== 'string' || entry.trim() === '') {
     throw new TypeError('browser graph entry must be a non-empty string')
@@ -79,20 +139,7 @@ export function assertSafeBrowserGraph(entry, readSource) {
 }
 
 function analyzeBrowserSource(source, sourceName) {
-  if (typeof source !== 'string') throw new TypeError('browser source must be a string')
-
-  let program
-  try {
-    program = parse(source, {
-      allowAwaitOutsideFunction: true,
-      createImportExpressions: true,
-      plugins: ['dynamicImport', 'importAttributes', 'jsx', 'topLevelAwait', 'typescript'],
-      sourceType: 'unambiguous',
-    }).program
-  } catch (error) {
-    const location = sourceName ? ' in ' + sourceName : ''
-    throw new Error('invalid browser source' + location + ': ' + error.message)
-  }
+  const program = parseBrowserSourceAst(source, sourceName)
 
   const imports = []
   walkAst(program, null, null, (node, parent, key) => {
@@ -145,6 +192,104 @@ function analyzeBrowserSource(source, sourceName) {
     }
   })
   return imports
+}
+
+function testCallModifiers(callee) {
+  const modifiers = []
+  let hasDynamicModifier = false
+  let current = unwrapExpression(callee)
+  while (current?.type === 'MemberExpression' || current?.type === 'OptionalMemberExpression') {
+    const modifier = getStaticMemberProperty(current)
+    if (modifier === null) hasDynamicModifier = true
+    else modifiers.unshift(modifier)
+    current = unwrapExpression(current.object)
+  }
+  if (current?.type !== 'Identifier' || current.name !== 'test') return null
+  if (modifiers.length > 0 && !modifiers.every(modifier => ['only', 'skip', 'fixme', 'fail', 'slow'].includes(modifier))) return null
+  return { modifiers, hasDynamicModifier }
+}
+
+function testDeclarationCallback(argumentsList) {
+  const callback = unwrapExpression(argumentsList.at(-1))
+  if (isFunctionNode(callback)) return { kind: 'function', functionNode: callback }
+  if (callback?.type === 'Identifier') return { kind: 'identifier', functionNode: null }
+  return null
+}
+
+function isRuntimeTestAnnotation(modifiers, argumentsList, title) {
+  if (modifiers.length !== 1) return false
+  if (!['skip', 'slow', 'fail', 'fixme'].includes(modifiers[0])) return false
+  if (argumentsList.length <= 1) return true
+  return argumentsList.length === 2
+    && title === null
+    && getStaticString(argumentsList[1]) !== null
+}
+
+function isFunctionNode(node) {
+  return ['ArrowFunctionExpression', 'FunctionExpression'].includes(unwrapExpression(node)?.type)
+}
+
+function namedFunctionNode(node) {
+  if (node.type === 'FunctionDeclaration' && node.id?.type === 'Identifier') {
+    return { name: node.id.name, functionNode: node }
+  }
+  if (node.type === 'VariableDeclarator'
+    && node.id?.type === 'Identifier'
+    && isFunctionNode(node.init)) return { name: node.id.name, functionNode: unwrapExpression(node.init) }
+  return null
+}
+
+function collectDirectCallNames(root) {
+  const calls = new Set()
+  walkAstWithoutNestedFunctions(root, root, node => {
+    if (node.type === 'CallExpression' && node.callee?.type === 'Identifier') calls.add(node.callee.name)
+  })
+  return calls
+}
+
+function collectExecutedCallNames(root) {
+  const calls = new Set()
+  visitExecutedNode(root, false)
+  return calls
+
+  function visitExecutedNode(node, invokedCallback) {
+    const current = unwrapExpression(node)
+    if (!current || typeof current !== 'object' || typeof current.type !== 'string') return
+    if (isFunctionNode(current)) {
+      if (invokedCallback) visitExecutedNode(current.body, false)
+      return
+    }
+    if (isNestedExecutionScope(current)) return
+    if (current.type === 'CallExpression' || current.type === 'OptionalCallExpression') {
+      if (current.callee?.type === 'Identifier') calls.add(current.callee.name)
+      visitExecutedNode(current.callee, isFunctionNode(current.callee))
+      for (const argument of current.arguments) visitExecutedNode(argument, isFunctionNode(argument))
+      return
+    }
+    for (const [key, value] of Object.entries(current)) {
+      if (['comments', 'errors', 'extra', 'loc', 'tokens'].includes(key)) continue
+      if (Array.isArray(value)) {
+        for (const child of value) visitExecutedNode(child, false)
+      } else visitExecutedNode(value, false)
+    }
+  }
+}
+
+function walkAstWithoutNestedFunctions(node, root, visitor) {
+  if (!node || typeof node !== 'object' || typeof node.type !== 'string') return
+  if (node !== root && isNestedExecutionScope(node)) return
+  visitor(node)
+  for (const [key, value] of Object.entries(node)) {
+    if (['comments', 'errors', 'extra', 'loc', 'tokens'].includes(key)) continue
+    if (Array.isArray(value)) {
+      for (const child of value) walkAstWithoutNestedFunctions(child, root, visitor)
+    } else walkAstWithoutNestedFunctions(value, root, visitor)
+  }
+}
+
+function isNestedExecutionScope(node) {
+  return isFunctionNode(node)
+    || ['FunctionDeclaration', 'ObjectMethod', 'ClassDeclaration', 'ClassExpression', 'ClassMethod', 'ClassPrivateMethod'].includes(node?.type)
 }
 
 function assertSafeMember(node, sourceName) {
@@ -244,7 +389,9 @@ function unwrapExpression(node) {
     'TSAsExpression',
     'TSInstantiationExpression',
     'TSNonNullExpression',
+    'TSSatisfiesExpression',
     'TSTypeAssertion',
+    'ParenthesizedExpression',
   ].includes(current.type)) current = current.expression
   return current
 }

@@ -2025,7 +2025,7 @@ async def test_real_planning_write_failure_rolls_back_then_archive_succeeds(
 
 
 @pytest.mark.asyncio
-async def test_archived_project_rejects_every_known_write_and_restore_reopens_writes(
+async def test_archive_blocks_writes_and_restore_reopens_future_writes_but_keeps_confirmed_baseline_locked(
     disposable_mysql,
 ):
     facts = await bootstrap_contract_fixture(disposable_mysql.session)
@@ -2249,10 +2249,12 @@ async def test_archived_project_rejects_every_known_write_and_restore_reopens_wr
         (now + 1, CONTRACT_BATCH),
     )
     restored = await project_service.restore(WRITE_FENCE_PROJECT, 1)
-    created_after_restore = await seed_service.create(
-        CreateSeed(
-            project_id=WRITE_FENCE_PROJECT,
-            payload=_seed_payload("Restored seed"),
+    confirmed_seed_after_restore = await capture(
+        seed_service.create(
+            CreateSeed(
+                project_id=WRITE_FENCE_PROJECT,
+                payload=_seed_payload("Restored seed"),
+            )
         )
     )
     planning_after_restore = await _write_current_planning_draft(
@@ -2262,9 +2264,13 @@ async def test_archived_project_rejects_every_known_write_and_restore_reopens_wr
     )
 
     assert restored.archived_at is None
-    assert created_after_restore.project_id == WRITE_FENCE_PROJECT
+    assert isinstance(confirmed_seed_after_restore, http_errors.SeedAlreadyConfirmed)
     assert planning_after_restore.content_hash == planning.content_hash
     assert await disposable_mysql.session.fetchone(
-        """SELECT status,draft_revision FROM planning_drafts
+        """SELECT project_id,status,draft_revision FROM planning_drafts
             WHERE id='8d000000-0000-0000-0001-000000000003'"""
-    ) == {"status": "active", "draft_revision": 2}
+    ) == {
+        "project_id": WRITE_FENCE_PROJECT,
+        "status": "active",
+        "draft_revision": 2,
+    }

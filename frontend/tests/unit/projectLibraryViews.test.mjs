@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { readFile } from 'node:fs/promises'
 
 import vuePlugin from '@vitejs/plugin-vue'
 import { createServer } from 'vite'
@@ -58,6 +59,13 @@ test.before(async () => {
 
 test.after(async () => {
   await vite?.close()
+})
+
+test('active library exposes only the compact project import entry in its header', async () => {
+  const source = await readFile(new URL('../../src/views/ProjectLibraryView.vue', import.meta.url), 'utf8')
+  assert.match(source, /ProjectImportPanel/)
+  assert.match(source, /project-library-heading__actions[\s\S]*<ProjectImportPanel/)
+  assert.doesNotMatch(source, /导入目标|合并项目|覆盖项目|取消导入/)
 })
 
 function project(overrides = {}) {

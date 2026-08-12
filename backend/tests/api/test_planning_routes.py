@@ -13,6 +13,7 @@ from backend.services.planning import (
     PlanningConflict as ServicePlanningConflict,
     PlanningArchived as ServicePlanningArchived,
     PlanningCapabilities,
+    ActualProgressResult,
     PlanningDraftResult,
     PlanningHeadResult,
     PlanningNotFound,
@@ -287,6 +288,94 @@ def test_state_and_history_are_explicit_camel_case_public_dtos():
             }
         ]
     }
+
+
+def test_state_serializes_only_the_closed_actual_progress_dto():
+    client, service, _ = make_client()
+    service.current_state = replace(
+        service.current_state,
+        actual_progress=(
+            ActualProgressResult(
+                revision_number=1,
+                subject_key="global",
+                entity_id=None,
+                field_path="plot.gunpowder",
+                value={"status": "推进"},
+                content_hash=HASH,
+            ),
+        ),
+    )
+
+    response = client.get("/api/projects/p1/planning")
+
+    assert response.status_code == 200
+    assert response.json()["actualProgress"] == [
+        {
+            "revisionNumber": 1,
+            "subjectKey": "global",
+            "entityId": None,
+            "fieldPath": "plot.gunpowder",
+            "value": {"status": "推进"},
+            "contentHash": HASH,
+        }
+    ]
+
+
+def test_state_does_not_leak_runtime_actual_progress_mapping_extras():
+    class LeakyActualProgress(dict):
+        def __init__(self):
+            super().__init__(
+                revisionNumber=1,
+                subjectKey="global",
+                entityId=None,
+                fieldPath="plot.gunpowder",
+                value={"status": "推进"},
+                contentHash=HASH,
+                internalSecret="must-not-cross-public-boundary",
+                extraKey="must-not-cross-public-boundary",
+            )
+            self.revision_number = 1
+            self.subject_key = "global"
+            self.entity_id = None
+            self.field_path = "plot.gunpowder"
+            self.value = {"status": "推进"}
+            self.content_hash = HASH
+
+    client, service, _ = make_client()
+    service.current_state = replace(
+        service.current_state,
+        actual_progress=(LeakyActualProgress(),),
+    )
+
+    response = client.get("/api/projects/p1/planning")
+
+    assert response.status_code == 200
+    assert response.json()["actualProgress"] == [
+        {
+            "revisionNumber": 1,
+            "subjectKey": "global",
+            "entityId": None,
+            "fieldPath": "plot.gunpowder",
+            "value": {"status": "推进"},
+            "contentHash": HASH,
+        }
+    ]
+
+
+def test_planning_router_has_no_actual_progress_mutation_path():
+    routes = {
+        (method, route.path)
+        for route in planning.router.routes
+        for method in route.methods
+    }
+    forbidden = ("complete", "progress", "mark", "sync-memory", "rebuild")
+
+    assert not [
+        (method, path)
+        for method, path in routes
+        if method not in {"GET", "HEAD", "OPTIONS"}
+        and any(token in path for token in forbidden)
+    ]
 
 
 def test_create_save_and_confirm_use_revisioned_service_commands():

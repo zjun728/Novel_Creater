@@ -82,7 +82,7 @@ def save_body(expected=0, **payload_overrides):
     }
 
 
-def test_exact_manual_bible_routes_save_confirm_clone_and_read_history():
+def test_confirmed_bible_routes_are_read_only_and_exact_retry_replays():
     client, _, _ = make_client()
 
     missing_head = client.get("/api/projects/p1/bible/head")
@@ -102,15 +102,28 @@ def test_exact_manual_bible_routes_save_confirm_clone_and_read_history():
     head = client.get("/api/projects/p1/bible/head")
     history = client.get("/api/projects/p1/bible/history")
     historical = client.get("/api/projects/p1/bible/history/1")
+    replay = client.post(
+        "/api/projects/p1/bible/confirm",
+        json={
+            "idempotencyKey": "route-confirm-1",
+            "expectedDraftVersion": saved.json()["draftVersion"],
+            "expectedHeadRevision": 0,
+        },
+    )
     clone = client.post(
         "/api/projects/p1/bible/draft/clone",
         json={"sourceRevision": 1},
     )
-    refreshed_head = client.get("/api/projects/p1/bible/head")
-    refreshed_historical = client.get("/api/projects/p1/bible/history/1")
-    blocked_clone = client.post(
-        "/api/projects/p1/bible/draft/clone",
-        json={"sourceRevision": 1},
+    saved_again = client.put(
+        "/api/projects/p1/bible/draft", json=save_body()
+    )
+    new_confirm = client.post(
+        "/api/projects/p1/bible/confirm",
+        json={
+            "idempotencyKey": "route-confirm-2",
+            "expectedDraftVersion": 1,
+            "expectedHeadRevision": 1,
+        },
     )
 
     assert [
@@ -122,7 +135,7 @@ def test_exact_manual_bible_routes_save_confirm_clone_and_read_history():
         history.status_code,
         historical.status_code,
         clone.status_code,
-    ] == [200, 200, 200, 201, 200, 200, 200, 200]
+    ] == [200, 200, 200, 201, 200, 200, 200, 409]
     assert missing_head.json()["status"] == "missing"
     assert missing_draft.json()["status"] == "missing"
     assert saved.json()["status"] == "current"
@@ -131,19 +144,16 @@ def test_exact_manual_bible_routes_save_confirm_clone_and_read_history():
     assert saved.json()["basis"]["bindingRevisionId"] is None
     assert saved.json()["basis"]["bindingHash"] is None
     assert confirmed.json()["revision"] == head.json()["revision"] == 1
-    assert confirmed.json()["canClone"] is True
-    assert head.json()["canClone"] is True
-    assert historical.json()["canClone"] is True
+    assert replay.status_code == 201
+    assert replay.json() == confirmed.json()
+    assert confirmed.json()["canClone"] is False
+    assert head.json()["canClone"] is False
+    assert historical.json()["canClone"] is False
     assert history.json()["items"] == [historical.json()]
     assert history.json()["nextBeforeRevision"] is None
-    assert clone.json()["draftVersion"] == 1
-    assert clone.json()["baseHeadRevision"] == 1
-    assert clone.json()["draft"] == historical.json()["bible"]
-    assert clone.json()["canClone"] is False
-    assert refreshed_head.json()["canClone"] is False
-    assert refreshed_historical.json()["canClone"] is False
-    assert blocked_clone.status_code == 409
-    assert blocked_clone.json()["code"] == "BibleConflict"
+    for response in (clone, saved_again, new_confirm):
+        assert response.status_code == 409
+        assert response.json()["code"] == "bible_already_confirmed"
 
 
 def test_clone_by_draft_id_only_accepts_the_active_superseded_draft():
@@ -181,7 +191,7 @@ def test_clone_by_draft_id_only_accepts_the_active_superseded_draft():
     assert clone.json()["canClone"] is False
 
 
-def test_clone_by_draft_id_hides_a_retired_confirmed_draft():
+def test_clone_by_draft_id_returns_confirmed_baseline_conflict():
     client, _, _ = make_client()
     saved = client.put("/api/projects/p1/bible/draft", json=save_body()).json()
     confirmed = client.post(
@@ -198,8 +208,8 @@ def test_clone_by_draft_id_hides_a_retired_confirmed_draft():
     )
 
     assert confirmed.status_code == 201
-    assert clone.status_code == 404
-    assert clone.json()["code"] == "BibleNotFound"
+    assert clone.status_code == 409
+    assert clone.json()["code"] == "bible_already_confirmed"
 
 
 def test_public_dtos_are_explicit_allowlists_without_internal_or_secret_fields():

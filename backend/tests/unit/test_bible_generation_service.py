@@ -27,6 +27,7 @@ from backend.services.bible_generation import (
     BibleGenerationService,
     GenerateBibleDraft,
 )
+from backend.services.bibles import BibleAlreadyConfirmed
 
 
 PROJECT_ID = "project-1"
@@ -526,6 +527,48 @@ async def test_success_is_one_call_outside_transaction_and_replays_atomically():
     assert repository.draft["binding_hash"] == "b" * 64
     assert repository.draft["draft_json"] == canonical_json(_bible())
     assert repository.attempts[first.attempt_id]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_confirmed_bible_replays_a_successful_terminal_generation():
+    service, repository, _, _, gateway, _ = _harness()
+    command = _command()
+    first = await service.generate(command)
+    repository.head["revision"] = 1
+
+    replay = await service.generate(command)
+
+    assert replay == first
+    assert gateway.calls == 1
+    assert len(repository.attempts) == 1
+
+
+@pytest.mark.asyncio
+async def test_confirmed_bible_keeps_idempotency_conflict_before_generation_lock():
+    service, repository, _, _, gateway, _ = _harness()
+    await service.generate(_command())
+    repository.head["revision"] = 1
+
+    with pytest.raises(BibleGenerationIdempotencyConflict):
+        await service.generate(_command(author_instructions="different request"))
+
+    assert gateway.calls == 1
+    assert len(repository.attempts) == 1
+
+
+@pytest.mark.asyncio
+async def test_confirmed_bible_blocks_generation_before_provider_or_attempt_write():
+    service, repository, _, _, gateway, _ = _harness()
+    repository.head["revision"] = 1
+
+    with pytest.raises(BibleAlreadyConfirmed):
+        await service.generate(
+            _command(expected_head_revision=1, idempotency_key="locked-head")
+        )
+
+    assert gateway.calls == 0
+    assert repository.attempts == {}
+    assert repository.draft is None
 
 
 @pytest.mark.asyncio

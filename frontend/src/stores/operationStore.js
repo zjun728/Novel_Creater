@@ -36,12 +36,34 @@ export function createOperationStore(storeId = 'operation') {
       return true
     }
 
+    function update(operationId, patch = {}) {
+      if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+        throw new TypeError('operation update accepts label or detail strings')
+      }
+      const keys = Object.keys(patch)
+      if (
+        keys.length === 0
+        || keys.some(key => !['label', 'detail'].includes(key))
+        || keys.some(key => typeof patch[key] !== 'string')
+      ) {
+        throw new TypeError('operation update accepts label or detail strings')
+      }
+      const index = operations.value.findIndex(operation => operation.id === operationId)
+      if (index < 0) return false
+      operations.value.splice(index, 1, {
+        ...operations.value[index],
+        ...patch,
+      })
+      return true
+    }
+
     return {
       current,
       active,
       blocking,
       start,
       finish,
+      update,
     }
   })
 }

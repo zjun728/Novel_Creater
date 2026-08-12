@@ -7,7 +7,7 @@ import {
   dateZhCN,
   zhCN,
 } from 'naive-ui'
-import { computed, onErrorCaptured, onMounted, onUnmounted, provide } from 'vue'
+import { computed, onErrorCaptured, onMounted, onUnmounted, provide, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
 
@@ -24,13 +24,16 @@ import {
 import { useHealthCheck } from '@/composables/useHealthCheck'
 import { useOperationStore } from '@/stores/operationStore.js'
 import { useProjectStore } from '@/stores/projectStore.js'
+import { createBeforeUnloadManager } from '@/router/operationNavigationGuard.js'
 
 const route = useRoute()
 const projectStore = useProjectStore()
 const routeProject = useShellProjectHydration({ route, store: projectStore })
 provide(SHELL_PROJECT_CONTEXT, routeProject)
 const viewportWidth = useViewportWidth()
-const { blocking } = storeToRefs(useOperationStore())
+const operationStore = useOperationStore()
+const { blocking } = storeToRefs(operationStore)
+const beforeUnload = createBeforeUnloadManager()
 const { backendOnline, startPeriodic, stopPeriodic } = useHealthCheck()
 
 const shellProject = computed(() => {
@@ -50,10 +53,14 @@ const shell = computed(() => createProductShellModel({
 
 onMounted(() => {
   startPeriodic(60000)
+  beforeUnload.setBlocking(blocking.value)
 })
+
+watch(blocking, value => beforeUnload.setBlocking(value))
 
 onUnmounted(() => {
   stopPeriodic()
+  beforeUnload.dispose()
 })
 
 onErrorCaptured((_error, _instance, info) => {

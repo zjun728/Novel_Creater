@@ -164,6 +164,25 @@ function storeFixture() {
   return store
 }
 
+test('drafting Session permits outline adjustment only through server capabilities', () => {
+  const store = storeFixture()
+  store.outlineState.activeSession = { status: 'drafting' }
+  store.outlineState.capabilities = {
+    ...store.outlineState.capabilities,
+    createDraft: true,
+    editDraft: false,
+  }
+
+  const controller = createChapterOutlineController({
+    store,
+    projectId: () => 'project-1',
+  })
+
+  assert.equal(controller.canAdjustOutline.value, true)
+  store.outlineState.activeSession.status = 'final'
+  assert.equal(controller.canAdjustOutline.value, false)
+})
+
 test('outline controller exposes the exact authoring actions and keeps typing local', async () => {
   const store = storeFixture()
   let key = 0

@@ -18,6 +18,9 @@ from backend.gateways.chapter_outline_provider import (
     ChapterOutlineProviderError,
 )
 from backend.http_errors import ProjectArchived
+from backend.services.chapter_outline_generation import (
+    ChapterOutlineGenerationConflict,
+)
 
 
 NOW = 2_100_000_000_000
@@ -665,6 +668,35 @@ async def test_success_reserves_calls_outside_transaction_and_join_loads_exact_d
         "outline-draft",
         "attempt",
     ]
+
+
+@pytest.mark.asyncio
+async def test_generation_allows_a_drafting_session_on_its_authoritative_chapter():
+    service, _repository, chapter, _planning, gateway, _tracker = _service()
+    chapter.active_session = {"chapter_num": 1, "status": "drafting"}
+
+    result = await service.generate(_command())
+
+    assert result.status == "succeeded"
+    assert result.loaded is True
+    assert len(gateway.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "active_session",
+    (
+        {"chapter_num": 1, "status": "final"},
+        {"chapter_num": 2, "status": "drafting"},
+    ),
+)
+async def test_generation_rejects_finalized_or_wrong_chapter_sessions(active_session):
+    service, _repository, chapter, _planning, gateway, _tracker = _service()
+    chapter.active_session = active_session
+
+    with pytest.raises(ChapterOutlineGenerationConflict):
+        await service.generate(_command())
+    assert gateway.calls == []
 
 
 @pytest.mark.asyncio

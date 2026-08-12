@@ -404,7 +404,17 @@ def _public_state(result):
             else None
         ),
         "futurePlan": _public_content(result.future_plan),
-        "actualProgress": list(result.actual_progress),
+        "actualProgress": [
+            {
+                "revisionNumber": item.revision_number,
+                "subjectKey": item.subject_key,
+                "entityId": item.entity_id,
+                "fieldPath": item.field_path,
+                "value": item.value,
+                "contentHash": item.content_hash,
+            }
+            for item in result.actual_progress
+        ],
         "canonProjectionStatus": dict(result.canon_projection_status),
         "capacityPolicy": (
             dict(result.capacity_policy)

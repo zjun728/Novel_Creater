@@ -47,6 +47,13 @@ export function createChapterOutlineController({
     && store.outlineState?.capabilities?.createDraft === true
     && !busy.value
   ))
+  const canAdjustOutline = computed(() => (
+    store.outlineState?.activeSession?.status === 'drafting'
+    && (
+      store.outlineState?.capabilities?.createDraft === true
+      || store.outlineState?.capabilities?.editDraft === true
+    )
+  ))
   const canSave = computed(() => (
     editable.value
     && store.outlineDirty === true
@@ -273,6 +280,7 @@ export function createChapterOutlineController({
     readOnly,
     editable,
     canCreateDraft,
+    canAdjustOutline,
     canSave,
     canGenerate,
     canConfirm,

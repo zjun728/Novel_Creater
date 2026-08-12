@@ -13,11 +13,20 @@ from backend.routers import chapter_sessions
 from backend.security.redaction import install_error_handlers
 
 
+FREEZE_KEY = "11111111-1111-1111-1111-111111111111"
+ACTIVE_OPERATION_ID = "30000000-0000-0000-0000-000000000001"
+
+
 class FakeChapterSessionService:
     def __init__(self):
         self.saved_content = ""
+        self.saved_expected_content_hash = None
+        self.candidate_commands = []
+        self.load_candidate_commands = []
+        self.load_error = None
         self.candidates = ()
         self.create_error = None
+        self.active_draft_operation_id = ACTIVE_OPERATION_ID
         self.session = ChapterSessionView(
             id="session-1",
             project_id="p1",
@@ -51,6 +60,7 @@ class FakeChapterSessionService:
         return ChapterWorkspace(
             project_id="p1", session=self.session,
             working_draft=self.draft, candidates=self.candidates,
+            active_draft_operation_id=self.active_draft_operation_id,
         )
 
     async def get(self, project_id, chapter_number):
@@ -65,6 +75,7 @@ class FakeChapterSessionService:
 
     async def save_working_draft(self, command):
         self.saved_content = command.content
+        self.saved_expected_content_hash = command.expected_content_hash
         self.draft = WorkingDraftView(
             id="draft-1", project_id="p1", chapter_session_id="session-1",
             revision=command.expected_revision + 1,
@@ -75,59 +86,61 @@ class FakeChapterSessionService:
         return self.workspace()
 
     async def save_candidate(self, command):
+        from backend.services.chapter_sessions import CandidateSaveResult
+
+        self.candidate_commands.append(command)
         candidate = DraftCandidateView(
             id="candidate-1", project_id="p1", chapter_session_id="session-1",
             working_draft_revision=command.expected_working_draft_revision,
             content=self.draft.content, content_hash=self.draft.content_hash,
-            provenance={
-                "source": "explicit-save-candidate",
-                "apiKey": "LEAK-SENTINEL",
-                "prompt": "LEAK-SENTINEL",
-                "raw": "LEAK-SENTINEL",
-                "provider": "LEAK-SENTINEL",
-            },
+            outline_revision_id="outline-revision-3",
+            outline_revision=3,
+            outline_hash="c" * 64,
+            planning_revision_id="planning-revision-1",
+            planning_revision=1,
+            planning_hash="a" * 64,
+            canon_revision=0,
+            projection_revision=0,
+            projection_hash="d" * 64,
+            basis_status="current",
+            created_at=2_010_000_000_000,
             status="drafting",
         )
         self.candidates = (candidate,)
-        return self.workspace()
+        return CandidateSaveResult(self.workspace(), candidate.id)
 
+    async def load_candidate(self, command):
+        if self.load_error is not None:
+            raise self.load_error
+        self.load_candidate_commands.append(command)
+        candidate = next(
+            (item for item in self.candidates if item.id == command.candidate_id),
+            None,
+        )
+        if candidate is None:
+            from backend.services.chapter_sessions import ChapterSessionNotFound
 
-class FakeChapterDraftGenerationService:
-    def __init__(self, chapter_service):
-        self.chapter_service = chapter_service
-        self.commands = []
-
-    async def generate_working_draft(self, command):
-        self.commands.append(command)
-        self.chapter_service.draft = WorkingDraftView(
+            raise ChapterSessionNotFound("secret candidate lookup")
+        self.draft = WorkingDraftView(
             id="draft-1", project_id="p1", chapter_session_id="session-1",
             revision=command.expected_working_draft_revision + 1,
-            content="沈清源站在织机前，先听见的是木轴发涩的吱呀声。",
-            content_hash="b" * 64,
-            source_payload={
-                "source": "ai-generation",
-                "authorInstruction": command.author_instruction,
-            },
-            status="drafting",
+            content=candidate.content, content_hash=candidate.content_hash,
+            source_payload={"source": "candidate-load"}, status="drafting",
         )
-        return self.chapter_service.workspace()
+        return self.workspace()
 
 
 def make_client():
     service = FakeChapterSessionService()
-    generation_service = FakeChapterDraftGenerationService(service)
     app = FastAPI()
     app.include_router(chapter_sessions.router, prefix="/api")
     app.dependency_overrides[chapter_sessions.get_chapter_session_service] = lambda: service
-    app.dependency_overrides[
-        chapter_sessions.get_chapter_draft_generation_service
-    ] = lambda: generation_service
     install_error_handlers(app)
-    return TestClient(app, raise_server_exceptions=False), service, generation_service
+    return TestClient(app, raise_server_exceptions=False), service
 
 
 def test_chapter_session_routes_keep_working_draft_and_candidate_separate():
-    client, service, _ = make_client()
+    client, service = make_client()
 
     created = client.post("/api/projects/p1/chapter-sessions/1", json={
         "chapterNumber": 1,
@@ -139,10 +152,13 @@ def test_chapter_session_routes_keep_working_draft_and_candidate_separate():
     })
     saved = client.put("/api/projects/p1/chapter-sessions/session-1/working-draft", json={
         "expectedRevision": 1,
+        "expectedContentHash": "e3b0c442" + "0" * 56,
         "content": "沈清源站在织机前，先听见的是木轴发涩的吱呀声。",
     })
     candidated = client.post("/api/projects/p1/chapter-sessions/session-1/candidates", json={
         "expectedWorkingDraftRevision": 2,
+        "expectedContentHash": "a" * 64,
+        "idempotencyKey": FREEZE_KEY,
     })
 
     assert [created.status_code, saved.status_code, candidated.status_code] == [201, 200, 201]
@@ -163,15 +179,20 @@ def test_chapter_session_routes_keep_working_draft_and_candidate_separate():
         "status": "drafting",
     }
     assert created.json()["workingDraft"]["content"] == ""
+    assert created.json()["activeDraftOperationId"] == ACTIVE_OPERATION_ID
     assert created.json()["candidates"] == []
     assert saved.json()["workingDraft"]["revision"] == 2
     assert saved.json()["candidates"] == []
     assert candidated.json()["candidates"][0]["workingDraftRevision"] == 2
+    assert candidated.json()["savedCandidateId"] == "candidate-1"
     assert service.saved_content.startswith("沈清源")
+    assert service.saved_expected_content_hash == "e3b0c442" + "0" * 56
+    assert service.candidate_commands[0].expected_content_hash == "a" * 64
+    assert service.candidate_commands[0].idempotency_key == FREEZE_KEY
 
 
 def test_chapter_session_get_reads_only_the_requested_chapter():
-    client, _, _ = make_client()
+    client, _ = make_client()
 
     chapter_one = client.get("/api/projects/p1/chapter-sessions/1")
     chapter_two = client.get("/api/projects/p1/chapter-sessions/2")
@@ -182,8 +203,18 @@ def test_chapter_session_get_reads_only_the_requested_chapter():
     assert chapter_two.json() is None
 
 
+def test_chapter_session_workspace_rejects_malformed_active_operation_authority():
+    client, service = make_client()
+    service.active_draft_operation_id = "not-a-canonical-operation-id"
+
+    response = client.get("/api/projects/p1/chapter-sessions/1")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "ChapterSessionConflict"
+
+
 def test_create_chapter_session_rejects_url_body_chapter_mismatch():
-    client, _, _ = make_client()
+    client, _ = make_client()
 
     response = client.post("/api/projects/p1/chapter-sessions/2", json={
         "chapterNumber": 1,
@@ -199,7 +230,7 @@ def test_create_chapter_session_rejects_url_body_chapter_mismatch():
 
 
 def test_create_chapter_session_strictly_rejects_noncanonical_assertions():
-    client, _, _ = make_client()
+    client, _ = make_client()
     invalid_bodies = (
         {
             "chapterNumber": True,
@@ -238,7 +269,7 @@ def test_create_chapter_session_strictly_rejects_noncanonical_assertions():
 
 
 def test_create_chapter_session_returns_fixed_conflict_for_non_authoritative_url():
-    client, service, _ = make_client()
+    client, service = make_client()
     service.create_error = chapter_sessions.ChapterSessionConflict(
         "requested chapter 2 differs from secret raw database state",
     )
@@ -265,10 +296,11 @@ def test_create_chapter_session_returns_fixed_conflict_for_non_authoritative_url
 
 
 def test_chapter_session_routes_reject_unknown_fields():
-    client, _, _ = make_client()
+    client, _ = make_client()
 
     response = client.put("/api/projects/p1/chapter-sessions/session-1/working-draft", json={
         "expectedRevision": 1,
+        "expectedContentHash": "e3b0c442" + "0" * 56,
         "content": "正文",
         "apiKey": "must-not-send",
     })
@@ -277,58 +309,187 @@ def test_chapter_session_routes_reject_unknown_fields():
     assert response.json()["code"] == "ChapterSessionRequestInvalid"
 
 
-def test_generate_working_draft_route_updates_draft_without_candidate():
-    client, _, generation_service = make_client()
+def test_save_working_draft_route_requires_canonical_content_hash():
+    client, _ = make_client()
 
-    response = client.post(
-        "/api/projects/p1/chapter-sessions/session-1/generate-working-draft",
-        json={
-            "expectedWorkingDraftRevision": 1,
-            "authorInstruction": "多一点市井对话",
+    for body in (
+        {"expectedRevision": 1, "content": "正文"},
+        {
+            "expectedRevision": 1,
+            "expectedContentHash": "A" * 64,
+            "content": "正文",
         },
-    )
+    ):
+        response = client.put(
+            "/api/projects/p1/chapter-sessions/session-1/working-draft",
+            json=body,
+        )
 
-    assert response.status_code == 201
-    body = response.json()
-    assert body["workingDraft"]["revision"] == 2
-    assert body["workingDraft"]["content"].startswith("沈清源")
-    assert "sourcePayload" not in body["workingDraft"]
-    assert body["candidates"] == []
-    assert len(generation_service.commands) == 1
-    command = generation_service.commands[0]
-    assert command.project_id == "p1"
-    assert command.chapter_session_id == "session-1"
-    assert command.expected_working_draft_revision == 1
+        assert response.status_code == 422
+        assert response.json()["code"] == "ChapterSessionRequestInvalid"
+
+
+def test_save_candidate_route_requires_canonical_lowercase_uuid_idempotency_key():
+    client, _ = make_client()
+
+    for idempotency_key in (
+        "secret-shaped-token-which-was-previously-allowed",
+        "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA",
+    ):
+        response = client.post(
+            "/api/projects/p1/chapter-sessions/session-1/candidates",
+            json={
+                "expectedWorkingDraftRevision": 1,
+                "expectedContentHash": "e3b0c442" + "0" * 56,
+                "idempotencyKey": idempotency_key,
+            },
+        )
+
+        assert response.status_code == 422
+        assert response.json()["code"] == "ChapterSessionRequestInvalid"
 
 
 def test_chapter_session_public_workspace_never_exports_internal_metadata():
-    client, _, _ = make_client()
+    client, _ = make_client()
 
     response = client.post(
         "/api/projects/p1/chapter-sessions/session-1/candidates",
-        json={"expectedWorkingDraftRevision": 1},
+        json={
+            "expectedWorkingDraftRevision": 1,
+            "expectedContentHash": "e3b0c442" + "0" * 56,
+            "idempotencyKey": FREEZE_KEY,
+        },
     )
 
     assert response.status_code == 201
     body = response.json()
     assert "sourcePayload" not in body["workingDraft"]
     assert "provenance" not in body["candidates"][0]
+    assert body["savedCandidateId"] == "candidate-1"
     serialized = response.text
-    for forbidden in ("LEAK-SENTINEL", "apiKey", "prompt", "raw", "provider"):
+    for forbidden in (
+        "LEAK-SENTINEL", "apiKey", "prompt", "raw", "provider",
+        "idempotencyKey", "freeze_requests",
+    ):
         assert forbidden not in serialized
 
 
-def test_generate_working_draft_route_rejects_secret_debug_fields():
-    client, _, _ = make_client()
+def test_chapter_session_public_workspace_exports_only_candidate_basis_fields():
+    client, _ = make_client()
 
     response = client.post(
-        "/api/projects/p1/chapter-sessions/session-1/generate-working-draft",
+        "/api/projects/p1/chapter-sessions/session-1/candidates",
         json={
             "expectedWorkingDraftRevision": 1,
-            "authorInstruction": "正文更活一点",
-            "apiKey": "must-not-send",
+            "expectedContentHash": "e3b0c442" + "0" * 56,
+            "idempotencyKey": FREEZE_KEY,
         },
     )
 
-    assert response.status_code == 422
-    assert response.json()["code"] == "ChapterSessionRequestInvalid"
+    assert response.status_code == 201
+    candidate = response.json()["candidates"][0]
+    assert candidate["outlineRevisionId"] == "outline-revision-3"
+    assert candidate["outlineRevision"] == 3
+    assert candidate["outlineHash"] == "c" * 64
+    assert candidate["planningRevisionId"] == "planning-revision-1"
+    assert candidate["planningRevision"] == 1
+    assert candidate["planningHash"] == "a" * 64
+    assert candidate["canonRevision"] == 0
+    assert candidate["projectionRevision"] == 0
+    assert candidate["projectionHash"] == "d" * 64
+    assert candidate["basisStatus"] == "current"
+    assert candidate["createdAt"] == 2_010_000_000_000
+    assert "provenance" not in candidate
+    assert "basisHash" not in candidate
+    assert "provider" not in candidate
+    assert "prompt" not in candidate
+
+
+def test_load_candidate_route_uses_exact_closed_command_and_returns_workspace():
+    client, service = make_client()
+    client.post(
+        "/api/projects/p1/chapter-sessions/session-1/candidates",
+        json={
+            "expectedWorkingDraftRevision": 1,
+            "expectedContentHash": "e3b0c442" + "0" * 56,
+            "idempotencyKey": FREEZE_KEY,
+        },
+    )
+
+    response = client.post(
+        "/api/projects/p1/chapter-sessions/session-1/candidates/candidate-1/load",
+        json={
+            "expectedWorkingDraftRevision": 1,
+            "expectedContentHash": "e3b0c442" + "0" * 56,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["workingDraft"] == {
+        "id": "draft-1",
+        "projectId": "p1",
+        "chapterSessionId": "session-1",
+        "revision": 2,
+        "content": "",
+        "contentHash": "e3b0c442" + "0" * 56,
+    }
+    assert response.json()["candidates"][0]["createdAt"] == 2_010_000_000_000
+    command = service.load_candidate_commands[0]
+    assert command.project_id == "p1"
+    assert command.chapter_session_id == "session-1"
+    assert command.candidate_id == "candidate-1"
+    assert command.expected_working_draft_revision == 1
+    assert command.expected_content_hash == "e3b0c442" + "0" * 56
+
+
+def test_load_candidate_route_rejects_unknown_or_noncanonical_body():
+    client, _ = make_client()
+    route = (
+        "/api/projects/p1/chapter-sessions/session-1/"
+        "candidates/candidate-1/load"
+    )
+    for body in (
+        {
+            "expectedWorkingDraftRevision": 1,
+            "expectedContentHash": "a" * 64,
+            "apiKey": "must-not-send",
+        },
+        {
+            "expectedWorkingDraftRevision": True,
+            "expectedContentHash": "a" * 64,
+        },
+        {
+            "expectedWorkingDraftRevision": 1,
+            "expectedContentHash": "A" * 64,
+        },
+    ):
+        response = client.post(route, json=body)
+        assert response.status_code == 422
+        assert response.json()["code"] == "ChapterSessionRequestInvalid"
+        assert "must-not-send" not in response.text
+
+
+def test_load_candidate_route_uses_fixed_missing_and_conflict_errors():
+    from backend.services.chapter_sessions import (
+        ChapterSessionConflict,
+        ChapterSessionNotFound,
+    )
+
+    client, service = make_client()
+    route = (
+        "/api/projects/p1/chapter-sessions/session-1/"
+        "candidates/cross-owner/load"
+    )
+    body = {
+        "expectedWorkingDraftRevision": 1,
+        "expectedContentHash": "a" * 64,
+    }
+    for error, expected_status, code in (
+        (ChapterSessionNotFound("secret missing candidate"), 404, "ChapterSessionNotFound"),
+        (ChapterSessionConflict("secret corrupt prose"), 409, "ChapterSessionConflict"),
+    ):
+        service.load_error = error
+        response = client.post(route, json=body)
+        assert response.status_code == expected_status
+        assert response.json()["code"] == code
+        assert "secret" not in response.text

@@ -24,6 +24,14 @@ const suiteNames = [
   'browser-phase2c',
   'browser-phase3b',
   'browser-phase3c',
+  'browser-phase4b2',
+  'browser-phase4b3',
+  'browser-phase4c',
+  'browser-phase5',
+  'browser-phase6a',
+  'browser-phase6b',
+  'browser-phase6c',
+  'browser-phase3',
   'browser-phase2',
 ]
 const integrationEnvironmentNames = [
@@ -41,6 +49,14 @@ const mysqlSuites = new Set([
   'browser-phase2c',
   'browser-phase3b',
   'browser-phase3c',
+  'browser-phase4b2',
+  'browser-phase4b3',
+  'browser-phase4c',
+  'browser-phase5',
+  'browser-phase6a',
+  'browser-phase6b',
+  'browser-phase6c',
+  'browser-phase3',
   'browser-phase2',
 ])
 export const pytestTempStages = Object.freeze({
@@ -96,6 +112,30 @@ const phase3bBrowserFiles = [
 const phase3cBrowserFiles = [
   'frontend/e2e/phase3c-story-blocks-outlines.spec.ts',
 ]
+const phase4b2BrowserFiles = [
+  'frontend/e2e/phase4b2-draft-streaming.spec.ts',
+]
+const phase4b3BrowserFiles = [
+  'frontend/e2e/phase4b3-selection-tools.spec.ts',
+]
+const phase4cBrowserFiles = [
+  'frontend/e2e/phase4c-candidate-workbench.spec.ts',
+]
+const phase5BrowserFiles = [
+  'frontend/e2e/phase5-atomic-finalization.spec.ts',
+]
+const phase6aBrowserFiles = [
+  'frontend/e2e/phase6a/finalized-novel-download.spec.mjs',
+]
+const phase6bBrowserFiles = [
+  'frontend/e2e/phase6b/project-backup.spec.mjs',
+]
+const phase6cBrowserFiles = [
+  'frontend/e2e/phase6c/project-import.spec.mjs',
+]
+const phase3BrowserFiles = [
+  'frontend/e2e/phase3-story-planning.spec.ts',
+]
 const phase2BrowserFiles = [
   'frontend/e2e/phase2-creative-foundation.spec.ts',
 ]
@@ -124,6 +164,14 @@ function createSuites(rootDirectory, environment) {
   const phase2cBrowserTests = absolute(phase2cBrowserFiles)
   const phase3bBrowserTests = absolute(phase3bBrowserFiles)
   const phase3cBrowserTests = absolute(phase3cBrowserFiles)
+  const phase4b2BrowserTests = absolute(phase4b2BrowserFiles)
+  const phase4b3BrowserTests = absolute(phase4b3BrowserFiles)
+  const phase4cBrowserTests = absolute(phase4cBrowserFiles)
+  const phase5BrowserTests = absolute(phase5BrowserFiles)
+  const phase6aBrowserTests = absolute(phase6aBrowserFiles)
+  const phase6bBrowserTests = absolute(phase6bBrowserFiles)
+  const phase6cBrowserTests = absolute(phase6cBrowserFiles)
+  const phase3BrowserTests = absolute(phase3BrowserFiles)
   const phase2BrowserTests = absolute(phase2BrowserFiles)
   const retainedM1 = [
     [
@@ -172,6 +220,14 @@ function createSuites(rootDirectory, environment) {
   const browserPhase2C = [[node, ['frontend/e2e/run-phase2c.mjs']]]
   const browserPhase3B = [[node, ['frontend/e2e/run-phase3b.mjs']]]
   const browserPhase3C = [[node, ['frontend/e2e/run-phase3c.mjs']]]
+  const browserPhase4B2 = [[node, ['frontend/e2e/run-phase4b2.mjs']]]
+  const browserPhase4B3 = [[node, ['frontend/e2e/run-phase4b3.mjs']]]
+  const browserPhase4C = [[node, ['frontend/e2e/run-phase4c.mjs']]]
+  const browserPhase5 = [[node, ['frontend/e2e/run-phase5.mjs']]]
+  const browserPhase6A = [[node, ['frontend/e2e/run-phase6a.mjs']]]
+  const browserPhase6B = [[node, ['frontend/e2e/run-phase6b.mjs']]]
+  const browserPhase6C = [[node, ['frontend/e2e/run-phase6c.mjs']]]
+  const browserPhase3 = [[node, ['frontend/e2e/run-phase3.mjs']]]
   const browserPhase2 = [[node, ['frontend/e2e/run-phase2.mjs']]]
 
   return {
@@ -187,6 +243,14 @@ function createSuites(rootDirectory, environment) {
       'browser-phase2c': browserPhase2C,
       'browser-phase3b': browserPhase3B,
       'browser-phase3c': browserPhase3C,
+      'browser-phase4b2': browserPhase4B2,
+      'browser-phase4b3': browserPhase4B3,
+      'browser-phase4c': browserPhase4C,
+      'browser-phase5': browserPhase5,
+      'browser-phase6a': browserPhase6A,
+      'browser-phase6b': browserPhase6B,
+      'browser-phase6c': browserPhase6C,
+      'browser-phase3': browserPhase3,
       'browser-phase2': browserPhase2,
     },
     formalTests: {
@@ -216,6 +280,30 @@ function createSuites(rootDirectory, environment) {
       ],
       'browser-phase3c': [
         ['Phase 3C Playwright spec', phase3cBrowserTests],
+      ],
+      'browser-phase4b2': [
+        ['Phase 4B2 Playwright spec', phase4b2BrowserTests],
+      ],
+      'browser-phase4b3': [
+        ['Phase 4B3 Playwright spec', phase4b3BrowserTests],
+      ],
+      'browser-phase4c': [
+        ['Phase 4C Playwright spec', phase4cBrowserTests],
+      ],
+      'browser-phase5': [
+        ['Phase 5 Playwright spec', phase5BrowserTests],
+      ],
+      'browser-phase6a': [
+        ['Phase 6A Playwright spec', phase6aBrowserTests],
+      ],
+      'browser-phase6b': [
+        ['Phase 6B Playwright spec', phase6bBrowserTests],
+      ],
+      'browser-phase6c': [
+        ['Phase 6C Playwright spec', phase6cBrowserTests],
+      ],
+      'browser-phase3': [
+        ['Phase 3 Playwright spec', phase3BrowserTests],
       ],
       'browser-phase2': [
         ['Phase 2 Playwright spec', phase2BrowserTests],
@@ -448,6 +536,15 @@ function writePytestDiagnostic(stderr, code, stage, detail = '') {
   stderr.write(`[${code}] stage=${pytestStageLabel(stage)}${detail}\n`)
 }
 
+function childEnvironmentForSuite(environment, suite) {
+  if (suite !== 'browser-phase3') return environment
+  const childEnvironment = { ...environment }
+  for (const key of Object.keys(childEnvironment)) {
+    if (key.toUpperCase() === 'PHASE3_FOCUS_SCENARIO') delete childEnvironment[key]
+  }
+  return childEnvironment
+}
+
 export function runSuites(requested, {
   rootDirectory = root,
   spawnSyncImpl = spawnSync,
@@ -510,6 +607,7 @@ export function runSuites(requested, {
               cwd: rootDirectory,
               stdio: 'inherit',
               shell: false,
+              env: childEnvironmentForSuite(environment, suite),
             })
           } catch (error) {
             result = { status: null, error }

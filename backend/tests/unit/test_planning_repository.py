@@ -24,6 +24,7 @@ PUBLIC_METHODS = {
     "finish_confirmation",
     "list_revisions",
     "read_projection_head",
+    "read_actual_plot_progress",
     "lock_projection_head",
     "lock_generation_attempt_by_key",
     "read_generation_attempt_by_key",
@@ -223,6 +224,25 @@ async def test_projection_read_and_lock_are_read_only_head_queries():
     assert "FROM projection_heads" in second
     assert second.endswith("FOR UPDATE")
     assert all(call[0] == "fetchone" for call in session.calls)
+
+
+@pytest.mark.asyncio
+async def test_actual_plot_progress_read_is_exact_revision_and_stably_ordered():
+    session = CapturingSession()
+
+    await PlanningRepository().read_actual_plot_progress(session, "p1", 2)
+
+    kind, sql, args = session.calls[-1]
+    compact = " ".join(sql.split())
+    assert kind == "fetchall"
+    assert args == ("p1", 2)
+    assert (
+        "SELECT revision_number,subject_key,entity_id,field_path,payload_json,content_hash"
+        in compact
+    )
+    assert "FROM plot_thread_projections" in compact
+    assert "project_id=%s AND revision_number=%s" in compact
+    assert compact.endswith("ORDER BY subject_key,field_path,id")
 
 
 @pytest.mark.asyncio

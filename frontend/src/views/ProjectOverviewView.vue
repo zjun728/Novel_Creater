@@ -4,6 +4,8 @@ import { NButton, NResult, NSkeleton } from 'naive-ui'
 
 import ArchivedProjectStatusView from './ArchivedProjectStatusView.vue'
 import NotFoundView from './NotFoundView.vue'
+import NovelDownloadPanel from '../components/projects/NovelDownloadPanel.vue'
+import ProjectBackupPanel from '../components/projects/ProjectBackupPanel.vue'
 import { useRouteProject } from '../composables/useRouteProject.js'
 import { useProjectStore } from '../stores/projectStore.js'
 
@@ -138,6 +140,11 @@ async function retryRouteProject() {
   await routeProject.reload({ force: true })
 }
 
+async function flushCurrentDraft() {
+  // Writer route navigation already awaits its controller flush before Overview is entered.
+  return true
+}
+
 onMounted(() => {
   mounted = true
   void refreshPreparation()
@@ -259,6 +266,20 @@ watch(
         >
           规划模型不可用；手工契约与圣经仍可继续，只有 AI 生成被停用。
         </p>
+
+        <novel-download-panel
+          :key="String(routeProject.project.value.id)"
+          :project-id="routeProject.project.value.id"
+          :title="routeProject.project.value.title"
+        />
+        <project-backup-panel
+          :key="`backup:${routeProject.project.value.id}`"
+          :project-id="routeProject.project.value.id"
+          :title="routeProject.project.value.title"
+          :lifecycle-revision="routeProject.project.value.lifecycleRevision"
+          :archived="false"
+          :flush-current-draft="flushCurrentDraft"
+        />
       </template>
     </section>
   </main>

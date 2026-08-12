@@ -4,7 +4,7 @@ const REASON_GROUPS = {
   selection_missing: '请选择种子后继续。', seed_missing: '请选择种子后继续。',
   contract_missing: '请完成或重新签署创作契约。', contract_not_ready: '请完成或重新签署创作契约。', contract_revision_replaced: '请完成或重新签署创作契约。',
   contract_basis_invalid: '请完成或重新签署创作契约。', contract_unavailable: '请完成或重新签署创作契约。',
-  selection_revision_changed: '内容已过期，请调整未来设计。', seed_identity_changed: '内容已过期，请调整未来设计。', seed_revision_changed: '内容已过期，请调整未来设计。', seed_generation_changed: '内容已过期，请调整未来设计。', contract_revision_changed: '内容已过期，请调整未来设计。', creation_contract_changed: '内容已过期，请调整未来设计。', style_contract_changed: '内容已过期，请调整未来设计。', bible_policy_changed: '内容已过期，请调整未来设计。', bible_head_changed: '内容已过期，请调整未来设计。', bible_revision_replaced: '内容已过期，请调整未来设计。',
+  selection_revision_changed: '内容已固定为项目永久基线，请查看历史记录。', seed_identity_changed: '内容已固定为项目永久基线，请查看历史记录。', seed_revision_changed: '内容已固定为项目永久基线，请查看历史记录。', seed_generation_changed: '内容已固定为项目永久基线，请查看历史记录。', contract_revision_changed: '内容已固定为项目永久基线，请查看历史记录。', creation_contract_changed: '内容已固定为项目永久基线，请查看历史记录。', style_contract_changed: '内容已固定为项目永久基线，请查看历史记录。', bible_policy_changed: '内容已固定为项目永久基线，请查看历史记录。', bible_head_changed: '内容已固定为项目永久基线，请查看历史记录。', bible_revision_replaced: '内容已固定为项目永久基线，请查看历史记录。',
   project_archived: '项目已归档，只能查阅。', bible_read_only: '项目已归档，只能查阅。',
 }
 
@@ -29,10 +29,11 @@ export function createBibleWorkspaceController({
   const attempts = new Map()
   let generation = 0
   let activeProject = ''
-  const busy = computed(() => Boolean(store.loading || store.saving || store.confirming || store.generating || store.cloning || store.historyLoading))
+  const busy = computed(() => Boolean(store.loading || store.saving || store.confirming || store.generating || store.historyLoading))
   const hasDraftBody = computed(() => store.draft?.draft != null)
   const hasHeadBody = computed(() => store.head?.bible != null)
   const mode = computed(() => {
+    if (store.baselineLocked === true) return 'head'
     if (isArchived() || store.readOnly || store.head?.lifecycle === 'archived') return 'archived'
     if (store.draft?.status === 'superseded') return 'superseded'
     if (hasDraftBody.value) return 'draft'
@@ -40,6 +41,7 @@ export function createBibleWorkspaceController({
     return 'first'
   })
   const activeArtifact = computed(() => {
+    if (store.baselineLocked === true) return store.head
     // Archived projects preserve an unsaved/superseded draft for read-only recovery.
     // Every displayed concern below (body, status, reasons) uses this same artifact.
     if (mode.value === 'archived') return store.draft?.draft != null ? store.draft : store.head
@@ -61,12 +63,6 @@ export function createBibleWorkspaceController({
   })
   const confirmPreview = computed(() => clone(store.draft?.draft || null))
   const reasonLabels = computed(() => activeReasons.value.map(bibleReasonLabel))
-  const cloneSource = computed(() => {
-    if (mode.value === 'superseded' && store.draft?.canClone === true && store.draft?.draftId) return { sourceDraftId: store.draft.draftId }
-    if (mode.value === 'head' && store.head?.canClone === true) return { sourceRevision: store.head.revision }
-    return null
-  })
-
   function ticket() { return { project: String(projectId() || ''), generation } }
   function current(value) { return value.project === String(projectId() || '') && value.project === activeProject && value.generation === generation }
   function publicFailure(failure) {
@@ -194,20 +190,6 @@ export function createBibleWorkspaceController({
       throw failure
     }
   }
-  async function cloneRevision(source = cloneSource.value) {
-    if (busy.value || isArchived() || !source) return undefined
-    const value = ticket()
-    const command = source.sourceDraftId ? { sourceDraftId: source.sourceDraftId }
-      : source.sourceRevision ? { sourceRevision: source.sourceRevision }
-        : source.draftId ? { sourceDraftId: source.draftId } : { sourceRevision: source.revision }
-    try {
-      const result = await store.clone(value.project, command)
-      if (!current(value)) return undefined
-      working.value = clone(result?.draft || store.draft?.draft || null)
-      clearFailure(value)
-      return result
-    } catch (failure) { if (!current(value)) return undefined; setError(failure, value, 'reconcile'); throw failure }
-  }
   async function openHistory() {
     const value = ticket(); historyOpen.value = true
     try {
@@ -254,5 +236,5 @@ export function createBibleWorkspaceController({
   }
   function requestLeave() { if (busy.value) return false; return store.dirty !== true || confirmLeave() }
   function beforeUnload(event) { if (store.dirty !== true && !busy.value) return undefined; event.preventDefault(); event.returnValue = ''; return '' }
-  return { working, confirmOpen, historyOpen, errorSummary, recoveryCommand, busy, mode, activeStatus, activeReasons, editable, canSave, canConfirm, canGenerate, generationDisabledReason, confirmPreview, reasonLabels, cloneSource, hydrate, edit, save, openConfirm, closeConfirm, confirm, generate, clone: cloneRevision, openHistory, showHistoryDetail, loadMoreHistory, retryFailure, requestLeave, beforeUnload, confirmLeave: requestLeave }
+  return { working, confirmOpen, historyOpen, errorSummary, recoveryCommand, busy, mode, activeStatus, activeReasons, editable, canSave, canConfirm, canGenerate, generationDisabledReason, confirmPreview, reasonLabels, hydrate, edit, save, openConfirm, closeConfirm, confirm, generate, openHistory, showHistoryDetail, loadMoreHistory, retryFailure, requestLeave, beforeUnload, confirmLeave: requestLeave }
 }

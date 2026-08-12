@@ -43,11 +43,14 @@ EXPECTED_TABLES = {
     "chapter_outline_drafts", "chapter_outline_generation_attempts",
     "chapter_outline_revisions", "project_chapter_outline_heads",
     "chapter_outline_confirmation_requests", "chapter_sessions", "working_drafts",
-    "draft_candidates", "finalization_change_sets", "finalization_records",
+    "working_draft_revisions", "draft_operation_attempts", "draft_operation_events",
+    "draft_candidates", "candidate_freeze_requests", "candidate_quality_reports",
+    "finalization_change_sets", "finalization_change_set_revisions", "finalization_records",
     "final_chapters", "canon_entities", "entity_aliases", "canon_revisions",
     "canon_events", "current_state_projections", "memory_views",
     "arc_projections", "plot_thread_projections", "projection_heads",
-    "reference_uses",
+    "reference_uses", "project_package_import_commands",
+    "project_import_provenance",
 }
 
 TASK_KEYS = (
@@ -183,34 +186,41 @@ async def _insert_active_provider(session, provider_id, name):
     )
 
 
-async def _insert_revision_one_contracts(session):
-    seed_id = "00000000-0000-0000-0000-000000000040"
-    seed_revision_id = "00000000-0000-0000-0000-000000000041"
-    creation_id = "00000000-0000-0000-0000-000000000042"
-    style_id = "00000000-0000-0000-0000-000000000043"
-    await _insert_foundation_project(session)
+async def _insert_revision_one_contracts(
+    session,
+    *,
+    project_id=PROJECT_ID,
+    binding_id=BINDING_ID,
+    seed_id="00000000-0000-0000-0000-000000000040",
+    seed_revision_id="00000000-0000-0000-0000-000000000041",
+    creation_id="00000000-0000-0000-0000-000000000042",
+    style_id="00000000-0000-0000-0000-000000000043",
+):
+    await _insert_foundation_project(
+        session, project_id=project_id, binding_id=binding_id,
+    )
     await session.execute(
         "INSERT INTO creative_seeds (id,project_id,status,created_at,updated_at) VALUES (%s,%s,'candidate',%s,%s)",
-        (seed_id, PROJECT_ID, NOW, NOW),
+        (seed_id, project_id, NOW, NOW),
     )
     await session.execute(
         """INSERT INTO creative_seed_revisions
            (id,project_id,seed_id,revision,payload_json,content_hash,created_at)
            VALUES (%s,%s,%s,1,%s,%s,%s)""",
-        (seed_revision_id, PROJECT_ID, seed_id, '{}', HASH_A, NOW),
+        (seed_revision_id, project_id, seed_id, '{}', HASH_A, NOW),
     )
     await session.execute(
         """INSERT INTO project_seed_selection_revisions
            (project_id,selection_revision,seed_id,seed_revision_id,seed_hash,selected_at)
            VALUES (%s,1,%s,%s,%s,%s)""",
-        (PROJECT_ID, seed_id, seed_revision_id, HASH_A, NOW),
+        (project_id, seed_id, seed_revision_id, HASH_A, NOW),
     )
     await session.execute(
         """INSERT INTO project_selected_seeds
            (project_id,seed_id,seed_revision_id,seed_hash,selection_revision,
             selected_at,updated_at)
            VALUES (%s,%s,%s,%s,1,%s,%s)""",
-        (PROJECT_ID, seed_id, seed_revision_id, HASH_A, NOW, NOW),
+        (project_id, seed_id, seed_revision_id, HASH_A, NOW, NOW),
     )
     await session.execute(
         """INSERT INTO creation_contracts
@@ -221,14 +231,14 @@ async def _insert_revision_one_contracts(session):
             reference_manifest_hash,content_json,content_hash,confirmed_at)
            VALUES (%s,%s,1,1,%s,%s,%s,%s,%s,'web','fantasy','quality-v1',
                    80000,120000,'按情节自然切章','{}',%s,%s,%s,%s)""",
-        (creation_id, PROJECT_ID, seed_id, seed_revision_id, HASH_A, BINDING_ID, HASH_A, HASH_A, '{}', HASH_B, NOW),
+        (creation_id, project_id, seed_id, seed_revision_id, HASH_A, binding_id, HASH_A, HASH_A, '{}', HASH_B, NOW),
     )
     await session.execute(
         """INSERT INTO style_contracts
            (id,project_id,creation_contract_id,revision,merged_style_json,
             likes_json,dislikes_json,content_hash,confirmed_at)
            VALUES (%s,%s,%s,1,%s,%s,%s,%s,%s)""",
-        (style_id, PROJECT_ID, creation_id, '{}', '[]', '[]', HASH_C, NOW),
+        (style_id, project_id, creation_id, '{}', '[]', '[]', HASH_C, NOW),
     )
     return creation_id, style_id
 
@@ -490,11 +500,28 @@ async def _assert_selected_disposable_database(disposable_mysql):
     )
 
 
-async def _insert_planning_outline_fixture(session):
-    creation_id, style_id = await _insert_revision_one_contracts(session)
-    seed_id = "00000000-0000-0000-0000-000000000040"
-    seed_revision_id = "00000000-0000-0000-0000-000000000041"
-    bible_id = "00000000-0000-0000-0000-000000000200"
+async def _insert_planning_outline_fixture(
+    session,
+    *,
+    project_id=PROJECT_ID,
+    binding_id=BINDING_ID,
+    identifier_offset=0,
+):
+    def owned_id(value):
+        return f"00000000-0000-0000-0000-{value + identifier_offset:012d}"
+
+    seed_id = owned_id(40)
+    seed_revision_id = owned_id(41)
+    creation_id, style_id = await _insert_revision_one_contracts(
+        session,
+        project_id=project_id,
+        binding_id=binding_id,
+        seed_id=seed_id,
+        seed_revision_id=seed_revision_id,
+        creation_id=owned_id(42),
+        style_id=owned_id(43),
+    )
+    bible_id = owned_id(200)
     bible_document = {
         "premise": "A displaced archivist protects a dangerous catalogue.",
         "worldRules": ["Recorded names may alter local history."],
@@ -509,8 +536,8 @@ async def _insert_planning_outline_fixture(session):
            VALUES (%s,%s,1,1,%s,%s,%s,1,%s,%s,%s,%s,%s,%s,'phase3a-test',
                    %s,%s,%s)""",
         (
-            bible_id, PROJECT_ID, seed_id, seed_revision_id, HASH_A,
-            creation_id, HASH_B, style_id, HASH_C, BINDING_ID, HASH_A,
+            bible_id, project_id, seed_id, seed_revision_id, HASH_A,
+            creation_id, HASH_B, style_id, HASH_C, binding_id, HASH_A,
             canonical_json(bible_document), bible_hash, NOW,
         ),
     )
@@ -519,20 +546,20 @@ async def _insert_planning_outline_fixture(session):
               SET revision=1,creation_contract_id=%s,style_contract_id=%s,
                   creation_hash=%s,style_hash=%s,updated_at=%s
             WHERE project_id=%s""",
-        (creation_id, style_id, HASH_B, HASH_C, NOW, PROJECT_ID),
+        (creation_id, style_id, HASH_B, HASH_C, NOW, project_id),
     )
     await session.execute(
         """UPDATE project_bible_heads
               SET revision=1,bible_revision_id=%s,content_hash=%s,updated_at=%s
             WHERE project_id=%s""",
-        (bible_id, bible_hash, NOW, PROJECT_ID),
+        (bible_id, bible_hash, NOW, project_id),
     )
 
-    volume_id = "00000000-0000-0000-0000-000000000210"
-    plot_id = "00000000-0000-0000-0000-000000000211"
-    block_id = "00000000-0000-0000-0000-000000000212"
-    stage_id = "00000000-0000-0000-0000-000000000213"
-    scene_task_id = "00000000-0000-0000-0000-000000000214"
+    volume_id = owned_id(210)
+    plot_id = owned_id(211)
+    block_id = owned_id(212)
+    stage_id = owned_id(213)
+    scene_task_id = owned_id(214)
     planning_documents = (
         {
             "volumes": [
@@ -618,8 +645,8 @@ async def _insert_planning_outline_fixture(session):
         },
     )
     planning_ids = (
-        "00000000-0000-0000-0000-000000000201",
-        "00000000-0000-0000-0000-000000000202",
+        owned_id(201),
+        owned_id(202),
     )
     planning_hashes = tuple(canonical_hash(item) for item in planning_documents)
     for revision, (revision_id, document, content_hash) in enumerate(
@@ -635,7 +662,7 @@ async def _insert_planning_outline_fixture(session):
                 content_hash,created_at)
                VALUES (%s,%s,%s,%s,1,%s,%s,%s,1,%s,%s,%s,%s,1,%s,%s,%s,%s,%s)""",
             (
-                revision_id, PROJECT_ID, revision, revision - 1, seed_id,
+                revision_id, project_id, revision, revision - 1, seed_id,
                 seed_revision_id, HASH_A, creation_id, HASH_B, style_id,
                 HASH_C, bible_id, bible_hash, canonical_json(document),
                 content_hash, NOW,
@@ -667,8 +694,8 @@ async def _insert_planning_outline_fixture(session):
         },
     )
     outline_ids = (
-        "00000000-0000-0000-0000-000000000203",
-        "00000000-0000-0000-0000-000000000204",
+        owned_id(203),
+        owned_id(204),
     )
     outline_hashes = tuple(canonical_hash(item) for item in outline_documents)
     projection_hash = canonical_hash(
@@ -698,7 +725,7 @@ async def _insert_planning_outline_fixture(session):
                 content_hash,created_at)
                VALUES (%s,%s,1,%s,%s,%s,%s,%s,0,0,%s,%s,%s,%s)""",
             (
-                outline_id, PROJECT_ID, revision, revision - 1, planning_id,
+                outline_id, project_id, revision, revision - 1, planning_id,
                 revision, planning_hash, projection_hash,
                 canonical_json(outline_document), outline_hash, NOW,
             ),
@@ -721,6 +748,281 @@ async def _insert_planning_outline_fixture(session):
         "story_block_id": block_id,
         "story_block_hashes": story_block_hashes,
     }
+
+
+async def _insert_draft_operation_owner_fixture(
+    session,
+    *,
+    project_id,
+    planning_fixture,
+    session_id,
+    working_draft_id,
+    operation_id,
+    provider_id,
+    chapter_num=1,
+):
+    await session.execute(
+        """INSERT INTO chapter_sessions
+           (id,project_id,planning_revision_id,planning_revision,planning_hash,
+            story_block_id,story_block_revision,story_block_hash,
+            chapter_outline_revision_id,chapter_outline_revision,
+            chapter_outline_hash,chapter_num,expected_canon_revision,status,
+            created_at,finalized_at)
+           VALUES (%s,%s,%s,1,%s,%s,1,%s,%s,1,%s,%s,0,'drafting',%s,NULL)""",
+        (
+            session_id, project_id, planning_fixture["planning_ids"][0],
+            planning_fixture["planning_hashes"][0], planning_fixture["story_block_id"],
+            planning_fixture["story_block_hashes"][0],
+            planning_fixture["outline_ids"][0], planning_fixture["outline_hashes"][0],
+            chapter_num, NOW,
+        ),
+    )
+    await session.execute(
+        """INSERT INTO working_drafts
+           (id,project_id,chapter_session_id,revision,content,content_hash,
+            source_payload_json,updated_at)
+           VALUES (%s,%s,%s,1,'draft',%s,'{}',%s)""",
+        (working_draft_id, project_id, session_id, HASH_A, NOW),
+    )
+    await session.execute(
+        """INSERT INTO draft_operation_attempts
+           (id,project_id,chapter_session_id,operation_type,idempotency_key,
+            request_fingerprint,active_slot,fencing_token,lease_expires_at,
+            base_working_draft_revision,base_working_draft_hash,input_manifest_json,
+             input_manifest_hash,provider_id,model_name_snapshot,
+             result_working_draft_revision,result_content_hash,last_event_sequence,
+             failure_code,partial_output_text,partial_output_hash,partial_output_scalars,
+             heartbeat_at,status,created_at,updated_at,completed_at,cancelled_at)
+            VALUES (%s,%s,%s,'generate_new',%s,%s,1,1,%s,1,%s,'{}',%s,%s,
+                    'writer',NULL,NULL,0,NULL,'',%s,0,%s,'starting',%s,%s,NULL,NULL)""",
+        (
+            operation_id, project_id, session_id, operation_id, HASH_B, NOW,
+            HASH_A, HASH_C, provider_id, HASH_A, NOW, NOW, NOW,
+        ),
+    )
+
+
+@pytest.mark.mysql
+async def test_draft_operation_owner_foreign_keys_reject_cross_owner_rows_and_cascade(
+    disposable_mysql,
+):
+    await _assert_selected_disposable_database(disposable_mysql)
+    session = disposable_mysql.session
+    project_two = "00000000-0000-0000-0000-000000009001"
+    provider_id = "00000000-0000-0000-0000-000000009002"
+    session_one = "00000000-0000-0000-0000-000000009003"
+    draft_one = "00000000-0000-0000-0000-000000009004"
+    operation_one = "00000000-0000-0000-0000-000000009005"
+    session_two = "00000000-0000-0000-0000-000000009006"
+    draft_two = "00000000-0000-0000-0000-000000009007"
+    operation_two = "00000000-0000-0000-0000-000000009008"
+
+    fixture_one = await _insert_planning_outline_fixture(session)
+    fixture_two = await _insert_planning_outline_fixture(
+        session,
+        project_id=project_two,
+        binding_id="00000000-0000-0000-0000-000000001002",
+        identifier_offset=1000,
+    )
+    await _insert_active_provider(session, provider_id, "writer")
+    await _insert_draft_operation_owner_fixture(
+        session,
+        project_id=PROJECT_ID,
+        planning_fixture=fixture_one,
+        session_id=session_one,
+        working_draft_id=draft_one,
+        operation_id=operation_one,
+        provider_id=provider_id,
+    )
+    await _insert_draft_operation_owner_fixture(
+        session,
+        project_id=project_two,
+        planning_fixture=fixture_two,
+        session_id=session_two,
+        working_draft_id=draft_two,
+        operation_id=operation_two,
+        provider_id=provider_id,
+    )
+
+    revision_sql = """INSERT INTO working_draft_revisions
+        (id,project_id,chapter_session_id,working_draft_id,working_draft_revision,
+         snapshot_role,replacement_reason,source_operation_id,content,content_hash,
+         created_at)
+        VALUES (%s,%s,%s,%s,2,%s,'generate_new',%s,'draft',%s,%s)"""
+    await _assert_mysql_rejects(
+        session.execute(
+            revision_sql,
+            (
+                "00000000-0000-0000-0000-000000009009", PROJECT_ID, session_one,
+                draft_two, "before", operation_one, HASH_A, NOW,
+            ),
+        ),
+    )
+    await _assert_mysql_rejects(
+        session.execute(
+            revision_sql,
+            (
+                "00000000-0000-0000-0000-000000009010", PROJECT_ID, session_one,
+                draft_one, "before", "00000000-0000-0000-0000-000000009099",
+                HASH_A, NOW,
+            ),
+        ),
+    )
+    await _assert_mysql_rejects(
+        session.execute(
+            revision_sql,
+            (
+                "00000000-0000-0000-0000-000000009015", PROJECT_ID, session_one,
+                draft_one, "before", operation_two, HASH_A, NOW,
+            ),
+        ),
+    )
+    for revision_id, snapshot_role in (
+        ("00000000-0000-0000-0000-000000009011", "before"),
+        ("00000000-0000-0000-0000-000000009012", "after"),
+    ):
+        await session.execute(
+            revision_sql,
+            (
+                revision_id, PROJECT_ID, session_one, draft_one, snapshot_role,
+                operation_one, HASH_A, NOW,
+            ),
+        )
+
+    event_sql = """INSERT INTO draft_operation_events
+        (id,project_id,draft_operation_id,sequence_num,event_type,
+         closed_payload_json,created_at)
+        VALUES (%s,%s,%s,1,'started',NULL,%s)"""
+    await _assert_mysql_rejects(
+        session.execute(
+            event_sql,
+            (
+                "00000000-0000-0000-0000-000000009013", project_two,
+                operation_one, NOW,
+            ),
+        ),
+    )
+    await session.execute(
+        event_sql,
+        (
+            "00000000-0000-0000-0000-000000009014", PROJECT_ID,
+            operation_one, NOW,
+        ),
+    )
+
+    await session.execute("DELETE FROM chapter_sessions WHERE id=%s", (session_one,))
+    for table_name, column_name, identifier in (
+        ("working_drafts", "id", draft_one),
+        ("working_draft_revisions", "chapter_session_id", session_one),
+        ("draft_operation_attempts", "id", operation_one),
+        ("draft_operation_events", "draft_operation_id", operation_one),
+    ):
+        row = await session.fetchone(
+            f"SELECT COUNT(*) AS count FROM {table_name} WHERE {column_name}=%s",
+            (identifier,),
+        )
+        assert row == {"count": 0}
+    retained = await session.fetchone(
+        """SELECT
+              (SELECT COUNT(*) FROM working_drafts WHERE id=%s) AS drafts,
+              (SELECT COUNT(*) FROM draft_operation_attempts WHERE id=%s) AS operations
+           """,
+        (draft_two, operation_two),
+    )
+    assert retained == {"drafts": 1, "operations": 1}
+    assert await session.fetchone(
+        "SELECT COUNT(*) AS count FROM projects WHERE id=%s", (project_two,)
+    ) == {"count": 1}
+
+
+@pytest.mark.mysql
+async def test_draft_operation_streaming_state_and_event_constraints(disposable_mysql):
+    session = disposable_mysql.session
+    provider_id = "00000000-0000-0000-0000-000000009101"
+    session_id = "00000000-0000-0000-0000-000000009102"
+    working_draft_id = "00000000-0000-0000-0000-000000009103"
+    operation_id = "00000000-0000-0000-0000-000000009104"
+    fixture = await _insert_planning_outline_fixture(session)
+    await _insert_active_provider(session, provider_id, "streaming writer")
+    await _insert_draft_operation_owner_fixture(
+        session,
+        project_id=PROJECT_ID,
+        planning_fixture=fixture,
+        session_id=session_id,
+        working_draft_id=working_draft_id,
+        operation_id=operation_id,
+        provider_id=provider_id,
+    )
+
+    await session.execute(
+        """UPDATE draft_operation_attempts
+           SET active_slot=NULL,status='cancelled',completed_at=%s,cancelled_at=%s
+           WHERE id=%s""",
+        (NOW, NOW, operation_id),
+    )
+    await _assert_mysql_rejects(
+        session.execute(
+            "UPDATE draft_operation_attempts SET failure_code='cancelled' WHERE id=%s",
+            (operation_id,),
+        )
+    )
+    await _assert_mysql_rejects(
+        session.execute(
+            "UPDATE draft_operation_attempts SET cancelled_at=NULL WHERE id=%s",
+            (operation_id,),
+        )
+    )
+    await _assert_mysql_rejects(
+        session.execute(
+            "UPDATE draft_operation_attempts SET partial_output_scalars=100001 WHERE id=%s",
+            (operation_id,),
+        )
+    )
+    await _assert_mysql_rejects(
+        session.execute(
+            "UPDATE draft_operation_attempts SET heartbeat_at=%s WHERE id=%s",
+            (NOW - 1, operation_id),
+        )
+    )
+    await session.execute(
+        """UPDATE draft_operation_attempts
+           SET result_working_draft_revision=2,result_content_hash=%s
+           WHERE id=%s""",
+        (HASH_B, operation_id),
+    )
+    await _assert_mysql_rejects(
+        session.execute(
+            "UPDATE draft_operation_attempts SET result_content_hash=NULL WHERE id=%s",
+            (operation_id,),
+        )
+    )
+
+    event_sql = """INSERT INTO draft_operation_events
+        (id,project_id,draft_operation_id,sequence_num,event_type,
+         closed_payload_json,created_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s)"""
+    for event_id, sequence_num, event_type, payload in (
+        ("00000000-0000-0000-0000-000000009105", 1, "started", None),
+        ("00000000-0000-0000-0000-000000009106", 2, "heartbeat", None),
+        ("00000000-0000-0000-0000-000000009107", 3, "delta", "{}"),
+        ("00000000-0000-0000-0000-000000009108", 4, "cancelled", "{}"),
+    ):
+        await session.execute(
+            event_sql,
+            (event_id, PROJECT_ID, operation_id, sequence_num, event_type, payload, NOW),
+        )
+    for event_id, sequence_num, event_type, payload in (
+        ("00000000-0000-0000-0000-000000009109", 0, "started", None),
+        ("00000000-0000-0000-0000-000000009110", 2049, "started", None),
+        ("00000000-0000-0000-0000-000000009111", 5, "heartbeat", "{}"),
+        ("00000000-0000-0000-0000-000000009112", 6, "delta", None),
+    ):
+        await _assert_mysql_rejects(
+            session.execute(
+                event_sql,
+                (event_id, PROJECT_ID, operation_id, sequence_num, event_type, payload, NOW),
+            )
+        )
 
 
 async def _insert_planning_draft(

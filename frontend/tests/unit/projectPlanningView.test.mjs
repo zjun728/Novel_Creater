@@ -1,11 +1,127 @@
 import assert from 'node:assert/strict'
 import { access, readFile } from 'node:fs/promises'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
+import { parse as parseTemplate } from '@vue/compiler-dom'
+import { createSSRApp, h, reactive } from 'vue'
+import { renderToString } from '@vue/server-renderer'
+import vuePlugin from '@vitejs/plugin-vue'
+import { createServer } from 'vite'
 
 const source = relativePath => readFile(
   new URL(`../../src/${relativePath}`, import.meta.url),
   'utf8',
 )
+const frontendRoot = fileURLToPath(new URL('../..', import.meta.url))
+const sourceRoot = fileURLToPath(new URL('../../src', import.meta.url))
+
+async function createWriterVite() {
+  return createServer({
+    configFile: false,
+    root: frontendRoot,
+    resolve: { alias: { '@': sourceRoot } },
+    server: { middlewareMode: true, hmr: false, ws: false },
+    appType: 'custom',
+    logLevel: 'error',
+    plugins: [
+      {
+        name: 'writer-candidate-render-stub',
+        enforce: 'pre',
+        transform(code, id) {
+          if (!id.endsWith('ChapterWriterView.vue')) return null
+          return code
+            .replace(
+              "import { computed, onBeforeUnmount, ref, watch } from 'vue'",
+              "import { computed, h, onBeforeUnmount, ref, watch } from 'vue'",
+            )
+            .replace(
+              /import\s*\{\s*onBeforeRouteLeave,[\s\S]*?\}\s*from 'vue-router'/u,
+              "const useRoute = () => globalThis.__writerRoute; const useRouter = () => ({ push() {} }); const onBeforeRouteLeave = () => {}; const onBeforeRouteUpdate = () => {};",
+            )
+            .replace(
+              /import\s*\{\s*NAlert,[\s\S]*?\}\s*from 'naive-ui'/u,
+              "const container = tag => ({ inheritAttrs: false, setup(_, { attrs, slots }) { return () => h(tag, attrs, slots.default?.()) } }); const NAlert = container('section'); const NButton = container('button'); const NCard = container('section'); const NInput = container('textarea'); const NResult = container('section'); const NSkeleton = container('div'); const NStatistic = container('div'); const NTag = container('span');",
+            )
+            .replace(
+              "import { useChapterSessionStore } from '@/stores/chapterSessionStore'",
+              'const useChapterSessionStore = () => globalThis.__writerStore',
+            )
+            .replace(
+              "import FinalizationPanel from '@/components/writer/FinalizationPanel.vue'",
+              'const FinalizationPanel = { render: () => null }',
+            )
+            .replace('const loading = ref(true)', 'const loading = ref(false)')
+            .replaceAll('loading.value = true', 'loading.value = false')
+        },
+      },
+      vuePlugin(),
+    ],
+    optimizeDeps: { noDiscovery: true },
+  })
+}
+
+async function renderWriterCandidates(candidates) {
+  globalThis.__writerRoute = reactive({
+    params: { projectId: 'project-1', chapterNumber: '1' },
+  })
+  globalThis.__writerStore = reactive({
+    session: { chapterNum: 1, status: 'drafting' },
+    workingDraft: { revision: 1 },
+    candidates,
+    hasSession: true,
+    busy: false,
+    writeBusy: false,
+    generatingDraft: false,
+    creating: false,
+    savingDraft: false,
+    savingCandidate: false,
+    workspace: null,
+    error: null,
+    async openAuthoritative() { return null },
+    invalidate() {},
+  })
+  const vite = await createWriterVite()
+  try {
+    const Writer = await vite.ssrLoadModule('/src/views/ChapterWriterView.vue')
+    const app = createSSRApp(Writer.default)
+    app.component('router-link', {
+      setup(_, { attrs, slots }) {
+        return () => h('a', attrs, slots.default?.())
+      },
+    })
+    return await renderToString(app)
+  } finally {
+    await vite.close()
+    delete globalThis.__writerRoute
+    delete globalThis.__writerStore
+  }
+}
+function hasPersistentOutlineLink(node, conditional = false) {
+  if (!node || typeof node !== 'object') return false
+  const nextConditional = conditional || (
+    node.type === 1
+    && node.props?.some(prop => (
+      prop.type === 7 && ['if', 'else-if', 'else'].includes(prop.name)
+    ))
+  )
+  if (
+    node.type === 1
+    && node.tag === 'router-link'
+    && !nextConditional
+    && node.props?.some(prop => (
+      prop.type === 7
+      && prop.name === 'bind'
+      && prop.arg?.content === 'to'
+      && prop.exp?.content === 'storyBlocksPath'
+    ))
+    && node.children?.some(child => (
+      child.type === 2 && child.content.includes('调整本章小纲')
+    ))
+  ) return true
+  return (node.children || []).some(child => (
+    hasPersistentOutlineLink(child, nextConditional)
+  ))
+}
 
 test('one project planning view hosts all three canonical tabs and the shared workspace', async () => {
   const [view, workspace, storyBlocks] = await Promise.all([
@@ -75,6 +191,44 @@ test('history is immutable and retired duplicate planning surfaces stay absent',
   ]) {
     await assert.rejects(access(new URL(`../../src/${retired}`, import.meta.url)))
   }
+})
+
+test('writer keeps the outline router link visible while the workspace loads', async () => {
+  const writer = await source('views/ChapterWriterView.vue')
+  const template = writer.match(/<template>([\s\S]*)<\/template>/u)?.[1]
+  const ast = parseTemplate(template || '')
+
+  assert.equal(hasPersistentOutlineLink(ast), true)
+})
+
+test('writer renders current and stale candidate basis badges', async () => {
+  const html = await renderWriterCandidates([
+    {
+      id: 'candidate-current',
+      workingDraftRevision: 1,
+      basisStatus: 'current',
+      content: '当前候选',
+      contentHash: 'a'.repeat(64),
+      createdAt: 1_700_000_000_000,
+    },
+    {
+      id: 'candidate-stale',
+      workingDraftRevision: 2,
+      basisStatus: 'stale',
+      content: '旧依据候选',
+      contentHash: 'b'.repeat(64),
+      createdAt: 1_700_000_001_000,
+    },
+  ])
+
+  assert.match(
+    html,
+    /候选 1[\s\S]*?<span class="candidate-basis candidate-basis--current"[^>]*>依据当前小纲<\/span>[\s\S]*?4 字 · aaaaaaaa/,
+  )
+  assert.match(
+    html,
+    /候选 2[\s\S]*?<span class="candidate-basis candidate-basis--stale"[^>]*>依据旧小纲，不能定稿<\/span>[\s\S]*?5 字 · bbbbbbbb/,
+  )
 })
 
 test('planning editors expose only their owned fields and no reverse IDs', async () => {

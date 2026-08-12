@@ -6,6 +6,7 @@ import {
   assertRuntimeEvidenceHealthy,
   observeRuntime,
   publicRuntimeDiagnostic,
+  runtimeFailureDiagnostic,
   runtimeSensitiveValues,
   scanRuntimeEvidence,
   settleNavigationBoundary,
@@ -150,13 +151,15 @@ async function finishRuntime(
     assertExactWrites(evidence, writes)
   } catch (error) {
     const publicDiagnostic = safeEvidence
-      ? JSON.stringify(publicRuntimeDiagnostic(safeEvidence))
-      : ''
-    auditError = error instanceof Error && publicDiagnostic
-      ? new Error(`${error.message}; safe evidence: ${publicDiagnostic}`, {
-          cause: error,
-        })
-      : error
+      ? publicRuntimeDiagnostic(safeEvidence)
+      : runtimeFailureDiagnostic(error)
+    if (publicDiagnostic) {
+      test.info().annotations.push({
+        type: 'runtime-failure-audit',
+        description: JSON.stringify(publicDiagnostic),
+      })
+    }
+    auditError = error
   }
   if (bodyError && auditError) {
     const describe = (error: unknown) => (

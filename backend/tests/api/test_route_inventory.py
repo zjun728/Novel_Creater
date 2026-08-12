@@ -25,6 +25,12 @@ APPROVED_FORMAL_ROUTES = {
     ("GET", "/api/projects/archived"),
     ("POST", "/api/projects"),
     ("GET", "/api/projects/{project_id}"),
+    ("GET", "/api/projects/{project_id}/novel-download/options"),
+    ("GET", "/api/projects/{project_id}/novel-download"),
+    ("POST", "/api/projects/{project_id}/backup"),
+    ("POST", "/api/project-imports/preflight"),
+    ("POST", "/api/project-imports"),
+    ("GET", "/api/project-imports/{command_id}"),
     ("GET", "/api/projects/{project_id}/preparation"),
     ("PUT", "/api/projects/{project_id}"),
     ("POST", "/api/projects/{project_id}/archive"),
@@ -125,8 +131,37 @@ APPROVED_FORMAL_ROUTES = {
     ("GET", "/api/projects/{pid}/chapter-sessions/{chapter_number}"),
     ("POST", "/api/projects/{pid}/chapter-sessions/{chapter_number}"),
     ("PUT", "/api/projects/{pid}/chapter-sessions/{session_id}/working-draft"),
+    ("POST", "/api/projects/{pid}/chapter-sessions/{session_id}/working-draft/undo"),
     ("POST", "/api/projects/{pid}/chapter-sessions/{session_id}/candidates"),
-    ("POST", "/api/projects/{pid}/chapter-sessions/{session_id}/generate-working-draft"),
+    ("POST", "/api/projects/{pid}/chapter-sessions/{session_id}/candidates/{candidate_id}/load"),
+    (
+        "POST",
+        "/api/projects/{project_id}/chapter-sessions/{session_id}/candidates/"
+        "{candidate_id}/finalization/prepare",
+    ),
+    (
+        "GET",
+        "/api/projects/{project_id}/chapter-sessions/{session_id}/finalization",
+    ),
+    (
+        "POST",
+        "/api/projects/{project_id}/chapter-sessions/{session_id}/finalization/"
+        "revisions",
+    ),
+    (
+        "POST",
+        "/api/projects/{project_id}/chapter-sessions/{session_id}/finalization/"
+        "confirm",
+    ),
+    (
+        "POST",
+        "/api/projects/{project_id}/chapter-sessions/{session_id}/finalization/"
+        "commit",
+    ),
+    ("POST", "/api/projects/{pid}/chapter-sessions/{session_id}/draft-operations"),
+    ("GET", "/api/projects/{pid}/chapter-sessions/{session_id}/draft-operations/{operation_id}"),
+    ("GET", "/api/projects/{pid}/chapter-sessions/{session_id}/draft-operations/{operation_id}/events"),
+    ("POST", "/api/projects/{pid}/chapter-sessions/{session_id}/draft-operations/{operation_id}/cancel"),
     ("GET", "/api/assets/style-templates"),
     ("GET", "/api/assets/style-templates/{revision_id}"),
     ("GET", "/api/assets/experience-cards"),

@@ -11,6 +11,7 @@ import { createChapterOutlineController } from '../../application/planning/chapt
 import { useOperationStore } from '../../stores/operationStore.js'
 import { canonicalPlanningContentForUi } from '../../stores/planningStore.js'
 import { createModalFocusManager } from '../common/modalFocusManager.js'
+import ActualProgressPanel from './ActualProgressPanel.vue'
 import ChapterOutlineWorkspace from './ChapterOutlineWorkspace.vue'
 import PlanningHistoryDrawer from './PlanningHistoryDrawer.vue'
 import PlotEditor from './PlotEditor.vue'
@@ -164,7 +165,7 @@ watch(
       projectId
       && typeof props.store.ensureOutlineLoaded === 'function'
     ) {
-      void outlineController.hydrate().catch(() => {})
+      void outlineController.hydrate({ force: true }).catch(() => {})
     }
   },
   { immediate: true },
@@ -232,6 +233,11 @@ onBeforeUnmount(() => {
         当前项目或规划修订为只读状态；可以查阅正文规划与历史，不能克隆、编辑或写入。
       </aside>
 
+      <actual-progress-panel
+        :items="store.state.actualProgress"
+        :status="store.state.canonProjectionStatus"
+      />
+
       <section v-if="!store.state.draft && !controller.readOnly.value" class="paper-panel empty-draft">
         <span>BLANK DRAFT</span>
         <h2>从空白工作稿开始</h2>
@@ -251,6 +257,7 @@ onBeforeUnmount(() => {
           :class="{ 'streaming-read-only': controller.localOverlay.value }"
           :inert="controller.localOverlay.value || undefined"
         >
+          <p class="future-planning-label">未来规划</p>
           <volume-editor
             v-if="activeTab === 'volumes'"
             :model-value="planningContent.volumes || []"
@@ -458,6 +465,7 @@ h1 { margin:6px 0 0; font:600 clamp(32px,5vw,52px) Georgia,'Noto Serif SC',serif
 .workspace-sheet { position:relative; min-height:420px; }
 .workspace-scroll { max-height:calc(100vh - 320px); min-height:420px; overflow:auto; padding:clamp(20px,4vw,38px); transition:opacity .15s ease; }
 .workspace-scroll.streaming-read-only { opacity:.72; }
+.future-planning-label { margin:0 0 18px; color:var(--nc-vermilion); font:700 10px Georgia,serif; letter-spacing:.18em; }
 .streaming-overlay { position:absolute; z-index:2; inset:0; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:6px; pointer-events:none; color:var(--nc-ink); background:color-mix(in srgb,var(--nc-paper) 38%,transparent); text-align:center; }
 .streaming-overlay span { max-width:42ch; color:var(--nc-muted); }
 .aggregate-summary { margin-top:28px; padding-top:20px; border-top:2px solid var(--nc-vermilion); }

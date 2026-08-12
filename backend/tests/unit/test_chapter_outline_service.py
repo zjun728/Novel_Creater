@@ -9,7 +9,9 @@ from backend.repositories.chapter_sessions import ActiveChapterSessionConflict
 from backend.services.chapter_outlines import (
     ChapterOutlineConflict,
     ChapterOutlineService,
+    ConfirmChapterOutlineDraft,
     CreateChapterOutlineDraft,
+    SaveChapterOutlineDraft,
     authoritative_chapter,
 )
 
@@ -165,7 +167,10 @@ class _OutlineStateRepository:
         return self.authorities if project_id == "project-1" else None
 
     async def read_outline_head(self, _session, _project_id, _chapter_number):
-        return None
+        return getattr(self, "head", None)
+
+    async def lock_outline_head(self, _session, _project_id, _chapter_number):
+        return getattr(self, "head", None)
 
     async def read_active_draft(
         self,
@@ -175,8 +180,30 @@ class _OutlineStateRepository:
     ):
         return self.draft
 
+    async def read_draft(
+        self,
+        _session,
+        _project_id,
+        _chapter_number,
+        _draft_id,
+    ):
+        return self.draft
+
+    async def find_confirmation(
+        self,
+        _session,
+        _project_id,
+        _chapter_number,
+        _idempotency_key,
+    ):
+        return None
+
     async def read_active_attempt(self, _session, _draft_id):
         return self.pending_attempt
+
+    async def insert_draft(self, _session, row):
+        self.draft = row
+        return True
 
 
 class _OutlineStateChapterRepository:
@@ -184,6 +211,7 @@ class _OutlineStateChapterRepository:
         self.calls = calls
         self.active_session = None
         self.session = None
+        self.max_final = None
 
     async def read_active_session(self, _session, _project_id):
         self.calls.append("active-session-read")
@@ -191,7 +219,7 @@ class _OutlineStateChapterRepository:
 
     async def read_max_final_chapter_number(self, _session, _project_id):
         self.calls.append("final-chapter-read")
-        return None
+        return self.max_final
 
     async def read_chapter_session(
         self,
@@ -402,3 +430,92 @@ async def test_archived_state_falls_back_to_read_after_project_lock():
     assert calls[:2] == ["project-lock", "project-read"]
     assert state.lifecycle == "archived"
     assert state.capabilities.generate is False
+
+
+@pytest.mark.asyncio
+async def test_drafting_session_can_adjust_the_current_outline_without_repinning_it():
+    service, outline, chapter, planning, _calls = _outline_state_service()
+    adopted = _active_session_row()["chapter_outline"]
+    outline.draft = None
+    outline.head = {
+        "project_id": "project-1",
+        "chapter_num": 1,
+        "revision": 1,
+        "parent_revision": 0,
+        "outline_revision_id": "outline-1",
+        "content_hash": HASH,
+        "planning_revision_id": "planning-1",
+        "planning_revision": 1,
+        "planning_hash": HASH,
+        "canon_revision": 0,
+        "projection_revision": 0,
+        "projection_hash": HASH,
+        "content": adopted,
+    }
+    outline.authorities["planning_content"] = {
+        "schemaVersion": "planning-v1",
+        "activeStoryBlockId": None,
+        "volumes": [],
+        "plots": [],
+        "storyBlocks": [],
+        "contentHash": HASH,
+    }
+    planning.basis["chapter_capacity_policy"] = {
+        "chapterWordRangePreference": [2_000, 3_000],
+    }
+    chapter.active_session = {"chapter_num": 1, "status": "drafting"}
+    chapter.session = {**_active_session_row(), "status": "drafting"}
+    service._content_is_confirmable = lambda *_args: True
+
+    initial = await service.get_current("project-1")
+
+    assert initial.capabilities.create_draft is True
+    assert initial.capabilities.edit_draft is False
+    assert initial.capabilities.generate is False
+    assert initial.capabilities.start_session is False
+
+    draft = await service.create_draft(
+        CreateChapterOutlineDraft("project-1", 1)
+    )
+
+    assert draft.base_head_revision == 1
+    assert draft.content.chapter_goal == adopted["chapterGoal"]
+    adjusted = await service.get_current("project-1")
+    assert adjusted.capabilities.edit_draft is True
+    assert adjusted.capabilities.generate is True
+    assert adjusted.capabilities.confirm is True
+    assert adjusted.active_session == initial.active_session
+
+
+@pytest.mark.asyncio
+async def test_finalized_chapter_rejects_create_save_and_confirm_by_authoritative_number():
+    service, outline, chapter, _planning, _calls = _outline_state_service()
+    chapter.max_final = 1
+    command = SaveChapterOutlineDraft(
+        "project-1",
+        1,
+        outline.draft["id"],
+        outline.draft["draft_revision"],
+        outline.draft["content_hash"],
+        EditableChapterOutlineContent(),
+    )
+    confirm = ConfirmChapterOutlineDraft(
+        "project-1",
+        1,
+        outline.draft["id"],
+        outline.draft["draft_revision"],
+        outline.draft["content_hash"],
+        0,
+        "reject-finalized-chapter",
+    )
+
+    for mutate in (
+        lambda: service.create_draft(CreateChapterOutlineDraft("project-1", 1)),
+        lambda: service.save_draft(command),
+        lambda: service.confirm_draft(confirm),
+    ):
+        with pytest.raises(
+            ChapterOutlineConflict,
+            match="requested chapter differs from server authority",
+        ):
+            await mutate()

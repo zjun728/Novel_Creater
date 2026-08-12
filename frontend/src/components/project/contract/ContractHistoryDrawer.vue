@@ -9,14 +9,11 @@ import ContractDecisionSummary from './ContractDecisionSummary.vue'
 const props = defineProps({
   show: { type: Boolean, default: false },
   projectId: { type: String, required: true },
-  currentSelectionRevision: { type: Number, default: 0 },
-  readOnly: { type: Boolean, default: false },
 })
-const emit = defineEmits(['update:show', 'cloned'])
+const emit = defineEmits(['update:show'])
 const store = useCreationContractStore()
 const errorMessage = ref('')
 const errorRegion = ref(null)
-const cloningRevision = ref(null)
 const historyRequestGuard = createLatestRequestGuard()
 
 const rows = computed(() => [...store.history].sort((a, b) => b.revision - a.revision))
@@ -24,11 +21,6 @@ const rows = computed(() => [...store.history].sort((a, b) => b.revision - a.rev
 function shortHash(value) {
   const text = String(value || '')
   return text ? `${text.slice(0, 12)}…` : '—'
-}
-
-function canClone(item) {
-  return !props.readOnly
-    && Number(item?.selectionRevision) === Number(props.currentSelectionRevision)
 }
 
 function reasonLabel(reason) {
@@ -68,33 +60,13 @@ function loadMore() {
   void loadHistory({ append: true })
 }
 
-async function cloneRevision(item) {
-  if (!canClone(item) || store.cloning) return
-  const targetProjectId = props.projectId
-  errorMessage.value = ''
-  cloningRevision.value = item.revision
-  try {
-    const result = await store.cloneRevision(targetProjectId, item.revision)
-    emit('update:show', false)
-    emit('cloned', result)
-  } catch (error) {
-    errorMessage.value = error?.message || '未来设计草稿创建失败'
-    await nextTick()
-    errorRegion.value?.focus({ preventScroll: false })
-  } finally {
-    cloningRevision.value = null
-  }
-}
-
 function handleShowUpdate(show) {
-  if (!show && store.cloning) return
   emit('update:show', show)
 }
 
 function resetDrawerState() {
   historyRequestGuard.invalidate()
   errorMessage.value = ''
-  cloningRevision.value = null
   store.clearHistory()
 }
 
@@ -120,12 +92,12 @@ onBeforeUnmount(() => resetDrawerState())
     :show="props.show"
     width="min(620px, 100vw)"
     placement="right"
-    :mask-closable="!store.cloning"
-    :close-on-esc="!store.cloning"
+    :mask-closable="true"
+    :close-on-esc="true"
     @update:show="handleShowUpdate"
   >
-    <n-drawer-content title="创作契约历史" :closable="!store.cloning">
-      <p class="drawer-intro">签印修订不可覆盖。只有与当前种子选择代次完全一致的历史修订，才可克隆为面向未来的新草稿。</p>
+    <n-drawer-content title="创作契约历史" :closable="true">
+      <p class="drawer-intro">签印修订不可覆盖。历史记录仅供查看与核对。</p>
 
       <n-alert
         v-if="errorMessage"
@@ -147,7 +119,7 @@ onBeforeUnmount(() => resetDrawerState())
                 <span>REVISION</span>
                 <h3>R{{ item.revision }}</h3>
               </div>
-              <n-tag :type="canClone(item) ? 'success' : 'warning'" round>
+              <n-tag type="default" round>
                 选择代次 R{{ item.selectionRevision }}
               </n-tag>
             </header>
@@ -231,15 +203,7 @@ onBeforeUnmount(() => resetDrawerState())
             </section>
 
             <footer>
-              <small v-if="!canClone(item)">
-                {{ props.readOnly ? '归档项目仅供只读查看' : '跨种子选择代次的设计不能复活' }}
-              </small>
-              <n-button
-                type="primary"
-                :disabled="!canClone(item)"
-                :loading="store.cloning && cloningRevision === item.revision"
-                @click="cloneRevision(item)"
-              >调整未来设计</n-button>
+              <small>历史修订仅供查看与核对。</small>
             </footer>
           </article>
           <n-button

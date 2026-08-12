@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, shallowRef, toRaw } from 'vue'
+import { computed, ref, shallowRef, toRaw } from 'vue'
 
 import {
   api,
@@ -158,6 +158,13 @@ export const usePlanningStore = defineStore('planning', () => {
   const outlineRecoveryKey = ref('')
   const outlineOutcomeUnknown = ref(false)
   const outlineAwaitingAuthority = ref(false)
+  const canAdjustOutline = computed(() => (
+    outlineState.value?.activeSession?.status === 'drafting'
+    && (
+      outlineState.value?.capabilities?.createDraft === true
+      || outlineState.value?.capabilities?.editDraft === true
+    )
+  ))
   const loadGuard = createLatestRequestGuard()
   const mutationGuard = createLatestRequestGuard()
   const generationGuard = createLatestRequestGuard()
@@ -2070,6 +2077,7 @@ export const usePlanningStore = defineStore('planning', () => {
     outlineRecoveryKey,
     outlineOutcomeUnknown,
     outlineAwaitingAuthority,
+    canAdjustOutline,
     load,
     ensureLoaded,
     createDraft,

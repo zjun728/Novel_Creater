@@ -1,6 +1,6 @@
 # 开发日志
 
-> 只记录当前有效的决策与证据摘要。日期：`2026-07-30`。不记录密钥、DSN、原始运行日志或本地截图。
+> 只记录当前有效的决策与证据摘要。日期：`2026-08-09`。不记录密钥、DSN、原始运行日志或本地截图。
 
 ## 2026-07-18 产品主规格重置
 
@@ -170,9 +170,102 @@ missing/error/retry、IME、Tab 焦点循环、Escape 焦点恢复、全局阻�
 - 详细证据：
   `docs/acceptance/2026-07-26-phase-3c-story-blocks-outlines.md`。
 
+## 2026-07-30 Phase 3 Story Planning 完成
+
+- Phase 3D 与完整 Phase 3 已完成。
+- 唯一下一产品包：Phase 4 Writer Loop。
+- 分支：`codex/phase3d-boundary-acceptance`；交付基线：`main@e8aebd9eb851ccc64f160022984342344905cd15`；功能代码 HEAD：`382dcefa57f575209cc703d3af0e60fd1b11137d`。
+- 当前源码 Schema 为 `writer-core-v1.6.0`；Candidate 身份包含 Outline/Planning/Canon/Projection 依据，Phase 3D 不提供 migration 或 compatibility path。
+- Future Plan/Actual Progress/Canon Projection 在同一 revision 只读组合，Planning 读取不写 lifecycle。
+- 完整 Fresh 门禁为 browser `6/6`、Python `2871 passed, 6 skipped, 0 failed`、root Node `345/345 passed, 0 failed`、frontend `547/547 passed, 0 failed`、integration `341 passed, 0 failed`、`created=339, cleaned=339, remaining=0`、Vite `8.0.13` 和 `2958 modules`；所有命令 exit `0`。
+- owned process、port、temp、artifact、cache 与 test DB 均为 `0`；Provider `0`、Product DB reads/writes `0/0`、live `0`、UI bypass `0`、secret `0`。
+- Seed、Contract 与 Bible 的已确认内容为永久基线；未来 Planning 只处理尚未实现的内容。正文定稿前对应大纲可以调整，正文定稿后大纲与事实不可修改，均以已实现和规格明确支持的范围为准。
+- Setting 与知识库仍在 Phase 5 通过 Canon/Projection 落地；Phase 4 Writer Loop、Phase 5 Finalization、真实 Provider、产品数据库与内容质量仍未就绪。
+- 规格与质量审查均为 `Critical/Important/Minor = 0/0/0`；详细证据：
+  `docs/acceptance/2026-07-30-phase-3-story-planning.md` 与
+  `docs/acceptance/2026-07-31-phase-3-immutable-boundary-alignment.md`。
+
+## 2026-08-09 Phase 4B3 Selection Tools / One-step Undo 完成
+
+- 分支：`codex/phase3d-boundary-acceptance`；功能代码验收快照：`caaeace`；源码 Schema：
+  `writer-core-v1.10.0`。
+- 交付同一纯文本编辑器中的精确选区 AI 改写、润色、扩写、缩写、独立 replacement
+  preview、局部取消保留原稿，以及最近一次未被触碰结果的一步追加式撤销。
+- 后端在任何 provider 副作用前验证 revision/hash、Unicode scalar range 与 selected-text
+  hash；完成时短事务重校验 fence/CAS，只替换目标范围并返回完整权威 WorkingDraft。
+- 没有新增表或列、同步 AI 旁路、scheduler 扩展、candidate/fusion、Canon 或 finalization
+  行为；Schema 只扩展既有 CHECK 枚举。
+- Fresh slice gates：Python/API `312 passed`，Node `190/190 passed`，Vite build
+  `2966 modules transformed`，affected MySQL `75 passed` 且 `75/75/0`，UI-only browser
+  `1/1 passed`。
+- 最终资源账本：owned process、开发端口、Phase4B3 temp、Vite `deps_temp`、test DB
+  均为 `0`；Real Provider calls `0`；Product DB reads/writes `0/0`。
+- 规格与质量审查均为 `Critical/Important/Minor = 0/0/0`；详细证据：
+  `docs/acceptance/2026-08-09-phase-4b3-selection-tools-undo.md`。
+- 本切片按精简风险门禁验收；完整 unit、364 项 MySQL、历史 Phase 4 browser 和 release
+  matrix 延期到 Phase 4 收口串行运行一次。
+- Full-draft rewrite、candidate load/compare/fusion、finalization、Canon projection、
+  download/export、real-provider quality 与 product-database readiness 仍未验收。
+
+## 2026-08-09 Phase 4C Candidate Load / Read-only Compare 完成
+
+- 分支：`codex/phase3d-boundary-acceptance`；功能代码验收快照：`05491f2`；源码 Schema：
+  `writer-core-v1.11.0`。
+- 交付严格 CAS 的 immutable Candidate load、同事务 before/update/after recovery，以及最多两份
+  Candidate 的紧凑只读并排比较。
+- 载入前 flush 可见编辑，client 只采用身份/content/hash/revision 全部校准的完整 server
+  workspace；迟到响应、错误 owner、过期 CAS、活跃 operation 与损坏 Candidate 均不能写回。
+- 没有 Candidate fusion、全文 AI 改写、通用 recovery browser、第二编辑器、Canon 写入或
+  finalization 行为；browser 不启动 Provider。
+- Fresh slice gates：Python/API/schema `230 passed`，Node `118/118 passed`，Vite build
+  `2966 modules transformed`，affected MySQL `1 passed` 且 `1/1/0`，UI-only browser
+  `1/1 passed`。
+- 最终资源账本：owned process/listener、Phase4C temp、pytest temp、Vite `deps_temp`、test DB
+  均为 `0`；Real Provider calls `0`；Product DB reads/writes `0/0`。
+- 规格与质量审查均为 `Critical/Important/Minor = 0/0/0`；详细证据：
+  `docs/acceptance/2026-08-09-phase-4c-candidate-load-compare.md`。
+- 本切片按精简风险门禁验收；完整 unit/integration、历史 Phase 4 browser 与 release matrix
+  延期到 Phase 4 close 串行运行一次。
+
+## 2026-08-09 Phase 4 Lean Writer Loop 收口
+
+- 分支：`codex/phase3d-boundary-acceptance`；阶段门禁快照：`840d90a`；源码 Schema：
+  `writer-core-v1.11.0`。
+- Phase4B2 streaming/reconnect/cancel、Phase4B3 exact-selection local tools/one-step undo
+  仅以 fake streaming provider 验收；Phase4C Candidate load/read-only compare 不启动 Provider。
+- Fresh Phase gates：Python `3322 passed, 6 skipped`，root Node `374/374`，frontend
+  `701/701`，integration `368 passed` 且 `366/366/0`，build `2966 modules`，browser
+  `6/6`（B2 `4/4`、B3 `1/1`、C `1/1`）。
+- 最终本轮资源账本：owned process/listener、常见开发端口、pytest temp、Vite `deps_temp`、
+  browser root、test DB 均为 `0`；Real Provider calls `0`；Product DB reads/writes `0/0`。
+- 发现并修正 3 处全局测试契约漂移：route inventory、旧 Phase 状态断言、旧 Candidate SSR
+  fixture；没有修改生产代码或放宽产品校验。
+- 规格与质量审查均为 `Critical/Important/Minor = 0/0/0`；详细证据：
+  `docs/acceptance/2026-08-09-phase-4-writer-loop.md`。
+- Full-draft rewrite、Candidate fusion、general recovery browsing、Canon/finalization、真实
+  Provider、产品数据库与内容质量仍未验收。
+
+## 2026-08-09 Phase 5 Lean Atomic Finalization 收口
+
+- 分支：`codex/phase3d-boundary-acceptance`；阶段门禁快照：`8edc651`；源码 Schema：
+  `writer-core-v1.12.0`。
+- 交付 current Candidate 的 deterministic precheck、注入 Provider 的质量报告与单次 ChangeSet
+  提取、作者修正 revision、整体确认，以及 FinalChapter/Canon/Projection/Planning progress/
+  Session final 的单事务提交和完整回滚。
+- Writer 只增加一个紧凑 finalization panel；没有第二编辑器、通用 workflow、评分框架、后台
+  job、runtime migration 或旧 finalization 兼容路径。
+- Fresh Phase gates：Python `3430 passed, 6 skipped`，root scripts Node `378/378`，frontend
+  Node `710/710`，integration `370 passed` 且 `368/368/0`，build `2969 modules`，Phase 5
+  browser `1/1`。
+- 最终资源账本：owned Python/Node process、Phase5 temp、Vite `deps_temp`、artifact root 和
+  test DB 均为 `0`；Real Provider calls `0`；Product DB reads/writes `0/0`。
+- Phase gate 收口 route inventory、旧 Writer fixture、browser pytest-temp 隔离和两个旧 MySQL
+  finalization fixtures；均为测试契约修复，没有修改生产行为或放宽校验。
+- 规格与质量审查均为 `Critical/Important/Minor = 0/0/0`；详细证据：
+  `docs/acceptance/2026-08-09-phase-5-atomic-finalization.md`。
+- 真实 Provider 质量、产品数据库、下载/备份/导入和内容质量仍未验收。
+
 ## 下一步
 
-唯一下一步是 Phase 3D Future Plan / Actual Progress / Canon Projection：在同一
-Planning revision 上只读组合 Future Plan、Actual Progress 与 Canon Projection，
-并完成 Phase 3 总验收。继续复用唯一 Planning aggregate、`planningStore` 和正式
-产品链；自动门禁继续禁止产品数据库、真实 Provider 和 live 网站。
+唯一下一产品阶段是 Phase 6：小说下载、安全备份、预检与导入。真实 Provider、产品数据库、
+live 网站和真实文章生成继续需要用户另行明确批准。

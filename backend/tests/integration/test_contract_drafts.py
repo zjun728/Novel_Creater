@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from hashlib import sha256
 
 import pytest
 
@@ -12,6 +13,7 @@ from backend.repositories.contracts import ContractRepository
 from backend.services.contracts import (
     AssetRevisionRef,
     ConfirmContracts,
+    ContractAlreadyConfirmed,
     ContractConflict,
     ContractDraftIncomplete,
     ContractDraftInput,
@@ -62,6 +64,8 @@ async def _bootstrap(session):
         project_id=PROJECT, revision=1, items=binding_items,
     ))
     now = 1_900_000_000_000
+    fragment_text = "A" * 300
+    fragment_hash = sha256(fragment_text.encode("utf-8")).hexdigest()
     await session.execute(
         """INSERT INTO projects
            (id,title,genre,description,target_words,target_chapters,status,
@@ -207,7 +211,7 @@ async def _bootstrap(session):
             chapter_char_start,chapter_char_end,normalized_text,content_hash,
             index_payload,analysis_version,created_at)
            VALUES (%s,%s,%s,1,0,300,%s,%s,'{}','analysis-v1',%s)""",
-        (FRAGMENT, SOURCE, CHAPTER, "A" * 300, "f" * 64, now),
+        (FRAGMENT, SOURCE, CHAPTER, fragment_text, fragment_hash, now),
     )
     await session.execute(
         "INSERT INTO project_contract_heads VALUES (%s,0,NULL,NULL,NULL,NULL,%s)",
@@ -220,7 +224,7 @@ async def _bootstrap(session):
         "card_hash": card_hash,
         "source_hash": source_hash,
         "binding_hash": binding_hash,
-        "fragment_hash": "f" * 64,
+        "fragment_hash": fragment_hash,
     }
 
 
@@ -457,7 +461,7 @@ def _service(disposable_mysql):
 
 
 @pytest.mark.asyncio
-async def test_real_draft_preview_cas_and_confirmed_clone(disposable_mysql):
+async def test_real_draft_preview_cas_and_confirmed_contract_is_locked(disposable_mysql):
     facts = await _bootstrap(disposable_mysql.session)
     service = _service(disposable_mysql)
     created = await service.save_draft(SaveContractDraft(PROJECT, 0, _draft(facts)))
@@ -550,7 +554,7 @@ async def test_real_draft_preview_cas_and_confirmed_clone(disposable_mysql):
         (CREATION, STYLE_CONTRACT, preview.creation_hash, preview.style_hash, now, PROJECT),
     )
 
-    cloned = await service.clone_revision(PROJECT, 1)
-    assert cloned.base_head_revision == 1
-    assert cloned.draft_version == 1
-    assert cloned.draft.seedRevisionId == SEED_REV
+    with pytest.raises(ContractAlreadyConfirmed):
+        await service.clone_revision(PROJECT, 1)
+    assert await _table_count(disposable_mysql.session, "project_contract_drafts") == 0
+    assert await _table_count(disposable_mysql.session, "creation_contracts") == 1

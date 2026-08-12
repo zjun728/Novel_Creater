@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+import logging
 import os
 from pathlib import Path
 
@@ -10,7 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.database import close_pool, connection
+from backend.database import close_pool, connection, transaction
+from backend.config import MANAGED_CORPUS_ROOT
 from backend.gateways.openai_json_transport import (
     OpenAIJSONTransportLifecycleError,
 )
@@ -23,19 +25,47 @@ from backend.routers import (
     chapter_sessions,
     contracts,
     corpus,
+    finalization,
     market_sources,
     model_bindings,
+    novel_downloads,
     planning,
+    project_packages,
+    project_imports,
     projects,
     providers,
     seeds,
     style_trials,
     story_engines,
 )
-from backend.schema_version import verify_schema_version
+from backend.runtime.draft_operation_tasks import DraftOperationTasksDrainPending
 from backend.runtime.market_scheduler import build_market_scheduler_runtime
+from backend.schema_version import verify_schema_version
 from backend.security.paths import resolve_spa_file
 from backend.security.redaction import install_error_handlers
+from backend.services import project_imports as project_import_service
+
+
+_project_package_logger = logging.getLogger("backend.project_packages")
+_project_import_logger = logging.getLogger("backend.project_imports")
+
+
+class DraftOperationTaskRegistryLifecycleError(RuntimeError):
+    pass
+
+
+async def _close_draft_operation_task_registry(
+    registry,
+) -> tuple[bool, object | None]:
+    try:
+        await registry.aclose()
+    except DraftOperationTasksDrainPending as error:
+        return False, error.cleanup_transfer
+    except BaseException:
+        return False, None
+    finally:
+        registry = None
+    return True, None
 
 
 async def _close_planning_provider_gateway(gateway) -> bool:
@@ -77,18 +107,96 @@ async def _settle_independent_cleanup(
     return succeeded, observed_cancellations
 
 
+def _previous_shutdown_transfer_failed(app: FastAPI) -> bool:
+    draft_transfer = getattr(
+        app.state,
+        "draft_operation_shutdown_transfer",
+        None,
+    )
+    market_transfer = getattr(
+        app.state,
+        "market_scheduler_shutdown_transfer",
+        None,
+    )
+    transfers = []
+    for transfer in (draft_transfer, market_transfer):
+        if transfer is not None and not any(
+            existing is transfer for existing in transfers
+        ):
+            transfers.append(transfer)
+
+    failed = False
+    for transfer in transfers:
+        try:
+            if not transfer.done() or transfer.cancelled():
+                failed = True
+                continue
+            transfer.result()
+        except BaseException:
+            failed = True
+
+    if draft_transfer is not None:
+        registry_closed = (
+            getattr(
+                chapter_sessions.draft_operation_task_registry,
+                "state",
+                None,
+            )
+            == "closed"
+        )
+        if not registry_closed:
+            failed = True
+    return failed
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if _previous_shutdown_transfer_failed(app):
+        raise DraftOperationTaskRegistryLifecycleError(
+            "Draft operation task registry lifecycle failed"
+        ) from None
+
+    try:
+        project_packages.cleanup_stale_project_package_roots(
+            project_packages.PROJECT_PACKAGE_TEMP_PARENT
+        )
+    except Exception:
+        _project_package_logger.warning(
+            "project_package_stale_cleanup_failed"
+        )
+
     scheduler_runtime = None
     application_error = None
     planning_gateway_start_attempted = False
     outline_gateway_start_attempted = False
+    finalization_quality_start_attempted = False
+    finalization_extraction_start_attempted = False
+    draft_registry_start_attempted = False
     shutdown_cancellations = 0
     pool_close_transferred = False
+    pool_close_blocked = False
+    draft_cleanup_transfer = None
+    market_cleanup_transfer = None
+    app.state.draft_operation_shutdown_transfer = None
     app.state.market_scheduler_shutdown_transfer = None
     try:
         async with connection() as session:
             await verify_schema_version(session)
+        if MANAGED_CORPUS_ROOT is not None:
+            try:
+                await project_import_service.reconcile_project_import_staging(
+                    managed_corpus_root=MANAGED_CORPUS_ROOT,
+                    connection_factory=connection,
+                    transaction_factory=transaction,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _project_import_logger.warning(
+                    "project_import_startup_reconciliation_failed"
+                )
+        draft_registry_start_attempted = True
+        await chapter_sessions.draft_operation_task_registry.start()
         scheduler_runtime = build_market_scheduler_runtime()
         app.state.market_scheduler_runtime = scheduler_runtime
         scheduler_runtime.start()
@@ -96,11 +204,77 @@ async def lifespan(app: FastAPI):
         await planning.planning_provider_gateway.start()
         outline_gateway_start_attempted = True
         await chapter_outlines.chapter_outline_provider_gateway.start()
+        finalization_quality_start_attempted = True
+        await finalization.finalization_quality_gateway.start()
+        finalization_extraction_start_attempted = True
+        await finalization.finalization_extraction_gateway.start()
         yield
     except BaseException as error:
         application_error = error
     finally:
         cleanup_errors = []
+        if draft_registry_start_attempted:
+            draft_registry_cleanup = asyncio.create_task(
+                _close_draft_operation_task_registry(
+                    chapter_sessions.draft_operation_task_registry
+                ),
+                name="draft-operation-task-registry-close",
+            )
+            draft_registry_close_result, observed_cancellations = (
+                await _settle_independent_cleanup(draft_registry_cleanup)
+            )
+            (
+                draft_registry_close_succeeded,
+                draft_cleanup_transfer,
+            ) = draft_registry_close_result
+            draft_registry_cleanup = None
+            shutdown_cancellations += observed_cancellations
+            observed_cancellations = 0
+            if not draft_registry_close_succeeded:
+                pool_close_blocked = draft_cleanup_transfer is None
+                cleanup_errors.append(
+                    DraftOperationTaskRegistryLifecycleError(
+                        "Draft operation task registry lifecycle failed"
+                    )
+                )
+        if finalization_extraction_start_attempted:
+            extraction_cleanup = asyncio.create_task(
+                _close_planning_provider_gateway(
+                    finalization.finalization_extraction_gateway
+                ),
+                name="finalization-extraction-provider-close",
+            )
+            extraction_close_succeeded, observed_cancellations = (
+                await _settle_independent_cleanup(extraction_cleanup)
+            )
+            extraction_cleanup = None
+            shutdown_cancellations += observed_cancellations
+            observed_cancellations = 0
+            if not extraction_close_succeeded:
+                cleanup_errors.append(
+                    OpenAIJSONTransportLifecycleError(
+                        "OpenAI JSON transport lifecycle failed"
+                    )
+                )
+        if finalization_quality_start_attempted:
+            quality_cleanup = asyncio.create_task(
+                _close_planning_provider_gateway(
+                    finalization.finalization_quality_gateway
+                ),
+                name="finalization-quality-provider-close",
+            )
+            quality_close_succeeded, observed_cancellations = (
+                await _settle_independent_cleanup(quality_cleanup)
+            )
+            quality_cleanup = None
+            shutdown_cancellations += observed_cancellations
+            observed_cancellations = 0
+            if not quality_close_succeeded:
+                cleanup_errors.append(
+                    OpenAIJSONTransportLifecycleError(
+                        "OpenAI JSON transport lifecycle failed"
+                    )
+                )
         if outline_gateway_start_attempted:
             outline_cleanup = asyncio.create_task(
                 _close_planning_provider_gateway(
@@ -143,18 +317,41 @@ async def lifespan(app: FastAPI):
             try:
                 await scheduler_runtime.stop()
             except BaseException as error:
-                cleanup_transfer = getattr(
+                market_cleanup_transfer = getattr(
                     error,
                     "cleanup_transfer",
                     None,
                 )
-                if cleanup_transfer is not None:
-                    app.state.market_scheduler_shutdown_transfer = (
-                        cleanup_transfer.start_pool_close(close_pool)
-                    )
-                    pool_close_transferred = True
                 cleanup_errors.append(error)
-        if not pool_close_transferred:
+        if market_cleanup_transfer is not None:
+            if draft_cleanup_transfer is not None:
+
+                async def close_pool_after_draft_drain():
+                    await draft_cleanup_transfer.start_pool_close(close_pool)
+
+                final_transfer = market_cleanup_transfer.start_pool_close(
+                    close_pool_after_draft_drain
+                )
+                app.state.draft_operation_shutdown_transfer = final_transfer
+            elif pool_close_blocked:
+
+                async def reject_transferred_pool_close():
+                    raise DraftOperationTaskRegistryLifecycleError(
+                        "Draft operation task registry lifecycle failed"
+                    )
+
+                final_transfer = market_cleanup_transfer.start_pool_close(
+                    reject_transferred_pool_close
+                )
+            else:
+                final_transfer = market_cleanup_transfer.start_pool_close(close_pool)
+            app.state.market_scheduler_shutdown_transfer = final_transfer
+            pool_close_transferred = True
+        elif draft_cleanup_transfer is not None:
+            final_transfer = draft_cleanup_transfer.start_pool_close(close_pool)
+            app.state.draft_operation_shutdown_transfer = final_transfer
+            pool_close_transferred = True
+        if not pool_close_transferred and not pool_close_blocked:
             pool_cleanup = asyncio.create_task(
                 _close_pool_for_lifespan(),
                 name="application-database-pool-close",
@@ -204,6 +401,9 @@ app.add_middleware(
 )
 
 app.include_router(projects.router, prefix="/api")
+app.include_router(novel_downloads.router, prefix="/api")
+app.include_router(project_packages.router, prefix="/api")
+app.include_router(project_imports.router, prefix="/api")
 app.include_router(providers.router, prefix="/api")
 app.include_router(application_settings.router, prefix="/api")
 app.include_router(model_bindings.router, prefix="/api")
@@ -215,6 +415,7 @@ app.include_router(bibles.router, prefix="/api")
 app.include_router(planning.router, prefix="/api")
 app.include_router(chapter_outlines.router, prefix="/api")
 app.include_router(chapter_sessions.router, prefix="/api")
+app.include_router(finalization.router, prefix="/api")
 app.include_router(assets.router, prefix="/api")
 app.include_router(corpus.router, prefix="/api")
 app.include_router(canon.router, prefix="/api")

@@ -1,6 +1,6 @@
 # 产品开发规划
 
-> 当前有效规划。日期：`2026-07-30`。
+> 当前有效规划。日期：`2026-08-09`。
 
 ## 1. 产品目标
 
@@ -24,10 +24,10 @@ Novel Creator 要帮助作者持续写出长篇、连贯、可控并且让人愿
 | --- | --- | --- |
 | Phase 1 | 产品壳层与项目生命周期 | 已完成门禁 |
 | Phase 2 | 创作资产、Provider/模型设置、市场来源、选题与种子、契约、圣经、模型继承与资产冻结 | 已完成门禁 |
-| Phase 3 | 分卷、情节、故事块、小纲、已发生事实与未来计划 | 3A/3B/3C 已完成，3D 下一步 |
-| Phase 4 | 自动暂存、流式新稿、改写、扩写、压缩、候选、对比、融合 | 待开始 |
-| Phase 5 | 质量审核、单次事实提取、整体确认、原子定稿与失败回滚 | 待开始 |
-| Phase 6 | 小说下载、安全备份、预检与导入 | 待开始 |
+| Phase 3 | 分卷、情节、故事块、小纲、已发生事实与未来计划 | 已完成门禁 |
+| Phase 4 | 自动暂存、流式新稿、改写、扩写、压缩、候选、对比、融合 | 精简 Writer Loop 已完成 Phase 门禁；B1–B3 仅 fake provider，C 无 Provider；fusion/full-draft rewrite 延期且未验收 |
+| Phase 5 | 质量审核、单次事实提取、整体确认、原子定稿与失败回滚 | 精简闭环已完成 Phase 门禁；仅 fake quality/extraction Provider |
+| Phase 6 | 小说下载、安全备份、预检与导入 | 下一步 |
 | Phase 7 | 产品库、真实 Provider、自由浏览器探索、《典镇山河》30 章人工验收 | 待开始 |
 
 ## 3. Phase 2 完成边界
@@ -56,7 +56,7 @@ Phase 5 Finalization 或小说内容质量。
 - 独立 ChapterOutline Draft/Revision，确认后才能创建 ChapterSession；
 - Planning 只保存未来计划；实际进度只能由 Canon/Projection 只读提供；
 - 手工规划不依赖模型；AI 只生成可编辑 Draft，不自动确认；
-- 从空库建立 `writer-core-v1.5.0`，删除旧 Planning 权威，不做兼容迁移。
+- 从空库建立当前精确源码 Schema，删除旧 Planning 权威，不做兼容迁移。
 
 Phase 3 不实现正式正文写作、质量审核、Canon 写入或原子定稿，也不以 Schema
 占位或 fake gateway 测试冒充这些能力已经完成。
@@ -69,14 +69,28 @@ Phase 3 不实现正式正文写作、质量审核、Canon 写入或原子定稿
   server-authoritative next action、archived/superseded 只读及正式 UI-only
   浏览器门禁。
 - Phase 3C 已完成 StoryBlock/Stage/SceneTask、ChapterOutline Draft/save CAS/confirm/history、权威章节号、单一 drafting Session 与可靠 Writer 入口。
-- Phase 3D 是唯一下一步：Future Plan/Actual Progress/Canon Projection 同 revision 只读组合及 Phase 3 总验收。
+- Phase 3D 已完成 Future Plan/Actual Progress/Canon Projection 同 revision 只读组合及完整 Phase 3 验收。
 
-Phase 3C 沿用唯一 `planning-v1` aggregate、唯一 `planningStore` 和
-`writer-core-v1.5.0`；没有 Schema 变更、迁移或兼容路径。其自动验收不包含
-Future Plan/Actual Progress/Canon Projection 组合、真实 Provider、产品数据库、
-正式正文生成、Canon 写入或小说内容
-质量；详细证据见
-`docs/acceptance/2026-07-26-phase-3c-story-blocks-outlines.md`。
+Phase 3 沿用唯一 `planning-v1` aggregate、唯一 `planningStore` 和
+`writer-core-v1.6.0`。Phase 3D 将 Candidate 的 Outline/Planning/Canon/Projection
+依据身份纳入 Schema；从空库建立，不提供 migration 或 compatibility path。Seed、
+Contract 与 Bible 的已确认内容是永久基线；未来 Planning 只处理尚未实现的内容。
+正文定稿前对应大纲可以调整，正文定稿后大纲与事实不可修改；Phase 3 只交付定稿前
+的权威围栏，原子定稿随后由 Phase 5 交付。Phase 5 已把作者确认的 ChangeSet 写入
+Canon/Projection；独立 Setting/知识库浏览体验仍不是已交付能力。详细证据见：
+
+- `docs/acceptance/2026-07-30-phase-3-story-planning.md`
+- `docs/acceptance/2026-07-31-phase-3-immutable-boundary-alignment.md`
+
+- Phase 4B1 formal `generate_new` 已验收（仅 fake provider）。
+- Phase 4B2 streaming / reconnect / cancel 已验收（仅 fake streaming provider）。
+- Phase 4B3 exact-selection rewrite/polish/expand/compress、local cancellation 与 one-step
+  append-only undo 已验收（仅 fake streaming provider）。
+- Phase 4C candidate load 与 two-candidate read-only comparison 已在无 Provider 场景验收。
+- Phase 4 lean Writer Loop 已完成完整 Phase 门禁。AI fusion、full-draft rewrite 与 general
+  recovery browsing 继续延期且未验收。
+- Phase 5 lean quality review / ChangeSet / atomic finalization 已完成完整 Phase 门禁，仅以
+  fake quality/extraction Provider 验收；下一步进入 Phase 6 下载、备份、预检与导入。
 
 ## 5. 写作链路的先决修复
 
@@ -89,14 +103,16 @@ Future Plan/Actual Progress/Canon Projection 组合、真实 Provider、产品�
 4. Provider 调用不持有长数据库事务，最终提交使用 manifest hash、幂等键和 CAS；
 5. fake adapter 只能授予单元证据，不能授予 Provider/DB/内容 Ready。
 
-随后建设单一 `FinalizationChangeSet`、Canon 唯一事实源和单事务定稿。设定、记忆、
+Phase 5 已建设单一 `FinalizationChangeSet`、Canon 唯一事实源和单事务定稿。设定、记忆、
 人物弧光、伏笔和故事块状态只能由同一批已确认 Canon 变化投影，不能各自重新读正文。
+该自动验收不证明真实 Provider 质量、产品数据库、导出/备份或小说内容质量。
 
 ## 6. 每阶段共同门禁
 
 - 从 `main` 的上一已验收阶段创建隔离分支/worktree；
 - 先批准详细计划，后按 TDD 实现；
-- Python、Node、前端、MySQL 8 集成、真实浏览器和构建按风险完整验证；
+- 开发循环运行受影响 focused tests；切片收口按风险运行 affected Python/Node/MySQL、
+  build 与一个窄 UI-only 浏览器场景；完整历史矩阵只在 Phase 收口和 release candidate 运行；
 - 测试使用 disposable 数据库并证明 created=cleaned、remaining=0；
 - 真实 Provider 和产品数据库只在对应阶段明确批准后使用；
 - 任何 API、错误、日志、截图、诊断、下载或备份都不得包含明文秘密；

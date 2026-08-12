@@ -42,7 +42,17 @@ class DraftCandidateView:
     working_draft_revision: int
     content: str
     content_hash: str
-    provenance: Mapping[str, Any]
+    outline_revision_id: str | None
+    outline_revision: int | None
+    outline_hash: str | None
+    planning_revision_id: str | None
+    planning_revision: int | None
+    planning_hash: str | None
+    canon_revision: int | None
+    projection_revision: int | None
+    projection_hash: str | None
+    basis_status: str
+    created_at: int
     status: str
 
 
@@ -52,3 +62,4 @@ class ChapterWorkspace:
     session: ChapterSessionView
     working_draft: WorkingDraftView
     candidates: tuple[DraftCandidateView, ...]
+    active_draft_operation_id: str | None = None

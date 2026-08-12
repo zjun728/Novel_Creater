@@ -39,6 +39,7 @@ const editingSeed = ref(null)
 const editorInitialPayload = ref(null)
 const editorProvenance = ref(null)
 const deleteTarget = ref(null)
+const selectionTarget = ref(null)
 let workspaceProjectId = ''
 let workspaceGeneration = 0
 
@@ -86,6 +87,7 @@ function resetProjectWorkspace(projectId) {
   editorInitialPayload.value = null
   editorProvenance.value = null
   deleteTarget.value = null
+  selectionTarget.value = null
   marketStore.activateProject(projectId)
   seedStore.activateProject(projectId)
 }
@@ -123,7 +125,7 @@ watch(
 )
 
 function openCreate(payload = null, provenance = null) {
-  if (readOnly.value || seedStore.mutationBusy) return
+  if (readOnly.value || seedStore.activeSelection || seedStore.mutationBusy) return
   editingSeed.value = null
   editorInitialPayload.value = payload
   editorProvenance.value = provenance
@@ -238,6 +240,7 @@ function saveProposal() {
 }
 
 async function selectSeed(seed) {
+  if (readOnly.value || !seed?.capabilities?.canSelect) return
   const projectId = props.projectId
   const generation = workspaceGeneration
   try {
@@ -256,6 +259,7 @@ async function selectSeed(seed) {
 }
 
 async function changeArchive(seed, action) {
+  if (readOnly.value || (action === 'archive' && !seed?.capabilities?.canArchive) || (action === 'restore' && !seed?.capabilities?.canRestore)) return
   const projectId = props.projectId
   const generation = workspaceGeneration
   try {
@@ -457,9 +461,10 @@ async function confirmPermanentDelete() {
           <div>
             <p>SAVED CANDIDATES / ONE ACTIVE SELECTION</p>
             <h2 id="saved-seeds-heading">已存种子</h2>
-            <span>候选可以有多个；点击“立即选定”直接生效，不增加多余确认步骤。</span>
+            <span>确认一个候选后，它会成为项目永久基线，后续不能更换。</span>
           </div>
           <n-button
+            v-if="!seedStore.activeSelection"
             type="primary"
             :disabled="readOnly || seedStore.mutationBusy"
             @click="openCreate()"
@@ -478,7 +483,7 @@ async function confirmPermanentDelete() {
                 :read-only="readOnly"
                 :busy="seedStore.mutationBusy"
                 @edit="openEdit"
-                @select="selectSeed"
+                @select="selectionTarget = $event"
                 @archive="changeArchive($event, 'archive')"
                 @permanent-delete="deleteTarget = $event"
               />
@@ -529,6 +534,33 @@ async function confirmPermanentDelete() {
         />
       </section>
     </section>
+
+    <n-modal
+      v-if="selectionTarget"
+      :show="Boolean(selectionTarget)"
+      preset="card"
+      class="seed-confirm-dialog"
+      title="确认创作种子"
+      :mask-closable="false"
+      :closable="false"
+      style="width: min(480px, calc(100vw - 32px));"
+    >
+      <p>
+        确认后不可更换：《{{ selectionTarget?.payload?.title || '未命名种子' }}》将作为项目的永久基线。
+      </p>
+      <template #footer>
+        <div class="permanent-delete-dialog__actions">
+          <n-button :disabled="seedStore.mutationBusy" @click="selectionTarget = null">取消</n-button>
+          <n-button
+            type="primary"
+            :loading="seedStore.mutationBusy"
+            @click="selectSeed(selectionTarget).then(() => { selectionTarget = null }).catch(() => {})"
+          >
+            确认这个种子并进入创作契约
+          </n-button>
+        </div>
+      </template>
+    </n-modal>
 
     <n-modal
       v-if="deleteTarget"

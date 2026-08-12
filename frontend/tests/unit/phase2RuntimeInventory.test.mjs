@@ -160,6 +160,7 @@ const CANONICAL_RUNTIME = [
   'stores/chapterSessionStore.js',
   'stores/creationContractStore.js',
   'stores/planningStore.js',
+  'application/writer/draftOperationCoordinator.js',
   'components/planning/PlanningWorkspace.vue',
   'components/planning/StoryBlockEditor.vue',
   'api/ai/providerPresets.js',
@@ -220,10 +221,11 @@ test('chapter writer has one exact-outline session path and no legacy StoryBlock
     path.join(sourceRoot, relativePath),
     'utf8',
   )
-  const [client, store, writer] = await Promise.all([
+  const [client, store, writer, controller] = await Promise.all([
     readSource('api/db/client.js'),
     readSource('stores/chapterSessionStore.js'),
     readSource('views/ChapterWriterView.vue'),
+    readSource('application/writer/chapterWriterController.js'),
   ])
 
   for (const [name, source] of [
@@ -239,17 +241,15 @@ test('chapter writer has one exact-outline session path and no legacy StoryBlock
   }
   assert.doesNotMatch(writer, /planningStore|usePlanningStore/)
   assert.doesNotMatch(writer, /watch\(\s*workingDraft/)
-  assert.match(writer, /createChapterEditorState/)
-  assert.match(writer, /decideChapterNavigation/)
-  assert.match(writer, /editorState\.finishSave/)
-  assert.match(writer, /editorState\.finishGeneration/)
-  assert.match(writer, /onBeforeRouteLeave/)
-  assert.match(writer, /onBeforeRouteUpdate/)
-  assert.match(
-    writer,
-    /:disabled="!session \|\| chapterSessionStore\.generatingDraft"/,
-  )
+  assert.match(writer, /createWorkingDraftAutosave/)
+  assert.match(writer, /createChapterWriterController/)
+  assert.match(controller, /createDraftOperationCoordinator/)
+  assert.match(writer, /PlainTextDraftEditor/)
+  assert.match(writer, /onBeforeRouteLeave\(async/)
+  assert.match(writer, /onBeforeRouteUpdate\(async/)
+  assert.doesNotMatch(writer, /chapterEditorState|createChapterEditorState|decideChapterNavigation/)
   assert.match(store, /const busy = computed\(/)
+  assert.match(store, /const commandBusy = computed\(/)
   assert.match(store, /function assertWriteAvailable\(/)
   assert.match(writer, /请先完成并确认本章小纲/)
   assert.match(
@@ -261,6 +261,14 @@ test('chapter writer has one exact-outline session path and no legacy StoryBlock
     /watch\(\s*\(\)\s*=>\s*\[route\.params\.projectId,\s*route\.params\.chapterNumber\]/,
   )
   assert.doesNotMatch(client, /chapterSessions\/current|chapterSessions:\s*\{[\s\S]*?current:/)
+  assert.doesNotMatch(client, /generateWorkingDraft|generate-working-draft/)
+  assert.doesNotMatch(store, /generateWorkingDraft|generate-working-draft/)
+  assert.doesNotMatch(writer, /chapterSessionStore\.generateWorkingDraft/)
+  assert.match(store, /api\.chapterSessions\.createDraftOperation/)
+  assert.match(store, /api\.chapterSessions\.readDraftOperation/)
+  assert.match(store, /api\.chapterSessions\.listDraftOperationEvents/)
+  assert.match(writer, /chapterSessionStore\.reloadCurrentWorkspace/)
+  assert.equal((writer.match(/chapterSessionStore\.saveWorkingDraft/g) ?? []).length, 1)
   assert.match(store, /const chapterNumber = ref\(0\)/)
   assert.match(
     store,

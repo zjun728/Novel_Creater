@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 
 import ProjectCard from '../components/projects/ProjectCard.vue'
 import ProjectEmptyState from '../components/projects/ProjectEmptyState.vue'
+import ProjectImportPanel from '../components/projects/ProjectImportPanel.vue'
 import ProjectNameDialog from '../components/projects/ProjectNameDialog.vue'
 import { useAppMessage } from '../composables/useAppMessage.js'
 import { createProjectLibraryController } from '../composables/projectLibraryControllers.js'
@@ -13,7 +14,7 @@ export { createProjectLibraryController }
 
 export default defineComponent({
   name: 'ProjectLibraryView',
-  components: { ProjectCard, ProjectEmptyState, ProjectNameDialog },
+  components: { ProjectCard, ProjectEmptyState, ProjectImportPanel, ProjectNameDialog },
   setup() {
     const store = useProjectStore()
     const controller = createProjectLibraryController({
@@ -36,6 +37,7 @@ export default defineComponent({
         <span>选择一部长篇继续创作，或从一个名字建立新项目。</span>
       </div>
       <div class="project-library-heading__actions">
+        <ProjectImportPanel />
         <router-link class="library-link" to="/projects/archived">已归档</router-link>
         <button type="button" class="library-primary-button" @click="beginCreate">
           新建项目

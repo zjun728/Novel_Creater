@@ -1,10 +1,78 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 import { createPinia, setActivePinia } from 'pinia'
 
 import { api } from '../../src/api/db/client.js'
 import { useCreationContractStore } from '../../src/stores/creationContractStore.js'
+
+test('contract store has no product clone revision action', async () => {
+  const source = await readFile(new URL('../../src/stores/creationContractStore.js', import.meta.url), 'utf8')
+  assert.doesNotMatch(source, /cloneRevision|api\.contracts\.clone/)
+})
+
+test('unknown contract head hydration rejects every product write before transport', async () => {
+  let writes = 0
+  const unexpectedWrite = async () => { writes += 1; return {} }
+  await withApiMethods([
+    [api.contracts.draft, 'save', unexpectedWrite],
+    [api.contracts, 'preview', unexpectedWrite],
+    [api.contracts, 'confirm', unexpectedWrite],
+    [api.storyEngines, 'generate', unexpectedWrite],
+    [api.storyEngines, 'manual', unexpectedWrite],
+    [api.storyEngines, 'reconcile', unexpectedWrite],
+    [api.styleTrials, 'generate', unexpectedWrite],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+    for (const operation of [
+      () => store.saveDraft('project-1', draftValues('engine')),
+      () => store.preview('project-1'),
+      () => store.confirm('project-1', { idempotencyKey: 'unknown' }),
+      () => store.generateEngineBatch('project-1', { idempotencyKey: 'unknown' }),
+      () => store.createManualEngineBatch('project-1', { idempotencyKey: 'unknown', options: [] }),
+      () => store.reconcileBatch('project-1', 'batch-1'),
+      () => store.reconcileRecoverableBatch('project-1', 'batch-1'),
+      () => store.runStyleTrial('project-1', {}),
+    ]) await assert.rejects(operation, error => error?.code === 'contract_hydration_unknown')
+    assert.equal(writes, 0)
+  })
+})
+
+test('a hydrated confirmed head locks every writer even with a coexisting incomplete draft', async () => {
+  let writes = 0
+  const unexpectedWrite = async () => { writes += 1; return {} }
+  await withApiMethods([
+    [api.contracts.draft, 'get', async () => publicDraft('assets', 3)],
+    [api.contracts, 'head', async projectId => ({ projectId, revision: 1, hasContract: true, contractReady: false, reasons: ['seed_drift'] })],
+    [api.contracts.draft, 'save', unexpectedWrite],
+    [api.contracts, 'preview', unexpectedWrite],
+    [api.contracts, 'confirm', unexpectedWrite],
+    [api.storyEngines, 'generate', unexpectedWrite],
+    [api.storyEngines, 'manual', unexpectedWrite],
+    [api.storyEngines, 'reconcile', unexpectedWrite],
+    [api.styleTrials, 'generate', unexpectedWrite],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+    await store.load('project-1')
+    assert.equal(store.headHydrated, true)
+    assert.equal(store.baselineLocked, true)
+    assert.ok(store.draft)
+    for (const operation of [
+      () => store.saveDraft('project-1', draftValues('engine')),
+      () => store.preview('project-1'),
+      () => store.confirm('project-1', { idempotencyKey: 'locked' }),
+      () => store.generateEngineBatch('project-1', { idempotencyKey: 'locked' }),
+      () => store.createManualEngineBatch('project-1', { idempotencyKey: 'locked', options: [] }),
+      () => store.reconcileBatch('project-1', 'batch-1'),
+      () => store.reconcileRecoverableBatch('project-1', 'batch-1'),
+      () => store.runStyleTrial('project-1', {}),
+    ]) await assert.rejects(operation, error => error?.code === 'contract_baseline_locked')
+    assert.equal(writes, 0)
+  })
+})
 
 const HASH_A = 'a'.repeat(64)
 const HASH_B = 'b'.repeat(64)
@@ -182,7 +250,6 @@ test('unsaved edit tracking is local-only and can be explicitly discarded withou
     [api.contracts, 'head', unexpectedCall],
     [api.contracts, 'preview', unexpectedCall],
     [api.contracts, 'confirm', unexpectedCall],
-    [api.contracts, 'clone', unexpectedCall],
     [api.storyEngines, 'reconcile', unexpectedCall],
   ], async () => {
     setActivePinia(createPinia())
@@ -221,7 +288,7 @@ test('a local edit invalidates an older load before it can clear the unsaved che
   })
 })
 
-test('successful load, save, confirm and clone checkpoints clear unsaved edit state', async () => {
+test('successful load, save, and confirm checkpoints clear unsaved edit state', async () => {
   let loadVersion = 3
 
   await withApiMethods([
@@ -231,7 +298,6 @@ test('successful load, save, confirm and clone checkpoints clear unsaved edit st
     [api.contracts, 'confirm', async () => ({
       projectId: 'project-1', revision: 1, contractReady: true, reasons: [],
     })],
-    [api.contracts, 'clone', async () => publicDraft('assets', 1)],
   ], async () => {
     setActivePinia(createPinia())
     const store = useCreationContractStore()
@@ -248,10 +314,6 @@ test('successful load, save, confirm and clone checkpoints clear unsaved edit st
     await store.confirm('project-1', { idempotencyKey: 'checkpoint-confirm' })
     assert.equal(store.hasUnsavedChanges, false)
 
-    loadVersion = 1
-    store.markUnsavedChanges()
-    await store.cloneRevision('project-1', 1)
-    assert.equal(store.hasUnsavedChanges, false)
   })
 })
 
@@ -446,6 +508,8 @@ test('outcome_unknown remains pending until reconcileBatch is called explicitly'
   let generates = 0
 
   await withApiMethods([
+    [api.contracts.draft, 'get', async () => null],
+    [api.contracts, 'head', async projectId => ({ projectId, revision: 0, hasContract: false })],
     [api.storyEngines, 'generate', async () => {
       generates += 1
       throw new Error('must not generate automatically')
@@ -457,6 +521,8 @@ test('outcome_unknown remains pending until reconcileBatch is called explicitly'
   ], async () => {
     setActivePinia(createPinia())
     const store = useCreationContractStore()
+
+    await store.load('project-1')
 
     assert.equal(reconciles, 0)
     assert.equal(generates, 0)
@@ -668,6 +734,8 @@ test('Provider and manual story-engine batches are created only by one explicit 
   const options = [{ name: '甲案' }, { name: '乙案' }, { name: '丙案' }]
 
   await withApiMethods([
+    [api.contracts.draft, 'get', async () => null],
+    [api.contracts, 'head', async projectId => ({ projectId, revision: 0, hasContract: false })],
     [api.storyEngines, 'generate', async (projectId, command) => {
       providerCalls.push({ projectId, command: structuredClone(command) })
       return { id: 'provider-batch', status: 'succeeded', options }
@@ -679,6 +747,7 @@ test('Provider and manual story-engine batches are created only by one explicit 
   ], async () => {
     setActivePinia(createPinia())
     const store = useCreationContractStore()
+    await store.load('project-1')
 
     assert.equal(providerCalls.length, 0)
     assert.equal(manualCalls.length, 0)
@@ -712,6 +781,8 @@ test('latest story-engine command wins and an outcome_unknown result never trigg
   let reconciles = 0
 
   await withApiMethods([
+    [api.contracts.draft, 'get', async () => null],
+    [api.contracts, 'head', async projectId => ({ projectId, revision: 0, hasContract: false })],
     [api.storyEngines, 'generate', async () => {
       generates += 1
       return slowGenerate.promise
@@ -727,6 +798,7 @@ test('latest story-engine command wins and an outcome_unknown result never trigg
   ], async () => {
     setActivePinia(createPinia())
     const store = useCreationContractStore()
+    await store.load('project-1')
 
     const generate = store.generateEngineBatch('project-1', {
       idempotencyKey: 'provider-explicit-2',
@@ -746,7 +818,7 @@ test('latest story-engine command wins and an outcome_unknown result never trigg
   })
 })
 
-test('confirm replays the exact command for the same idempotency key after draft consumption', async () => {
+test('confirmation locks its permanent baseline after the first command', async () => {
   const confirmCalls = []
   const confirmed = {
     projectId: 'project-1', revision: 1, hasContract: true,
@@ -755,7 +827,7 @@ test('confirm replays the exact command for the same idempotency key after draft
 
   await withApiMethods([
     [api.contracts.draft, 'get', async () => publicDraft('assets', 3)],
-    [api.contracts, 'head', async () => ({ contractReady: false, reasons: [] })],
+    [api.contracts, 'head', async () => ({ revision: 0, contractReady: false, reasons: [] })],
     [api.contracts, 'confirm', async (projectId, command) => {
       confirmCalls.push({ projectId, command: structuredClone(command) })
       return confirmed
@@ -767,12 +839,13 @@ test('confirm replays the exact command for the same idempotency key after draft
 
     const first = await store.confirm('project-1', { idempotencyKey: 'confirm-1' })
     assert.equal(store.draft, null)
-    const replay = await store.confirm('project-1', { idempotencyKey: 'confirm-1' })
+    await assert.rejects(
+      store.confirm('project-1', { idempotencyKey: 'confirm-1' }),
+      error => error?.code === 'contract_baseline_locked',
+    )
 
     assert.equal(first, confirmed)
-    assert.equal(replay, confirmed)
-    assert.equal(confirmCalls.length, 2)
-    assert.deepEqual(confirmCalls[1], confirmCalls[0])
+    assert.equal(confirmCalls.length, 1)
     assert.deepEqual(confirmCalls[0].command, {
       idempotencyKey: 'confirm-1',
       expectedDraftVersion: 3,
@@ -780,67 +853,6 @@ test('confirm replays the exact command for the same idempotency key after draft
     })
     assert.equal(store.confirmed, confirmed)
     assert.equal(store.contractReady, true)
-  })
-})
-
-test('cloneRevision performs one formal API call and installs the returned backend draft', async () => {
-  let clones = 0
-
-  await withApiMethods([
-    [api.contracts, 'clone', async (projectId, sourceRevision) => {
-      clones += 1
-      assert.equal(sourceRevision, 4)
-      return { ...publicDraft('assets', 1), projectId, baseHeadRevision: 4 }
-    }],
-  ], async () => {
-    setActivePinia(createPinia())
-    const store = useCreationContractStore()
-    const result = await store.cloneRevision('project-1', 4)
-
-    assert.equal(clones, 1)
-    assert.equal(result.baseHeadRevision, 4)
-    assert.equal(store.draft, result)
-    assert.equal(store.lastSavedStage, 'assets')
-  })
-})
-
-test('clone clears prior confirmation replay so the same key confirms the new draft snapshot', async () => {
-  const confirmCalls = []
-  const cloned = {
-    ...publicDraft('assets', 1),
-    contentHash: HASH_B,
-    baseHeadRevision: 1,
-  }
-
-  await withApiMethods([
-    [api.contracts.draft, 'get', async () => publicDraft('assets', 3)],
-    [api.contracts, 'head', async () => ({ contractReady: false, reasons: [] })],
-    [api.contracts, 'confirm', async (_projectId, command) => {
-      confirmCalls.push(structuredClone(command))
-      return { revision: confirmCalls.length, contractReady: true, reasons: [] }
-    }],
-    [api.contracts, 'clone', async () => cloned],
-  ], async () => {
-    setActivePinia(createPinia())
-    const store = useCreationContractStore()
-    await store.load('project-1')
-
-    await store.confirm('project-1', { idempotencyKey: 'reused-key' })
-    await store.cloneRevision('project-1', 1)
-    await store.confirm('project-1', { idempotencyKey: 'reused-key' })
-
-    assert.deepEqual(confirmCalls, [
-      {
-        idempotencyKey: 'reused-key',
-        expectedDraftVersion: 3,
-        expectedDraftHash: HASH_A,
-      },
-      {
-        idempotencyKey: 'reused-key',
-        expectedDraftVersion: 1,
-        expectedDraftHash: HASH_B,
-      },
-    ])
   })
 })
 
@@ -875,6 +887,8 @@ test('style trial uses the backend gateway and remains temporary contract-neutra
 
   try {
     await withApiMethods([
+      [api.contracts.draft, 'get', async () => null],
+      [api.contracts, 'head', async projectId => ({ projectId, revision: 0, hasContract: false })],
       [api.styleTrials, 'generate', async (projectId, payload) => {
         calls.push({ projectId, payload: structuredClone(payload) })
         return trial
@@ -882,6 +896,7 @@ test('style trial uses the backend gateway and remains temporary contract-neutra
     ], async () => {
       setActivePinia(createPinia())
       const store = useCreationContractStore()
+      await store.load('project-1')
       const beforeDraft = store.draft
       const result = await store.runStyleTrial('project-1', command)
 
@@ -1047,7 +1062,6 @@ test('archived read-only mode rejects every formal write before transport', asyn
     [api.contracts.draft, 'save', unexpectedWrite],
     [api.contracts, 'preview', unexpectedWrite],
     [api.contracts, 'confirm', unexpectedWrite],
-    [api.contracts, 'clone', unexpectedWrite],
     [api.storyEngines, 'generate', unexpectedWrite],
     [api.storyEngines, 'manual', unexpectedWrite],
     [api.styleTrials, 'generate', unexpectedWrite],
@@ -1060,7 +1074,6 @@ test('archived read-only mode rejects every formal write before transport', asyn
       () => store.saveDraft('project-1', draftValues('engine')),
       () => store.preview('project-1'),
       () => store.confirm('project-1', { idempotencyKey: 'archived' }),
-      () => store.cloneRevision('project-1', 1),
       () => store.generateEngineBatch('project-1', { idempotencyKey: 'archived' }),
       () => store.createManualEngineBatch('project-1', { idempotencyKey: 'archived', options: [] }),
       () => store.runStyleTrial('project-1', {}),

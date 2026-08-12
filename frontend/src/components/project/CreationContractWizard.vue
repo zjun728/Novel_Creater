@@ -42,17 +42,10 @@ const steps = Object.freeze([
 ])
 
 const selectedSeed = computed(() => seedStore.selectedSeed)
-const hasSignedHead = computed(() => contractStore.head?.hasContract === true)
-const hasCurrentContract = computed(() => (
-  hasSignedHead.value
-  && contractStore.contractReady
-  && !contractStore.draft
-  && !props.readOnly
-))
-const hasArchivedSignedContract = computed(() => props.readOnly && hasSignedHead.value)
-const displayedSignedContract = computed(() => (
-  hasCurrentContract.value || hasArchivedSignedContract.value
-))
+const baselineLocked = computed(() => Number(contractStore.head?.revision || 0) > 0)
+const hasCurrentContract = computed(() => baselineLocked.value && !props.readOnly)
+const hasArchivedSignedContract = computed(() => props.readOnly && baselineLocked.value)
+const displayedSignedContract = computed(() => baselineLocked.value)
 const archivedInvalidReasons = computed(() => {
   if (!hasArchivedSignedContract.value) return []
   const detailed = Array.isArray(contractStore.head?.supersededReasons)
@@ -80,14 +73,12 @@ const writeBusy = computed(() => Boolean(
   || contractStore.saving
   || contractStore.previewing
   || contractStore.confirming
-  || contractStore.cloning
   || contractStore.engineLoading
   || contractStore.reconciling
   || contractStore.styleTrialLoading,
 ))
 const operationLabel = computed(() => {
   if (contractStore.confirming) return '正在签印创作契约'
-  if (contractStore.cloning) return '正在建立未来设计草稿'
   if (contractStore.styleTrialLoading) return '正在生成临时风格试写'
   if (contractStore.engineLoading || contractStore.reconciling) return '正在处理故事发动机'
   if (contractStore.previewing) return '正在核对冻结引用'
@@ -206,7 +197,7 @@ onBeforeUnmount(() => {
         <p>先把未来写作的边界与承诺写成一份稿簿，再进入滚动规划。</p>
       </div>
       <div class="ledger-tools">
-        <n-button v-if="contractStore.head?.hasContract" quaternary @click="historyOpen = true">历史修订</n-button>
+        <n-button v-if="baselineLocked" quaternary @click="historyOpen = true">历史修订</n-button>
         <n-tag v-if="hasArchivedSignedContract" type="warning" round :bordered="false">最后签印的历史契约</n-tag>
         <n-tag v-else-if="props.readOnly" type="warning" round :bordered="false">只读档案</n-tag>
         <n-tag v-else-if="hasCurrentContract" type="success" round :bordered="false">已签印</n-tag>
@@ -265,9 +256,9 @@ onBeforeUnmount(() => {
         <div class="confirmed-seal" aria-hidden="true">契</div>
         <div>
           <span>IMMUTABLE REVISION · R{{ contractStore.head.revision }}</span>
-          <h2>{{ hasArchivedSignedContract ? '最后签印的历史契约' : '当前生效的创作契约' }}</h2>
+          <h2>{{ hasArchivedSignedContract ? '最后签印的历史契约' : '已确认，作为项目永久基线' }}</h2>
           <p v-if="hasArchivedSignedContract">这是项目归档前最后签印的不可变修订，仅用于历史核对，不代表当前输入仍然就绪。</p>
-          <p v-else>这份修订已经签印，只读且不可覆盖。调整只会从历史修订建立一份面向未来的新草稿。</p>
+          <p v-else>这份修订已经签印，只读且不可覆盖，可通过历史记录核对。</p>
           <n-alert
             v-if="archivedInvalidReasons.length"
             type="warning"
@@ -289,7 +280,7 @@ onBeforeUnmount(() => {
             :dislikes="contractStore.head.dislikes"
             compact
           />
-          <n-button v-if="!props.readOnly" type="primary" @click="historyOpen = true">从历史调整未来设计</n-button>
+          <n-button v-if="!props.readOnly" type="primary" @click="historyOpen = true">查看修订历史</n-button>
         </div>
       </article>
 
@@ -377,9 +368,6 @@ onBeforeUnmount(() => {
     <ContractHistoryDrawer
       v-model:show="historyOpen"
       :project-id="props.projectId"
-      :current-selection-revision="seedStore.selectionRevision"
-      :read-only="props.readOnly"
-      @cloned="advance(4)"
     />
   </section>
 </template>

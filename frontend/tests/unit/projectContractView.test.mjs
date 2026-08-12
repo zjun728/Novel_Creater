@@ -24,6 +24,19 @@ const behaviorNaiveStubId = '\0contract-workspace-naive-ui-stub'
 const HASH_A = 'a'.repeat(64)
 const HASH_B = 'b'.repeat(64)
 
+test('confirmed contract components present a permanent baseline without clone controls', async () => {
+  const files = await Promise.all([
+    'src/components/project/ContractHeadSummary.vue',
+    'src/components/project/CreationContractWizard.vue',
+    'src/components/project/contract/ContractHistoryDrawer.vue',
+  ].map(path => source(path)))
+  const contents = files.join('\n')
+  assert.match(contents, /已确认，作为项目永久基线/)
+  assert.match(contents, /Number\(contractStore\.head\?\.revision \|\| 0\) > 0/)
+  assert.doesNotMatch(contents, /contractStore\.contractReady\s*&&\s*!contractStore\.draft/)
+  assert.doesNotMatch(contents, /创建新修订|调整未来设计|cloneRevision/)
+})
+
 function formalAssetRecommendations(styles = [], cards = [], corpus = []) {
   return {
     attemptId: 'attempt-formal',
@@ -541,7 +554,7 @@ test('workspace guards unsaved edits, scopes its overlay, and focuses live error
   assert.doesNotMatch(combined, /删除契约|重置契约|resetContract|deleteContract/)
 })
 
-test('history shows immutable pinned revisions and enables clone only for compatible generations', async () => {
+test('history shows immutable pinned revisions as read-only records', async () => {
   const [history, preview] = await Promise.all([
     source('src/components/project/contract/ContractHistoryDrawer.vue'),
     source('src/components/project/contract/ContractPreviewStep.vue'),
@@ -550,9 +563,8 @@ test('history shows immutable pinned revisions and enables clone only for compat
   assert.match(history, /pinnedHistoricalRevision/)
   assert.match(history, /supersededReasons/)
   assert.match(history, /selectionRevision/)
-  assert.match(history, /cloneRevision\([^)]*revision/)
-  assert.match(history, /调整未来设计/)
-  assert.match(history, /:disabled="[^"\n]*(superseded|canClone)/)
+  assert.match(history, /历史修订仅供查看与核对/)
+  assert.doesNotMatch(history, /cloneRevision|调整未来设计|canClone/)
   assert.match(preview, /一次确认完整契约/)
   assert.match(preview, /不可覆盖|只读/)
   assert.doesNotMatch(`${history}\n${preview}`, /删除|重置/)
@@ -604,7 +616,7 @@ function mountWithPinia(component, props, configureStore) {
   return { app, root, store }
 }
 
-test('wizard treats a superseded contract head as not current and starts the selected seed at engine', async () => {
+test('wizard treats a revisioned contract head as a permanent baseline despite stale readiness', async () => {
   const invalidHead = {
     hasContract: true,
     contractReady: false,
@@ -654,11 +666,10 @@ test('wizard treats a superseded contract head as not current and starts the sel
   try {
     await flush()
     const rendered = textContent(mounted.root)
-    assert.doesNotMatch(rendered, /当前生效的创作契约/)
-    assert.ok(walk(mounted.root).find(node => (
+    assert.match(rendered, /已确认，作为项目永久基线/)
+    assert.equal(walk(mounted.root).find(node => (
       node.type === 'nav' && node.props['aria-label'] === '创作契约五个步骤'
-    )))
-    assert.match(rendered, /故事发动机/)
+    )), undefined)
     assert.match(rendered, /雾港错钟/)
     assert.ok(findByText(mounted.root, 'button', '历史修订'))
   } finally {
@@ -799,7 +810,7 @@ test('story engine trims and saves custom profile identifiers without mapping or
   }
 })
 
-test('history drawer renders every pinned identity and fragment while generation gates clone', async () => {
+test('history drawer renders every pinned identity and fragment as read-only', async () => {
   const hashes = {
     seed: '1'.repeat(64),
     engine: '2'.repeat(64),
@@ -855,12 +866,8 @@ test('history drawer renders every pinned identity and fragment while generation
     assert.match(rendered, /已被更新修订取代/)
     assert.match(rendered, /种子选择代次已改变/)
     assert.doesNotMatch(rendered, /selection_revision_changed/)
-    const cloneButtons = walk(mounted.root).filter(node => (
-      node.type === 'button' && textContent(node).trim() === '调整未来设计'
-    ))
-    assert.equal(cloneButtons.length, 2)
-    assert.notEqual(cloneButtons[0].props.disabled, true)
-    assert.equal(cloneButtons[1].props.disabled, true)
+    assert.match(rendered, /历史修订仅供查看与核对/)
+    assert.equal(walk(mounted.root).some(node => textContent(node).trim() === '调整未来设计'), false)
   } finally {
     mounted.app.unmount()
   }
@@ -1393,7 +1400,11 @@ for (const lateOutcome of ['rejection', 'failed-result']) {
       engineHash: HASH_A,
       primaryStyleRef: primaryStyleRef.value,
       secondaryStyleRef: null,
-    }))
+    }), store => {
+      store.projectId = 'project-1'
+      store.head = { projectId: 'project-1', revision: 0, hasContract: false }
+      store.headHydrated = true
+    })
 
     try {
       const scenario = inputForLabel(mounted.root, '作者场景')
@@ -1453,118 +1464,6 @@ function simpleHistoryRow(revision) {
     styleRefs: [], experienceCardRefs: [], corpusSourceRefs: [], supersededReasons: [],
   }
 }
-
-test('history clone ignores close requests while pending then closes through the cloned step handoff', async () => {
-  const pendingClone = deferred()
-  const originalClone = api.contracts.clone
-  const show = VueRuntime.ref(true)
-  const events = []
-  const clonedDraft = {
-    id: 'draft-from-r4',
-    projectId: 'project-1',
-    baseHeadRevision: 4,
-    draftVersion: 1,
-    draftStage: 'assets',
-    draft: { draftStage: 'assets' },
-  }
-  api.contracts.clone = async () => pendingClone.promise
-  const mounted = mountWithPinia(ContractHistoryDrawer, () => ({
-    show: show.value,
-    projectId: 'project-1',
-    currentSelectionRevision: 8,
-    readOnly: false,
-    'onUpdate:show': value => {
-      events.push(['show', value])
-      show.value = value
-    },
-    onCloned: value => events.push(['cloned', value]),
-  }), store => {
-    store.projectId = 'project-1'
-    store.history = [simpleHistoryRow(4)]
-    store.loadHistory = async () => ({ items: store.history, nextBeforeRevision: null })
-  })
-
-  try {
-    await flush()
-    const clone = invoke(findByText(mounted.root, 'button', '调整未来设计'), 'onClick')
-    await flush()
-    assert.equal(mounted.store.cloning, true)
-    const drawer = walk(mounted.root).find(node => node.props['data-component'] === 'NDrawer')
-    const content = walk(drawer).find(node => node.props['data-component'] === 'NDrawerContent')
-    const pendingFlags = {
-      maskClosable: drawer.props.maskClosable,
-      closeOnEsc: drawer.props.closeOnEsc,
-      contentClosable: content.props.closable,
-    }
-    await trigger(drawer, 'onRequestClose')
-    const stayedOpen = show.value
-
-    pendingClone.resolve(clonedDraft)
-    await clone
-    await flush()
-
-    assert.equal(stayedOpen, true)
-    assert.deepEqual(pendingFlags, {
-      maskClosable: false,
-      closeOnEsc: false,
-      contentClosable: false,
-    })
-    assert.deepEqual(events, [
-      ['show', false],
-      ['cloned', clonedDraft],
-    ])
-    assert.equal(show.value, false)
-    const wizard = await source('src/components/project/CreationContractWizard.vue')
-    assert.match(wizard, /@cloned="advance\(4\)"/)
-  } finally {
-    api.contracts.clone = originalClone
-    mounted.app.unmount()
-  }
-})
-
-test('history clone failure keeps the drawer open and focuses its current error', async () => {
-  const pendingClone = deferred()
-  const originalClone = api.contracts.clone
-  const show = VueRuntime.ref(true)
-  const events = []
-  naiveBehaviorModule.focusEvents.length = 0
-  api.contracts.clone = async () => pendingClone.promise
-  const mounted = mountWithPinia(ContractHistoryDrawer, () => ({
-    show: show.value,
-    projectId: 'project-1',
-    currentSelectionRevision: 8,
-    readOnly: false,
-    'onUpdate:show': value => {
-      events.push(['show', value])
-      show.value = value
-    },
-    onCloned: value => events.push(['cloned', value]),
-  }), store => {
-    store.projectId = 'project-1'
-    store.history = [simpleHistoryRow(4)]
-    store.loadHistory = async () => ({ items: store.history, nextBeforeRevision: null })
-  })
-
-  try {
-    await flush()
-    const clone = invoke(findByText(mounted.root, 'button', '调整未来设计'), 'onClick')
-    await flush()
-    const drawer = walk(mounted.root).find(node => node.props['data-component'] === 'NDrawer')
-    await trigger(drawer, 'onRequestClose')
-    pendingClone.reject(new Error('当前克隆失败'))
-    await clone
-    await flush()
-
-    assert.equal(show.value, true)
-    assert.deepEqual(events, [])
-    assert.equal(mounted.store.cloning, false)
-    assert.match(textContent(mounted.root), /当前克隆失败/)
-    assert.ok(naiveBehaviorModule.focusEvents.includes('NAlert'))
-  } finally {
-    api.contracts.clone = originalClone
-    mounted.app.unmount()
-  }
-})
 
 test('history drawer reloads on project change and ignores the old project late failure', async () => {
   const pendingA = deferred()

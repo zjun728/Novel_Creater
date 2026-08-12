@@ -1,8 +1,14 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { createPinia, setActivePinia } from 'pinia'
 import { useBibleStore } from '../../src/stores/bibleStore.js'
 import { createBibleWorkspaceController } from '../../src/application/bible/bibleWorkspaceController.js'
+
+test('Bible store exposes no clone draft action after confirmation', async () => {
+  const source = await readFile(new URL('../../src/stores/bibleStore.js', import.meta.url), 'utf8')
+  assert.doesNotMatch(source, /async function clone|api\.bible\.draft\.clone/)
+})
 
 function deferred() { let resolve; let reject; const promise = new Promise((a, b) => { resolve = a; reject = b }); return { promise, resolve, reject } }
 function bible() { const item = id => [{ id, text: `${id} text` }]; return { premiseAndPromise: 'Promise', worldRules: item('world'), powerOrProgressionSystem: 'Growth', protagonist: 'Hero', coreCast: item('cast'), factions: item('faction'), longTermConflicts: item('conflict'), relationshipDynamics: item('relationship'), toneAndNarrativeBoundaries: 'Tone', continuityGuardrails: item('guardrail'), openDesignQuestions: item('question'), privateField: 'must-not-publish' } }
@@ -43,7 +49,57 @@ test('confirm replays the same pending or outcome-unknown command promise and ke
 test('archived and backend capability denial prevent all writes before transport', async () => {
   let writes = 0
   await withFetch(async (url, options = {}) => { if (options.method !== 'GET') writes += 1; const path = new URL(String(url)).pathname; return response(path.endsWith('/head') ? head('project-1', 1, { lifecycle: 'archived', canClone: false }) : draft('project-1', 1, { lifecycle: 'archived', canEdit: false, canConfirm: false, canClone: false, reasons: ['archived'] })) }, async () => {
-    setActivePinia(createPinia()); const store = useBibleStore(); await store.load('project-1', { readOnly: true }); for (const action of [async () => store.save('project-1'), async () => store.confirm('project-1', { idempotencyKey: 'no' }), async () => store.clone('project-1', { sourceRevision: 1 })]) await assert.rejects(action); assert.equal(writes, 0)
+    setActivePinia(createPinia()); const store = useBibleStore(); await store.load('project-1', { readOnly: true }); for (const action of [async () => store.save('project-1'), async () => store.confirm('project-1', { idempotencyKey: 'no' })]) await assert.rejects(action); assert.equal(writes, 0)
+  })
+})
+
+test('a same-project authority refresh failure fails closed over a formerly writable draft', async () => {
+  let refreshFails = false
+  let writes = 0
+  await withFetch(async (url, options = {}) => {
+    const path = new URL(String(url)).pathname
+    if (options.method !== 'GET') writes += 1
+    if (refreshFails && path.endsWith('/bible/head')) return response({ code: 'BibleUnavailable' }, 503)
+    return response(path.endsWith('/head') ? head('project-1') : draft('project-1'))
+  }, async () => {
+    setActivePinia(createPinia())
+    const store = useBibleStore()
+    await store.load('project-1')
+    assert.equal(store.canEdit, true)
+    refreshFails = true
+    await assert.rejects(store.load('project-1'))
+
+    assert.equal(store.headHydrated, false)
+    assert.equal(store.canEdit, false)
+    assert.equal(store.canConfirm, false)
+    assert.throws(() => store.edit(bible()))
+    assert.throws(() => store.confirm('project-1', { idempotencyKey: 'stale' }))
+    for (const action of [
+      () => store.save('project-1'),
+      () => store.generate('project-1', { idempotencyKey: 'stale' }),
+    ]) await assert.rejects(action)
+    assert.equal(writes, 0)
+  })
+})
+
+test('a confirmed Bible head locks every write even when a stale draft claims capabilities', async () => {
+  let writes = 0
+  await withFetch(async (url, options = {}) => {
+    if (options.method !== 'GET') writes += 1
+    const path = new URL(String(url)).pathname
+    return response(path.endsWith('/head') ? head('project-1', 1) : draft('project-1'))
+  }, async () => {
+    setActivePinia(createPinia())
+    const store = useBibleStore()
+    await store.load('project-1')
+    assert.equal(store.baselineLocked, true)
+    assert.throws(() => store.edit(bible()))
+    assert.throws(() => store.confirm('project-1', { idempotencyKey: 'locked' }))
+    for (const action of [
+      () => store.save('project-1'),
+      () => store.generate('project-1', { idempotencyKey: 'locked' }),
+    ]) await assert.rejects(action)
+    assert.equal(writes, 0)
   })
 })
 

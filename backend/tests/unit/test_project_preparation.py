@@ -37,22 +37,43 @@ def _selection(revision=7):
     }
 
 
-def _contract(*, ready=True, revision=5, selection_revision=7):
+def _seed_ref(
+    *,
+    seed_id="seed-a",
+    revision_id="seed-a-r1",
+    content_hash="a" * 64,
+):
     return SimpleNamespace(
-        revision=revision,
-        selection_revision=selection_revision,
-        creation_contract_id="creation-5",
-        creation_hash="b" * 64,
-        style_contract_id="style-5",
-        style_hash="c" * 64,
-        contract_ready=ready,
-        seed_ref=SimpleNamespace(
-            id="seed-a",
-            revision_id="seed-a-r1",
-            content_hash="a" * 64,
-        ),
-        reasons=() if ready else ("selection_drift",),
+        id=seed_id,
+        revision_id=revision_id,
+        content_hash=content_hash,
     )
+
+
+def _contract(
+    *,
+    ready=True,
+    revision=5,
+    selection_revision=7,
+    reasons=None,
+    seed_ref=None,
+    **overrides,
+):
+    values = {
+        "revision": revision,
+        "selection_revision": selection_revision,
+        "creation_contract_id": "creation-5",
+        "creation_hash": "b" * 64,
+        "style_contract_id": "style-5",
+        "style_hash": "c" * 64,
+        "contract_ready": ready,
+        "seed_ref": seed_ref or _seed_ref(),
+        "reasons": reasons if reasons is not None else (
+            () if ready else ("selection_drift",)
+        ),
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
 
 
 def _ready_model_tasks():
@@ -383,7 +404,7 @@ async def test_preparation_priority_is_operation_session_then_foundation_and_pla
         ),
         (
             _snapshot(selection=_selection()),
-            _contract(ready=False),
+            _contract(ready=False, selection_revision=6),
             (
                 "continue_contract",
                 "/projects/project%20%2F%20%E4%B8%80/contract",
@@ -596,6 +617,116 @@ def _outline_head():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "dynamic_reason",
+    ("binding_drift", "future_runtime_drift"),
+)
+async def test_confirmed_story_chain_survives_planning_binding_drift(
+    dynamic_reason,
+):
+    rows = list(_ready_model_tasks())
+    planning_index = TASK_KEYS.index("planning")
+    rows[planning_index] = {
+        **rows[planning_index],
+        "resolution_status": "unbound",
+        "provider_ready": 0,
+        "model_snapshot_matches": 0,
+    }
+    service, *_ = _service(
+        _snapshot(
+            selection=_selection(),
+            bible_head=_current_bible_head(),
+            planning_head=_current_planning_head(),
+            outline_head=_outline_head(),
+            canon_projection=_current_projection(),
+            authoritative_chapter_number=8,
+            model_tasks=rows,
+        ),
+        _contract(ready=False, reasons=(dynamic_reason,)),
+    )
+
+    preparation = await service.preparation("project / 一")
+
+    assert (
+        preparation.contract,
+        preparation.bible,
+        preparation.planning,
+        preparation.outline,
+    ) == ("current", "current", "current", "current")
+    assert preparation.next_action == "start_chapter_session"
+    assert "planning_model_not_ready" in preparation.reasons
+
+
+@pytest.mark.asyncio
+async def test_contract_head_drift_invalidates_confirmed_story_chain():
+    service, *_ = _service(
+        _snapshot(
+            selection=_selection(),
+            bible_head=_current_bible_head(),
+            planning_head=_current_planning_head(),
+            outline_head=_outline_head(),
+            canon_projection=_current_projection(),
+            authoritative_chapter_number=8,
+        ),
+        _contract(ready=True, reasons=("contract_head_drift",)),
+    )
+
+    preparation = await service.preparation("project / 一")
+
+    assert preparation.contract == "superseded"
+    assert preparation.next_action == "continue_contract"
+    assert preparation.reasons[0] == "contract_superseded"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("selection_overrides", "contract_overrides"),
+    (
+        (None, {}),
+        ({"selection_revision": 8}, {}),
+        ({}, {"seed_ref": _seed_ref(seed_id="seed-other")}),
+        ({}, {"seed_ref": _seed_ref(revision_id="seed-a-r2")}),
+        ({}, {"seed_ref": _seed_ref(content_hash="9" * 64)}),
+        ({}, {"creation_contract_id": None}),
+        ({}, {"creation_hash": ""}),
+        ({}, {"style_contract_id": None}),
+        ({}, {"style_hash": ""}),
+    ),
+    ids=(
+        "missing-selection",
+        "selection-revision-drift",
+        "seed-id-drift",
+        "seed-revision-drift",
+        "seed-hash-drift",
+        "missing-creation-id",
+        "missing-creation-hash",
+        "missing-style-id",
+        "missing-style-hash",
+    ),
+)
+async def test_confirmed_contract_basis_fails_closed_on_identity_drift(
+    selection_overrides,
+    contract_overrides,
+):
+    selection = (
+        None
+        if selection_overrides is None
+        else {**_selection(), **selection_overrides}
+    )
+    service, *_ = _service(
+        _snapshot(selection=selection),
+        _contract(**contract_overrides),
+    )
+
+    preparation = await service.preparation("project / 一")
+
+    assert preparation.contract == "superseded"
+    assert preparation.next_action == (
+        "select_seed" if selection is None else "continue_contract"
+    )
+
+
+@pytest.mark.asyncio
 async def test_outline_operation_draft_and_confirmed_head_have_fixed_priority():
     base = {
         "selection": _selection(),
@@ -679,42 +810,30 @@ async def test_outline_operation_draft_and_confirmed_head_have_fixed_priority():
 async def test_current_drafts_require_current_selection_and_base_head_revision():
     current_contract_draft = {
         **_selection(),
-        "base_head_revision": 5,
+        "base_head_revision": 0,
     }
     current_bible_draft = {
         "draft_id": "draft-current",
-        "base_head_revision": 3,
+        "base_head_revision": 0,
         **_bible_basis(),
-    }
-    old_bible_head = {
-        "head_revision": 3,
-        "head_bible_revision_id": "bible-old-a",
-        "head_content_hash": "d" * 64,
-        "revision_id": "bible-old-a",
-        "revision": 3,
-        "content_hash": "d" * 64,
-        **_bible_basis(selection_revision=4),
     }
     service, *_ = _service(
         _snapshot(
             selection=_selection(),
             contract_draft=current_contract_draft,
-            bible_head=old_bible_head,
-            bible_draft=current_bible_draft,
         ),
-        _contract(ready=False),
+        _contract(ready=False, revision=0),
     )
 
     preparation = await service.preparation("project / 一")
 
     assert preparation.contract == "draft"
-    assert preparation.bible == "superseded"
+    assert preparation.bible == "missing"
     assert preparation.next_action == "continue_contract"
 
     service, *_ = _service(
         _snapshot(
             selection=_selection(),
-            bible_head=old_bible_head,
             bible_draft=current_bible_draft,
         ),
         _contract(),
@@ -747,7 +866,7 @@ async def test_contract_draft_requires_the_exact_selected_seed_identity():
 
 
 @pytest.mark.asyncio
-async def test_active_adjustment_drafts_take_priority_over_confirmed_heads():
+async def test_confirmed_contract_and_bible_heads_precede_legacy_drafts():
     current_head = {
         "head_revision": 3,
         "head_bible_revision_id": "bible-3",
@@ -769,8 +888,8 @@ async def test_active_adjustment_drafts_take_priority_over_confirmed_heads():
         _contract(),
     )
     preparation = await service.preparation("project / 一")
-    assert preparation.contract == "draft"
-    assert preparation.next_action == "continue_contract"
+    assert preparation.contract == "current"
+    assert preparation.next_action == "establish_planning"
 
     service, *_ = _service(
         _snapshot(
@@ -786,8 +905,8 @@ async def test_active_adjustment_drafts_take_priority_over_confirmed_heads():
     )
     preparation = await service.preparation("project / 一")
     assert preparation.contract == "current"
-    assert preparation.bible == "draft"
-    assert preparation.next_action == "continue_bible"
+    assert preparation.bible == "current"
+    assert preparation.next_action == "establish_planning"
 
 
 @pytest.mark.asyncio
@@ -851,6 +970,26 @@ async def test_bible_current_requires_exact_head_identity_hash_and_full_contract
 
 
 @pytest.mark.asyncio
+async def test_planning_current_still_requires_exact_confirmed_bible_basis():
+    service, *_ = _service(
+        _snapshot(
+            selection=_selection(),
+            bible_head=_current_bible_head(),
+            planning_head={
+                **_current_planning_head(),
+                "bible_hash": "9" * 64,
+            },
+        ),
+        _contract(),
+    )
+
+    result = await service.preparation("project / 一")
+
+    assert result.bible == "current"
+    assert result.planning == "superseded"
+
+
+@pytest.mark.asyncio
 async def test_only_planning_model_loss_changes_bible_generation_capability():
     rows = list(_ready_model_tasks())
     rows[1] = {
@@ -862,11 +1001,79 @@ async def test_only_planning_model_loss_changes_bible_generation_capability():
         _contract(),
     )
     result = await service.preparation("project / 一")
-    assert result.capabilities.edit_contract is True
+    assert result.capabilities.edit_contract is False
     assert result.capabilities.edit_bible is True
     assert result.capabilities.generate_bible is False
     assert result.reasons == ("bible_missing", "planning_model_not_ready")
     assert result.model_tasks[1].reasons == ("provider_unavailable",)
+
+
+@pytest.mark.asyncio
+async def test_confirmed_baselines_close_contract_and_bible_capabilities_only():
+    current_bible = {
+        "head_revision": 1,
+        "head_bible_revision_id": "bible-1",
+        "head_content_hash": "d" * 64,
+        "revision_id": "bible-1",
+        "revision": 1,
+        "content_hash": "d" * 64,
+        **_bible_basis(),
+    }
+    service, *_ = _service(
+        _snapshot(selection=_selection(), bible_head=current_bible), _contract()
+    )
+
+    result = await service.preparation("project / 一")
+
+    assert result.contract == result.bible == "current"
+    assert result.capabilities.edit_contract is False
+    assert result.capabilities.edit_bible is False
+    assert result.capabilities.generate_bible is False
+    assert result.next_action == "establish_planning"
+
+    service, *_ = _service(
+        _snapshot(
+            selection=_selection(),
+            contract_draft={**_selection(), "base_head_revision": 0},
+        ),
+        _contract(ready=False, revision=0),
+    )
+    draft_contract = await service.preparation("project / 一")
+    assert draft_contract.contract == "draft"
+    assert draft_contract.capabilities.edit_contract is True
+
+    service, *_ = _service(_snapshot(selection=_selection()), _contract())
+    missing_bible = await service.preparation("project / 一")
+    assert missing_bible.bible == "missing"
+    assert missing_bible.capabilities.edit_bible is True
+
+    service, *_ = _service(
+        _snapshot(
+            selection=_selection(),
+            contract_draft={**_selection(), "base_head_revision": 5},
+        ),
+        _contract(),
+    )
+    legacy_contract_draft = await service.preparation("project / 一")
+    assert legacy_contract_draft.contract == "current"
+    assert legacy_contract_draft.capabilities.edit_contract is False
+
+    service, *_ = _service(
+        _snapshot(
+            selection=_selection(),
+            bible_head=current_bible,
+            bible_draft={
+                "draft_id": "legacy-bible-draft",
+                "base_head_revision": 1,
+                **_bible_basis(),
+            },
+        ),
+        _contract(),
+    )
+    legacy_bible_draft = await service.preparation("project / 一")
+    assert legacy_bible_draft.bible == "current"
+    assert legacy_bible_draft.capabilities.edit_bible is False
+    assert legacy_bible_draft.capabilities.generate_bible is False
 
     rows = list(_ready_model_tasks())
     rows[0] = {
@@ -933,7 +1140,7 @@ async def test_malformed_model_task_snapshot_fails_closed_to_eight_safe_values(r
     assert tuple(item.task_key for item in result.model_tasks) == TASK_KEYS
     assert all(item.readiness == "not_ready" for item in result.model_tasks)
     assert all(item.reasons == ("binding_incomplete",) for item in result.model_tasks)
-    assert result.capabilities.edit_contract is True
+    assert result.capabilities.edit_contract is False
     assert result.capabilities.edit_bible is True
     assert result.capabilities.generate_bible is False
 

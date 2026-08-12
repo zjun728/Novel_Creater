@@ -301,6 +301,45 @@ test('planning transport exposes only the revisioned aggregate endpoints', () =>
   assert.equal(api.planning.createInitial, undefined)
 })
 
+test('actual progress remains authoritative state and never enters editable Planning writes', async () => {
+  const progress = {
+    revisionNumber: 2,
+    subjectKey: '__global__',
+    entityId: null,
+    fieldPath: 'plot.gunpowder',
+    value: { status: 'old', evidence: ['第一章'] },
+    contentHash: HASH,
+  }
+  const loaded = readyState('project-1', draft())
+  loaded.canonProjectionStatus = {
+    canonRevision: 2,
+    projectionRevision: 2,
+    contentHash: HASH,
+    synchronized: true,
+  }
+  loaded.actualProgress = [progress]
+  const savedBodies = []
+  await withApiMethods([
+    [api.planning, 'get', async () => loaded],
+    [api.planning, 'history', async () => ({ items: [] })],
+    [api.planning, 'saveDraft', async (_projectId, _draftId, body) => {
+      savedBodies.push(body)
+      return draft(NEXT_HASH, 2)
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.load('project-1')
+    store.editLocal({ ...store.localContent, activeStoryBlockRef: 'author-edit' })
+    await store.saveDraft({ idempotencyKey: 'planning-save-author-only' })
+
+    assert.deepEqual(store.state.actualProgress, [progress])
+    assert.equal('actualProgress' in store.localContent, false)
+  })
+  assert.equal('actualProgress' in savedBodies[0].content, false)
+  assert.equal('actualProgress' in savedBodies[0], false)
+})
+
 test('sensitive generation keys fail before API calls and never enter recovery state', async () => {
   let generationCalls = 0
   await withApiMethods([
@@ -1646,6 +1685,29 @@ function outlineForPlanningR1(
   loaded.capabilities.createDraft = activeDraft === null
   return loaded
 }
+
+test('drafting active Session exposes only server-authorized outline adjustment', () => {
+  setActivePinia(createPinia())
+  const store = usePlanningStore()
+  store.outlineState = outlineState('project-1')
+  store.outlineState.activeSession = { status: 'drafting' }
+  store.outlineState.capabilities = {
+    ...store.outlineState.capabilities,
+    createDraft: true,
+    editDraft: false,
+  }
+
+  assert.equal(store.canAdjustOutline, true)
+
+  store.outlineState = {
+    ...store.outlineState,
+    capabilities: {
+      ...store.outlineState.capabilities,
+      createDraft: false,
+    },
+  }
+  assert.equal(store.canAdjustOutline, false)
+})
 
 test('real ChapterOutline response boundary keeps mutation and history secrets out of Store state', async () => {
   const originalFetch = global.fetch

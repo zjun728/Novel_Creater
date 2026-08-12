@@ -16,6 +16,7 @@ from backend.domain.seeds import (
     seed_revision_document,
 )
 from backend.http_errors import ProjectArchived
+from backend.services import contracts
 from backend.services.contracts import (
     ConfirmContracts,
     ContractConflict,
@@ -999,225 +1000,52 @@ async def test_preview_invalid_binding_returns_null_creation_instead_of_422():
 
 
 @pytest.mark.asyncio
-async def test_clone_confirmed_head_creates_version_one_and_never_overwrites():
+async def test_confirmed_contract_clone_is_rejected_before_snapshot_validation():
     harness = ContractHarness()
-    initial = await harness.service.save_draft(command(harness))
-    preview = await harness.service.preview("p1")
-    harness.repository.drafts.clear()
-    harness.repository.heads["p1"] = {
-        "project_id": "p1", "revision": 7,
-        "creation_contract_id": "creation-7", "style_contract_id": "style-7",
-        "creation_hash": preview.creation_hash, "style_hash": preview.style_hash,
-    }
-    reference_manifest = harness.service._reference_manifest(preview)
-    harness.repository.confirmed["p1"] = {
-        "project_id": "p1",
-        "revision": 7,
-        "selection_revision": initial.selection_revision,
-        "channel_profile_key": initial.draft.channelProfileKey,
-        "genre_profile_key": initial.draft.genreProfileKey,
-        "quality_charter_version": initial.draft.qualityCharterVersion,
-        "total_word_min": initial.draft.targetTotalWords,
-        "total_word_max": initial.draft.targetTotalWords,
-        "chapter_capacity_policy": canonical_json({
-            "expectedVolumeCount": initial.draft.expectedVolumeCount,
-            "expectedChapterCount": initial.draft.expectedChapterCount,
-            "chapterWordRangePreference": list(
-                initial.draft.chapterWordRangePreference
-            ),
-        }),
-        "seed_id": preview.seed_ref.id,
-        "seed_revision_id": initial.draft.seedRevisionId,
-        "seed_hash": initial.draft.seedHash,
-        "engine_option_id": initial.draft.engineOptionId,
-        "engine_batch_id": preview.engine_ref.batch_id,
-        "engine_hash": initial.draft.engineHash,
-        "binding_revision_id": preview.binding_ref.id,
-        "binding_revision": preview.binding_ref.revision,
-        "binding_hash": preview.binding_ref.content_hash,
-        "creation_hash": preview.creation_hash,
-        "style_hash": preview.style_hash,
-        "head_creation_hash": preview.creation_hash,
-        "head_style_hash": preview.style_hash,
-        "creation_contract_id": "creation-7",
-        "style_contract_id": "style-7",
-        "reference_manifest_json": canonical_json(reference_manifest),
-        "reference_manifest_hash": canonical_hash(reference_manifest),
-        "creation_json": preview.creation_contract.model_dump(mode="json"),
-        "style_json": preview.style_contract.model_dump(mode="json"),
-        "likes_json": list(initial.draft.likes),
-        "dislikes_json": list(initial.draft.dislikes),
-        "style_refs": tuple(ref.model_dump(mode="json") for ref in preview.style_refs),
-        "experience_card_refs": tuple(
-            ref.model_dump(mode="json") for ref in preview.experience_card_refs
-        ),
-            "corpus_source_refs": tuple(
-                ref.model_dump(mode="json") for ref in preview.corpus_source_refs
-            ),
-            "corpus_fragment_refs": tuple({
-                "sourceId": source.id,
-                **fragment.model_dump(mode="json"),
-            } for source in preview.corpus_source_refs
-              for fragment in source.fragments),
-    }
-    snapshot = harness.repository.confirmed["p1"]
-    snapshot["creation_json"] = canonical_json(snapshot["creation_json"])
-    snapshot["style_json"] = canonical_json(snapshot["style_json"])
-    snapshot["likes_json"] = canonical_json(snapshot["likes_json"])
-    snapshot["dislikes_json"] = canonical_json(snapshot["dislikes_json"])
-
-    snapshot["creation_hash"] = "0" * 64
-    with pytest.raises(ContractPreconditionFailed):
-        await harness.service.clone_revision("p1", 7)
-    harness.repository.confirmed["p1"]["creation_hash"] = preview.creation_hash
-
-    corruptions = ("binding", "seed", "engine", "style", "card", "corpus")
-    for kind in corruptions:
-        target, field = {
-            "binding": (
-                harness.repository.binding_revisions["binding-revision-3"],
-                "content_hash",
-            ),
-            "seed": (
-                harness.repository.seed_revisions["seed-revision-1"], "seed_hash",
-            ),
-            "engine": (harness.repository.engines["engine-1"], "content_hash"),
-            "style": (harness.repository.styles["style-primary"], "content_hash"),
-            "card": (harness.repository.cards["card-1"], "content_hash"),
-            "corpus": (harness.repository.sources["source-1"], "source_hash"),
-        }[kind]
-        original = target[field]
-        target[field] = "f" * 64
-        with pytest.raises(ContractPreconditionFailed):
-            await harness.service.clone_revision("p1", 7)
-        # Rollback replaces fake repository containers; restore by semantic key.
-        if kind == "seed":
-            harness.repository.seed_revisions["seed-revision-1"][field] = original
-        elif kind == "corpus":
-            harness.repository.sources["source-1"][field] = original
-        elif kind == "engine":
-            harness.repository.engines["engine-1"][field] = original
-        elif kind == "style":
-            harness.repository.styles["style-primary"][field] = original
-        elif kind == "card":
-            harness.repository.cards["card-1"][field] = original
-        else:
-            harness.repository.binding_revisions["binding-revision-3"][field] = original
-
-    harness.repository.styles["style-primary"]["head_revision"] = 99
-    harness.repository.styles["style-primary"]["head_hash"] = "9" * 64
-    cloned = await harness.service.clone_revision("p1", 7)
-
-    assert cloned.draft_version == 1
-    assert cloned.base_head_revision == 7
-    assert cloned.draft == initial.draft
-    harness.repository.binding_head = {
-        "head_revision": 4,
-        "head_binding_revision_id": "binding-revision-4",
-        "head_hash": "c" * 64,
-    }
-    drifted_clone = await harness.service.preview("p1")
-    assert drifted_clone.contract_ready is False
-    assert "style_drift:primary" in drifted_clone.reasons
-    with pytest.raises(ContractConflict):
-        await harness.service.clone_revision("p1", 7)
+    saved = await harness.service.save_draft(command(harness))
+    confirmed = await harness.service.confirm(confirmation(saved))
+    with pytest.raises(contracts.ContractAlreadyConfirmed):
+        await harness.service.clone_revision("p1", confirmed.revision)
+    assert harness.repository.drafts == {}
 
 
 @pytest.mark.asyncio
-async def test_clone_historical_revision_in_same_selection_uses_current_head_base():
+async def test_confirmed_contract_history_is_readable_but_not_cloneable():
     harness = ContractHarness()
-    initial = await harness.service.save_draft(command(harness))
-    await harness.service.confirm(confirmation(initial))
-    historical = deepcopy(harness.repository.confirmed_revisions[("p1", 1)])
-    current = {
-        **deepcopy(historical),
-        "revision": 2,
-        "creation_contract_id": "creation-2",
-        "style_contract_id": "style-2",
-    }
-    harness.repository.confirmed_revisions[("p1", 2)] = current
-    harness.repository.confirmed["p1"] = current
-    harness.repository.heads["p1"] = {
-        "project_id": "p1",
-        "revision": 2,
-        "creation_contract_id": "creation-2",
-        "style_contract_id": "style-2",
-        "creation_hash": current["creation_hash"],
-        "style_hash": current["style_hash"],
-    }
-
-    cloned = await harness.service.clone_revision("p1", 1)
-
-    assert cloned.draft == initial.draft
-    assert cloned.selection_revision == historical["selection_revision"]
-    assert cloned.base_head_revision == 2
-    assert cloned.draft_version == 1
-    assert cloned.id != initial.id
+    saved = await harness.service.save_draft(command(harness))
+    confirmed = await harness.service.confirm(confirmation(saved))
+    history = await harness.service.history("p1")
+    assert tuple(item.revision for item in history.items) == (confirmed.revision,)
+    with pytest.raises(contracts.ContractAlreadyConfirmed):
+        await harness.service.clone_revision("p1", confirmed.revision)
 
 
-@pytest.mark.parametrize(
-    ("case", "field", "tampered", "relation_updates", "capacity_updates"),
-    (
-        ("selection", "selectionRevision", 8, {}, {}),
-        ("channel", "channelProfileKey", "tampered-channel", {}, {}),
-        ("genre", "genreProfileKey", "tampered-genre", {}, {}),
-        ("charter", "qualityCharterVersion", "tampered-charter-v2", {}, {}),
-        ("word-min", "targetTotalWords", 1_000_001,
-         {"total_word_max": 1_000_001}, {}),
-        ("word-max", "targetTotalWords", 999_999,
-         {"total_word_min": 999_999}, {}),
-        ("volumes", "expectedVolumeCount", 9, {}, {}),
-        ("chapters", "expectedChapterCount", 401, {}, {}),
-        ("chapter-range", "chapterWordRangePreference", [2_600, 3_600], {}, {}),
-        ("capacity-extra", None, None, {}, {"unexpected": 1}),
-    ),
-)
 @pytest.mark.asyncio
-async def test_clone_non_head_revision_rejects_creation_payload_relational_drift(
-    case, field, tampered, relation_updates, capacity_updates,
+async def test_confirmed_contract_clone_rejects_every_revision_before_payload_reads(
 ):
     harness = ContractHarness()
     first_draft = await harness.service.save_draft(command(harness))
-    await harness.service.confirm(confirmation(
-        first_draft, key=f"confirm-first-{case}",
-    ))
-    second_draft = await harness.service.clone_revision("p1", 1)
-    await harness.service.confirm(confirmation(
-        second_draft, key=f"confirm-second-{case}",
-    ))
-    historical = harness.repository.confirmed_revisions[("p1", 1)]
-    creation = json.loads(historical["creation_json"])
-    if field is not None:
-        creation[field] = tampered
-    historical["creation_json"] = canonical_json(creation)
-    historical["creation_hash"] = canonical_hash(creation)
-    historical.update(relation_updates)
-    if capacity_updates:
-        capacity = json.loads(historical["chapter_capacity_policy"])
-        capacity.update(capacity_updates)
-        historical["chapter_capacity_policy"] = canonical_json(capacity)
-
-    with pytest.raises(ContractPreconditionFailed):
-        await harness.service.clone_revision("p1", 1)
-
-    assert "p1" not in harness.repository.drafts
+    await harness.service.confirm(confirmation(first_draft))
+    with pytest.raises(contracts.ContractAlreadyConfirmed):
+        await harness.service.clone_revision("p1", 999)
+    assert harness.repository.drafts == {}
 
 
 @pytest.mark.asyncio
-async def test_clone_historical_revision_rejects_a_b_a_selection_generation():
+async def test_confirmed_contract_clone_beats_selected_seed_drift():
     harness = ContractHarness()
     saved = await harness.service.save_draft(command(harness))
-    await harness.service.confirm(confirmation(saved))
+    confirmed = await harness.service.confirm(confirmation(saved))
     harness.repository.selected_seeds["p1"]["selection_revision"] = 9
 
-    with pytest.raises(ContractConflict):
-        await harness.service.clone_revision("p1", 1)
+    with pytest.raises(contracts.ContractAlreadyConfirmed):
+        await harness.service.clone_revision("p1", confirmed.revision)
 
     assert harness.repository.drafts == {}
 
 
 @pytest.mark.asyncio
-async def test_clone_rejects_confirmed_head_from_superseded_same_seed_selection():
+async def test_confirmed_contract_clone_beats_superseded_seed_state():
     harness = ContractHarness()
     saved = await harness.service.save_draft(command(harness))
     confirmed = await harness.service.confirm(confirmation(saved))
@@ -1226,22 +1054,22 @@ async def test_clone_rejects_confirmed_head_from_superseded_same_seed_selection(
 
     harness.repository.selected_seeds["p1"]["selection_revision"] = 8
 
-    with pytest.raises(ContractConflict):
+    with pytest.raises(contracts.ContractAlreadyConfirmed):
         await harness.service.clone_revision("p1", 1)
 
     assert harness.repository.drafts == {}
 
 
 @pytest.mark.asyncio
-async def test_clone_requires_existing_source_revision():
+async def test_clone_without_confirmed_head_remains_a_conflict():
     harness = ContractHarness()
-    with pytest.raises(ContractNotFound):
+    with pytest.raises(ContractConflict):
         await harness.service.clone_revision("p1", 1)
 
 
-@pytest.mark.parametrize("corruption", ("primary", "card", "corpus", "manifest"))
+@pytest.mark.parametrize("corruption", ("manifest",))
 @pytest.mark.asyncio
-async def test_clone_rejects_incomplete_or_tampered_reference_manifest(corruption):
+async def test_confirmed_contract_clone_does_not_read_tampered_manifest(corruption):
     harness = ContractHarness()
     saved = await harness.service.save_draft(command(harness))
     await harness.service.confirm(confirmation(saved, key=f"confirm-{corruption}"))
@@ -1259,7 +1087,7 @@ async def test_clone_rejects_incomplete_or_tampered_reference_manifest(corruptio
         manifest["schemaVersion"] = "tampered-manifest"
         snapshot["reference_manifest_json"] = canonical_json(manifest)
 
-    with pytest.raises(ContractPreconditionFailed):
+    with pytest.raises(contracts.ContractAlreadyConfirmed):
         await harness.service.clone_revision("p1", 1)
 
     assert "p1" not in harness.repository.drafts
@@ -1274,7 +1102,7 @@ async def test_plain_save_cannot_bypass_clone_after_a_confirmed_head():
         "creation_hash": "a" * 64, "style_hash": "b" * 64,
     }
 
-    with pytest.raises(ContractConflict):
+    with pytest.raises(contracts.ContractAlreadyConfirmed):
         await harness.service.save_draft(command(harness))
 
 
@@ -1646,6 +1474,32 @@ async def test_confirm_atomically_consumes_draft_and_freezes_all_relations():
 
 
 @pytest.mark.asyncio
+async def test_confirmed_contract_is_a_permanent_baseline():
+    assert hasattr(contracts, "ContractAlreadyConfirmed")
+    harness = ContractHarness()
+    saved = await harness.service.save_draft(command(harness))
+    confirmed = await harness.service.confirm(confirmation(saved))
+
+    with pytest.raises(contracts.ContractAlreadyConfirmed):
+        await harness.service.save_draft(command(harness))
+    with pytest.raises(contracts.ContractAlreadyConfirmed):
+        await harness.service.clone_revision("p1", confirmed.revision)
+    assert harness.repository.heads["p1"]["revision"] == 1
+    assert harness.repository.drafts == {}
+
+
+@pytest.mark.asyncio
+async def test_confirmed_contract_clone_beats_a_legacy_active_draft():
+    harness = ContractHarness()
+    saved = await harness.service.save_draft(command(harness))
+    confirmed = await harness.service.confirm(confirmation(saved))
+    harness.repository.drafts["p1"] = {"id": "legacy-active-draft"}
+
+    with pytest.raises(contracts.ContractAlreadyConfirmed):
+        await harness.service.clone_revision("p1", confirmed.revision)
+
+
+@pytest.mark.asyncio
 async def test_confirm_accepts_a_frozen_seed_revision_with_provenance():
     harness = ContractHarness()
     add_seed_provenance(harness)
@@ -1768,19 +1622,17 @@ async def test_confirm_same_key_replays_but_different_hash_is_stable_conflict():
 
 
 @pytest.mark.asyncio
-async def test_confirm_replay_ignores_an_unrelated_newer_clone_draft():
+async def test_confirm_replay_survives_locked_baseline_without_clone_draft():
     harness = ContractHarness()
     saved = await harness.service.save_draft(command(harness))
     first = await harness.service.confirm(confirmation(saved))
-    cloned = await harness.service.clone_revision("p1", 1)
-    await harness.service.save_draft(command(
-        harness, expected=cloned.draft_version, likes=("新修订",),
-    ))
+    with pytest.raises(contracts.ContractAlreadyConfirmed):
+        await harness.service.clone_revision("p1", 1)
 
     replay = await harness.service.confirm(confirmation(saved))
 
     assert replay == first
-    assert harness.repository.drafts["p1"]["content_hash"] != saved.content_hash
+    assert harness.repository.drafts == {}
 
 
 @pytest.mark.asyncio
@@ -1803,55 +1655,37 @@ async def test_history_and_replay_mark_superseded_selection_generation_read_only
 
 
 @pytest.mark.asyncio
-async def test_history_and_replay_mark_replaced_contract_revision_superseded():
+async def test_history_and_replay_keep_the_only_contract_revision_current():
     harness = ContractHarness()
     first_draft = await harness.service.save_draft(command(harness))
     first = await harness.service.confirm(confirmation(
         first_draft, key="confirm-revision-1"
     ))
-    second_draft = await harness.service.clone_revision("p1", 1)
-    second = await harness.service.confirm(confirmation(
-        second_draft, key="confirm-revision-2"
-    ))
+    with pytest.raises(contracts.ContractAlreadyConfirmed):
+        await harness.service.clone_revision("p1", 1)
 
     history = (await harness.service.history("p1")).items
     replay = await harness.service.confirm(confirmation(
         first_draft, key="confirm-revision-1"
     ))
 
-    assert first.selection_revision == second.selection_revision
-    assert tuple(item.revision for item in history) == (2, 1)
+    assert tuple(item.revision for item in history) == (1,)
     assert history[0].contract_ready is True
     assert history[0].superseded_reasons == ()
-    assert history[1].contract_ready is False
-    assert history[1].reasons == ("superseded",)
-    assert history[1].superseded_reasons == ("contract_revision_replaced",)
-    assert replay.contract_ready is False
-    assert replay.reasons == ("superseded",)
-    assert replay.superseded_reasons == ("contract_revision_replaced",)
+    assert replay == first
 
 
 @pytest.mark.asyncio
-async def test_history_uses_exclusive_revision_cursor_without_duplicates_or_gaps():
+async def test_locked_history_uses_an_empty_cursor_after_its_only_revision():
     harness = ContractHarness()
     draft = await harness.service.save_draft(command(harness))
-    for revision in (1, 2, 3):
-        await harness.service.confirm(confirmation(
-            draft, key=f"history-page-{revision}"
-        ))
-        if revision < 3:
-            draft = await harness.service.clone_revision("p1", revision)
+    await harness.service.confirm(confirmation(draft, key="history-page-1"))
 
     first = await harness.service.history("p1", limit=2)
-    second = await harness.service.history(
-        "p1", limit=2, before_revision=first.next_before_revision
-    )
     empty = await harness.service.history("p1", limit=2, before_revision=1)
 
-    assert tuple(item.revision for item in first.items) == (3, 2)
-    assert first.next_before_revision == 2
-    assert tuple(item.revision for item in second.items) == (1,)
-    assert second.next_before_revision is None
+    assert tuple(item.revision for item in first.items) == (1,)
+    assert first.next_before_revision is None
     assert empty == ContractHistoryPage(items=(), next_before_revision=None)
 
 

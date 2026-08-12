@@ -805,9 +805,16 @@ class ChapterOutlineGenerationService:
             raise ChapterOutlineArchived("Project is archived")
         if authority["project"] is None:
             raise ChapterOutlineNotFound("Project not found")
-        if (
-            authority["chapter_number"] != command.chapter_number
-            or authority["active_session"] is not None
+        if authority["chapter_number"] != command.chapter_number:
+            raise ChapterOutlineGenerationConflict(
+                "authoritative chapter changed"
+            )
+        active_session = authority["active_session"]
+        if active_session is not None and (
+            active_session.get("effective_status", active_session["status"])
+            != "drafting"
+            or int(active_session["chapter_num"])
+            != command.chapter_number
         ):
             raise ChapterOutlineGenerationConflict(
                 "authoritative chapter changed"

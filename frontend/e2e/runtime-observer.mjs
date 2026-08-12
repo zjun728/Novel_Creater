@@ -1,4 +1,5 @@
 const RESPONSE_BODY_READ_TIMEOUT_MS = 10_000
+const runtimeFailureDiagnostics = new WeakMap()
 
 
 async function readWithTimeout(read, timeoutMs, timeoutMessage) {
@@ -157,6 +158,16 @@ function httpOrigin(value) {
       : null
   } catch {
     return null
+  }
+}
+
+function isLoopbackHttpUrl(value) {
+  try {
+    const parsed = new URL(String(value))
+    return ['http:', 'https:'].includes(parsed.protocol)
+      && parsed.hostname === '127.0.0.1'
+  } catch {
+    return false
   }
 }
 
@@ -339,6 +350,8 @@ export function assertRuntimeEvidenceHealthy(evidence, {
   return { healthy: true }
 }
 
+const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+
 export function assertExactWrites(evidence, allowlist) {
   if (!Array.isArray(allowlist)) throw new TypeError('write allowlist must be an array')
   const ruleKeys = new Set()
@@ -374,8 +387,9 @@ export function assertExactWrites(evidence, allowlist) {
     }
     ruleKeys.add(ruleKey)
   }
-  const writes = (evidence.apiResponses || []).filter(response => (
-    !['GET', 'HEAD', 'OPTIONS'].includes(String(response.method).toUpperCase())
+  const writes = (evidence.responses || []).filter(response => (
+    isApiUrl(response?.url)
+    && !READ_METHODS.has(String(response?.method).toUpperCase())
   ))
   const matched = new Map(allowlist.map((entry, index) => [index, []]))
 
@@ -551,6 +565,7 @@ function publicRequestFailure(value) {
   if (!match) return invalid
   const [, method, rawUrl] = match
   if (!PUBLIC_REQUEST_FAILURE_METHODS.has(method)) return invalid
+  if (!isLoopbackHttpUrl(rawUrl)) return null
   try {
     const url = new URL(rawUrl)
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return invalid
@@ -558,6 +573,24 @@ function publicRequestFailure(value) {
       method,
       path: url.pathname,
     }
+  } catch {
+    return invalid
+  }
+}
+
+
+function publicPendingRequest(value) {
+  const invalid = {
+    method: '[invalid-method]',
+    path: '[invalid-path]',
+    status: 'pending',
+  }
+  if (!value || typeof value !== 'object') return invalid
+  if (!PUBLIC_REQUEST_FAILURE_METHODS.has(value.method)) return invalid
+  try {
+    const url = new URL(value.url)
+    if (!isLoopbackHttpUrl(url)) return null
+    return { method: value.method, path: url.pathname, status: 'pending' }
   } catch {
     return invalid
   }
@@ -573,8 +606,16 @@ export function publicRuntimeDiagnostic(evidence) {
   const requestFailures = Array.isArray(evidence?.requestFailures)
     ? evidence.requestFailures
     : []
+  const pendingRequests = Array.isArray(evidence?.pendingRequests)
+    ? evidence.pendingRequests
+    : []
+  const publicPendingRequests = pendingRequests
+    .map(publicPendingRequest)
+    .filter(Boolean)
   const responseFailures = responses
     .filter(item => (
+      isLoopbackHttpUrl(item?.url)
+      &&
       (Number(item?.status) < 200 || Number(item?.status) >= 300)
       && Number(item?.status) !== 304
     ))
@@ -589,29 +630,37 @@ export function publicRuntimeDiagnostic(evidence) {
       ? evidence.consoleErrors.length
       : 0,
     requestFailureCount: requestFailures.length,
-    requestFailures: requestFailures.map(publicRequestFailure),
+    requestFailures: requestFailures.map(publicRequestFailure).filter(Boolean),
     responseFailures,
     apiResponseCount: apiResponses.length,
     apiHeaderReadFailures: apiResponses
-      .filter(item => Boolean(item?.headersReadError))
+      .filter(item => (
+        isLoopbackHttpUrl(item?.url) && Boolean(item?.headersReadError)
+      ))
       .map(item => ({
         method: item.method,
         status: item.status,
         path: publicDiagnosticPath(item.url),
       })),
     apiBodyReadFailures: apiResponses
-      .filter(item => Boolean(item?.bodyReadError))
+      .filter(item => (
+        isLoopbackHttpUrl(item?.url) && Boolean(item?.bodyReadError)
+      ))
       .map(item => ({
         method: item.method,
         status: item.status,
         path: publicDiagnosticPath(item.url),
       })),
     requestHeaderReadFailures: requests
-      .filter(item => Boolean(item?.headersReadError))
+      .filter(item => (
+        isLoopbackHttpUrl(item?.url) && Boolean(item?.headersReadError)
+      ))
       .map(item => ({
         method: item.method,
         path: publicDiagnosticPath(item.url),
       })),
+    pendingRequestCount: publicPendingRequests.length,
+    pendingRequests: publicPendingRequests,
     ...(networkAccess === undefined
       ? {}
       : {
@@ -623,6 +672,30 @@ export function publicRuntimeDiagnostic(evidence) {
         },
       }),
   }
+}
+
+
+function freezeRuntimeFailureDiagnostic(value) {
+  if (Array.isArray(value)) {
+    for (const item of value) freezeRuntimeFailureDiagnostic(item)
+  } else if (value && typeof value === 'object') {
+    for (const item of Object.values(value)) freezeRuntimeFailureDiagnostic(item)
+  }
+  return Object.freeze(value)
+}
+
+
+function copyRuntimeFailureDiagnostic(value) {
+  return JSON.parse(JSON.stringify(value))
+}
+
+
+export function runtimeFailureDiagnostic(error) {
+  if (!error || (typeof error !== 'object' && typeof error !== 'function')) {
+    return null
+  }
+  const diagnostic = runtimeFailureDiagnostics.get(error)
+  return diagnostic === undefined ? null : copyRuntimeFailureDiagnostic(diagnostic)
 }
 
 
@@ -638,11 +711,17 @@ export function observeRuntime(page, {
   readTimeoutMs = RESPONSE_BODY_READ_TIMEOUT_MS,
   settleTimeoutMs = 15_000,
 } = {}) {
+  const context = page.context()
   const originAllowlist = allowedHttpOrigins(allowedOrigins)
   const evidenceReadTimeoutMs = Math.min(readTimeoutMs, settleTimeoutMs)
   const pendingApiBodies = new Set()
   const pendingRequests = new Set()
   const activeApiRequests = new Set()
+  const activeHttpRequests = new Map()
+  const requestStages = new WeakMap()
+  const responseStages = new WeakMap()
+  const requestMetadata = new WeakMap()
+  const responseMetadata = new WeakMap()
   const responses = []
   const consoleMessages = []
   const consoleErrors = []
@@ -662,9 +741,12 @@ export function observeRuntime(page, {
   let activityVersion = 0
 
   const onResponse = response => {
+    responseStages.set(response, 'entry')
     const method = response.request().method()
     const status = response.status()
     const url = response.url()
+    responseMetadata.set(response, { method, url, status })
+    responseStages.set(response, 'metadata')
     const origin = httpOrigin(url)
     if (
       networkAccess !== null
@@ -674,6 +756,7 @@ export function observeRuntime(page, {
       networkAccess.forbiddenResponseCount += 1
     }
     responses.push({ url, method, status })
+    responseStages.set(response, 'recorded')
     if ((status < 200 || status >= 300) && status !== 304) {
       responseFailures.push(`${status} ${method} ${url}`)
     }
@@ -684,10 +767,14 @@ export function observeRuntime(page, {
       { url, method, status },
       evidenceReadTimeoutMs,
     ))
+    responseStages.set(response, 'scheduled')
   }
   const onRequest = request => {
+    requestStages.set(request, 'entry')
     const method = request.method()
     const url = request.url()
+    requestMetadata.set(request, { method, url })
+    requestStages.set(request, 'metadata')
     const origin = httpOrigin(url)
     if (networkAccess !== null && origin !== null) {
       networkAccess.httpRequestCount += 1
@@ -695,16 +782,21 @@ export function observeRuntime(page, {
       else networkAccess.forbiddenRequestCount += 1
     }
     activityVersion += 1
+    if (isLoopbackHttpUrl(url)) {
+      activeHttpRequests.set(request, { method, url })
+    }
     if (isApiUrl(url)) activeApiRequests.add(request)
     pendingRequests.add(captureRequest(
       request,
       { url, method },
       evidenceReadTimeoutMs,
     ))
+    requestStages.set(request, 'scheduled')
   }
   const onRequestFinished = request => {
     activityVersion += 1
     activeApiRequests.delete(request)
+    activeHttpRequests.delete(request)
   }
   const onConsole = message => {
     const rendered = `${message.type()}: ${message.text()}`
@@ -717,17 +809,34 @@ export function observeRuntime(page, {
   const onRequestFailed = request => {
     activityVersion += 1
     activeApiRequests.delete(request)
+    activeHttpRequests.delete(request)
     requestFailures.push(
       `${request.method()} ${request.url()} ${request.failure()?.errorText || 'unknown failure'}`,
     )
   }
-
-  page.on('request', onRequest)
-  page.on('requestfinished', onRequestFinished)
-  page.on('response', onResponse)
+  const listenersAttached = () => (
+    context.listeners('request').includes(onRequest)
+    && context.listeners('requestfinished').includes(onRequestFinished)
+    && context.listeners('response').includes(onResponse)
+    && context.listeners('requestfailed').includes(onRequestFailed)
+    && page.listeners('console').includes(onConsole)
+    && page.listeners('pageerror').includes(onPageError)
+  )
+  const matchesObservation = (snapshot, method, pathname) => {
+    if (!snapshot || typeof snapshot.method !== 'string' || typeof snapshot.url !== 'string') return false
+    if (typeof method !== 'string' || typeof pathname !== 'string') return false
+    try {
+      return snapshot.method === method && new URL(snapshot.url).pathname === pathname
+    } catch {
+      return false
+    }
+  }
+  context.on('request', onRequest)
+  context.on('requestfinished', onRequestFinished)
+  context.on('response', onResponse)
   page.on('console', onConsole)
   page.on('pageerror', onPageError)
-  page.on('requestfailed', onRequestFailed)
+  context.on('requestfailed', onRequestFailed)
 
   const drainPendingRequests = async () => {
     while (pendingRequests.size) {
@@ -791,13 +900,34 @@ export function observeRuntime(page, {
       await settle()
       pageContent = await page.content()
       await settle()
+    } catch {
+      const diagnostic = publicRuntimeDiagnostic({
+        requests,
+        responses,
+        apiResponses,
+        consoleMessages,
+        consoleErrors,
+        pageErrors,
+        requestFailures,
+        responseFailures,
+        pendingRequests: [...activeHttpRequests.values()],
+        ...(networkAccess === null ? {} : { networkAccess: { ...networkAccess } }),
+      })
+      const failure = new Error(
+        `Runtime evidence settlement failed: ${JSON.stringify(diagnostic)}`,
+      )
+      runtimeFailureDiagnostics.set(
+        failure,
+        freezeRuntimeFailureDiagnostic(copyRuntimeFailureDiagnostic(diagnostic)),
+      )
+      throw failure
     } finally {
-      page.off('request', onRequest)
-      page.off('requestfinished', onRequestFinished)
-      page.off('response', onResponse)
+      context.off('request', onRequest)
+      context.off('requestfinished', onRequestFinished)
+      context.off('response', onResponse)
       page.off('console', onConsole)
       page.off('pageerror', onPageError)
-      page.off('requestfailed', onRequestFailed)
+      context.off('requestfailed', onRequestFailed)
     }
 
     return {
@@ -814,5 +944,16 @@ export function observeRuntime(page, {
     }
   }
 
-  return { finish, settle }
+  return {
+    finish,
+    settle,
+    listenersAttached,
+    observationStage: object => requestStages.get(object) || responseStages.get(object) || 'unseen',
+    requestObservationMatches: (request, method, pathname) => matchesObservation(requestMetadata.get(request), method, pathname),
+    responseObservationMatches: (response, method, pathname, status) => (
+      Number.isInteger(status)
+      && responseMetadata.get(response)?.status === status
+      && matchesObservation(responseMetadata.get(response), method, pathname)
+    ),
+  }
 }

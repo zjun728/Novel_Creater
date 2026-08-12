@@ -1,31 +1,17 @@
 <script setup>
-import { computed, ref } from 'vue'
-import { NAlert, NButton, NDescriptions, NDescriptionsItem, NTag } from 'naive-ui'
-import { useCreationContractStore } from '@/stores/creationContractStore'
+import { computed } from 'vue'
+import { NAlert, NDescriptions, NDescriptionsItem, NTag } from 'naive-ui'
 
 const props = defineProps({
-  projectId: { type: String, required: true },
   head: { type: Object, required: true },
 })
-const emit = defineEmits(['cloned'])
-const store = useCreationContractStore()
-const cloneError = ref('')
-const source = computed(() => store.head || props.head)
+const source = computed(() => props.head)
 
 function shortHash(value) {
   const text = String(value || '')
   return text ? `${text.slice(0, 12)}…` : '—'
 }
 
-async function createRevision() {
-  cloneError.value = ''
-  try {
-    const draft = await store.cloneRevision(props.projectId)
-    emit('cloned', draft)
-  } catch (error) {
-    cloneError.value = error?.message || '新修订创建失败'
-  }
-}
 </script>
 
 <template>
@@ -33,7 +19,7 @@ async function createRevision() {
     <div class="seal-column" aria-hidden="true"><span>契</span><span>约</span><small>REV {{ source.revision }}</small></div>
     <div class="summary-main">
       <header>
-        <div><p>IMMUTABLE CONTRACT HEAD</p><h3>当前生效的创作契约</h3></div>
+        <div><p>IMMUTABLE CONTRACT HEAD</p><h3>已确认，作为项目永久基线</h3></div>
         <n-tag :type="source.contractReady ? 'success' : 'warning'" round>
           {{ source.contractReady ? '冻结完整' : '需要复核' }}
         </n-tag>
@@ -57,10 +43,8 @@ async function createRevision() {
       </n-descriptions>
 
       <footer>
-        <div><strong>签印后的修订不可覆盖</strong><p>需要调整时，从当前契约复制一份新草稿；旧修订继续保留。</p></div>
-        <n-button type="primary" size="large" :loading="store.cloning" @click="createRevision">创建新修订</n-button>
+        <div><strong>签印后的修订不可覆盖</strong><p>这份契约永久保留，可通过修订历史查阅。</p></div>
       </footer>
-      <n-alert v-if="cloneError" type="error" class="clone-error">{{ cloneError }}</n-alert>
     </div>
   </article>
 </template>
@@ -78,6 +62,5 @@ async function createRevision() {
 .summary-main footer { align-items: flex-end; margin-top: 26px; padding-top: 22px; border-top: 1px solid #d9ccb7; }
 .summary-main footer strong { font-family: 'Noto Serif SC', serif; font-size: 14px; }
 .summary-main footer p { margin: 5px 0 0; color: #7b7062; font-size: 12px; }
-.clone-error { margin-top: 14px; }
 @media (max-width: 620px) { .head-summary { grid-template-columns: 1fr; } .seal-column { align-items: center; flex-direction: row; gap: 4px; padding: 12px 18px; } .seal-column > span { font-size: 20px; } .seal-column small { margin: 0 0 0 auto; writing-mode: horizontal-tb; } .summary-main { padding: 22px 18px; } .summary-main footer { align-items: stretch; flex-direction: column; } }
 </style>

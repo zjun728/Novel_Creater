@@ -1,12 +1,31 @@
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import test from 'node:test'
+import { observeRuntime } from '../../frontend/e2e/runtime-observer.mjs'
 
 const requireFromFrontend = createRequire(
   new URL('../../frontend/package.json', import.meta.url),
 )
 const { parse } = requireFromFrontend('@babel/parser')
+
+class FakeRuntimePage extends EventEmitter {
+  constructor() {
+    super()
+    this.contextEmitter = new EventEmitter()
+  }
+
+  context() {
+    return this.contextEmitter
+  }
+
+  async waitForLoadState() {}
+
+  async content() {
+    return '<main>runtime observer contract</main>'
+  }
+}
 
 const readWorkspaceFile = async relativePath => {
   try {
@@ -75,10 +94,14 @@ const isIdentifierCall = (node, name) => (
 )
 
 const isPageCall = (node, method) => (
+  isReceiverCall(node, 'page', method)
+)
+
+const isReceiverCall = (node, receiver, method) => (
   node?.type === 'CallExpression'
   && node.callee?.type === 'MemberExpression'
   && node.callee.computed === false
-  && isIdentifier(node.callee.object, 'page')
+  && isIdentifier(node.callee.object, receiver)
   && isIdentifier(node.callee.property, method)
 )
 
@@ -147,20 +170,24 @@ const assertFinishContract = source => {
   const detachments = finalizer.body.map(statement => {
     const node = statement.type === 'ExpressionStatement' ? statement.expression : null
     if (
-      !isPageCall(node, 'off')
+      node?.type !== 'CallExpression'
+      || node.callee?.type !== 'MemberExpression'
+      || node.callee.computed !== false
+      || !['page', 'context'].includes(node.callee.object?.name)
+      || !isIdentifier(node.callee.property, 'off')
       || node.arguments.length !== 2
       || node.arguments[0]?.type !== 'StringLiteral'
       || node.arguments[1]?.type !== 'Identifier'
     ) return null
-    return [node.arguments[0].value, node.arguments[1].name]
+    return [node.callee.object.name, node.arguments[0].value, node.arguments[1].name]
   })
   assert.deepEqual(detachments, [
-    ['request', 'onRequest'],
-    ['requestfinished', 'onRequestFinished'],
-    ['response', 'onResponse'],
-    ['console', 'onConsole'],
-    ['pageerror', 'onPageError'],
-    ['requestfailed', 'onRequestFailed'],
+    ['context', 'request', 'onRequest'],
+    ['context', 'requestfinished', 'onRequestFinished'],
+    ['context', 'response', 'onResponse'],
+    ['page', 'console', 'onConsole'],
+    ['page', 'pageerror', 'onPageError'],
+    ['context', 'requestfailed', 'onRequestFailed'],
   ])
 }
 
@@ -189,12 +216,54 @@ test('M1 browser spec defines exactly two real-page goals with no direct API wri
   assert.doesNotMatch(source, /page\.request|request\.(?:post|put|patch|delete)\s*\(|fetch\s*\(|route\.(?:fulfill|continue)\s*\(/)
 })
 
+test('M1 runtime observer owns network and diagnostic listeners at runtime', async () => {
+  const networkEvents = ['request', 'requestfinished', 'response', 'requestfailed']
+  const diagnosticEvents = ['console', 'pageerror']
+  const page = new FakeRuntimePage()
+  const observer = observeRuntime(page, { quietWindowMs: 1 })
+
+  for (const event of networkEvents) {
+    assert.equal(page.context().listenerCount(event), 1, `${event} belongs to context`)
+    assert.equal(page.listenerCount(event), 0, `${event} must not belong to page`)
+  }
+  for (const event of diagnosticEvents) {
+    assert.equal(page.listenerCount(event), 1, `${event} belongs to page`)
+    assert.equal(page.context().listenerCount(event), 0, `${event} must not belong to context`)
+  }
+  assert.equal(observer.listenersAttached(), true)
+
+  for (const [owner, event] of [
+    ...networkEvents.map(event => [page.context(), event]),
+    ...diagnosticEvents.map(event => [page, event]),
+  ]) {
+    const isolatedPage = new FakeRuntimePage()
+    const isolatedObserver = observeRuntime(isolatedPage, { quietWindowMs: 1 })
+    const isolatedOwner = owner === page ? isolatedPage : isolatedPage.context()
+    isolatedOwner.removeAllListeners(event)
+    assert.equal(isolatedObserver.listenersAttached(), false, `${event} is required`)
+    await isolatedObserver.finish()
+  }
+
+  await observer.finish()
+  for (const event of networkEvents) {
+    assert.equal(page.context().listenerCount(event), 0, `${event} must detach from context`)
+  }
+  for (const event of diagnosticEvents) {
+    assert.equal(page.listenerCount(event), 0, `${event} must detach from page`)
+  }
+})
+
 test('M1 browser spec awaits every API body and rejects runtime failures and leaks', async () => {
   const [source, observer] = await Promise.all([
     readWorkspaceFile('frontend/e2e/milestone1.spec.ts'),
     readWorkspaceFile('frontend/e2e/runtime-observer.mjs'),
   ])
   const combined = `${source}\n${observer}`
+  assert.match(
+    source,
+    /import\s*\{\s*observeRuntime\s*\}\s*from\s*['"]\.\/runtime-observer\.mjs['"]/,
+  )
+  assert.match(source, /observeRuntime\(page\)/)
   const drainCalls = ['Requests', 'ApiBodies', 'Requests', 'ApiBodies']
     .map(kind => `await readBeforeDeadline(() => drainPending${kind}(), deadline, settleTimeoutMessage)`)
     .join('\n')
@@ -204,12 +273,12 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
       pageContent = await page.content()
       await settle()
     } finally {
-      page.off('request', onRequest)
-      page.off('requestfinished', onRequestFinished)
-      page.off('response', onResponse)
+      context.off('request', onRequest)
+      context.off('requestfinished', onRequestFinished)
+      context.off('response', onResponse)
       page.off('console', onConsole)
       page.off('pageerror', onPageError)
-      page.off('requestfailed', onRequestFailed)
+      context.off('requestfailed', onRequestFailed)
     }
   `
   const crossFunctionDecoy = `
@@ -245,12 +314,12 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
       pageContent = await page.content()
       await settle()
       try {} finally {
-        page.off('request', onRequest)
-        page.off('requestfinished', onRequestFinished)
-        page.off('response', onResponse)
+        context.off('request', onRequest)
+        context.off('requestfinished', onRequestFinished)
+        context.off('response', onResponse)
         page.off('console', onConsole)
         page.off('pageerror', onPageError)
-        page.off('requestfailed', onRequestFailed)
+        context.off('requestfailed', onRequestFailed)
       }
     }
   `
@@ -279,19 +348,18 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
         pageContent = await page.content ( )
         await settle ( )
       } finally {
-        page.off ( "request", onRequest )
-        page.off ( "requestfinished", onRequestFinished )
-        page.off ( "response", onResponse )
+        context.off ( "request", onRequest )
+        context.off ( "requestfinished", onRequestFinished )
+        context.off ( "response", onResponse )
         page.off ( "console", onConsole )
         page.off ( "pageerror", onPageError )
-        page.off ( "requestfailed", onRequestFailed )
+        context.off ( "requestfailed", onRequestFailed )
       }
     }
   `
 
   for (const required of [
-    "page.on('response'", "page.on('console'", "page.on('pageerror'",
-    "page.on('requestfailed'", 'pendingApiBodies.add', 'response.text()',
+    'pendingApiBodies.add', 'response.text()',
     'Promise.all(batch)', 'response.status()', 'consoleErrors',
     'response.request().method()', 'consoleMessages', 'pageErrors',
     'requestFailures', 'responseFailures', 'apiFailures', 'apiWriteMethods',

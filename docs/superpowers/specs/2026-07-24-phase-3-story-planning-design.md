@@ -1,5 +1,11 @@
 # Phase 3 故事规划设计
 
+> **2026-07-31 precedence notice:** Where this document permits replacing a
+> confirmed Seed/Bible, treats a drafting ChapterSession as an Outline freeze,
+> or invalidates an adopted Outline merely because Planning Head advances,
+> `docs/superpowers/specs/2026-07-31-immutable-boundaries-revision-design.md`
+> takes precedence.
+
 > 状态：作者已确认总体方案；本文冻结 Phase 3 的领域边界、数据权威、
 > 页面入口和验收范围，供详细实施计划与代码审查使用。
 

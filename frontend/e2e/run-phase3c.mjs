@@ -26,9 +26,21 @@ import {
   waitForOwnedServer,
 } from './support/product-runner.mjs'
 import {
+  DENY_PROXY_SOURCE,
+  assertDenyProxyLedger,
+} from './support/deny-proxy.mjs'
+import { assertDatabaseResidue } from './support/database-residue.mjs'
+import {
+  collectLeafFailures,
+  compactDiagnostic,
+  redactDiagnostic,
+} from './support/safe-diagnostics.mjs'
+import {
   assertNoPrivateEvidenceMarkers,
   runtimeSensitiveValues,
 } from './runtime-observer.mjs'
+
+export { DENY_PROXY_SOURCE, assertDenyProxyLedger }
 
 
 export const FORMAL_SPECS = Object.freeze([
@@ -837,41 +849,6 @@ http.createServer((incoming, response) => {
 }).listen(port, '127.0.0.1')
 `
 
-export const DENY_PROXY_SOURCE = String.raw`
-const http = require('node:http')
-const { appendFileSync } = require('node:fs')
-
-const port = Number(process.argv[2])
-const nonce = process.env.M2_BROWSER_RUN_NONCE
-const ledgerPath = process.env.BROWSER_DENY_PROXY_LEDGER_PATH
-
-const server = http.createServer((request, response) => {
-  if (request.method === 'GET' && request.url === '/health') {
-    response.writeHead(200, { 'content-type': 'application/json' })
-    response.end(JSON.stringify({ browserRunNonce: nonce }))
-    return
-  }
-  appendFileSync(ledgerPath, 'http-denied\n', 'utf8')
-  response.writeHead(502, {
-    connection: 'close',
-    'content-type': 'text/plain; charset=utf-8',
-  })
-  response.end('outbound request denied')
-})
-
-server.on('connect', (_request, socket) => {
-  appendFileSync(ledgerPath, 'connect-denied\n', 'utf8')
-  socket.end(
-    'HTTP/1.1 502 Bad Gateway\r\n'
-      + 'Connection: close\r\n'
-      + 'Content-Length: 0\r\n'
-      + '\r\n',
-  )
-})
-
-server.listen(port, '127.0.0.1')
-`
-
 export const FAKE_PLANNING_OUTLINE_GATEWAY_SOURCE = String.raw`
 const { appendFileSync, existsSync, writeFileSync } = require('node:fs')
 const http = require('node:http')
@@ -1115,6 +1092,20 @@ function buildCleanupEnvironment(environment, databaseName) {
 }
 
 
+export function phase3CViteConfigSource(baseConfigUrl, ownedRoot) {
+  const cacheDir = path.join(ownedRoot, 'vite-cache')
+  return [
+    `import base from ${JSON.stringify(baseConfigUrl)}`,
+    'export default {',
+    '  ...base,',
+    `  cacheDir: ${JSON.stringify(cacheDir)},`,
+    '  optimizeDeps: { ...base.optimizeDeps, noDiscovery: false },',
+    '}',
+    '',
+  ].join('\n')
+}
+
+
 function createRoots(ownedRoot) {
   const artifactRoot = path.join(ownedRoot, 'artifacts')
   const counterPath = path.join(ownedRoot, 'gateway-counter.log')
@@ -1152,14 +1143,7 @@ function createRoots(ownedRoot) {
   const baseConfigUrl = pathToFileURL(path.join(frontendRoot, 'vite.config.js')).href
   writeFileSync(
     viteConfigPath,
-    [
-      `import base from ${JSON.stringify(baseConfigUrl)}`,
-      'export default {',
-      '  ...base,',
-      '  optimizeDeps: { ...base.optimizeDeps, noDiscovery: true },',
-      '}',
-      '',
-    ].join('\n'),
+    phase3CViteConfigSource(baseConfigUrl, ownedRoot),
     { encoding: 'utf8', flag: 'wx' },
   )
   return {
@@ -1316,38 +1300,6 @@ function assertBackendOutboundLedger(value, scenario) {
   assertDeepEqual(entries, expected, 'backend HTTPX outbound ledger')
 }
 
-export function assertDenyProxyLedger(value, {
-  expectedHttpCount = 0,
-  expectedConnectCount = 0,
-} = {}) {
-  if (
-    !Number.isInteger(expectedHttpCount)
-    || expectedHttpCount < 0
-    || !Number.isInteger(expectedConnectCount)
-    || expectedConnectCount < 0
-  ) {
-    throw new TypeError('deny proxy ledger expectation is invalid')
-  }
-  const entries = String(value).split(/\r?\n/u).filter(Boolean)
-  if (entries.some(entry => !['http-denied', 'connect-denied'].includes(entry))) {
-    throw new Error('deny proxy ledger did not match its closed contract')
-  }
-  const deniedHttpCount = entries.filter(entry => entry === 'http-denied').length
-  const deniedConnectCount = entries.filter(entry => entry === 'connect-denied').length
-  if (
-    deniedHttpCount !== expectedHttpCount
-    || deniedConnectCount !== expectedConnectCount
-  ) {
-    throw new Error('deny proxy ledger did not match its closed contract')
-  }
-  return {
-    deniedHttpCount,
-    deniedConnectCount,
-    liveWebsiteAccessCount: 0,
-  }
-}
-
-
 function assertUpstreamLedger(value, scenario) {
   const expected = scenario.mode === 'gateway'
     ? 'upstream-generation-status=200\n'
@@ -1457,29 +1409,117 @@ export function assertArtifactEvidenceSafe(
 }
 
 
-function browserFailure(error, resultPath, sensitiveValues) {
+const PUBLIC_BROWSER_DIAGNOSTIC_METHODS = new Set([
+  'GET',
+  'POST',
+  'PUT',
+  'PATCH',
+  'DELETE',
+  'HEAD',
+  'OPTIONS',
+])
+const PUBLIC_BROWSER_DIAGNOSTIC_COUNTS = Object.freeze([
+  'consoleErrorCount',
+  'requestFailureCount',
+  'apiResponseCount',
+  'pendingRequestCount',
+])
+const MAX_PUBLIC_BROWSER_SAFE_EVIDENCE_DESCRIPTION_LENGTH = 20_000
+
+
+function publicBrowserDiagnosticPath(value) {
+  return typeof value === 'string'
+    && value.startsWith('/')
+    && !value.includes('?')
+    && !value.includes('#')
+    && !/[\\\s\p{Cc}]/u.test(value)
+}
+
+
+function projectBrowserDiagnosticEntries(entries, { status = null } = {}) {
+  if (!Array.isArray(entries)) return null
+  const projected = []
+  for (const entry of entries) {
+    if (
+      !entry
+      || typeof entry !== 'object'
+      || !PUBLIC_BROWSER_DIAGNOSTIC_METHODS.has(entry.method)
+      || !publicBrowserDiagnosticPath(entry.path)
+    ) return null
+    if (status === 'pending') {
+      if (entry.status !== 'pending') return null
+      projected.push({ method: entry.method, path: entry.path, status: 'pending' })
+    } else if (status === 'http') {
+      if (!Number.isInteger(entry.status) || entry.status < 100 || entry.status > 599) {
+        return null
+      }
+      projected.push({ method: entry.method, status: entry.status, path: entry.path })
+    } else {
+      projected.push({ method: entry.method, path: entry.path })
+    }
+  }
+  return projected
+}
+
+
+function projectBrowserSafeEvidence(description) {
+  if (
+    typeof description !== 'string'
+    || description.length > MAX_PUBLIC_BROWSER_SAFE_EVIDENCE_DESCRIPTION_LENGTH
+  ) return null
+  let diagnostic
+  try {
+    diagnostic = JSON.parse(description)
+  } catch {
+    return null
+  }
+  if (!diagnostic || typeof diagnostic !== 'object' || Array.isArray(diagnostic)) {
+    return null
+  }
+  const projected = {}
+  for (const field of PUBLIC_BROWSER_DIAGNOSTIC_COUNTS) {
+    if (!Number.isInteger(diagnostic[field]) || diagnostic[field] < 0) return null
+    projected[field] = diagnostic[field]
+  }
+  const details = [
+    ['requestFailures', null],
+    ['responseFailures', 'http'],
+    ['apiHeaderReadFailures', 'http'],
+    ['apiBodyReadFailures', 'http'],
+    ['requestHeaderReadFailures', null],
+    ['pendingRequests', 'pending'],
+  ]
+  for (const [field, status] of details) {
+    const entries = projectBrowserDiagnosticEntries(diagnostic[field], { status })
+    if (entries === null) return null
+    projected[field] = entries
+  }
+  return projected
+}
+
+
+export function formatPhase3CBrowserFailure(_error, resultPath, _sensitiveValues) {
   let detail = 'formal scenario failed'
   try {
     const report = JSON.parse(readFileSync(resultPath, 'utf8'))
-    const tests = (report.suites || []).flatMap(suite => suite.specs || [])
-    const failed = tests.find(spec => (spec.tests || []).some(item => (
-      (item.results || []).some(result => result.status !== 'passed')
-    )))
-    const result = failed?.tests?.flatMap(item => item.results || [])
-      .find(item => item.status !== 'passed')
-    const message = String(result?.error?.message || '').replace(/\s+/gu, ' ').trim()
-    detail = `${String(failed?.title || 'formal scenario failed')}: ${message}`
+    const failedTest = (report.suites || [])
+      .flatMap(suite => suite.specs || [])
+      .flatMap(spec => spec.tests || [])
+      .find(item => (item.results || []).some(result => result.status !== 'passed'))
+    const annotations = Array.isArray(failedTest?.annotations)
+      ? failedTest.annotations
+      : []
+    const runtimeFailureAnnotations = annotations.filter(annotation => (
+      annotation?.type === 'runtime-failure-audit'
+    ))
+    const safeEvidence = runtimeFailureAnnotations.length === 1
+      ? projectBrowserSafeEvidence(runtimeFailureAnnotations[0].description)
+      : null
+    if (safeEvidence) detail = `safe evidence: ${JSON.stringify(safeEvidence)}`
   } catch {
     // The fixed fallback remains safe when the reporter file is unavailable.
   }
-  for (const sensitive of sensitiveValues) {
-    if (typeof sensitive === 'string' && sensitive) {
-      detail = detail.replaceAll(sensitive, '[redacted]')
-    }
-  }
-  return new Error(`Phase 3C browser test failed: ${detail.slice(0, 2000)}`, {
-    cause: error,
-  })
+  return new Error(`Phase 3C browser test failed: ${detail}`)
 }
 
 
@@ -1541,27 +1581,6 @@ function collectFailureContexts(error, contexts = [], visited = new Set()) {
 }
 
 
-function collectLeafFailures(error, failures = [], visited = new Set()) {
-  if (error && (typeof error === 'object' || typeof error === 'function')) {
-    if (visited.has(error)) return failures
-    visited.add(error)
-    if (error instanceof AggregateError && Array.isArray(error.errors)) {
-      for (const nested of error.errors) {
-        collectLeafFailures(nested, failures, visited)
-      }
-      if (error.errors.length > 0) return failures
-    }
-  }
-  failures.push(error)
-  return failures
-}
-
-
-function compactDiagnostic(value) {
-  return String(value ?? '').replace(/\s+/gu, ' ').trim()
-}
-
-
 function commandSensitiveValues(environment, contexts) {
   const mapped = {
     ...environment,
@@ -1580,17 +1599,6 @@ function commandSensitiveValues(environment, contexts) {
     ...contexts.flatMap(context => context.sensitiveValues || []),
   ].filter(value => typeof value === 'string' && value)
   return [...new Set(values)].sort((left, right) => right.length - left.length)
-}
-
-
-function redactDiagnostic(value, sensitiveValues) {
-  let redacted = String(value)
-  for (const sensitive of sensitiveValues) {
-    redacted = redacted.replaceAll(sensitive, '[redacted]')
-    const encoded = encodeURIComponent(sensitive)
-    if (encoded !== sensitive) redacted = redacted.replaceAll(encoded, '[redacted]')
-  }
-  return redacted
 }
 
 
@@ -1721,6 +1729,80 @@ export async function cleanupOwnedRoot({
     throw new AggregateError(errors, 'Phase 3C root validation and removal failed')
   }
   return true
+}
+
+
+function phase3CResourceAccountingFailure({
+  scenario,
+  ownedRoot,
+  artifactRoot,
+  resultPath,
+  sensitiveValues,
+}) {
+  const error = new AggregateError([], 'Phase 3C resource accounting failed')
+  return attachPhase3CFailureContext(error, {
+    scenario,
+    ownedRoot,
+    artifactRoot,
+    resultPath,
+    sensitiveValues,
+  })
+}
+
+
+export function assertPhase3CResourceAccounting({
+  databaseName,
+  databaseCreated,
+  databaseCleaned,
+  databaseRemaining,
+  ownedRootRemoved,
+  browserNetworkAudit,
+  denyProxyAudit,
+  scenario,
+  ownedRoot,
+  artifactRoot,
+  resultPath,
+  sensitiveValues,
+  assertDatabaseResidueImpl = assertDatabaseResidue,
+}) {
+  let databaseResidue
+  try {
+    databaseResidue = assertDatabaseResidueImpl(databaseName, databaseName, {
+      created: databaseCreated,
+      cleaned: databaseCleaned,
+      remaining: databaseRemaining,
+    })
+  } catch {
+    throw phase3CResourceAccountingFailure({
+      scenario,
+      ownedRoot,
+      artifactRoot,
+      resultPath,
+      sensitiveValues,
+    })
+  }
+  if (
+    databaseResidue.created !== 1
+    || databaseResidue.cleaned !== 1
+    || databaseResidue.remaining !== 0
+    || !ownedRootRemoved
+    || browserNetworkAudit === null
+    || browserNetworkAudit.forbiddenRequestCount !== 0
+    || browserNetworkAudit.forbiddenResponseCount !== 0
+    || denyProxyAudit === null
+    || denyProxyAudit.deniedHttpCount !== 0
+    || denyProxyAudit.deniedConnectCount !== 0
+    || denyProxyAudit.liveWebsiteAccessCount !== 0
+  ) {
+    throw phase3CResourceAccountingFailure({
+      scenario,
+      ownedRoot,
+      artifactRoot,
+      resultPath,
+      sensitiveValues,
+    })
+  }
+  return databaseResidue
 }
 
 
@@ -1941,7 +2023,11 @@ export async function runOneScenario({
             },
           )
         } catch (error) {
-          throw browserFailure(error, roots.browserResultPath, sensitiveValues)
+          throw formatPhase3CBrowserFailure(
+            error,
+            roots.browserResultPath,
+            sensitiveValues,
+          )
         }
         browserNetworkAudit = assertBrowserNetworkAudit(
           readFileSync(roots.browserResultPath, 'utf8'),
@@ -2033,29 +2119,20 @@ export async function runOneScenario({
     throw error
   }
 
-  if (
-    databaseCreated !== 1
-    || databaseCleaned !== 1
-    || databaseRemaining !== 0
-    || !ownedRootRemoved
-    || browserNetworkAudit === null
-    || browserNetworkAudit.forbiddenRequestCount !== 0
-    || browserNetworkAudit.forbiddenResponseCount !== 0
-    || denyProxyAudit === null
-    || denyProxyAudit.deniedHttpCount !== 0
-    || denyProxyAudit.deniedConnectCount !== 0
-    || denyProxyAudit.liveWebsiteAccessCount !== 0
-  ) {
-    const error = new AggregateError([], 'Phase 3C resource accounting failed')
-    attachPhase3CFailureContext(error, {
-      scenario: scenario.mode,
-      ownedRoot: ownedRootPath,
-      artifactRoot: roots?.artifactRoot,
-      resultPath: roots?.browserResultPath,
-      sensitiveValues: [...sensitiveValues, databaseName],
-    })
-    throw error
-  }
+  assertPhase3CResourceAccounting({
+    databaseName,
+    databaseCreated,
+    databaseCleaned,
+    databaseRemaining,
+    ownedRootRemoved,
+    browserNetworkAudit,
+    denyProxyAudit,
+    scenario: scenario.mode,
+    ownedRoot: ownedRootPath,
+    artifactRoot: roots?.artifactRoot,
+    resultPath: roots?.browserResultPath,
+    sensitiveValues: [...sensitiveValues, databaseName],
+  })
   console.log(
     `Phase3C ${scenario.mode}: browser assertions passed; `
       + `DB created=${databaseCreated} cleaned=${databaseCleaned} `

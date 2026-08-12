@@ -338,6 +338,20 @@ class PlanningRepository:
             (project_id,),
         )
 
+    async def read_actual_plot_progress(
+        self,
+        session,
+        project_id: str,
+        revision_number: int,
+    ):
+        return await session.fetchall(
+            """SELECT revision_number,subject_key,entity_id,field_path,payload_json,content_hash
+                 FROM plot_thread_projections
+                WHERE project_id=%s AND revision_number=%s
+                ORDER BY subject_key,field_path,id""",
+            (project_id, revision_number),
+        )
+
     async def lock_projection_head(self, session, project_id: str):
         return await session.fetchone(
             """SELECT * FROM projection_heads

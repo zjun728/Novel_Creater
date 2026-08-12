@@ -4,6 +4,10 @@ import { computed, ref, shallowRef } from 'vue'
 import { api } from '../api/db/client.js'
 import { createLatestRequestGuard } from '../utils/latestRequest.js'
 
+const CONTENT_HASH = /^[0-9a-f]{64}$/
+const IDEMPOTENCY_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const DRAFT_OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
 function publicError(error) {
   return {
     status: Number(error?.status || 0),
@@ -34,6 +38,247 @@ function requireWorkspace(workspace) {
   return workspace
 }
 
+function requireWorkingDraftCommand(command) {
+  if (
+    !command
+    || !Number.isInteger(command.expectedRevision)
+    || command.expectedRevision < 1
+    || typeof command.expectedContentHash !== 'string'
+    || !CONTENT_HASH.test(command.expectedContentHash)
+    || typeof command.content !== 'string'
+  ) {
+    throw new TypeError('working draft command is required')
+  }
+  return Object.freeze({
+    expectedRevision: command.expectedRevision,
+    expectedContentHash: command.expectedContentHash,
+    content: command.content,
+  })
+}
+
+function requireCandidateCommand(command) {
+  if (
+    !command
+    || !Number.isInteger(command.expectedWorkingDraftRevision)
+    || command.expectedWorkingDraftRevision < 1
+    || typeof command.expectedContentHash !== 'string'
+    || !CONTENT_HASH.test(command.expectedContentHash)
+    || typeof command.idempotencyKey !== 'string'
+    || !IDEMPOTENCY_KEY.test(command.idempotencyKey)
+  ) {
+    throw new TypeError('candidate command is required')
+  }
+  return Object.freeze({
+    expectedWorkingDraftRevision: command.expectedWorkingDraftRevision,
+    expectedContentHash: command.expectedContentHash,
+    idempotencyKey: command.idempotencyKey,
+  })
+}
+
+function requireCandidateLoadCommand(command) {
+  const fields = ['expectedWorkingDraftRevision', 'expectedContentHash']
+  if (
+    !command
+    || typeof command !== 'object'
+    || Array.isArray(command)
+    || Object.keys(command).length !== fields.length
+    || fields.some(field => !Object.hasOwn(command, field))
+    || !Number.isInteger(command.expectedWorkingDraftRevision)
+    || command.expectedWorkingDraftRevision < 1
+    || typeof command.expectedContentHash !== 'string'
+    || !CONTENT_HASH.test(command.expectedContentHash)
+  ) throw new TypeError('candidate load command is required')
+  return Object.freeze({
+    expectedWorkingDraftRevision: command.expectedWorkingDraftRevision,
+    expectedContentHash: command.expectedContentHash,
+  })
+}
+
+function requireUndoCommand(command) {
+  const fields = [
+    'expectedWorkingDraftRevision', 'expectedContentHash', 'sourceOperationId',
+  ]
+  if (
+    !command
+    || typeof command !== 'object'
+    || Array.isArray(command)
+    || Object.keys(command).length !== fields.length
+    || fields.some(field => !Object.hasOwn(command, field))
+    || !Number.isInteger(command.expectedWorkingDraftRevision)
+    || command.expectedWorkingDraftRevision < 1
+    || command.expectedWorkingDraftRevision > 2_147_483_646
+    || typeof command.expectedContentHash !== 'string'
+    || !CONTENT_HASH.test(command.expectedContentHash)
+    || typeof command.sourceOperationId !== 'string'
+    || !DRAFT_OPERATION_ID.test(command.sourceOperationId)
+  ) throw new TypeError('local undo command is required')
+  return Object.freeze({
+    expectedWorkingDraftRevision: command.expectedWorkingDraftRevision,
+    expectedContentHash: command.expectedContentHash,
+    sourceOperationId: command.sourceOperationId,
+  })
+}
+
+const CANDIDATE_BASIS_FIELDS = Object.freeze([
+  'outlineRevisionId',
+  'outlineRevision',
+  'outlineHash',
+  'planningRevisionId',
+  'planningRevision',
+  'planningHash',
+  'canonRevision',
+  'projectionRevision',
+  'projectionHash',
+])
+const CANDIDATE_PUBLIC_FIELDS = Object.freeze([
+  'id',
+  'projectId',
+  'chapterSessionId',
+  'workingDraftRevision',
+  'content',
+  'contentHash',
+  'createdAt',
+])
+const SESSION_PUBLIC_FIELDS = Object.freeze([
+  'id', 'projectId', 'planningRevisionId', 'planningRevision', 'planningHash',
+  'storyBlockId', 'storyBlockRevision', 'storyBlockHash',
+  'chapterOutlineRevisionId', 'chapterOutlineRevision', 'chapterOutlineHash',
+  'chapterNum', 'expectedCanonRevision', 'status',
+])
+const WORKING_DRAFT_PUBLIC_FIELDS = Object.freeze([
+  'id', 'projectId', 'chapterSessionId', 'revision', 'content', 'contentHash',
+])
+
+function publicFields(value, fields) {
+  const source = value && typeof value === 'object' && !Array.isArray(value)
+    ? value
+    : {}
+  return Object.fromEntries(fields.map(field => [field, source[field]]))
+}
+function candidateBasisIsSafe(candidate) {
+  return (
+    typeof candidate?.outlineRevisionId === 'string'
+    && candidate.outlineRevisionId.length > 0
+    && Number.isInteger(candidate.outlineRevision)
+    && candidate.outlineRevision >= 1
+    && typeof candidate.outlineHash === 'string'
+    && CONTENT_HASH.test(candidate.outlineHash)
+    && typeof candidate?.planningRevisionId === 'string'
+    && candidate.planningRevisionId.length > 0
+    && Number.isInteger(candidate.planningRevision)
+    && candidate.planningRevision >= 1
+    && typeof candidate.planningHash === 'string'
+    && CONTENT_HASH.test(candidate.planningHash)
+    && Number.isInteger(candidate.canonRevision)
+    && candidate.canonRevision >= 0
+    && Number.isInteger(candidate.projectionRevision)
+    && candidate.projectionRevision >= 0
+    && typeof candidate.projectionHash === 'string'
+    && CONTENT_HASH.test(candidate.projectionHash)
+  )
+}
+
+function normalizeCandidate(candidate) {
+  const source = candidate && typeof candidate === 'object' ? candidate : {}
+  if (!Number.isSafeInteger(source.createdAt) || source.createdAt < 0) {
+    throw new TypeError('Invalid candidate createdAt')
+  }
+  const basisStatus = source.basisStatus
+  const basisIsSafe = (
+    (basisStatus === 'current' || basisStatus === 'stale')
+    && candidateBasisIsSafe(source)
+  )
+  const basis = Object.fromEntries(CANDIDATE_BASIS_FIELDS.map(field => [
+    field,
+    basisIsSafe ? source[field] : null,
+  ]))
+  return {
+    ...Object.fromEntries(CANDIDATE_PUBLIC_FIELDS.map(field => [
+      field,
+      source[field],
+    ])),
+    ...basis,
+    basisStatus: basisIsSafe ? basisStatus : 'stale',
+  }
+}
+
+function requireCandidateLoadWorkspace(
+  nextWorkspace,
+  current,
+  candidate,
+  command,
+) {
+  const normalized = normalizeWorkspace(nextWorkspace)
+  const returnedCandidate = normalized?.candidates?.find(
+    item => item.id === candidate.id,
+  )
+  if (
+    normalized?.projectId !== current.projectId
+    || normalized?.activeDraftOperationId !== null
+    || normalized?.session?.id !== current.session.id
+    || normalized?.workingDraft?.chapterSessionId !== current.session.id
+    || normalized?.workingDraft?.revision
+      !== command.expectedWorkingDraftRevision + 1
+    || normalized?.workingDraft?.content !== candidate.content
+    || normalized?.workingDraft?.contentHash !== candidate.contentHash
+    || !returnedCandidate
+    || returnedCandidate.projectId !== current.projectId
+    || returnedCandidate.chapterSessionId !== current.session.id
+    || returnedCandidate.content !== candidate.content
+    || returnedCandidate.contentHash !== candidate.contentHash
+    || returnedCandidate.createdAt !== candidate.createdAt
+  ) throw new TypeError('Invalid candidate load workspace')
+  return normalized
+}
+
+function normalizeWorkspace(nextWorkspace) {
+  if (!nextWorkspace || typeof nextWorkspace !== 'object') return nextWorkspace
+  const activeDraftOperationId = nextWorkspace.activeDraftOperationId
+  if (
+    activeDraftOperationId !== null
+    && (
+      typeof activeDraftOperationId !== 'string'
+      || !DRAFT_OPERATION_ID.test(activeDraftOperationId)
+    )
+  ) {
+    throw new TypeError('Invalid active draft operation id')
+  }
+  return {
+    projectId: nextWorkspace.projectId,
+    activeDraftOperationId,
+    session: publicFields(nextWorkspace.session, SESSION_PUBLIC_FIELDS),
+    workingDraft: publicFields(
+      nextWorkspace.workingDraft,
+      WORKING_DRAFT_PUBLIC_FIELDS,
+    ),
+    candidates: Array.isArray(nextWorkspace.candidates)
+      ? nextWorkspace.candidates.map(normalizeCandidate)
+      : [],
+  }
+}
+
+function requireUndoWorkspace(
+  nextWorkspace,
+  targetProjectId,
+  targetSessionId,
+  targetChapterNumber,
+  expectedRevision,
+) {
+  const normalized = normalizeWorkspace(nextWorkspace)
+  if (
+    normalized?.projectId !== targetProjectId
+    || normalized?.activeDraftOperationId !== null
+    || normalized?.session?.id !== targetSessionId
+    || normalized?.session?.chapterNum !== targetChapterNumber
+    || normalized?.workingDraft?.chapterSessionId !== targetSessionId
+    || normalized?.workingDraft?.revision !== expectedRevision + 1
+    || typeof normalized?.workingDraft?.content !== 'string'
+    || typeof normalized?.workingDraft?.contentHash !== 'string'
+    || !CONTENT_HASH.test(normalized.workingDraft.contentHash)
+  ) throw new TypeError('Invalid local undo workspace')
+  return normalized
+}
+
 export const useChapterSessionStore = defineStore('chapterSession', () => {
   const projectId = ref('')
   const chapterNumber = ref(0)
@@ -43,13 +288,15 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
   const creating = ref(false)
   const savingDraft = ref(false)
   const savingCandidate = ref(false)
-  const generatingDraft = ref(false)
+  const loadingCandidate = ref(false)
+  const undoingDraft = ref(false)
   const loadGuard = createLatestRequestGuard()
   const createGuard = createLatestRequestGuard()
   const draftGuard = createLatestRequestGuard()
   const candidateGuard = createLatestRequestGuard()
-  const generationGuard = createLatestRequestGuard()
+  const candidateLoadGuard = createLatestRequestGuard()
   const authoritativeEntryGuard = createLatestRequestGuard()
+  const undoGuard = createLatestRequestGuard()
   let stateGeneration = 0
 
   const session = computed(() => workspace.value?.session || null)
@@ -62,7 +309,14 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     creating.value
     || savingDraft.value
     || savingCandidate.value
-    || generatingDraft.value
+    || loadingCandidate.value
+    || undoingDraft.value
+  ))
+  const commandBusy = computed(() => (
+    creating.value
+    || savingCandidate.value
+    || loadingCandidate.value
+    || undoingDraft.value
   ))
   const busy = computed(() => loading.value || writeBusy.value)
 
@@ -71,7 +325,8 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     creating.value = false
     savingDraft.value = false
     savingCandidate.value = false
-    generatingDraft.value = false
+    loadingCandidate.value = false
+    undoingDraft.value = false
   }
 
   function assertWriteAvailable() {
@@ -92,8 +347,9 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
       createGuard.invalidate()
       draftGuard.invalidate()
       candidateGuard.invalidate()
-      generationGuard.invalidate()
+      candidateLoadGuard.invalidate()
       authoritativeEntryGuard.invalidate()
+      undoGuard.invalidate()
       workspace.value = null
       error.value = null
       resetPendingFlags()
@@ -120,7 +376,12 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
   }
 
   function acceptWorkspace(nextWorkspace) {
-    workspace.value = nextWorkspace
+    workspace.value = normalizeWorkspace(nextWorkspace)
+    error.value = null
+  }
+
+  function clearWorkspace() {
+    workspace.value = null
     error.value = null
   }
 
@@ -135,29 +396,39 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     const projection = current?.canonProjectionAuthority
     const outline = current?.confirmedOutline
     const active = current?.activeSession
+    const expectedPlanningRevisionId = (
+      active?.planningRevisionId ?? planning?.planningRevisionId
+    )
+    const expectedPlanningRevision = active?.planningRevision ?? planning?.revision
+    const expectedPlanningHash = active?.planningHash ?? planning?.contentHash
+    const expectedOutlineRevisionId = (
+      active?.outlineRevisionId ?? outline?.outlineRevisionId
+    )
+    const expectedOutlineRevision = active?.outlineRevision ?? outline?.revision
+    const expectedOutlineHash = active?.outlineHash ?? outline?.contentHash
     return Boolean(
       sessionValue?.id
       && (!expectedSessionId || sessionValue.id === expectedSessionId)
       && sessionValue.chapterNum === targetChapterNumber
-      && sessionValue.planningRevisionId === planning?.planningRevisionId
-      && sessionValue.planningRevision === planning?.revision
-      && sessionValue.planningHash === planning?.contentHash
-      && sessionValue.chapterOutlineRevisionId === outline?.outlineRevisionId
-      && sessionValue.chapterOutlineRevision === outline?.revision
-      && sessionValue.chapterOutlineHash === outline?.contentHash
-      && sessionValue.expectedCanonRevision === projection?.canonRevision
+      && sessionValue.planningRevisionId === expectedPlanningRevisionId
+      && sessionValue.planningRevision === expectedPlanningRevision
+      && sessionValue.planningHash === expectedPlanningHash
+      && sessionValue.chapterOutlineRevisionId === expectedOutlineRevisionId
+      && sessionValue.chapterOutlineRevision === expectedOutlineRevision
+      && sessionValue.chapterOutlineHash === expectedOutlineHash
       && (
-        !active
-        || (
-          active.chapterSessionId === sessionValue.id
-          && active.chapterNumber === sessionValue.chapterNum
-          && active.planningRevisionId === sessionValue.planningRevisionId
-          && active.planningRevision === sessionValue.planningRevision
-          && active.planningHash === sessionValue.planningHash
-          && active.outlineRevisionId === sessionValue.chapterOutlineRevisionId
-          && active.outlineRevision === sessionValue.chapterOutlineRevision
-          && active.outlineHash === sessionValue.chapterOutlineHash
-        )
+        active
+          ? (
+            active.chapterSessionId === sessionValue.id
+            && active.chapterNumber === sessionValue.chapterNum
+            && active.planningRevisionId === sessionValue.planningRevisionId
+            && active.planningRevision === sessionValue.planningRevision
+            && active.planningHash === sessionValue.planningHash
+            && active.outlineRevisionId === sessionValue.chapterOutlineRevisionId
+            && active.outlineRevision === sessionValue.chapterOutlineRevision
+            && active.outlineHash === sessionValue.chapterOutlineHash
+          )
+          : sessionValue.expectedCanonRevision === projection?.canonRevision
       )
     )
   }
@@ -195,7 +466,10 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
         current.lifecycle === 'archived'
         || !routeMatches
         || !confirmed
-      ) return current
+      ) {
+        clearWorkspace()
+        return current
+      }
 
       let loaded
       if (current.activeSession) {
@@ -224,7 +498,10 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
         if (
           confirmed.status !== 'current'
           || current.capabilities?.startSession !== true
-        ) return current
+        ) {
+          clearWorkspace()
+          return current
+        }
         const planning = current.planningAuthority
         const projection = current.canonProjectionAuthority
         loaded = await api.chapterSessions.create(
@@ -380,12 +657,13 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     }
   }
 
-  async function saveWorkingDraft(nextProjectId, content) {
+  async function saveWorkingDraft(nextProjectId, command) {
     const {
       projectId: targetProjectId,
       chapterNumber: targetChapterNumber,
     } = enterContext(nextProjectId, chapterNumber.value)
     assertWriteAvailable()
+    const writeCommand = requireWorkingDraftCommand(command)
     const current = requireWorkspace(workspace.value)
     const generation = draftGuard.begin()
     const targetStateGeneration = stateGeneration
@@ -394,10 +672,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
       const saved = await api.chapterSessions.saveWorkingDraft(
         targetProjectId,
         current.session.id,
-        {
-          expectedRevision: current.workingDraft.revision,
-          content,
-        },
+        writeCommand,
       )
       if (isCurrent(
         draftGuard,
@@ -431,12 +706,13 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     }
   }
 
-  async function saveCandidate(nextProjectId) {
+  async function saveCandidate(nextProjectId, command) {
     const {
       projectId: targetProjectId,
       chapterNumber: targetChapterNumber,
     } = enterContext(nextProjectId, chapterNumber.value)
     assertWriteAvailable()
+    const writeCommand = requireCandidateCommand(command)
     const current = requireWorkspace(workspace.value)
     const generation = candidateGuard.begin()
     const targetStateGeneration = stateGeneration
@@ -445,7 +721,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
       const saved = await api.chapterSessions.saveCandidate(
         targetProjectId,
         current.session.id,
-        { expectedWorkingDraftRevision: current.workingDraft.revision },
+        writeCommand,
       )
       if (isCurrent(
         candidateGuard,
@@ -479,55 +755,163 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     }
   }
 
-  async function generateWorkingDraft(nextProjectId, authorInstruction = '') {
+  function operationContext(nextProjectId) {
+    const context = enterContext(nextProjectId, chapterNumber.value)
+    const current = requireWorkspace(workspace.value)
+    return { projectId: context.projectId, sessionId: current.session.id }
+  }
+
+  async function loadCandidate(nextProjectId, candidateId, command) {
     const {
       projectId: targetProjectId,
       chapterNumber: targetChapterNumber,
     } = enterContext(nextProjectId, chapterNumber.value)
     assertWriteAvailable()
+    const writeCommand = requireCandidateLoadCommand(command)
     const current = requireWorkspace(workspace.value)
-    const generation = generationGuard.begin()
+    const candidate = current.candidates.find(item => item.id === candidateId)
+    if (
+      !candidate
+      || candidate.projectId !== targetProjectId
+      || candidate.chapterSessionId !== current.session.id
+      || typeof candidate.content !== 'string'
+      || typeof candidate.contentHash !== 'string'
+      || !CONTENT_HASH.test(candidate.contentHash)
+    ) throw new TypeError('candidate load identity is required')
+    const generation = candidateLoadGuard.begin()
     const targetStateGeneration = stateGeneration
-    generatingDraft.value = true
+    loadingCandidate.value = true
     try {
-      const generated = await api.chapterSessions.generateWorkingDraft(
+      const loaded = await api.chapterSessions.loadCandidate(
         targetProjectId,
         current.session.id,
-        {
-          expectedWorkingDraftRevision: current.workingDraft.revision,
-          authorInstruction,
-        },
+        candidate.id,
+        writeCommand,
       )
-      if (isCurrent(
-        generationGuard,
+      if (!isCurrent(
+        candidateLoadGuard,
         generation,
         targetProjectId,
         targetChapterNumber,
         targetStateGeneration,
-      )) {
-        acceptWorkspace(generated)
-      }
-      return generated
+      )) return null
+      const normalized = requireCandidateLoadWorkspace(
+        loaded, current, candidate, writeCommand,
+      )
+      acceptWorkspace(normalized)
+      return normalized
     } catch (failure) {
       if (isCurrent(
-        generationGuard,
+        candidateLoadGuard,
         generation,
         targetProjectId,
         targetChapterNumber,
         targetStateGeneration,
-      )) {
-        error.value = publicError(failure)
-      }
+      )) error.value = publicError(failure)
       throw failure
     } finally {
       if (
         projectId.value === targetProjectId
         && chapterNumber.value === targetChapterNumber
-        && generationGuard.isCurrent(generation)
-      ) {
-        generatingDraft.value = false
-      }
+        && candidateLoadGuard.isCurrent(generation)
+      ) loadingCandidate.value = false
     }
+  }
+
+  async function createDraftOperation(nextProjectId, command) {
+    const context = operationContext(nextProjectId)
+    return api.chapterSessions.createDraftOperation(
+      context.projectId,
+      context.sessionId,
+      command,
+    )
+  }
+
+  async function readDraftOperation(nextProjectId, operationId) {
+    const context = operationContext(nextProjectId)
+    return api.chapterSessions.readDraftOperation(
+      context.projectId,
+      context.sessionId,
+      operationId,
+    )
+  }
+
+  async function listDraftOperationEvents(nextProjectId, operationId, afterSequence) {
+    const context = operationContext(nextProjectId)
+    return api.chapterSessions.listDraftOperationEvents(
+      context.projectId,
+      context.sessionId,
+      operationId,
+      afterSequence,
+    )
+  }
+
+  async function cancelDraftOperation(nextProjectId, operationId) {
+    const context = operationContext(nextProjectId)
+    return api.chapterSessions.cancelDraftOperation(
+      context.projectId,
+      context.sessionId,
+      operationId,
+    )
+  }
+
+  async function undoLocalDraft(nextProjectId, command) {
+    const undoCommand = requireUndoCommand(command)
+    const {
+      projectId: targetProjectId,
+      sessionId,
+    } = operationContext(nextProjectId)
+    assertWriteAvailable()
+    const current = requireWorkspace(workspace.value)
+    if (
+      current.workingDraft.revision !== undoCommand.expectedWorkingDraftRevision
+      || current.workingDraft.contentHash !== undoCommand.expectedContentHash
+    ) throw new TypeError('local undo authority changed')
+    const generation = undoGuard.begin()
+    const targetChapterNumber = chapterNumber.value
+    const targetStateGeneration = stateGeneration
+    undoingDraft.value = true
+    try {
+      const restored = await api.chapterSessions.undoLocalDraft(
+        targetProjectId,
+        sessionId,
+        undoCommand,
+      )
+      const normalized = requireUndoWorkspace(
+        restored,
+        targetProjectId,
+        sessionId,
+        targetChapterNumber,
+        undoCommand.expectedWorkingDraftRevision,
+      )
+      if (isCurrent(
+        undoGuard,
+        generation,
+        targetProjectId,
+        targetChapterNumber,
+        targetStateGeneration,
+      )) acceptWorkspace(normalized)
+      return normalized
+    } catch (failure) {
+      if (isCurrent(
+        undoGuard,
+        generation,
+        targetProjectId,
+        targetChapterNumber,
+        targetStateGeneration,
+      )) error.value = publicError(failure)
+      throw failure
+    } finally {
+      if (
+        projectId.value === targetProjectId
+        && chapterNumber.value === targetChapterNumber
+        && undoGuard.isCurrent(generation)
+      ) undoingDraft.value = false
+    }
+  }
+
+  function reloadCurrentWorkspace(nextProjectId) {
+    return load(nextProjectId, chapterNumber.value)
   }
 
   function invalidate() {
@@ -536,8 +920,9 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     createGuard.invalidate()
     draftGuard.invalidate()
     candidateGuard.invalidate()
-    generationGuard.invalidate()
+    candidateLoadGuard.invalidate()
     authoritativeEntryGuard.invalidate()
+    undoGuard.invalidate()
     resetPendingFlags()
   }
 
@@ -550,19 +935,27 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     creating,
     savingDraft,
     savingCandidate,
-    generatingDraft,
+    loadingCandidate,
+    undoingDraft,
     session,
     workingDraft,
     candidates,
     hasSession,
     writeBusy,
+    commandBusy,
     busy,
     load,
     openAuthoritative,
     create,
     saveWorkingDraft,
-    generateWorkingDraft,
+    createDraftOperation,
+    readDraftOperation,
+    listDraftOperationEvents,
+    cancelDraftOperation,
+    undoLocalDraft,
+    reloadCurrentWorkspace,
     saveCandidate,
+    loadCandidate,
     invalidate,
   }
 })

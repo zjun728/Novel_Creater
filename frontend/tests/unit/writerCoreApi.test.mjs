@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import test from 'node:test'
 
 function jsonResponse(body = {}) {
@@ -27,6 +28,12 @@ async function captureRequests(run, responseFor = () => ({})) {
 function bodyOf(call) {
   return call.options.body === undefined ? undefined : JSON.parse(call.options.body)
 }
+
+test('planning actual progress parser remains private to the client module', async () => {
+  const client = await import('../../src/api/db/client.js')
+  assert.equal(Object.hasOwn(client, 'planningActualProgressItem'), false)
+  assert.equal(client.planningActualProgressItem, undefined)
+})
 
 function formalChapterOutlineState(overrides = {}) {
   return {
@@ -558,6 +565,136 @@ test('planning client uses revisioned aggregate paths and strict write allowlist
   assert.equal(JSON.stringify(calls).includes('must-not-send'), false)
 })
 
+test('planning GET closes formal Canon actual progress to its six public fields', async () => {
+  const originalFetch = global.fetch
+  try {
+    global.fetch = async () => jsonResponse({
+      projectId: 'project-1',
+      actualProgress: [{
+        revisionNumber: 3,
+        subjectKey: '__global__',
+        entityId: null,
+        fieldPath: 'plot.gunpowder',
+        value: {
+          status: 'old',
+          evidence: ['第一章', { chapter: 1, active: true }],
+        },
+        contentHash: 'b'.repeat(64),
+        apiKey: 'must-not-reach-planning-state',
+        privateReasoning: 'must-not-reach-planning-state',
+      }, {
+        revisionNumber: 3,
+        subjectKey: 'plot-thread',
+        entityId: 'thread-1',
+        fieldPath: 'plot.gunpowder',
+        value: ['已埋下', { chapter: 2 }],
+        contentHash: 'b'.repeat(64),
+      }],
+      canonProjectionStatus: {
+        canonRevision: 3,
+        projectionRevision: 3,
+        contentHash: 'b'.repeat(64),
+        synchronized: true,
+      },
+    })
+    const { api } = await import('../../src/api/db/client.js')
+
+    const state = await api.planning.get('project-1')
+
+    assert.deepEqual(state.actualProgress, [{
+      revisionNumber: 3,
+      subjectKey: '__global__',
+      entityId: null,
+      fieldPath: 'plot.gunpowder',
+      value: {
+        status: 'old',
+        evidence: ['第一章', { chapter: 1, active: true }],
+      },
+      contentHash: 'b'.repeat(64),
+    }, {
+      revisionNumber: 3,
+      subjectKey: 'plot-thread',
+      entityId: 'thread-1',
+      fieldPath: 'plot.gunpowder',
+      value: ['已埋下', { chapter: 2 }],
+      contentHash: 'b'.repeat(64),
+    }])
+    assert.equal(JSON.stringify(state.actualProgress).includes('must-not-reach'), false)
+    global.fetch = async () => jsonResponse({
+      actualProgress: [{
+        revisionNumber: 3,
+        subjectKey: '__global__',
+        entityId: null,
+        fieldPath: 'plot.\na',
+        value: null,
+        contentHash: 'b'.repeat(64),
+      }],
+    })
+    const newlinePath = await api.planning.get('project-1')
+    assert.equal(newlinePath.actualProgress[0].fieldPath, 'plot.\na')
+
+    global.fetch = async () => jsonResponse({
+      projectId: 'project-1',
+      actualProgress: [{
+        revisionNumber: 0,
+        subjectKey: '__global__',
+        entityId: null,
+        fieldPath: 'plot.gunpowder',
+        value: null,
+        contentHash: 'a'.repeat(64),
+      }],
+    })
+    await assert.rejects(
+      api.planning.get('project-1'),
+      /Invalid Planning actual progress response/i,
+    )
+    global.fetch = async () => jsonResponse({
+      actualProgress: [{
+        revisionNumber: 1,
+        subjectKey: '__global__',
+        entityId: null,
+        fieldPath: 'chapter.gunpowder',
+        value: false,
+        contentHash: 'a'.repeat(64),
+      }],
+    })
+    await assert.rejects(
+      api.planning.get('project-1'),
+      /Invalid Planning actual progress response/i,
+    )
+    global.fetch = async () => jsonResponse({
+      actualProgress: [{
+        revisionNumber: 1,
+        subjectKey: '__global__',
+        entityId: null,
+        fieldPath: 'plot.',
+        value: 1,
+        contentHash: 'a'.repeat(64),
+      }],
+    })
+    await assert.rejects(
+      api.planning.get('project-1'),
+      /Invalid Planning actual progress response/i,
+    )
+    global.fetch = async () => jsonResponse({
+      actualProgress: [{
+        revisionNumber: 1,
+        subjectKey: '__global__',
+        entityId: null,
+        fieldPath: 'plot.gunpowder',
+        value: true,
+        contentHash: 'A'.repeat(64),
+      }],
+    })
+    await assert.rejects(
+      api.planning.get('project-1'),
+      /Invalid Planning actual progress response/i,
+    )
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
 test('planning generation uses encoded paths and closed request and response DTOs', async () => {
   const originalFetch = global.fetch
   const calls = []
@@ -1074,28 +1211,32 @@ test('chapter session client separates session draft and explicit candidate writ
     })
     await api.chapterSessions.saveWorkingDraft('project-1', 'session-1', {
       expectedRevision: 1,
+      expectedContentHash: 'a'.repeat(64),
       content: '正文',
       rawModelOutput: 'must-not-send',
     })
-    await api.chapterSessions.generateWorkingDraft('project-1', 'session-1', {
-      expectedWorkingDraftRevision: 2,
-      authorInstruction: '多一点市井对话',
-      apiKey: 'must-not-send',
-      baseURL: 'https://must-not-send.invalid',
-      debug: true,
-    })
     await api.chapterSessions.saveCandidate('project-1', 'session-1', {
       expectedWorkingDraftRevision: 3,
+      expectedContentHash: 'b'.repeat(64),
+      idempotencyKey: '11111111-1111-1111-1111-111111111111',
       apiKey: 'must-not-send',
+      provider: 'must-not-send',
     })
+    await api.chapterSessions.loadCandidate(
+      'project-1', 'session-1', 'candidate/1', {
+        expectedWorkingDraftRevision: 4,
+        expectedContentHash: 'c'.repeat(64),
+        apiKey: 'must-not-send',
+      },
+    )
   })
 
   assert.deepEqual(calls.map(call => [call.options.method, new URL(call.url).pathname]), [
     ['GET', '/api/projects/project-1/chapter-sessions/1'],
     ['POST', '/api/projects/project-1/chapter-sessions/1'],
     ['PUT', '/api/projects/project-1/chapter-sessions/session-1/working-draft'],
-    ['POST', '/api/projects/project-1/chapter-sessions/session-1/generate-working-draft'],
     ['POST', '/api/projects/project-1/chapter-sessions/session-1/candidates'],
+    ['POST', '/api/projects/project-1/chapter-sessions/session-1/candidates/candidate%2F1/load'],
   ])
   assert.equal(bodyOf(calls[0]), undefined)
   assert.deepEqual(bodyOf(calls[1]), {
@@ -1108,39 +1249,1052 @@ test('chapter session client separates session draft and explicit candidate writ
   })
   assert.deepEqual(bodyOf(calls[2]), {
     expectedRevision: 1,
+    expectedContentHash: 'a'.repeat(64),
     content: '正文',
   })
   assert.deepEqual(bodyOf(calls[3]), {
-    expectedWorkingDraftRevision: 2,
-    authorInstruction: '多一点市井对话',
+    expectedWorkingDraftRevision: 3,
+    expectedContentHash: 'b'.repeat(64),
+    idempotencyKey: '11111111-1111-1111-1111-111111111111',
   })
-  assert.deepEqual(bodyOf(calls[4]), { expectedWorkingDraftRevision: 3 })
+  assert.deepEqual(bodyOf(calls[4]), {
+    expectedWorkingDraftRevision: 4,
+    expectedContentHash: 'c'.repeat(64),
+  })
 })
 
-test('chapter working draft generation uses a long model timeout', async () => {
+test('draft operation client uses only formal routes, strict bodies, and closed public DTOs', async () => {
   const originalFetch = global.fetch
-  const originalSetTimeout = global.setTimeout
-  const originalClearTimeout = global.clearTimeout
-  const timeouts = []
-  global.fetch = async () => jsonResponse()
-  global.setTimeout = (callback, timeoutMs) => {
-    timeouts.push(timeoutMs)
-    return { callback, timeoutMs }
+  const calls = []
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const key = '44444444-4444-4444-8444-444444444444'
+  const hash = 'a'.repeat(64)
+  const operation = {
+    id: operationId,
+    projectId,
+    chapterSessionId: sessionId,
+    operationType: 'generate_new',
+    status: 'completed',
+    lastEventSequence: 2,
+    partialOutput: '正文',
+    partialOutputHash: hash,
+    partialOutputScalars: 2,
+    resultWorkingDraftRevision: 5,
+    resultContentHash: hash,
+    resultSelectionStart: null,
+    resultSelectionEnd: null,
+    failureCode: null,
+    model: { providerId: 'provider-1', modelName: 'writer-model' },
   }
-  global.clearTimeout = () => {}
-
+  global.fetch = async (url, options) => {
+    calls.push({ url: String(url), options })
+    if (new URL(url).pathname.endsWith('/events')) {
+      return jsonResponse({
+        operationId,
+        events: [{
+          sequence: 1,
+          type: 'started',
+          createdAt: 1,
+        }, {
+          sequence: 2,
+          type: 'completed',
+          createdAt: 2,
+          resultWorkingDraftRevision: 5,
+          resultContentHash: hash,
+        }],
+        lastEventSequence: 2,
+        nextAfter: 2,
+        hasMore: false,
+      })
+    }
+    return jsonResponse(operation)
+  }
   try {
     const { api } = await import('../../src/api/db/client.js')
-    await api.chapterSessions.generateWorkingDraft('project-1', 'session-1', {
-      expectedWorkingDraftRevision: 2,
-      authorInstruction: '放慢节奏，多写人物反应',
-    })
+    const command = {
+      operationType: 'generate_new',
+      expectedWorkingDraftRevision: 4,
+      expectedContentHash: hash,
+      idempotencyKey: key,
+      authorInstruction: '多一点人物试探',
+    }
+    const created = await api.chapterSessions.createDraftOperation(
+      projectId, sessionId, command,
+    )
+    const read = await api.chapterSessions.readDraftOperation(
+      projectId, sessionId, operationId,
+    )
+    const events = await api.chapterSessions.listDraftOperationEvents(
+      projectId, sessionId, operationId, 0,
+    )
 
-    assert.equal(timeouts.at(-1), 1_200_000)
+    assert.deepEqual(calls.map(call => [
+      call.options.method,
+      new URL(call.url).pathname + new URL(call.url).search,
+    ]), [
+      ['POST', `/api/projects/${projectId}/chapter-sessions/${sessionId}/draft-operations`],
+      ['GET', `/api/projects/${projectId}/chapter-sessions/${sessionId}/draft-operations/${operationId}`],
+      ['GET', `/api/projects/${projectId}/chapter-sessions/${sessionId}/draft-operations/${operationId}/events?after=0`],
+    ])
+    assert.deepEqual(bodyOf(calls[0]), command)
+    assert.equal(
+      new Headers(calls[0].options.headers).get('content-type'),
+      'application/json',
+    )
+    const expectedOperation = {
+      id: operationId,
+      projectId,
+      chapterSessionId: sessionId,
+      operationType: 'generate_new',
+      status: 'completed',
+      lastEventSequence: 2,
+      partialOutput: '正文',
+      partialOutputHash: hash,
+      partialOutputScalars: 2,
+      resultWorkingDraftRevision: 5,
+      resultContentHash: hash,
+      resultSelectionStart: null,
+      resultSelectionEnd: null,
+      failureCode: null,
+      model: { providerId: 'provider-1', modelName: 'writer-model' },
+    }
+    assert.deepEqual(created, expectedOperation)
+    assert.deepEqual(read, expectedOperation)
+    assert.equal(Object.isFrozen(created), true)
+    assert.equal(Object.isFrozen(created.model), true)
+    assert.deepEqual(events, {
+      operationId,
+      events: [{ sequence: 1, type: 'started', createdAt: 1 }, {
+        sequence: 2,
+        type: 'completed',
+        createdAt: 2,
+        resultWorkingDraftRevision: 5,
+        resultContentHash: hash,
+      }],
+      lastEventSequence: 2,
+      nextAfter: 2,
+      hasMore: false,
+    })
+    assert.equal(Object.hasOwn(api.chapterSessions, 'generateWorkingDraft'), false)
   } finally {
     global.fetch = originalFetch
-    global.setTimeout = originalSetTimeout
-    global.clearTimeout = originalClearTimeout
+  }
+})
+
+test('draft operation client admits four exact local commands and closed terminal ranges', async () => {
+  const originalFetch = global.fetch
+  const calls = []
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const key = '44444444-4444-4444-8444-444444444444'
+  const selectedHash = 'a'.repeat(64)
+  const replacement = ' 新😀 '
+  const replacementHash = 'b'.repeat(64)
+  const resultHash = 'c'.repeat(64)
+  let operationType = 'rewrite_selection'
+  let responsePatch = {}
+  global.fetch = async (url, options) => {
+    calls.push({ url: String(url), options })
+    return jsonResponse({
+      id: operationId,
+      projectId,
+      chapterSessionId: sessionId,
+      operationType,
+      status: 'completed',
+      lastEventSequence: 2,
+      partialOutput: replacement,
+      partialOutputHash: replacementHash,
+      partialOutputScalars: 4,
+      resultWorkingDraftRevision: 5,
+      resultContentHash: resultHash,
+      resultSelectionStart: 2,
+      resultSelectionEnd: 6,
+      failureCode: null,
+      model: { providerId: 'provider-1', modelName: 'writer-model' },
+      ...responsePatch,
+    })
+  }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    for (const type of [
+      'rewrite_selection',
+      'polish_selection',
+      'expand_selection',
+      'compress_selection',
+    ]) {
+      operationType = type
+      const command = Object.freeze({
+        operationType: type,
+        expectedWorkingDraftRevision: 4,
+        expectedContentHash: 'd'.repeat(64),
+        idempotencyKey: key,
+        authorInstruction: '😀'.repeat(1000),
+        startOffset: 2,
+        endOffset: 4,
+        selectedTextHash: selectedHash,
+      })
+      const result = await api.chapterSessions.createDraftOperation(
+        projectId, sessionId, command,
+      )
+      assert.deepEqual(bodyOf(calls.at(-1)), command)
+      assert.equal(result.operationType, type)
+      assert.equal(result.resultSelectionStart, 2)
+      assert.equal(result.resultSelectionEnd, 6)
+      assert.notEqual(result.resultContentHash, result.partialOutputHash)
+    }
+
+    operationType = 'rewrite_selection'
+    for (const patch of [
+      { resultSelectionEnd: 7 },
+      { resultSelectionStart: null, resultSelectionEnd: null },
+      {
+        status: 'cancelled',
+        resultWorkingDraftRevision: null,
+        resultContentHash: null,
+        resultSelectionStart: 2,
+        resultSelectionEnd: 6,
+      },
+    ]) {
+      responsePatch = patch
+      await assert.rejects(
+        api.chapterSessions.readDraftOperation(
+          projectId, sessionId, operationId,
+        ),
+        TypeError,
+      )
+    }
+    responsePatch = {
+      status: 'cancelled',
+      partialOutput: ' 预览 ',
+      partialOutputScalars: 4,
+      resultWorkingDraftRevision: null,
+      resultContentHash: null,
+      resultSelectionStart: null,
+      resultSelectionEnd: null,
+    }
+    const cancelled = await api.chapterSessions.readDraftOperation(
+      projectId, sessionId, operationId,
+    )
+    assert.equal(cancelled.status, 'cancelled')
+    assert.equal(cancelled.partialOutput, ' 预览 ')
+    responsePatch = {}
+
+    const invalid = [
+      {
+        operationType: 'rewrite_selection',
+        expectedWorkingDraftRevision: 4,
+        expectedContentHash: 'd'.repeat(64),
+        idempotencyKey: key,
+        authorInstruction: '',
+        startOffset: 2,
+        endOffset: 2,
+        selectedTextHash: selectedHash,
+      },
+      {
+        operationType: 'rewrite_selection',
+        expectedWorkingDraftRevision: 4,
+        expectedContentHash: 'd'.repeat(64),
+        idempotencyKey: key,
+        authorInstruction: '',
+        startOffset: 99_999,
+        endOffset: 100_001,
+        selectedTextHash: selectedHash,
+      },
+      {
+        operationType: 'rewrite_selection',
+        expectedWorkingDraftRevision: 4,
+        expectedContentHash: 'd'.repeat(64),
+        idempotencyKey: key,
+        authorInstruction: '😀'.repeat(1001),
+        startOffset: 2,
+        endOffset: 4,
+        selectedTextHash: selectedHash,
+      },
+      {
+        operationType: 'generate_new',
+        expectedWorkingDraftRevision: 4,
+        expectedContentHash: 'd'.repeat(64),
+        idempotencyKey: key,
+        authorInstruction: '',
+        startOffset: 2,
+        endOffset: 4,
+        selectedTextHash: selectedHash,
+      },
+    ]
+    const cyclic = { ...invalid[0], endOffset: 4 }
+    cyclic.debug = cyclic
+    invalid.push(cyclic)
+    const acceptedCalls = calls.length
+    for (const command of invalid) {
+      await assert.rejects(
+        api.chapterSessions.createDraftOperation(projectId, sessionId, command),
+        TypeError,
+      )
+    }
+    assert.equal(calls.length, acceptedCalls)
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation client uses the exact local undo route and closed body', async () => {
+  const calls = []
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const sourceOperationId = '33333333-3333-4333-8333-333333333333'
+  const command = Object.freeze({
+    expectedWorkingDraftRevision: 5,
+    expectedContentHash: 'a'.repeat(64),
+    sourceOperationId,
+  })
+  const response = { projectId, session: { id: sessionId }, workingDraft: {} }
+  const originalFetch = global.fetch
+  global.fetch = async (url, options) => {
+    calls.push({ url: String(url), options })
+    return jsonResponse(response)
+  }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    assert.deepEqual(
+      await api.chapterSessions.undoLocalDraft(projectId, sessionId, command),
+      response,
+    )
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].options.method, 'POST')
+    assert.equal(
+      new URL(calls[0].url).pathname,
+      `/api/projects/${projectId}/chapter-sessions/${sessionId}/working-draft/undo`,
+    )
+    assert.deepEqual(bodyOf(calls[0]), command)
+
+    const acceptedCalls = calls.length
+    for (const invalid of [
+      { ...command, sourceOperationId: 'not-a-uuid' },
+      { ...command, apiKey: 'MUST-NOT-CROSS' },
+      { ...command, expectedWorkingDraftRevision: true },
+    ]) {
+      await assert.rejects(
+        api.chapterSessions.undoLocalDraft(projectId, sessionId, invalid),
+        TypeError,
+      )
+    }
+    assert.equal(calls.length, acceptedCalls)
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation client exposes bounded streaming status, paginated events, and bodyless cancel', async () => {
+  const originalFetch = global.fetch
+  const calls = []
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const partialOutput = '甲😀'
+  const partialOutputHash = 'b'.repeat(64)
+  const operation = {
+    id: operationId,
+    projectId,
+    chapterSessionId: sessionId,
+    operationType: 'generate_new',
+    status: 'cancelled',
+    lastEventSequence: 4,
+    partialOutput,
+    partialOutputHash,
+    partialOutputScalars: 2,
+    resultWorkingDraftRevision: 5,
+    resultContentHash: partialOutputHash,
+    resultSelectionStart: null,
+    resultSelectionEnd: null,
+    failureCode: null,
+    model: { providerId: 'provider-1', modelName: 'writer-model' },
+  }
+  global.fetch = async (url, options) => {
+    calls.push({ url: String(url), options })
+    if (new URL(url).pathname.endsWith('/events')) {
+      return jsonResponse({
+        operationId,
+        events: [{
+          sequence: 2,
+          type: 'delta',
+          createdAt: 2,
+          text: partialOutput,
+          partialOutputHash,
+          partialOutputScalars: 2,
+        }, {
+          sequence: 3,
+          type: 'heartbeat',
+          createdAt: 3,
+        }, {
+          sequence: 4,
+          type: 'cancelled',
+          createdAt: 4,
+          resultWorkingDraftRevision: 5,
+          resultContentHash: partialOutputHash,
+        }],
+        lastEventSequence: 4,
+        nextAfter: 4,
+        hasMore: false,
+      })
+    }
+    return jsonResponse(operation)
+  }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    const cancelled = await api.chapterSessions.cancelDraftOperation(
+      projectId, sessionId, operationId,
+    )
+    const events = await api.chapterSessions.listDraftOperationEvents(
+      projectId, sessionId, operationId, 1,
+    )
+    assert.deepEqual(cancelled, operation)
+    assert.equal(calls[0].options.body, undefined)
+    assert.equal(new Headers(calls[0].options.headers).has('content-type'), false)
+    assert.equal(
+      new URL(calls[0].url).pathname,
+      `/api/projects/${projectId}/chapter-sessions/${sessionId}/draft-operations/${operationId}/cancel`,
+    )
+    assert.deepEqual(events, {
+      operationId,
+      events: [{
+        sequence: 2,
+        type: 'delta',
+        createdAt: 2,
+        text: partialOutput,
+        partialOutputHash,
+        partialOutputScalars: 2,
+      }, {
+        sequence: 3,
+        type: 'heartbeat',
+        createdAt: 3,
+      }, {
+        sequence: 4,
+        type: 'cancelled',
+        createdAt: 4,
+        resultWorkingDraftRevision: 5,
+        resultContentHash: partialOutputHash,
+      }],
+      lastEventSequence: 4,
+      nextAfter: 4,
+      hasMore: false,
+    })
+    assert.equal(Object.isFrozen(cancelled), true)
+    assert.equal(Object.isFrozen(events), true)
+    assert.equal(Object.isFrozen(events.events), true)
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation client rejects malformed streaming scalars and recursive extra fields', async () => {
+  const originalFetch = global.fetch
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const base = {
+    id: operationId,
+    projectId,
+    chapterSessionId: sessionId,
+    operationType: 'generate_new',
+    status: 'running',
+    lastEventSequence: 2,
+    partialOutput: '😀',
+    partialOutputHash: 'a'.repeat(64),
+    partialOutputScalars: 1,
+    resultWorkingDraftRevision: null,
+    resultContentHash: null,
+    resultSelectionStart: null,
+    resultSelectionEnd: null,
+    failureCode: null,
+    model: { providerId: 'provider-1', modelName: 'writer-model' },
+  }
+  const responses = [
+    { ...base, partialOutputScalars: 2 },
+    { ...base, model: { ...base.model, diagnostics: { apiKey: 'MUST-NOT-CROSS' } } },
+  ]
+  global.fetch = async () => jsonResponse(responses.shift())
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await assert.rejects(
+        () => api.chapterSessions.readDraftOperation(projectId, sessionId, operationId),
+        TypeError,
+      )
+    }
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation client rejects impossible streaming status correlations', async () => {
+  const originalFetch = global.fetch
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const partialHash = 'a'.repeat(64)
+  const base = {
+    id: operationId,
+    projectId,
+    chapterSessionId: sessionId,
+    operationType: 'generate_new',
+    status: 'running',
+    lastEventSequence: 2,
+    partialOutput: '甲',
+    partialOutputHash: partialHash,
+    partialOutputScalars: 1,
+    resultWorkingDraftRevision: null,
+    resultContentHash: null,
+    resultSelectionStart: null,
+    resultSelectionEnd: null,
+    failureCode: null,
+    model: { providerId: 'provider-1', modelName: 'writer-model' },
+  }
+  const impossible = [
+    { ...base, status: 'starting' },
+    { ...base, lastEventSequence: 1 },
+    { ...base, status: 'expired', lastEventSequence: 2_048 },
+    {
+      ...base,
+      status: 'completed',
+      partialOutput: '',
+      partialOutputScalars: 0,
+      resultWorkingDraftRevision: 5,
+      resultContentHash: partialHash,
+    },
+    {
+      ...base,
+      status: 'completed',
+      resultWorkingDraftRevision: 5,
+      resultContentHash: 'b'.repeat(64),
+    },
+    { ...base, status: 'cancelled' },
+  ]
+  global.fetch = async () => jsonResponse(impossible.shift())
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      await assert.rejects(
+        () => api.chapterSessions.readDraftOperation(projectId, sessionId, operationId),
+        TypeError,
+      )
+    }
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation event paging accepts an ahead 32-bit cursor and rejects a short retained page', async () => {
+  const originalFetch = global.fetch
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const responses = [{
+    operationId,
+    events: [],
+    lastEventSequence: 4,
+    nextAfter: 2_147_483_647,
+    hasMore: false,
+  }, {
+    operationId,
+    events: [{ sequence: 1, type: 'started', createdAt: 1 }],
+    lastEventSequence: 137,
+    nextAfter: 1,
+    hasMore: true,
+  }]
+  let calls = 0
+  global.fetch = async () => {
+    calls += 1
+    return jsonResponse(responses.shift())
+  }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    assert.deepEqual(
+      await api.chapterSessions.listDraftOperationEvents(
+        projectId, sessionId, operationId, 2_147_483_647,
+      ),
+      {
+        operationId,
+        events: [],
+        lastEventSequence: 4,
+        nextAfter: 2_147_483_647,
+        hasMore: false,
+      },
+    )
+    await assert.rejects(
+      () => api.chapterSessions.listDraftOperationEvents(
+        projectId, sessionId, operationId, 0,
+      ),
+      TypeError,
+    )
+    assert.equal(calls, 2)
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation events accept a normalized terminal result after raw streamed delta and reject a nonterminal sequence 2048 tail', async () => {
+  const originalFetch = global.fetch
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const rawHash = createHash('sha256').update(' 甲 ', 'utf8').digest('hex')
+  const normalizedHash = createHash('sha256').update('甲', 'utf8').digest('hex')
+  const responses = [{
+    operationId,
+    events: [{ sequence: 1, type: 'started', createdAt: 1 }, {
+      sequence: 2,
+      type: 'delta',
+      createdAt: 2,
+      text: ' 甲 ',
+      partialOutputHash: rawHash,
+      partialOutputScalars: 3,
+    }, {
+      sequence: 3,
+      type: 'completed',
+      createdAt: 3,
+      resultWorkingDraftRevision: 5,
+      resultContentHash: normalizedHash,
+    }],
+    lastEventSequence: 3,
+    nextAfter: 3,
+    hasMore: false,
+  }, {
+    operationId,
+    events: Array.from({ length: 100 }, (_, index) => ({
+      sequence: 1_949 + index,
+      type: 'heartbeat',
+      createdAt: 1_949 + index,
+    })),
+    lastEventSequence: 2_048,
+    nextAfter: 2_048,
+    hasMore: false,
+  }]
+  global.fetch = async () => jsonResponse(responses.shift())
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    const normalized = await api.chapterSessions.listDraftOperationEvents(
+      projectId, sessionId, operationId, 0,
+    )
+    assert.notEqual(rawHash, normalizedHash)
+    assert.equal(normalized.events.at(-1).resultContentHash, normalizedHash)
+    await assert.rejects(
+      () => api.chapterSessions.listDraftOperationEvents(
+        projectId, sessionId, operationId, 1_948,
+      ),
+      TypeError,
+    )
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation events accept a whitespace-only delta followed by an empty cancellation result', async () => {
+  const originalFetch = global.fetch
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const whitespaceHash = createHash('sha256').update(' ', 'utf8').digest('hex')
+  global.fetch = async () => jsonResponse({
+    operationId,
+    events: [{ sequence: 1, type: 'started', createdAt: 1 }, {
+      sequence: 2,
+      type: 'delta',
+      createdAt: 2,
+      text: ' ',
+      partialOutputHash: whitespaceHash,
+      partialOutputScalars: 1,
+    }, {
+      sequence: 3,
+      type: 'cancelled',
+      createdAt: 3,
+      resultWorkingDraftRevision: null,
+      resultContentHash: null,
+    }],
+    lastEventSequence: 3,
+    nextAfter: 3,
+    hasMore: false,
+  })
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    const result = await api.chapterSessions.listDraftOperationEvents(
+      projectId, sessionId, operationId, 0,
+    )
+    assert.equal(result.events.at(-1).type, 'cancelled')
+    assert.equal(result.events.at(-1).resultContentHash, null)
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation events accept a complete 100-item page and reject recursive sensitive extras', async () => {
+  const originalFetch = global.fetch
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const completePage = [{ sequence: 1, type: 'started', createdAt: 1 }, ...Array.from(
+    { length: 99 },
+    (_, index) => ({ sequence: index + 2, type: 'heartbeat', createdAt: index + 2 }),
+  )]
+  const responses = [{
+    operationId,
+    events: completePage,
+    lastEventSequence: 137,
+    nextAfter: 100,
+    hasMore: true,
+  }, {
+    operationId,
+    events: [{
+      sequence: 1,
+      type: 'started',
+      createdAt: 1,
+      diagnostics: { apiKey: 'MUST-NOT-CROSS' },
+    }],
+    lastEventSequence: 1,
+    nextAfter: 1,
+    hasMore: false,
+  }]
+  global.fetch = async () => jsonResponse(responses.shift())
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    const page = await api.chapterSessions.listDraftOperationEvents(
+      projectId, sessionId, operationId, 0,
+    )
+    assert.equal(page.events.length, 100)
+    assert.equal(page.nextAfter, 100)
+    assert.equal(page.hasMore, true)
+    await assert.rejects(
+      () => api.chapterSessions.listDraftOperationEvents(
+        projectId, sessionId, operationId, 0,
+      ),
+      TypeError,
+    )
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation partials accept exactly 100000 Unicode scalars and reject malformed Unicode', async () => {
+  const originalFetch = global.fetch
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const exactBound = '😀'.repeat(100_000)
+  const base = {
+    id: operationId,
+    projectId,
+    chapterSessionId: sessionId,
+    operationType: 'generate_new',
+    status: 'running',
+    lastEventSequence: 2,
+    partialOutput: exactBound,
+    partialOutputHash: 'a'.repeat(64),
+    partialOutputScalars: 100_000,
+    resultWorkingDraftRevision: null,
+    resultContentHash: null,
+    resultSelectionStart: null,
+    resultSelectionEnd: null,
+    failureCode: null,
+    model: { providerId: 'provider-1', modelName: 'writer-model' },
+  }
+  const responses = [base, {
+    ...base,
+    partialOutput: '\ud800',
+    partialOutputScalars: 1,
+  }]
+  global.fetch = async () => jsonResponse(responses.shift())
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    const accepted = await api.chapterSessions.readDraftOperation(
+      projectId, sessionId, operationId,
+    )
+    assert.equal(accepted.partialOutputScalars, 100_000)
+    await assert.rejects(
+      () => api.chapterSessions.readDraftOperation(projectId, sessionId, operationId),
+      TypeError,
+    )
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation client rejects extra operation and nested model fields', async () => {
+  const originalFetch = global.fetch
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const command = {
+    operationType: 'generate_new',
+    expectedWorkingDraftRevision: 4,
+    expectedContentHash: 'a'.repeat(64),
+    idempotencyKey: '44444444-4444-4444-8444-444444444444',
+    authorInstruction: '',
+  }
+  const operation = {
+    id: operationId,
+    projectId,
+    chapterSessionId: sessionId,
+    operationType: 'generate_new',
+    status: 'completed',
+    lastEventSequence: 2,
+    partialOutput: '正文',
+    partialOutputHash: 'a'.repeat(64),
+    partialOutputScalars: 2,
+    resultWorkingDraftRevision: 5,
+    resultContentHash: 'a'.repeat(64),
+    failureCode: null,
+    model: { providerId: 'provider-1', modelName: 'writer-model' },
+  }
+  const responses = [
+    { ...operation, prompt: 'MUST-NOT-CROSS' },
+    {
+      ...operation,
+      model: { ...operation.model, apiKey: 'MUST-NOT-CROSS' },
+    },
+  ]
+  global.fetch = async () => jsonResponse(responses.shift())
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await assert.rejects(
+        () => api.chapterSessions.createDraftOperation(projectId, sessionId, command),
+        TypeError,
+      )
+    }
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation client counts author instructions by Unicode scalar value', async () => {
+  const originalFetch = global.fetch
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  let calls = 0
+  global.fetch = async () => {
+    calls += 1
+    return jsonResponse({
+      id: operationId,
+      projectId,
+      chapterSessionId: sessionId,
+      operationType: 'generate_new',
+      status: 'completed',
+      lastEventSequence: 2,
+      partialOutput: '正文',
+      partialOutputHash: 'a'.repeat(64),
+      partialOutputScalars: 2,
+      resultWorkingDraftRevision: 2,
+      resultContentHash: 'a'.repeat(64),
+      resultSelectionStart: null,
+      resultSelectionEnd: null,
+      failureCode: null,
+      model: { providerId: 'provider-1', modelName: 'writer-model' },
+    })
+  }
+  const base = {
+    operationType: 'generate_new',
+    expectedWorkingDraftRevision: 1,
+    expectedContentHash: 'a'.repeat(64),
+    idempotencyKey: '44444444-4444-4444-8444-444444444444',
+  }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    for (const size of [1_001, 2_000]) {
+      await api.chapterSessions.createDraftOperation(projectId, sessionId, {
+        ...base,
+        authorInstruction: '😀'.repeat(size),
+      })
+    }
+    for (const authorInstruction of ['😀'.repeat(2_001), '\ud800']) {
+      await assert.rejects(
+        () => api.chapterSessions.createDraftOperation(projectId, sessionId, {
+          ...base,
+          authorInstruction,
+        }),
+        TypeError,
+      )
+    }
+    assert.equal(calls, 2)
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation client rejects malformed commands, identifiers, cursors, and deep sensitive keys before fetch', async () => {
+  const originalFetch = global.fetch
+  let calls = 0
+  global.fetch = async () => {
+    calls += 1
+    return jsonResponse()
+  }
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const command = {
+    operationType: 'generate_new',
+    expectedWorkingDraftRevision: 1,
+    expectedContentHash: 'a'.repeat(64),
+    idempotencyKey: '44444444-4444-4444-8444-444444444444',
+    authorInstruction: '',
+  }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    for (const invalid of [
+      { ...command, expectedWorkingDraftRevision: true },
+      { ...command, expectedContentHash: 'A'.repeat(64) },
+      { ...command, idempotencyKey: '44444444-4444-4444-8444-44444444444A' },
+      { ...command, authorInstruction: 'x'.repeat(2001) },
+      { ...command, prompt: { messages: [{ provider: { apiKey: 'secret' } }] } },
+    ]) {
+      await assert.rejects(
+        () => api.chapterSessions.createDraftOperation(projectId, sessionId, invalid),
+        TypeError,
+      )
+    }
+    for (const invalidRequest of [
+      () => api.chapterSessions.createDraftOperation('project/1', sessionId, command),
+      () => api.chapterSessions.readDraftOperation(projectId, sessionId, 'not-a-uuid'),
+      () => api.chapterSessions.listDraftOperationEvents(projectId, sessionId, operationId, -1),
+      () => api.chapterSessions.listDraftOperationEvents(projectId, sessionId, operationId, 2147483648),
+      () => api.chapterSessions.listDraftOperationEvents(projectId, sessionId, operationId, true),
+    ]) await assert.rejects(invalidRequest(), TypeError)
+    assert.equal(calls, 0)
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation client rejects invalid completed revisions and event state sequences after fetch', async () => {
+  const originalFetch = global.fetch
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const command = {
+    operationType: 'generate_new',
+    expectedWorkingDraftRevision: 4,
+    expectedContentHash: 'a'.repeat(64),
+    idempotencyKey: '44444444-4444-4444-8444-444444444444',
+    authorInstruction: '',
+  }
+  const valid = {
+    id: operationId,
+    projectId,
+    chapterSessionId: sessionId,
+    operationType: 'generate_new',
+    status: 'completed',
+    lastEventSequence: 2,
+    partialOutput: '正文',
+    partialOutputHash: 'a'.repeat(64),
+    partialOutputScalars: 2,
+    resultWorkingDraftRevision: 5,
+    resultContentHash: 'a'.repeat(64),
+    failureCode: null,
+    model: { providerId: 'provider-1', modelName: 'writer-model' },
+  }
+  let calls = 0
+  const responses = [
+    { ...valid, resultWorkingDraftRevision: 4 },
+    { operationId, events: [{ sequence: 1, type: 'started', createdAt: 1 }, {
+      sequence: 2,
+      type: 'started',
+      createdAt: 2,
+    }], lastEventSequence: 2, nextAfter: 2, hasMore: false },
+  ]
+  global.fetch = async () => {
+    calls += 1
+    return jsonResponse(responses.shift())
+  }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    await assert.rejects(
+      () => api.chapterSessions.createDraftOperation(projectId, sessionId, command),
+      TypeError,
+    )
+    await assert.rejects(
+      () => api.chapterSessions.listDraftOperationEvents(projectId, sessionId, operationId, 0),
+      TypeError,
+    )
+    assert.equal(calls, 2)
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation client enforces exact safe revision bounds before transport and on public projections', async () => {
+  const originalFetch = global.fetch
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const base = 2_147_483_646
+  const result = 2_147_483_647
+  const command = {
+    operationType: 'generate_new',
+    expectedWorkingDraftRevision: base,
+    expectedContentHash: 'a'.repeat(64),
+    idempotencyKey: '44444444-4444-4444-8444-444444444444',
+    authorInstruction: '',
+  }
+  const valid = {
+    id: operationId,
+    projectId,
+    chapterSessionId: sessionId,
+    operationType: 'generate_new',
+    status: 'completed',
+    lastEventSequence: 2,
+    partialOutput: '正文',
+    partialOutputHash: 'a'.repeat(64),
+    partialOutputScalars: 2,
+    resultWorkingDraftRevision: result,
+    resultContentHash: 'a'.repeat(64),
+    resultSelectionStart: null,
+    resultSelectionEnd: null,
+    failureCode: null,
+    model: { providerId: 'provider-1', modelName: 'writer-model' },
+  }
+  const responses = [valid, {
+    operationId,
+    events: [{ sequence: 1, type: 'started', createdAt: 1 }, {
+      sequence: 2,
+      type: 'completed',
+      createdAt: 2,
+      resultWorkingDraftRevision: result + 1,
+      resultContentHash: 'a'.repeat(64),
+    }],
+    lastEventSequence: 2,
+    nextAfter: 2,
+    hasMore: false,
+  }]
+  let calls = 0
+  global.fetch = async () => {
+    calls += 1
+    return jsonResponse(responses.shift())
+  }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    assert.equal(
+      (await api.chapterSessions.createDraftOperation(projectId, sessionId, command)).resultWorkingDraftRevision,
+      result,
+    )
+    await assert.rejects(
+      () => api.chapterSessions.listDraftOperationEvents(projectId, sessionId, operationId, 0),
+      TypeError,
+    )
+    assert.equal(calls, 2)
+    for (const revision of [base + 1, Number.MAX_SAFE_INTEGER + 1]) {
+      await assert.rejects(
+        () => api.chapterSessions.createDraftOperation(projectId, sessionId, {
+          ...command,
+          expectedWorkingDraftRevision: revision,
+        }),
+        TypeError,
+      )
+    }
+    assert.equal(calls, 2)
+  } finally {
+    global.fetch = originalFetch
   }
 })
 

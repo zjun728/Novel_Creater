@@ -164,6 +164,7 @@ function controllerFixture() {
     hasCriticalRecovery: ref(false),
     readOnly: ref(false),
     editable: ref(true),
+    canAdjustOutline: ref(false),
     canCreateDraft: ref(false),
     canSave: ref(false),
     canGenerate: ref(false),
@@ -182,6 +183,41 @@ function controllerFixture() {
     closeHistory() {},
   }
 }
+
+test('drafting Session renders outline adoption labels from confirmed authority', async () => {
+  const vite = await createVite()
+  try {
+    const Workspace = await vite.ssrLoadModule(
+      '/src/components/planning/ChapterOutlineWorkspace.vue',
+    )
+    for (const [confirmedOutline, label] of [
+      [null, '采用小纲'],
+      [{ content: outlineContent() }, '更新当前小纲'],
+    ]) {
+      const store = storeFixture()
+      store.outlineState.activeSession = { status: 'drafting' }
+      store.outlineState.capabilities = {
+        ...store.outlineState.capabilities,
+        createDraft: true,
+        editDraft: false,
+      }
+      store.outlineState.confirmedOutline = confirmedOutline
+      const controller = controllerFixture()
+      controller.canAdjustOutline.value = true
+      const html = await renderToString(createSSRApp(Workspace.default, {
+        store,
+        controller,
+      }))
+
+      assert.match(html, /调整本章小纲/)
+      assert.match(html, /采用后作为当前写作依据；正文定稿前仍可调整。/)
+      assert.match(html, new RegExp(`>\\s*${label}\\s*<`))
+      assert.doesNotMatch(html, /Session 已创建，小纲只读/)
+    }
+  } finally {
+    await vite.close()
+  }
+})
 
 test('outline workspace keeps server authority read-only and closes editing to the approved fields', async () => {
   const vite = await createVite()

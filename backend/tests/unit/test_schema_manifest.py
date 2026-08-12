@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from hashlib import sha256
+from pathlib import Path
 
 from backend import schema_manifest
 from backend.domain.assets import ASSET_CATEGORIES
@@ -26,6 +27,7 @@ EXPECTED_FRAGMENTS = (
     "50_canon.sql",
     "60_projections.sql",
     "70_corpus.sql",
+    "80_project_imports.sql",
 )
 
 EXPECTED_TABLES = {
@@ -98,9 +100,15 @@ EXPECTED_TABLES = {
     "chapter_outline_confirmation_requests",
     "chapter_sessions",
     "working_drafts",
+    "working_draft_revisions",
+    "draft_operation_attempts",
+    "draft_operation_events",
     "draft_candidates",
+    "candidate_freeze_requests",
+    "candidate_quality_reports",
     "final_chapters",
     "finalization_change_sets",
+    "finalization_change_set_revisions",
     "finalization_records",
     "canon_entities",
     "entity_aliases",
@@ -112,6 +120,8 @@ EXPECTED_TABLES = {
     "plot_thread_projections",
     "projection_heads",
     "reference_uses",
+    "project_package_import_commands",
+    "project_import_provenance",
 }
 
 
@@ -140,7 +150,7 @@ def _raw_table_statement(table_name: str) -> str:
 def test_manifest_has_exact_ordered_fragments_and_tables():
     assert FRAGMENTS == EXPECTED_FRAGMENTS
     assert set(created_table_names()) == EXPECTED_TABLES
-    assert len(created_table_names()) == len(EXPECTED_TABLES)
+    assert len(created_table_names()) == len(EXPECTED_TABLES) == 91
     assert set(created_table_names()).isdisjoint(
         {"task_model_bindings", "task_model_binding_items", "contract_asset_refs"}
     )
@@ -686,7 +696,7 @@ def test_outline_tables_pin_exact_planning_canon_projection_and_chapter():
     assert "reserved" not in request
 
 
-def test_chapter_session_and_phase_five_placeholders_pin_planning_and_outline():
+def test_chapter_session_and_phase_five_records_pin_planning_and_outline():
     session = _table_statement("chapter_sessions")
     for column in (
         "planning_revision_id char(36) not null",
@@ -750,6 +760,320 @@ def test_chapter_session_and_phase_five_placeholders_pin_planning_and_outline():
     ) in final_chapter
     assert "story_block_revision" not in final_chapter
     assert "planning_snapshot_json" not in final_chapter
+
+
+def test_phase_five_finalization_schema_is_lean_closed_and_immutable():
+    names = created_table_names()
+    assert names.index("draft_candidates") < names.index("candidate_quality_reports")
+    assert names.index("candidate_quality_reports") < names.index("finalization_change_sets")
+    assert names.index("finalization_change_sets") < names.index(
+        "finalization_change_set_revisions"
+    )
+    assert names.index("finalization_change_set_revisions") < names.index(
+        "finalization_records"
+    )
+    assert names.index("finalization_records") < names.index("final_chapters")
+
+    report = _table_statement("candidate_quality_reports")
+    for contract in (
+        "chapter_session_id char(36) not null",
+        "draft_candidate_id char(36) not null",
+        "candidate_hash char(64) not null",
+        "expected_canon_revision int not null",
+        "expected_planning_hash char(64) not null",
+        "expected_outline_hash char(64) not null",
+        "policy_version varchar(32) not null",
+        "context_manifest_hash char(64) not null",
+        "deterministic_blocks_json json not null",
+        "findings_json json not null",
+        "content_hash char(64) not null",
+        "unique key uq_quality_report_owner_id (project_id, chapter_session_id, draft_candidate_id, id)",
+        "check (status in ('completed','quality_not_completed'))",
+    ):
+        assert contract in report
+    assert "api_key" not in report
+    assert "raw_response" not in report
+    assert "content longtext" not in report
+
+    change_set = _table_statement("finalization_change_sets")
+    for contract in (
+        "chapter_session_id char(36) not null",
+        "quality_report_id char(36) null",
+        "idempotency_key char(64) not null",
+        "request_fingerprint char(64) not null",
+        "active_slot tinyint null",
+        "context_manifest_json json not null",
+        "context_manifest_hash char(64) not null",
+        "current_revision int null",
+        "current_revision_hash char(64) null",
+        "confirmed_revision int null",
+        "confirmed_revision_hash char(64) null",
+        "unique key uq_finalization_active_slot (chapter_session_id, active_slot)",
+        "check (active_slot is null or active_slot = 1)",
+        "confirmed_revision = current_revision",
+        "status = 'preparing' and quality_report_id is null",
+        "status = 'awaiting_author' and quality_report_id is not null",
+        "status in ('committing','committed') and quality_report_id is not null",
+        "check (status in ('preparing','awaiting_author','committing','committed','invalidated','cancelled','failed'))",
+    ):
+        assert contract in change_set
+    assert "payload_json" not in change_set
+
+    revision = _table_statement("finalization_change_set_revisions")
+    for contract in (
+        "change_set_id char(36) not null",
+        "revision int not null",
+        "payload_json json not null",
+        "content_hash char(64) not null",
+        "unique key uq_changeset_revision (change_set_id, revision)",
+        "check (source in ('extraction','author_correction'))",
+        "check (revision > 0)",
+    ):
+        assert contract in revision
+
+    record = _table_statement("finalization_records")
+    for contract in (
+        "change_set_revision int not null",
+        "request_fingerprint char(64) not null",
+        "foreign key (project_id, change_set_id, change_set_revision, change_set_hash)",
+    ):
+        assert contract in record
+    assert "unique key uq_finalization_idempotency (project_id, idempotency_key)" in record
+
+
+def test_phase_4b_draft_operation_recovery_schema_is_exact_and_secret_free():
+    names = created_table_names()
+    assert names.index("working_drafts") < names.index("draft_operation_attempts")
+    assert names.index("draft_operation_attempts") < names.index("draft_candidates")
+    assert names.index("draft_candidates") < names.index("working_draft_revisions")
+    assert names.index("working_draft_revisions") < names.index("draft_operation_events")
+
+    sessions = _table_statement("chapter_sessions")
+    for contract in (
+        "draft_operation_fencing_token bigint not null default 0",
+        "active_draft_operation_id char(36) null",
+        "check (draft_operation_fencing_token >= 0)",
+    ):
+        assert contract in sessions
+
+    revisions = _table_statement("working_draft_revisions")
+    for contract in (
+        "working_draft_id char(36) not null",
+        "working_draft_revision int not null",
+        "snapshot_role varchar(24) not null",
+        "replacement_reason varchar(40) not null",
+        "source_operation_id char(36) null",
+        "source_candidate_id char(36) null",
+        "unique key uq_working_draft_recovery "
+        "(chapter_session_id, working_draft_revision, snapshot_role)",
+        "foreign key (project_id, chapter_session_id, working_draft_id) "
+        "references working_drafts(project_id, chapter_session_id, id) "
+        "on delete cascade",
+        "foreign key (project_id, chapter_session_id, source_operation_id) "
+        "references draft_operation_attempts(project_id, chapter_session_id, id) "
+        "on delete cascade",
+        "foreign key (project_id, chapter_session_id, source_candidate_id) "
+        "references draft_candidates(project_id, chapter_session_id, id) "
+        "on delete cascade",
+        "check (working_draft_revision > 0)",
+        "check (snapshot_role in ('before','after'))",
+        "check (replacement_reason in ('generate_new','rewrite_selection',"
+        "'polish_selection','expand_selection','compress_selection','undo_local',"
+        "'candidate_load'))",
+        "check ( (replacement_reason = 'candidate_load' "
+        "and source_operation_id is null and source_candidate_id is not null) "
+        "or (replacement_reason <> 'candidate_load' "
+        "and source_operation_id is not null and source_candidate_id is null) )",
+    ):
+        assert contract in revisions
+    assert "uq_working_draft_revision_identity" not in revisions
+    assert "uq_working_draft_revision_recovery" not in revisions
+    assert revisions.count("unique key") == 1
+    assert "foreign key (project_id) references projects(id)" not in revisions
+    assert "foreign key (working_draft_id) references working_drafts(id)" not in revisions
+
+    candidates = _table_statement("draft_candidates")
+    assert (
+        "unique key uq_candidate_owner_id "
+        "(project_id, chapter_session_id, id)"
+    ) in candidates
+    assert all(
+        not statement.lower().startswith("alter table")
+        for statement in read_statements()
+    )
+
+    operations = _table_statement("draft_operation_attempts")
+    for contract in (
+        "operation_type varchar(40) not null",
+        "idempotency_key varchar(64) not null",
+        "request_fingerprint char(64) not null",
+        "active_slot tinyint null",
+        "fencing_token bigint not null",
+        "lease_expires_at bigint not null",
+        "base_working_draft_revision int not null",
+        "base_working_draft_hash char(64) not null",
+        "input_manifest_json json not null",
+        "input_manifest_hash char(64) not null",
+        "provider_id char(36) not null",
+        "model_name_snapshot varchar(200) not null",
+        "result_working_draft_revision int null",
+        "result_content_hash char(64) null",
+        "last_event_sequence int not null",
+        "failure_code varchar(64) null",
+        "completed_at bigint null",
+        "unique key uq_draft_operation_idempotency "
+        "(chapter_session_id, idempotency_key)",
+        "unique key uq_draft_operation_active_slot "
+        "(chapter_session_id, active_slot)",
+        "unique key uq_draft_operation_fencing "
+        "(chapter_session_id, fencing_token)",
+        "unique key uq_draft_operation_project_id (project_id, id)",
+        "unique key uq_draft_operation_owner "
+        "(project_id, chapter_session_id, id)",
+        "foreign key (project_id, chapter_session_id) references "
+        "chapter_sessions(project_id, id) on delete cascade",
+        "foreign key (provider_id) references provider_profiles(id) on delete restrict",
+        "check (active_slot is null or active_slot = 1)",
+        "check (fencing_token > 0)",
+        "check (base_working_draft_revision > 0)",
+        "check (last_event_sequence >= 0)",
+        "check (operation_type in ('generate_new','rewrite_selection',"
+        "'polish_selection','expand_selection','compress_selection'))",
+        "status = 'completed' and active_slot is null "
+        "and result_working_draft_revision is not null "
+        "and result_content_hash is not null and failure_code is null "
+        "and completed_at is not null",
+        "status = 'failed' and active_slot is null "
+        "and result_working_draft_revision is null "
+        "and result_content_hash is null and failure_code is not null "
+        "and completed_at is not null",
+        "status = 'expired' and active_slot is null "
+        "and result_working_draft_revision is null "
+        "and result_content_hash is null and failure_code is null "
+        "and completed_at is not null",
+    ):
+        assert contract in operations
+    for forbidden in (
+        "operation_id char(36)",
+        "uq_draft_operation_identity",
+        "result_working_draft_hash",
+        "last_sequence_num",
+    ):
+        assert forbidden not in operations
+    for forbidden in (
+        "provider_body",
+        "provider_key",
+        "base_url",
+        "prompt",
+        "raw_response",
+    ):
+        assert forbidden not in operations
+    for forbidden in (
+        "selection_start",
+        "selection_end",
+        "selected_text_hash",
+        "undo_operation_id",
+    ):
+        assert forbidden not in operations
+
+    events = _table_statement("draft_operation_events")
+    for contract in (
+        "draft_operation_id char(36) not null",
+        "sequence_num int not null",
+        "event_type varchar(16) not null",
+        "closed_payload_json json null",
+        "unique key uq_draft_operation_event_sequence "
+        "(draft_operation_id, sequence_num)",
+        "foreign key (project_id, draft_operation_id) "
+        "references draft_operation_attempts(project_id, id) "
+        "on delete cascade",
+    ):
+        assert contract in events
+    assert "foreign key (project_id) references projects(id)" not in events
+    assert "foreign key (draft_operation_id) references draft_operation_attempts(id)" not in events
+
+    drafts = _table_statement("working_drafts")
+    assert (
+        "unique key uq_working_draft_owner "
+        "(project_id, chapter_session_id, id)"
+    ) in drafts
+
+
+def test_phase_4b2_streaming_schema_is_exact():
+    operations = _table_statement("draft_operation_attempts")
+    for contract in (
+        "partial_output_text longtext not null",
+        "partial_output_hash char(64) not null",
+        "partial_output_scalars int not null",
+        "heartbeat_at bigint not null",
+        "cancelled_at bigint null",
+        "check (partial_output_scalars between 0 and 100000)",
+        "check (heartbeat_at >= created_at)",
+        "check ( (status = 'cancelled' and cancelled_at is not null) or "
+        "(status <> 'cancelled' and cancelled_at is null) )",
+        "check (status in ('starting','running','completed','failed','cancelled','expired'))",
+        "status in ('starting','running') and active_slot is not null "
+        "and active_slot = 1 and result_working_draft_revision is null "
+        "and result_content_hash is null and failure_code is null "
+        "and completed_at is null and cancelled_at is null",
+        "status = 'cancelled' and active_slot is null and failure_code is null "
+        "and completed_at is not null and cancelled_at is not null",
+    ):
+        assert contract in operations
+
+    events = _table_statement("draft_operation_events")
+    for contract in (
+        "check (sequence_num between 1 and 2048)",
+        "check (event_type in ('started','delta','heartbeat','completed','failed','cancelled'))",
+        "event_type in ('started','heartbeat') and closed_payload_json is null",
+        "event_type in ('delta','completed','failed','cancelled') "
+        "and closed_payload_json is not null",
+    ):
+        assert contract in events
+
+
+def test_phase_4b2_governing_design_commits_only_safe_nonempty_cancelled_partial():
+    design_path = (
+        Path(schema_manifest.__file__).resolve().parents[1]
+        / "docs/superpowers/specs/2026-08-01-phase-4-writer-loop-design.md"
+    )
+    design = design_path.read_text(encoding="utf-8")
+    assert (
+        "Cancellation commits the latest safe persisted non-empty partial to "
+        "the WorkingDraft. Empty partial, failure, and expiry preserve the "
+        "prior WorkingDraft."
+    ) in design
+
+
+def test_candidate_identity_is_content_and_immutable_basis_hash():
+    candidate = _table_statement("draft_candidates")
+
+    assert "basis_hash char(64) not null" in candidate
+    assert (
+        "unique key uq_candidate_identity "
+        "(chapter_session_id, content_hash, basis_hash)"
+    ) in candidate
+    assert "uq_candidate_hash" not in candidate
+
+
+def test_phase4a_draft_integrity_tables_are_in_exact_manifest():
+    names = created_table_names()
+    assert names.index("draft_candidates") < names.index("candidate_freeze_requests")
+    assert names.index("candidate_freeze_requests") < names.index(
+        "finalization_change_sets"
+    )
+
+    freeze_requests = _table_statement("candidate_freeze_requests")
+    for contract in (
+        "unique key uq_candidate_freeze_idempotency "
+        "(chapter_session_id, idempotency_key)",
+        "foreign key (project_id) references projects(id) on delete cascade",
+        "foreign key (project_id, chapter_session_id) references "
+        "chapter_sessions(project_id, id) on delete cascade",
+        "foreign key (project_id, draft_candidate_id) references "
+        "draft_candidates(project_id, id) on delete cascade",
+    ):
+        assert contract in freeze_requests
 
 
 def test_corpus_revision_identity_allows_metadata_only_revisions_on_one_blob():
@@ -1178,17 +1502,32 @@ def test_project_private_parent_child_edges_are_project_scoped():
             "foreign key (project_id, chapter_session_id) references "
             "chapter_sessions(project_id, id) on delete cascade",
         ),
+        "candidate_quality_reports": (
+            "foreign key (project_id, chapter_session_id, draft_candidate_id) "
+            "references draft_candidates(project_id, chapter_session_id, id) "
+            "on delete cascade",
+        ),
         "finalization_change_sets": (
-            "foreign key (project_id, draft_candidate_id) references "
-            "draft_candidates(project_id, id) on delete cascade",
+            "foreign key (project_id, chapter_session_id, draft_candidate_id) "
+            "references draft_candidates(project_id, chapter_session_id, id) "
+            "on delete cascade",
+            "foreign key (project_id, chapter_session_id, draft_candidate_id, "
+            "quality_report_id) references candidate_quality_reports(project_id, "
+            "chapter_session_id, draft_candidate_id, id) on delete restrict",
+        ),
+        "finalization_change_set_revisions": (
+            "foreign key (project_id, change_set_id) references "
+            "finalization_change_sets(project_id, id) on delete cascade",
         ),
         "finalization_records": (
             "foreign key (project_id, chapter_session_id) references "
             "chapter_sessions(project_id, id) on delete cascade",
-            "foreign key (project_id, draft_candidate_id) references "
-            "draft_candidates(project_id, id) on delete cascade",
-            "foreign key (project_id, change_set_id) references "
-            "finalization_change_sets(project_id, id) on delete cascade",
+            "foreign key (project_id, chapter_session_id, draft_candidate_id) "
+            "references draft_candidates(project_id, chapter_session_id, id) "
+            "on delete cascade",
+            "foreign key (project_id, change_set_id, change_set_revision, "
+            "change_set_hash) references finalization_change_set_revisions("
+            "project_id, change_set_id, revision, content_hash) on delete restrict",
         ),
         "final_chapters": (
             "foreign key (project_id, chapter_session_id) references "
