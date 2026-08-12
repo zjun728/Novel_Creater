@@ -19,8 +19,11 @@ function saveDownload(objectUrl, filename) {
   link.download = filename
   link.hidden = true
   document.body.append(link)
-  link.click()
-  link.remove()
+  try {
+    link.click()
+  } finally {
+    link.remove()
+  }
 }
 
 const operationStore = useOperationStore()

@@ -121,6 +121,33 @@ test('a revoke failure cannot leave the operation or busy state behind', async (
   assert.equal(item.controller.busy.value, false)
 })
 
+test('a finish failure clears busy state, uses fixed error copy, and permits retry', async () => {
+  let finishes = 0
+  let downloads = 0
+  const item = harness({
+    operationStore: {
+      start: () => `op-${downloads + 1}`,
+      finish: () => {
+        finishes += 1
+        if (finishes === 1) throw new Error('private store detail')
+      },
+    },
+    api: { novelDownloads: {
+      options: async () => OPTIONS,
+      download: async () => {
+        downloads += 1
+        return { blob: new Blob(['book']), contentDisposition: 'attachment; filename="book.txt"' }
+      },
+    } },
+  })
+  await item.controller.loadOptions('p')
+  await assert.rejects(() => item.controller.download('p', selector), /private store detail/)
+  assert.equal(item.controller.busy.value, false)
+  assert.equal(item.controller.error.value, '下载失败，请重试。')
+  assert.equal(await item.controller.download('p', selector), true)
+  assert.equal(downloads, 2)
+})
+
 test('disposal aborts an internal request and fences its late result', async () => {
   const pending = deferred()
   let receivedSignal
@@ -156,7 +183,9 @@ test('disposing an option load fences its late result', async () => {
     download: async () => { throw new Error('not used') },
   } } })
   const loading = controller.loadOptions('p')
+  assert.equal(controller.loading.value, true)
   controller.dispose()
+  assert.equal(controller.loading.value, false)
   pending.resolve(OPTIONS)
   assert.equal(await loading, false)
   assert.equal(controller.options.value, null)

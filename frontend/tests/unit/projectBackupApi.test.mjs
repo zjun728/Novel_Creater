@@ -146,16 +146,17 @@ test('project backup removes external listeners and clears timers on success and
   }
 })
 
-test('project backup reports the fixed internal 30-second timeout without waiting', async () => {
+test('project backup reports the fixed internal 1200-second timeout without waiting', async () => {
   const originalFetch = global.fetch
   const originalSetTimeout = global.setTimeout
   const originalClearTimeout = global.clearTimeout
   let timeoutCallback
+  let scheduledDelay
   let cleared = false
   const timer = { name: 'backup-timeout' }
   global.setTimeout = (callback, delay) => {
-    assert.equal(delay, 30_000)
     timeoutCallback = callback
+    scheduledDelay = delay
     return timer
   }
   global.clearTimeout = value => { cleared = value === timer }
@@ -165,14 +166,37 @@ test('project backup reports the fixed internal 30-second timeout without waitin
   try {
     const pending = api.projectBackups.create('p', 4)
     assert.equal(typeof timeoutCallback, 'function')
+    assert.equal(scheduledDelay, 1_200_000)
     timeoutCallback()
     await assert.rejects(
       pending,
       error => error instanceof ApiError
         && error.code === 'request_timeout'
-        && error.message === '请求超时 (30s)',
+        && error.message === '请求超时 (1200s)',
     )
     assert.equal(cleared, true)
+  } finally {
+    global.fetch = originalFetch
+    global.setTimeout = originalSetTimeout
+    global.clearTimeout = originalClearTimeout
+  }
+})
+
+test('project backup timeout does not change other binary request timeouts', async () => {
+  const originalFetch = global.fetch
+  const originalSetTimeout = global.setTimeout
+  const originalClearTimeout = global.clearTimeout
+  const delays = []
+  global.setTimeout = (_callback, delay) => {
+    delays.push(delay)
+    return { delay }
+  }
+  global.clearTimeout = () => {}
+  global.fetch = async () => response()
+  try {
+    await api.projectBackups.create('p', 4)
+    await api.novelDownloads.download('p', { scope: 'book', format: 'txt' })
+    assert.deepEqual(delays, [1_200_000, 30_000])
   } finally {
     global.fetch = originalFetch
     global.setTimeout = originalSetTimeout

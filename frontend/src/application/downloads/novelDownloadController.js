@@ -154,10 +154,16 @@ export function createNovelDownloadController({
       try {
         if (objectUrl !== null) revokeObjectURL(objectUrl)
       } finally {
-        operationStore.finish(operationId)
-        if (inFlight?.token === token) {
-          inFlight = null
-          busyState.value = false
+        try {
+          operationStore.finish(operationId)
+        } catch (failure) {
+          if (active()) error.value = '下载失败，请重试。'
+          throw failure
+        } finally {
+          if (inFlight?.token === token) {
+            inFlight = null
+            busyState.value = false
+          }
         }
       }
     }
@@ -168,6 +174,7 @@ export function createNovelDownloadController({
     disposed = true
     loadGeneration += 1
     inFlight?.abortController.abort()
+    loadingState.value = false
     busyState.value = false
   }
 
