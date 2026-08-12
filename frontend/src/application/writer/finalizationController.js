@@ -108,16 +108,7 @@ export function createFinalizationController({
 
   async function load() {
     return run(async active => {
-      let value
-      try {
-        value = await getReview()
-      } catch (failure) {
-        if (Number(failure?.status) !== 404) throw failure
-        if (!active()) return null
-        review.value = null
-        result.value = null
-        return null
-      }
+      const value = await getReview()
       if (!active()) return null
       review.value = value
       if (value?.status !== 'committed') result.value = null

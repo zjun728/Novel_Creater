@@ -1970,6 +1970,7 @@ function finalizationChangeSet(value) {
 
 function finalizationReview(value) {
   const source = finalizationObject(value, 'review')
+  if (source.state === 'empty' && Object.keys(source).length === 1) return null
   if (!FINALIZATION_STATUSES.has(source.status)) {
     throw new TypeError('Invalid finalization status')
   }

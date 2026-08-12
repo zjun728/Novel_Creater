@@ -158,11 +158,9 @@ test('unknown commit result recovers with GET and never issues a second commit',
 })
 
 
-test('load treats a missing finalization attempt as the normal empty state', async () => {
+test('load treats the explicit empty review as prepare state', async () => {
   const controller = createFinalizationController({
-    getReview: async () => {
-      throw Object.assign(new Error('not found'), { status: 404 })
-    },
+    getReview: async () => null,
   })
 
   const loaded = await controller.load()
@@ -171,6 +169,20 @@ test('load treats a missing finalization attempt as the normal empty state', asy
   assert.equal(controller.review.value, null)
   assert.equal(controller.primaryAction.value, 'prepare')
   assert.equal(controller.error.value, '')
+})
+
+
+test('load does not reclassify a real 404 as an empty review', async () => {
+  const failure = Object.assign(new Error('not found'), { status: 404 })
+  const controller = createFinalizationController({
+    getReview: async () => { throw failure },
+  })
+
+  await assert.rejects(controller.load(), error => error === failure)
+
+  assert.equal(controller.review.value, null)
+  assert.equal(controller.primaryAction.value, 'prepare')
+  assert.equal(controller.error.value, '定稿审查状态加载失败，请刷新后重试。')
 })
 
 

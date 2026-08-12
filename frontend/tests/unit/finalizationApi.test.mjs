@@ -88,3 +88,26 @@ test('finalization client uses only the five closed session endpoints', async ()
     global.fetch = originalFetch
   }
 })
+
+
+test('getFinalization maps only the closed empty projection to null', async () => {
+  const originalFetch = global.fetch
+  const responses = [
+    { state: 'empty' },
+    { state: 'empty', unexpected: true },
+  ]
+  global.fetch = async () => jsonResponse(responses.shift())
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    assert.equal(
+      await api.chapterSessions.getFinalization('project-1', 'session-1'),
+      null,
+    )
+    await assert.rejects(
+      api.chapterSessions.getFinalization('project-1', 'session-1'),
+      TypeError,
+    )
+  } finally {
+    global.fetch = originalFetch
+  }
+})
