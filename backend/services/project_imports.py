@@ -44,13 +44,23 @@ STAGING_DIRECTORY = ".project-import-staging"
 STAGING_MANIFEST = "manifest.json"
 CLAIM_DIRECTORY = ".claims"
 RECOVERY_SCAN_LIMIT = 32
-CLAIM_ATTEMPTS = 64
+CLAIM_WAIT_SECONDS = 30.0
+CLAIM_INITIAL_BACKOFF_SECONDS = 0.01
+CLAIM_MAX_BACKOFF_SECONDS = 0.25
 _HASH = re.compile(r"[0-9a-f]{64}")
 _KEY = re.compile(r"[a-z0-9_-]{16,64}")
 
 
 def _invalid() -> ProjectImportInvalid:
     return ProjectImportInvalid("invalid project import archive")
+
+
+def _claim_monotonic() -> float:
+    return time.monotonic()
+
+
+async def _claim_sleep(delay: float) -> None:
+    await asyncio.sleep(delay)
 
 
 def _cleanup_owned_directory(root: Path, parent: Path) -> None:
@@ -238,20 +248,29 @@ class ProjectImportStaging:
 
     async def _acquire_claim(self, item: StagedBlob) -> Path:
         claim_parent = self.root.parent / CLAIM_DIRECTORY
-        claim_parent.mkdir(exist_ok=True)
-        apply_private_permissions(claim_parent, is_directory=True)
         claim = claim_parent / item.content_hash
-        for _ in range(CLAIM_ATTEMPTS):
+        deadline = _claim_monotonic() + CLAIM_WAIT_SECONDS
+        delay = CLAIM_INITIAL_BACKOFF_SECONDS
+        while True:
             created = False
             try:
-                descriptor = os.open(claim, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                claim_parent.mkdir(exist_ok=True)
+                apply_private_permissions(claim_parent, is_directory=True)
+                try:
+                    descriptor = os.open(claim, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                except FileNotFoundError:
+                    continue
                 created = True
                 with os.fdopen(descriptor, "w", encoding="ascii") as output:
                     output.write(self.command_id)
                 apply_private_permissions(claim, is_directory=False)
                 return claim
             except FileExistsError:
-                await asyncio.sleep(0)
+                remaining = deadline - _claim_monotonic()
+                if remaining <= 0:
+                    raise ProjectImportCommandStateConflict() from None
+                await _claim_sleep(min(delay, remaining))
+                delay = min(delay * 2, CLAIM_MAX_BACKOFF_SECONDS)
             except BaseException:
                 if created:
                     try:
@@ -260,7 +279,6 @@ class ProjectImportStaging:
                     except BaseException:
                         pass
                 raise
-        raise ProjectImportCommandStateConflict()
 
     def _release_claim(self, claim: Path) -> None:
         try:

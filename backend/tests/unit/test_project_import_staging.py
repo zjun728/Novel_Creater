@@ -147,6 +147,128 @@ async def test_concurrent_same_digest_has_one_actual_installer(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_same_digest_waits_for_delayed_manifest_winner_and_leaves_no_residue(
+    tmp_path, monkeypatch,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    package, plan, digest = _package(tmp_path, b"shared")
+    first = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    second = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed,
+        command_id="22222222-2222-4222-8222-222222222222",
+    )
+    manifest_started = asyncio.Event()
+    release_manifest = asyncio.Event()
+    link_calls = 0
+    real_link = project_imports.os.link
+
+    async def delayed_manifest(_value):
+        manifest_started.set()
+        await release_manifest.wait()
+
+    def counted_link(source, destination):
+        nonlocal link_calls
+        link_calls += 1
+        return real_link(source, destination)
+
+    monkeypatch.setattr(project_imports.os, "link", counted_link)
+    first_task = asyncio.create_task(first.promote(delayed_manifest))
+    await manifest_started.wait()
+    second_task = asyncio.create_task(second.promote(lambda _value: None))
+    await asyncio.sleep(0)
+    assert not second_task.done()
+    release_manifest.set()
+    await asyncio.gather(first_task, second_task)
+
+    assert link_calls == 1
+    assert sorted((first.blobs[0].created, second.blobs[0].created)) == [False, True]
+    first.cleanup_root()
+    second.cleanup_root()
+    staging_parent = managed / project_imports.STAGING_DIRECTORY
+    assert list(staging_parent.iterdir()) == []
+    assert not (staging_parent / project_imports.CLAIM_DIRECTORY).exists()
+    assert managed_corpus_blob_path(managed, digest).read_bytes() == b"shared"
+
+
+@pytest.mark.asyncio
+async def test_claim_wait_uses_exact_monotonic_deadline_and_capped_backoff(
+    tmp_path, monkeypatch,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    package, plan, digest = _package(tmp_path, b"shared")
+    staging = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    claim_parent = staging.root.parent / project_imports.CLAIM_DIRECTORY
+    claim_parent.mkdir()
+    claim = claim_parent / digest
+    claim.write_text("another-command", encoding="ascii")
+    now = 100.0
+    sleeps = []
+
+    def monotonic():
+        return now
+
+    async def sleep(delay):
+        nonlocal now
+        sleeps.append(delay)
+        now += delay
+
+    monkeypatch.setattr(project_imports, "_claim_monotonic", monotonic)
+    monkeypatch.setattr(project_imports, "_claim_sleep", sleep)
+    with pytest.raises(ProjectImportCommandStateConflict):
+        await staging._acquire_claim(staging.blobs[0])
+
+    assert sleeps[:6] == pytest.approx([0.01, 0.02, 0.04, 0.08, 0.16, 0.25])
+    assert max(sleeps) == pytest.approx(0.25)
+    assert sum(sleeps) == pytest.approx(30.0)
+    assert now == pytest.approx(130.0)
+    assert claim.read_text("ascii") == "another-command"
+
+    claim.unlink()
+    claim_parent.rmdir()
+    staging.cleanup_root()
+
+
+@pytest.mark.asyncio
+async def test_claim_wait_cancellation_preserves_existing_owner(tmp_path, monkeypatch):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    package, plan, digest = _package(tmp_path, b"shared")
+    staging = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    claim_parent = staging.root.parent / project_imports.CLAIM_DIRECTORY
+    claim_parent.mkdir()
+    claim = claim_parent / digest
+    claim.write_text("another-command", encoding="ascii")
+    sleeping = asyncio.Event()
+
+    async def sleep(_delay):
+        sleeping.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(project_imports, "_claim_sleep", sleep)
+    acquisition = asyncio.create_task(staging._acquire_claim(staging.blobs[0]))
+    await sleeping.wait()
+    acquisition.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await acquisition
+    assert claim.read_text("ascii") == "another-command"
+
+    claim.unlink()
+    claim_parent.rmdir()
+    staging.cleanup_root()
+
+
+@pytest.mark.asyncio
 async def test_prewritten_owner_with_link_failure_never_deletes_later_winner(
     tmp_path, monkeypatch,
 ):
