@@ -553,32 +553,32 @@ Acceptance evidence (2026-08-11):
 - Modify: `package.json`
 - Modify: `frontend/package.json`
 
-- [ ] **Step 1: Write runner-contract RED.**
+- [x] **Step 1: Write runner-contract RED.**
 
 Require disposable DB, owned quarantine/staging/download/artifact roots, deny proxy, runtime observer,
 visible UI file input, real preflight/import/download, one consumer-failure cleanup, exact ZIP/package
 verifier reuse, and no `page.request`, `page.route`, `fetch`, `axios`, or `page.evaluate`.
 
-- [ ] **Step 2: Seed one complete real authority fixture.**
+- [x] **Step 2: Seed one complete real authority fixture.**
 
 Use real service paths to create one active project with confirmed Contract/Bible/Planning/Outline,
 WorkingDraft, Candidate, final chapter/Canon, frozen asset/corpus, terminal operation history, and
 private Provider configuration that must not run or leak.
 
-- [ ] **Step 3: Exercise the complete visible Phase 6 flow.**
+- [x] **Step 3: Exercise the complete visible Phase 6 flow.**
 
 Through visible UI only: create the Phase 6B backup, navigate to Project Library, choose that actual
 download with the file input, preflight, edit title, import once, open the new project, prove Provider
 Not Ready, and download finalized TXT from the imported project. Verify current authority/final bytes
 and that the original project remains unchanged.
 
-- [ ] **Step 4: Inject unknown-result and cleanup boundaries.**
+- [x] **Step 4: Inject unknown-result and cleanup boundaries.**
 
 Hold/close one import response after publication and require GET recovery to return the same project.
 Assert only one target project and zero quarantine/staging/temp/download/artifact/process/port/DB
 residue after success and injected consumer failure.
 
-- [ ] **Step 5: Run the focused browser gate once and commit.**
+- [x] **Step 5: Run the focused browser gate once and commit.**
 
 ```powershell
 node --test scripts/tests/phase6cBrowserContract.test.mjs
@@ -594,18 +594,18 @@ git commit -m "test: accept phase6c atomic project import"
 - Create: `docs/acceptance/2026-08-10-phase-6c-atomic-project-import.md`
 - Modify: this plan's execution status after acceptance
 
-- [ ] **Step 1: Run one fresh combined Phase 6C focused suite.**
+- [x] **Step 1: Run one fresh combined Phase 6C focused suite.**
 
 Run Tasks 1–9 domain/security/schema/repository/service/API/frontend/runner tests, one disposable-MySQL
 publication/recovery suite, `py_compile`, build, and `git diff --check`.
 
-- [ ] **Step 2: Run one specification review, then one serial quality review.**
+- [x] **Step 2: Run one specification review, then one serial quality review.**
 
 Require `Critical/Important/Minor = 0/0/0` for new findings. Only active Critical/Important data
 corruption, security, atomic-publication, idempotency, secret, or guaranteed cleanup defects may
 return. Record nonblocking extremes for Phase 7; do not start an unbounded review loop.
 
-- [ ] **Step 3: Run the full Phase 6 matrix once.**
+- [x] **Step 3: Run the full Phase 6 matrix once.**
 
 Run serially and diagnose first cause before any rerun:
 
@@ -619,7 +619,7 @@ npm run test:browser:phase6c
 The Phase 6C browser scenario itself covers finalized download, deterministic backup, and atomic
 import. Require DB/process/port/temp/cache/quarantine/staging/download/artifact residue zero.
 
-- [ ] **Step 4: Write acceptance and commit.**
+- [x] **Step 4: Write acceptance and commit.**
 
 Record exact exit/counts, review counts, first causes, schema version, package version/hash, Provider
 Not Ready, atomic visibility, idempotent recovery, and resource ledger. Do not record body text,
@@ -630,7 +630,7 @@ git add docs/acceptance/2026-08-10-phase-6c-atomic-project-import.md docs/superp
 git commit -m "docs: accept phase6c atomic project import"
 ```
 
-- [ ] **Step 5: State the exact boundary and proceed to Phase 7.**
+- [x] **Step 5: State the exact boundary and proceed to Phase 7.**
 
 Use only:
 
