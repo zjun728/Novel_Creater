@@ -64,6 +64,7 @@ test('@phase6b backs up active and archived project with consumer cleanup', asyn
   await page.getByRole('link', { name: 'Novel Creator 项目库' }).click()
   await expect(page.getByRole('heading', { name: '项目库' })).toBeVisible()
   const card = page.locator('.project-card').filter({ hasText: 'contract integration' })
+  await expect(card).toBeVisible({ timeout: uiTimeout })
   await card.getByText('更多', { exact: true }).click()
   await card.getByRole('button', { name: '归档' }).click()
   await expect(page.getByText('项目已归档')).toBeVisible()

@@ -92,6 +92,11 @@ test('Phase 6B browser spec uses visible UI, real downloads, ZIP verification an
     /await expect\(page\.getByRole\('dialog', \{ name: '正在建立一致快照' \}\)\)\.toBeHidden/u,
     'backup helper waits for its blocking operation to finish before later UI actions',
   )
+  assert.match(
+    spec,
+    /await expect\(card\)\.toBeVisible\(\{ timeout: uiTimeout \}\)/u,
+    'library actions wait for the asynchronously loaded project card',
+  )
   assert.match(body, /归档/u)
   assert.match(body, /Novel Creator 项目库/u)
   assert.match(spec, /X-Package-SHA256|x-package-sha256/u)
