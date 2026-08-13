@@ -39,7 +39,7 @@ from backend.services.chapter_sessions import (
 )
 from backend.services.contracts import (
     AssetRevisionRef, ConfirmContracts, ContractDraftInput, ContractService,
-    SaveContractDraft,
+    CorpusSourceRef, SaveContractDraft,
 )
 from backend.services.finalization import (
     ConfirmFinalization, FinalizationService, PrepareFinalization,
@@ -156,7 +156,11 @@ async def _finalize(sessions, finalization_service, atomic_service, workspace, o
         confirmed.current_revision, confirmed.current_revision_hash))
 
 
-async def prepare(database_name: str) -> None:
+async def prepare(
+    database_name: str,
+    *,
+    corpus_source_refs: tuple[CorpusSourceRef, ...] = (),
+) -> None:
     database_name = assert_database_name(database_name)
     if os.environ.get("MYSQL_DB") != database_name: raise RuntimeError("Phase6A fixture database authority mismatch")
     async with connection() as session:
@@ -193,7 +197,7 @@ async def prepare(database_name: str) -> None:
         chapterWordRangePreference=(2000, 3000), prohibitedDirections=("不写无代价升级",), authorNotes="人物选择优先。",
         primaryStyleRef=AssetRevisionRef(id=styles[0]["id"], revision=int(styles[0]["revision"]), contentHash=styles[0]["content_hash"]),
         experienceCardRefs=(AssetRevisionRef(id=cards[0]["id"], revision=int(cards[0]["revision"]), contentHash=cards[0]["content_hash"]),),
-        corpusSourceRefs=(), likes=("选择有代价",), dislikes=("空泛升级",))
+        corpusSourceRefs=tuple(corpus_source_refs), likes=("选择有代价",), dislikes=("空泛升级",))
     saved_contract = await contracts.save_draft(SaveContractDraft(PROJECT, 0, contract))
     await contracts.confirm(ConfirmContracts(PROJECT, "phase6a-confirm-contract", saved_contract.draft_version, saved_contract.content_hash))
     bibles = BibleService(BibleRepository(), contract_service=contracts, transaction_factory=transaction)

@@ -355,13 +355,43 @@ def _rewrite_outline(payload: dict[str, object], ids: Mapping[tuple[str, str], s
 
 
 def _rewrite_corpus(data: dict[str, object], ids: Mapping[tuple[str, str], str]) -> None:
+    chapters_by_order: dict[int, str] = {}
     for item in data.get("chapters", []):
-        if not isinstance(item, dict):
+        if (
+            not isinstance(item, dict)
+            or type(item.get("chapterOrder")) is not int
+            or not isinstance(item.get("logicalId"), str)
+            or item["chapterOrder"] in chapters_by_order
+        ):
             raise _invalid()
+        chapters_by_order[item["chapterOrder"]] = item["logicalId"]
         _slot(item, "logicalId", ("corpus-chapter",), ids)
     for item in data.get("fragments", []):
-        if not isinstance(item, dict):
+        if (
+            not isinstance(item, dict)
+            or type(item.get("chapterOrder")) is not int
+            or not isinstance(item.get("logicalId"), str)
+        ):
             raise _invalid()
+        fragment_logical_id = item["logicalId"]
+        chapter_logical_id = chapters_by_order.get(item["chapterOrder"])
+        if chapter_logical_id is None:
+            raise _invalid()
+        index_payload = item.get("indexPayload")
+        if isinstance(index_payload, dict) and (
+            "fragmentId" in index_payload or "chapterId" in index_payload
+        ):
+            if (
+                index_payload.get("fragmentId") != fragment_logical_id
+                or index_payload.get("chapterId") != chapter_logical_id
+                or (
+                    "contentHash" in index_payload
+                    and index_payload["contentHash"] != item.get("contentHash")
+                )
+            ):
+                raise _invalid()
+            _slot(index_payload, "fragmentId", ("corpus-fragment",), ids)
+            _slot(index_payload, "chapterId", ("corpus-chapter",), ids)
         _slot(item, "logicalId", ("corpus-fragment",), ids)
 
 

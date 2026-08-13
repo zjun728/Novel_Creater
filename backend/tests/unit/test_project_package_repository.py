@@ -1421,7 +1421,13 @@ async def test_repository_freezes_referenced_corpus_revision_and_blob_descriptor
                 "fragment_id": "fragment-db",
                 "fragment_order": 1, "chapter_char_start": 0, "chapter_char_end": 9,
                 "normalized_text": "fragment text", "content_hash": "e" * 64,
-                "analysis_version": "v1", "index_payload": '{"terms":[]}', "created_at": 4,
+                "analysis_version": "v1", "index_payload": json.dumps({
+                    "schemaVersion": "corpus-index-v1",
+                    "fragmentId": "fragment-db",
+                    "chapterId": "chapter-db",
+                    "contentHash": "e" * 64,
+                    "normalizerVersion": "n1",
+                }), "created_at": 4,
             }],
         },
     )
@@ -1436,6 +1442,13 @@ async def test_repository_freezes_referenced_corpus_revision_and_blob_descriptor
     assert snapshot.corpus_revision_records[0].data["fragments"][0]["fragmentOrder"] == 1
     assert snapshot.corpus_revision_records[0].data["chapters"][0]["normalizedText"] == "chapter text"
     assert snapshot.corpus_revision_records[0].data["fragments"][0]["logicalId"] == "corpus-fragment:1"
+    assert snapshot.corpus_revision_records[0].data["fragments"][0]["indexPayload"] == {
+        "schemaVersion": "corpus-index-v1",
+        "fragmentId": "corpus-fragment:1",
+        "chapterId": "corpus-chapter:1",
+        "contentHash": "e" * 64,
+        "normalizerVersion": "n1",
+    }
     assert "chapter-db" not in repr(snapshot.corpus_revision_records[0].to_public_dict())
     assert snapshot.corpus_blobs == (FrozenCorpusBlob("corpus-blob:1", "d" * 64, 9, storage_key),)
     corpus_ref = next(record for record in snapshot.graph_records if record.entity_type == "creation-contract-corpus-ref")

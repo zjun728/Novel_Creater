@@ -8,13 +8,15 @@ import os
 from pathlib import Path
 
 from backend.database import close_pool, connection, get_pool, transaction
-from backend.domain.bibles import BiblePayload
+from backend.domain.contracts import FrozenCorpusFragment
 from backend.routers.projects import _service as project_lifecycle_service
 from backend.repositories.chapter_sessions import ChapterSessionRepository
+from backend.repositories.corpus import CorpusRepository
 from backend.repositories.project_packages import ProjectPackageRepository
 from backend.scripts.prepare_phase4b2_browser_db import assert_database_name
 from backend.scripts.prepare_phase6a_browser_db import (
     CANDIDATE_SENTINEL,
+    PROJECT,
     WORKING_SENTINEL,
     prepare as prepare_finalized_project,
 )
@@ -23,8 +25,8 @@ from backend.security.paths import (
     managed_corpus_storage_key,
 )
 from backend.services.draft_operations import DraftOperationService, StartDraftOperation
-from backend.tests.integration.test_contract_drafts import PROJECT, PROVIDER
-from backend.tests.integration import test_planning_aggregate_lifecycle as planning_fixture
+from backend.services.corpus_import import CorpusImportService
+from backend.services.contracts import CorpusSourceRef
 
 
 SECRET_SENTINEL = "phase6b-private-api-key-sentinel"
@@ -32,20 +34,8 @@ BASE_URL_SENTINEL = "https://phase6b-private.invalid/v1"
 CORPUS_UNIT = b"PHASE6B_OWNED_CORPUS_BYTES\n"
 CORPUS_BYTES = (CORPUS_UNIT * ((8 * 1024 * 1024 // len(CORPUS_UNIT)) + 1))[: 8 * 1024 * 1024]
 CORPUS_HASH = sha256(CORPUS_BYTES).hexdigest()
-LEGACY_CORPUS_HASH = "e" * 64
-VALID_BIBLE = BiblePayload.model_validate({
-    "premiseAndPromise": "保存真相必须承担关系与行动的代价。",
-    "worldRules": ({"id": "world-rule", "text": "所有能力都留下可追踪代价。"},),
-    "powerOrProgressionSystem": "成长来自选择、训练与有限资源。",
-    "protagonist": "主角谨慎并愿意承担选择后果。",
-    "coreCast": ({"id": "core-cast", "text": "同伴拥有独立目标与判断。"},),
-    "factions": ({"id": "faction", "text": "守序势力试图封存异常档案。"},),
-    "longTermConflicts": ({"id": "conflict", "text": "真相与秩序长期冲突。"},),
-    "relationshipDynamics": ({"id": "relationship", "text": "互疑会在共同选择中转为有限信任。"},),
-    "toneAndNarrativeBoundaries": "叙事克制具体，以人物选择推动情节。",
-    "continuityGuardrails": ({"id": "guardrail", "text": "关键胜利必须伴随损失。"},),
-    "openDesignQuestions": ({"id": "question", "text": "幕后人的真实身份仍未确定。"},),
-}, strict=True).model_dump(mode="json", by_alias=True)
+CORPUS_SOURCE_BYTES = "第一章 受控语料\n这段语料只用于备份闭包验证。".encode("utf-8")
+PROVIDER_NAME = "Phase6A local deny"
 
 
 class PreparationSnapshotTimeout(RuntimeError):
@@ -87,57 +77,92 @@ def _authority(database_name: str) -> tuple[str, Path]:
     return database, root
 
 
+async def _prepare_corpus_ref(corpus_root: Path) -> CorpusSourceRef:
+    source_name = "phase6b-owned-source.txt"
+    source_path = corpus_root / source_name
+    source_path.write_bytes(CORPUS_SOURCE_BYTES)
+    initial_hash = sha256(CORPUS_SOURCE_BYTES).hexdigest()
+    service = CorpusImportService(
+        CorpusRepository(),
+        corpus_root=corpus_root,
+        managed_root=corpus_root,
+        transaction_factory=transaction,
+        connection_factory=connection,
+    )
+    try:
+        imported = await service.import_source(
+            source_name,
+            "phase6b-corpus-import-authority",
+            display_name="Phase6B owned corpus",
+        )
+        source_id = str(imported["corpus_source_id"])
+        revision_id = str(imported["source_revision_id"])
+        revision = int(imported["source_revision"])
+        chapters = await service.list_chapters(source_id)
+        if len(chapters) != 1:
+            raise RuntimeError("Phase6B corpus chapter authority is invalid")
+        fragment_page = await service.list_fragments(chapters[0]["id"], 0, 10)
+        fragments = tuple(fragment_page["items"])
+        if len(fragments) != 1:
+            raise RuntimeError("Phase6B corpus fragment authority is invalid")
+        fragment = fragments[0]
+        async with transaction() as session:
+            await session.execute("SET FOREIGN_KEY_CHECKS=0")
+            try:
+                await session.execute(
+                    """UPDATE corpus_blobs
+                       SET content_hash=%s,byte_length=%s,storage_key=%s
+                       WHERE content_hash=%s""",
+                    (
+                        CORPUS_HASH,
+                        len(CORPUS_BYTES),
+                        managed_corpus_storage_key(CORPUS_HASH),
+                        initial_hash,
+                    ),
+                )
+                await session.execute(
+                    """UPDATE corpus_source_revisions
+                       SET content_hash=%s,byte_length=%s WHERE id=%s""",
+                    (CORPUS_HASH, len(CORPUS_BYTES), revision_id),
+                )
+                await session.execute(
+                    "UPDATE corpus_source_heads SET content_hash=%s WHERE source_id=%s",
+                    (CORPUS_HASH, source_id),
+                )
+                await session.execute(
+                    "UPDATE corpus_chapters SET source_hash=%s WHERE source_revision_id=%s",
+                    (CORPUS_HASH, revision_id),
+                )
+            finally:
+                await session.execute("SET FOREIGN_KEY_CHECKS=1")
+        initial_blob = corpus_root / managed_corpus_storage_key(initial_hash)
+        target = ensure_managed_corpus_blob_parent(corpus_root, CORPUS_HASH)
+        target.write_bytes(CORPUS_BYTES)
+        initial_blob.unlink()
+        return CorpusSourceRef(
+            id=source_id,
+            revisionId=revision_id,
+            revision=revision,
+            contentHash=CORPUS_HASH,
+            selectionMode="author",
+            fragments=(FrozenCorpusFragment(
+                chapterId=str(chapters[0]["id"]),
+                fragmentId=str(fragment["id"]),
+                fragmentHash=str(fragment["content_hash"]),
+                chapterCharStart=int(fragment["chapter_char_start"]),
+                chapterCharEnd=int(fragment["chapter_char_end"]),
+                referenceUse="structure",
+            ),),
+            pinnedHistoricalRevision=False,
+        )
+    finally:
+        source_path.unlink(missing_ok=True)
+
+
 async def prepare(database_name: str) -> None:
     database, corpus_root = _authority(database_name)
-    target = ensure_managed_corpus_blob_parent(corpus_root, CORPUS_HASH)
-    target.write_bytes(CORPUS_BYTES)
-    original_bootstrap = planning_fixture._bootstrap
-    original_insert_bible = planning_fixture._insert_confirmed_bible
-
-    async def bootstrap_with_owned_corpus(session):
-        facts = await original_bootstrap(session)
-        await session.execute("SET FOREIGN_KEY_CHECKS=0")
-        try:
-            await session.execute(
-                """UPDATE corpus_blobs
-                   SET content_hash=%s,byte_length=%s,storage_key=%s
-                   WHERE content_hash=%s""",
-                (
-                    CORPUS_HASH,
-                    len(CORPUS_BYTES),
-                    managed_corpus_storage_key(CORPUS_HASH),
-                    LEGACY_CORPUS_HASH,
-                ),
-            )
-            await session.execute(
-                """UPDATE corpus_source_revisions
-                   SET content_hash=%s,byte_length=%s WHERE content_hash=%s""",
-                (CORPUS_HASH, len(CORPUS_BYTES), LEGACY_CORPUS_HASH),
-            )
-            await session.execute(
-                "UPDATE corpus_source_heads SET content_hash=%s WHERE content_hash=%s",
-                (CORPUS_HASH, LEGACY_CORPUS_HASH),
-            )
-            await session.execute(
-                "UPDATE corpus_chapters SET source_hash=%s WHERE source_hash=%s",
-                (CORPUS_HASH, LEGACY_CORPUS_HASH),
-            )
-        finally:
-            await session.execute("SET FOREIGN_KEY_CHECKS=1")
-        return dict(facts) | {"source_hash": CORPUS_HASH}
-
-    async def insert_valid_bible(*args, **kwargs):
-        options = dict(kwargs)
-        options.setdefault("content", VALID_BIBLE)
-        return await original_insert_bible(*args, **options)
-
-    planning_fixture._bootstrap = bootstrap_with_owned_corpus
-    planning_fixture._insert_confirmed_bible = insert_valid_bible
-    try:
-        await prepare_finalized_project(database)
-    finally:
-        planning_fixture._bootstrap = original_bootstrap
-        planning_fixture._insert_confirmed_bible = original_insert_bible
+    corpus_ref = await _prepare_corpus_ref(corpus_root)
+    await prepare_finalized_project(database, corpus_source_refs=(corpus_ref,))
     # The Phase 6A fixture normally runs as its own process and closes its pool
     # in main().  Preserve that lifecycle boundary before Phase 6B mutates the
     # canonical fixture through a fresh pool.
@@ -185,9 +210,14 @@ async def prepare(database_name: str) -> None:
         selected = await session.fetchone("SELECT DATABASE() AS database_name")
         if selected != {"database_name": database}:
             raise RuntimeError("Phase6B fixture selected a non-owned database")
+        provider = await session.fetchone(
+            "SELECT id FROM provider_profiles WHERE name=%s", (PROVIDER_NAME,)
+        )
+        if provider is None:
+            raise RuntimeError("Phase6B provider authority is unavailable")
         await session.execute(
             "UPDATE provider_profiles SET api_key=%s,base_url=%s WHERE id=%s",
-            (SECRET_SENTINEL, BASE_URL_SENTINEL, PROVIDER),
+            (SECRET_SENTINEL, BASE_URL_SENTINEL, provider["id"]),
         )
     _record_state(10)
     async with transaction() as session:
@@ -259,7 +289,8 @@ async def verify_postconditions(database_name: str) -> None:
             (PROJECT, PROJECT, PROJECT, CORPUS_HASH),
         )
         provider = await session.fetchone(
-            "SELECT api_key,base_url FROM provider_profiles WHERE id=%s", (PROVIDER,)
+            "SELECT api_key,base_url FROM provider_profiles WHERE name=%s",
+            (PROVIDER_NAME,),
         )
         operations = await session.fetchone(
             """SELECT COUNT(*) AS count FROM draft_operation_attempts

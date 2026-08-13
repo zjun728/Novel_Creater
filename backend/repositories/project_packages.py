@@ -2143,6 +2143,24 @@ class ProjectPackageRepository:
                                 fragment["chapter_char_start"],
                                 fragment["chapter_char_end"],
                             )
+                            index_payload = _json_value(fragment["index_payload"])
+                            if isinstance(index_payload, dict) and (
+                                "fragmentId" in index_payload or "chapterId" in index_payload
+                            ):
+                                if (
+                                    index_payload.get("fragmentId") != fragment["fragment_id"]
+                                    or index_payload.get("chapterId") != chapter["chapter_id"]
+                                    or (
+                                        "contentHash" in index_payload
+                                        and index_payload["contentHash"] != fragment["content_hash"]
+                                    )
+                                ):
+                                    raise _invalid()
+                                index_payload = {
+                                    **index_payload,
+                                    "fragmentId": fragment_logical_id,
+                                    "chapterId": chapter_logical_id,
+                                }
                             fragments_data.append({
                                 "logicalId": fragment_logical_id,
                                 "chapterOrder": chapter_order, "fragmentOrder": fragment["fragment_order"],
@@ -2151,7 +2169,7 @@ class ProjectPackageRepository:
                                 "normalizedText": fragment["normalized_text"],
                                 "contentHash": fragment["content_hash"], "createdAt": fragment["created_at"],
                                 "analysisVersion": fragment["analysis_version"],
-                                "indexPayload": _json_value(fragment["index_payload"]),
+                                "indexPayload": index_payload,
                             })
                     corpus_revision_records.append(PackageRecord(
                         "corpus-revision",
