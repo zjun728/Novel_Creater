@@ -123,6 +123,48 @@ test('a revoke failure cannot leave the operation or busy state behind', async (
   assert.equal(item.controller.busy.value, false)
 })
 
+test('a save failure remains primary when revoke also fails and real-store cleanup permits retry', async () => {
+  const saveFailure = new Error('primary save failure')
+  const revokeFailure = new Error('secondary revoke failure')
+  let downloads = 0
+  let saves = 0
+  const revoked = []
+  setActivePinia(createPinia())
+  const operationStore = createOperationStore(`download-cross-cleanup-${Date.now()}`)()
+  const item = harness({
+    operationStore,
+    saveBlob: () => {
+      saves += 1
+      if (saves === 1) throw saveFailure
+    },
+    revokeObjectURL: url => {
+      revoked.push(url)
+      if (revoked.length === 1) throw revokeFailure
+    },
+    api: { novelDownloads: {
+      options: async () => OPTIONS,
+      download: async () => {
+        downloads += 1
+        return { blob: new Blob(['book']), contentDisposition: 'attachment; filename="book.txt"' }
+      },
+    } },
+  })
+  await item.controller.loadOptions('p')
+
+  await assert.rejects(
+    () => item.controller.download('p', selector),
+    failure => failure === saveFailure,
+  )
+  assert.deepEqual(revoked, ['blob:1'])
+  assert.equal(item.controller.busy.value, false)
+  assert.equal(operationStore.blocking, false)
+
+  assert.equal(await item.controller.download('p', selector), true)
+  assert.equal(downloads, 2)
+  assert.deepEqual(revoked, ['blob:1', 'blob:1'])
+  assert.equal(operationStore.blocking, false)
+})
+
 test('a transient real-store finish failure clears the blocker and permits retry', async () => {
   let downloads = 0
   setActivePinia(createPinia())

@@ -157,6 +157,68 @@ test('a revoke failure cannot leave the operation or busy state behind', async (
   assert.equal(item.controller.busy.value, false)
 })
 
+test('a save failure remains primary when revoke also fails and cleanup permits retry', async () => {
+  const saveFailure = new Error('primary save failure')
+  const revokeFailure = new Error('secondary revoke failure')
+  let saves = 0
+  let revokes = 0
+  const item = harness({
+    saveBlob: () => {
+      saves += 1
+      if (saves === 1) throw saveFailure
+    },
+    revokeObjectURL: () => {
+      revokes += 1
+      if (revokes === 1) throw revokeFailure
+    },
+  })
+
+  await assert.rejects(
+    () => item.controller.backup('p', 1),
+    failure => failure === saveFailure,
+  )
+  assert.equal(revokes, 1)
+  assert.deepEqual(item.operations.at(-1), ['finish', 'op-1'])
+  assert.equal(item.controller.busy.value, false)
+
+  assert.equal(await item.controller.backup('p', 1), true)
+  assert.equal(item.requests.length, 2)
+  assert.equal(revokes, 2)
+})
+
+test('a save failure remains primary when finish also fails and cleanup permits retry', async () => {
+  const saveFailure = new Error('primary save failure')
+  const finishFailure = new Error('secondary finish failure')
+  let saves = 0
+  let finishes = 0
+  const item = harness({
+    operationStore: {
+      start: () => 'op-1',
+      update: () => {},
+      finish: () => {
+        finishes += 1
+        if (finishes === 1) throw finishFailure
+      },
+    },
+    saveBlob: () => {
+      saves += 1
+      if (saves === 1) throw saveFailure
+    },
+  })
+
+  await assert.rejects(
+    () => item.controller.backup('p', 1),
+    failure => failure === saveFailure,
+  )
+  assert.deepEqual(item.revoked, ['blob:backup'])
+  assert.equal(finishes, 1)
+  assert.equal(item.controller.busy.value, false)
+
+  assert.equal(await item.controller.backup('p', 1), true)
+  assert.equal(item.requests.length, 2)
+  assert.equal(finishes, 2)
+})
+
 test('dispose aborts the request and fences a late binary result', async () => {
   const pending = deferred()
   let receivedSignal

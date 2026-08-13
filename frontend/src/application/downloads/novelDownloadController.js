@@ -165,9 +165,11 @@ export function createNovelDownloadController({
       try {
         if (objectUrl !== null) revokeObjectURL(objectUrl)
       } catch (failure) {
-        primaryFailure ??= failure
         if (active()) error.value = '下载失败，请重试。'
-        throw failure
+        if (primaryFailure === null && cleanupFailureCanSurface) {
+          primaryFailure = failure
+          throw failure
+        }
       } finally {
         let finishFailure = null
         try {
