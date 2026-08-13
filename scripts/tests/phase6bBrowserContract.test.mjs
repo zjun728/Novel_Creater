@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -95,4 +96,34 @@ test('Phase 6B browser spec uses visible UI, real downloads, ZIP verification an
   assert.match(body, /Novel Creator 项目库/u)
   assert.match(spec, /X-Package-SHA256|x-package-sha256/u)
   assert.doesNotMatch(spec, /page\.(?:request|route|evaluate)|\bfetch\(|\baxios\b/u)
+})
+
+test('Phase 6B classifies only actual Playwright errors with fixed locator categories', async () => {
+  const { classifyBrowserFailure } = await import('../../frontend/e2e/run-phase6b.mjs')
+  const rootPath = mkdtempSync(path.join(os.tmpdir(), 'phase6b-classifier-'))
+  const resultPath = path.join(rootPath, 'result.json')
+  try {
+    writeFileSync(resultPath, JSON.stringify({
+      config: { timeout: 180_000 },
+      suites: [{ specs: [{ tests: [{ results: [{ errors: [{
+        message: 'expect(received).toBe(expected)',
+        location: { file: 'project-backup.spec.mjs', line: 65 },
+      }] }] }] }] }],
+    }))
+    assert.equal(classifyBrowserFailure(resultPath), 'assertion@65')
+
+    writeFileSync(resultPath, JSON.stringify({ suites: [{ specs: [{ tests: [{ results: [{ errors: [{
+      message: 'locator.click: Timeout 10000ms exceeded.\nCall log:\n - waiting for locator',
+      location: { file: 'project-backup.spec.mjs', line: 67 },
+    }] }] }] }] }] }))
+    assert.equal(classifyBrowserFailure(resultPath), 'locator-missing@67')
+
+    writeFileSync(resultPath, JSON.stringify({ suites: [{ specs: [{ tests: [{ results: [{ errors: [{
+      message: 'locator.click: Timeout 10000ms exceeded.\nlocator resolved to element\nintercepts pointer events',
+      location: { file: 'project-backup.spec.mjs', line: 67 },
+    }] }] }] }] }] }))
+    assert.equal(classifyBrowserFailure(resultPath), 'locator-intercepted@67')
+  } finally {
+    rmSync(rootPath, { recursive: true, force: true })
+  }
 })

@@ -260,13 +260,43 @@ async function runStage(stage, action) {
   }
 }
 
-function classifyBrowserFailure(resultPath) {
+function reportErrors(report) {
+  const found = []
+  const visit = value => {
+    if (Array.isArray(value)) { value.forEach(visit); return }
+    if (!value || typeof value !== 'object') return
+    if (Array.isArray(value.errors)) {
+      for (const error of value.errors) if (error && typeof error.message === 'string') found.push(error)
+    }
+    for (const child of Object.values(value)) visit(child)
+  }
+  visit(report)
+  return found
+}
+
+function browserErrorLine(error) {
+  if (error.location?.file?.endsWith('project-backup.spec.mjs') && Number.isInteger(error.location.line)) {
+    return String(error.location.line)
+  }
+  return error.stack?.match(/project-backup\.spec\.mjs:(\d+):\d+/u)?.[1] || 'unknown'
+}
+
+export function classifyBrowserFailure(resultPath) {
   try {
-    const rendered = JSON.stringify(JSON.parse(readFileSync(resultPath, 'utf8')))
-    const line = rendered.match(/project-backup\.spec\.mjs:(\d+)/u)?.[1] || 'unknown'
-    const status = rendered.match(/backup-status-(\d{3})/u)?.[1]
+    const errors = reportErrors(JSON.parse(readFileSync(resultPath, 'utf8')))
+    const error = errors[0]
+    if (!error) return 'unclassified'
+    const line = browserErrorLine(error)
+    const status = error.message.match(/backup-status-(\d{3})/u)?.[1]
     if (status) return `backup-status-${status}`
-    return `${/timed out|timeout/iu.test(rendered) ? 'timeout' : /locator/iu.test(rendered) ? 'locator' : 'assertion'}@${line}`
+    if (/locator\.click/iu.test(error.message) && /timed out|timeout/iu.test(error.message)) {
+      if (/intercepts pointer events/iu.test(error.message)) return `locator-intercepted@${line}`
+      if (/element is not enabled|disabled/iu.test(error.message)) return `locator-disabled@${line}`
+      if (/element is not visible/iu.test(error.message)) return `locator-hidden@${line}`
+      if (!/locator resolved to/iu.test(error.message)) return `locator-missing@${line}`
+      return `locator-timeout@${line}`
+    }
+    return `${/timed out|timeout/iu.test(error.message) ? 'timeout' : /locator/iu.test(error.message) ? 'locator' : 'assertion'}@${line}`
   } catch { return 'unclassified' }
 }
 
