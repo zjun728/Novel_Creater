@@ -133,6 +133,11 @@ export function createProjectBackupController({
           if (operationId !== null) operationStore.finish(operationId)
         } catch (failure) {
           if (active()) error.value = BACKUP_ERROR
+          try {
+            operationStore.finish(operationId)
+          } catch {
+            // The public operation API has no stronger recovery primitive.
+          }
           if (!hasPrimaryFailure) throw failure
         } finally {
           if (inFlight?.token === token) {

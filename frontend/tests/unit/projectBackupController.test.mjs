@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { createPinia, setActivePinia } from 'pinia'
 
 import { createProjectBackupController } from '../../src/application/project/projectBackupController.js'
+import { createOperationStore } from '../../src/stores/operationStore.js'
 
 const PHASES = [
   '正在核对项目状态',
@@ -186,20 +188,21 @@ test('a save failure remains primary when revoke also fails and cleanup permits 
   assert.equal(revokes, 2)
 })
 
-test('a save failure remains primary when finish also fails and cleanup permits retry', async () => {
+test('a save failure remains primary while transient real-store finish cleanup clears blocking for retry', async () => {
   const saveFailure = new Error('primary save failure')
   const finishFailure = new Error('secondary finish failure')
   let saves = 0
   let finishes = 0
+  setActivePinia(createPinia())
+  const operationStore = createOperationStore(`backup-cross-cleanup-${Date.now()}`)()
+  const realFinish = operationStore.finish.bind(operationStore)
+  operationStore.finish = operationId => {
+    finishes += 1
+    if (finishes === 1) throw finishFailure
+    return realFinish(operationId)
+  }
   const item = harness({
-    operationStore: {
-      start: () => 'op-1',
-      update: () => {},
-      finish: () => {
-        finishes += 1
-        if (finishes === 1) throw finishFailure
-      },
-    },
+    operationStore,
     saveBlob: () => {
       saves += 1
       if (saves === 1) throw saveFailure
@@ -211,12 +214,16 @@ test('a save failure remains primary when finish also fails and cleanup permits 
     failure => failure === saveFailure,
   )
   assert.deepEqual(item.revoked, ['blob:backup'])
-  assert.equal(finishes, 1)
   assert.equal(item.controller.busy.value, false)
+  assert.equal(operationStore.blocking, false)
+  assert.equal(operationStore.active, false)
+  assert.equal(finishes, 2)
 
   assert.equal(await item.controller.backup('p', 1), true)
   assert.equal(item.requests.length, 2)
-  assert.equal(finishes, 2)
+  assert.equal(finishes, 3)
+  assert.equal(operationStore.blocking, false)
+  assert.equal(operationStore.active, false)
 })
 
 test('dispose aborts the request and fences a late binary result', async () => {
