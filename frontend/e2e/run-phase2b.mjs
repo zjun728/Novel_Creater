@@ -215,11 +215,11 @@ from backend.gateways.market_sources.manual_snapshot import ManualSnapshotAdapte
 from backend.main import app
 from backend.repositories.market import MarketRepository
 from backend.repositories.seeds import SeedRepository
-from backend.routers.market_sources import (
+from backend.domain.routers.market_sources import (
     get_market_analysis_service,
     get_market_source_service,
 )
-from backend.routers.seeds import (
+from backend.domain.routers.seeds import (
     get_seed_generation_service,
     get_seed_service,
 )

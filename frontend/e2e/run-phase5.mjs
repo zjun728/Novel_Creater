@@ -52,7 +52,7 @@ class DeniedAsyncClient:
     async def post(self, *args, **kwargs): self.deny()
 httpx.AsyncClient = DeniedAsyncClient
 from backend.domain.finalization import FinalizationChangeSet, QualityFinding
-from backend.routers import finalization
+from backend.domain.routers import finalization
 def evidence(prose):
     end = min(4, len(prose))
     return {'startScalar': 0, 'endScalar': end, 'excerptHash': sha256(prose[:end].encode()).hexdigest(), 'confidence': 1.0, 'rationale': '正文直接证据。'}

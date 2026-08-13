@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from backend import main
 from backend.http_errors import ProjectArchived
-from backend.routers import assets, contracts, corpus, projects, seeds, story_engines
+from backend.domain.routers import assets, contracts, corpus, projects, seeds, story_engines
 from backend.domain.seeds import SeedMutationCapabilities, SeedPayload
 from backend.security.redaction import install_error_handlers
 from backend.services.project_lifecycle import (

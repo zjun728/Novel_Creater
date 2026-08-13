@@ -9,7 +9,7 @@ from backend.domain.novel_downloads import (
     NovelDownloadScopeNotFoundError,
     SafeAttachmentNames,
 )
-from backend.routers import novel_downloads
+from backend.domain.routers import novel_downloads
 from backend.security.redaction import install_error_handlers
 from backend.services.novel_downloads import (
     NovelDownloadOptions,

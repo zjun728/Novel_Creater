@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from backend.domain.model_bindings import TASK_KEYS
 from backend.http_errors import BindingConflict
-from backend.routers import model_bindings
+from backend.domain.routers import model_bindings
 from backend.security.redaction import install_error_handlers
 
 

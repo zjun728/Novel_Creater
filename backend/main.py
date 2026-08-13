@@ -16,7 +16,7 @@ from backend.config import MANAGED_CORPUS_ROOT
 from backend.gateways.openai_json_transport import (
     OpenAIJSONTransportLifecycleError,
 )
-from backend.routers import (
+from backend.domain.routers import (
     application_settings,
     assets,
     bibles,

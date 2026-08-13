@@ -17,7 +17,7 @@ from backend.domain.bibles import BiblePayload
 from backend.http_errors import PublicDomainError
 from backend.gateways.bible_provider import BibleProviderGateway
 from backend.repositories.bibles import BibleRepository
-from backend.routers.contracts import get_contract_service
+from backend.domain.routers.contracts import get_contract_service
 from backend.services.bibles import (
     BibleService,
     CloneBibleDraft,

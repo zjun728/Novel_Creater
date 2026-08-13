@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.domain.planning import PlanningAggregate
-from backend.routers import planning
+from backend.domain.routers import planning
 from backend.security.redaction import install_error_handlers
 from backend.services.planning import (
     PlanningConflict as ServicePlanningConflict,

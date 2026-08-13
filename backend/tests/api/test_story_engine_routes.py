@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.http_errors import StoryEngineBatchConflict, StoryEngineBatchNotFound
-from backend.routers import story_engines
+from backend.domain.routers import story_engines
 from backend.security.redaction import install_error_handlers
 from backend.tests.support.story_engine_fakes import three_options
 

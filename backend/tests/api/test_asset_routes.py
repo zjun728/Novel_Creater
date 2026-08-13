@@ -21,7 +21,7 @@ from backend.http_errors import (
     AssetRecommendationConflict,
     AssetRecommendationInProgress,
 )
-from backend.routers import assets, corpus
+from backend.domain.routers import assets, corpus
 from backend.security.redaction import install_error_handlers
 from backend.services import creative_assets as creative_asset_services
 

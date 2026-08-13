@@ -17,7 +17,7 @@ import httpx
 import pytest
 
 from backend.gateways.story_engine_provider import StoryEngineProviderGateway
-from backend.routers import providers, story_engines
+from backend.domain.routers import providers, story_engines
 from backend.security.redaction import SecretRedactionFilter, install_error_handlers
 from backend.tests.support.story_engine_fakes import StoryEngineHarness, three_options
 

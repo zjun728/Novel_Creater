@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 import pytest
 
-from backend.routers import chapter_sessions
+from backend.domain.routers import chapter_sessions
 from backend.security.redaction import install_error_handlers
 from backend.services.draft_operations import (
     DraftOperationResult,

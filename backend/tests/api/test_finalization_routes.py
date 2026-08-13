@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.domain.finalization import FinalizationChangeSet
-from backend.routers import finalization
+from backend.domain.routers import finalization
 from backend.security.redaction import install_error_handlers
 from backend.services.finalization import (
     FinalizationConflict,

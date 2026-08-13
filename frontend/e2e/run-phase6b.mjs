@@ -58,7 +58,7 @@ class DeniedAsyncClient:
     def stream(self, *args, **kwargs): self.deny()
     async def post(self, *args, **kwargs): self.deny()
 httpx.AsyncClient = DeniedAsyncClient
-from backend.routers import project_packages
+from backend.domain.routers import project_packages
 project_packages.PROJECT_PACKAGE_TEMP_PARENT = Path(os.environ['PHASE6B_PACKAGE_TEMP_ROOT'])
 real_stream_project_package = project_packages.stream_project_package
 async def phase6b_held_project_package(path, cleanup):

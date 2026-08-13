@@ -232,7 +232,7 @@ import uvicorn
 from uvicorn.config import LOGGING_CONFIG
 
 from backend.main import app
-from backend.routers.providers import build_provider_profile_service
+from backend.domain.routers.providers import build_provider_profile_service
 
 class FakeProviderConnectionGateway:
     async def test_connection(self, profile):

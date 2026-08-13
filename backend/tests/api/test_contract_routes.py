@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.domain.json_contracts import canonical_hash, canonical_json
-from backend.routers import contracts
+from backend.domain.routers import contracts
 from backend.security.redaction import install_error_handlers
 from backend.services.contracts import ContractDraftInput
 from backend.tests.support.contract_fakes import ContractHarness, draft_values

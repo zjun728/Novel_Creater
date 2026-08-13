@@ -4,7 +4,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from backend.routers import canon
+from backend.domain.routers import canon
 from backend.schema_version import EXPECTED_SCHEMA_VERSION
 
 

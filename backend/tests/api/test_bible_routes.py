@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from backend.routers import bibles
+from backend.domain.routers import bibles
 from backend.http_errors import ProjectArchived
 from backend.security.redaction import install_error_handlers
 from backend.services.bible_generation import (

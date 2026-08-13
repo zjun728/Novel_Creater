@@ -9,7 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 
 from backend.http_errors import PublicDomainError
-from backend.routers import providers
+from backend.domain.routers import providers
 from backend.security.redaction import install_error_handlers
 from backend.serializers.provider import (
     ProviderConnectionPublicResult,

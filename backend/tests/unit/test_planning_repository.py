@@ -493,7 +493,7 @@ async def test_load_generation_result_is_one_exact_attempt_owned_draft_cas():
 
 
 def test_phase3b_planning_router_exposes_only_the_closed_revisioned_contract():
-    import backend.routers.planning as planning_router
+    import backend.domain.routers.planning as planning_router
 
     assert planning_router.router.tags == ["planning"]
     routes = {

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from backend.database import close_pool, connection, get_pool, transaction
 from backend.domain.contracts import FrozenCorpusFragment
-from backend.routers.projects import _service as project_lifecycle_service
+from backend.domain.routers.projects import _service as project_lifecycle_service
 from backend.repositories.chapter_sessions import ChapterSessionRepository
 from backend.repositories.corpus import CorpusRepository
 from backend.repositories.project_packages import ProjectPackageRepository

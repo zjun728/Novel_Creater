@@ -17,7 +17,7 @@ from backend.http_errors import (
     SeedNotFound,
 )
 from backend.security.redaction import install_error_handlers
-from backend.routers.chapter_outlines import (
+from backend.domain.routers.chapter_outlines import (
     ChapterOutlineArchived,
     ChapterOutlineConflict,
     ChapterOutlinePreconditionFailed,

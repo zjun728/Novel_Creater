@@ -18,7 +18,7 @@ from backend.domain.project_packages import (
     ProjectPackageSensitiveData,
     ProjectPackageTooLarge,
 )
-from backend.routers import project_packages
+from backend.domain.routers import project_packages
 from backend.security.redaction import install_error_handlers
 from backend.services.project_packages import ProjectPackageFile
 

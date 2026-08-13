@@ -22,7 +22,7 @@ from backend.http_errors import (
     CorpusRequestInvalid,
     CorpusResourceNotFound,
 )
-from backend.routers import corpus
+from backend.domain.routers import corpus
 from backend.security.redaction import install_error_handlers
 from backend.services.corpus_import import CorpusImportService
 from backend.services.creative_assets import CreativeAssetService

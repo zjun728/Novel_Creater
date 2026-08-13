@@ -11,7 +11,7 @@ from backend.repositories.chapter_sessions import ChapterSessionRepository
 from backend.repositories.model_bindings import ModelBindingRepository
 from backend.repositories.planning import PlanningRepository
 from backend.repositories.projects import ProjectRepository
-from backend.routers.contracts import _public_confirmed
+from backend.domain.routers.contracts import _public_confirmed
 from backend.services.chapter_sessions import (
     ChapterSessionService,
     CreateChapterSession,

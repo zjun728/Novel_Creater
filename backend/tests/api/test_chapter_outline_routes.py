@@ -6,7 +6,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from backend.routers import chapter_outlines
+from backend.domain.routers import chapter_outlines
 from backend.repositories.chapter_sessions import ActiveChapterSessionConflict
 from backend.security.redaction import install_error_handlers
 from backend.domain.chapter_outlines import EditableChapterOutlineContent

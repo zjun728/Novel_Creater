@@ -8,7 +8,7 @@ from backend.domain.style_trials import (
     StyleTrialFailure,
     StyleTrialResult,
 )
-from backend.routers import style_trials
+from backend.domain.routers import style_trials
 from backend.security.redaction import install_error_handlers
 
 

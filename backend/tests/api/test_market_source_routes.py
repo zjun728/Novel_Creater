@@ -175,7 +175,7 @@ class FakeAnalysisService:
 
 
 def _client():
-    from backend.routers import market_sources
+    from backend.domain.routers import market_sources
     from backend.security.redaction import install_error_handlers
 
     service = FakeService()
@@ -460,7 +460,7 @@ async def test_manual_body_reader_checks_length_before_receive_and_stops_at_limi
     from backend.gateways.market_sources.manual_snapshot import (
         MAX_MANUAL_SNAPSHOT_BYTES,
     )
-    from backend.routers.market_sources import _read_manual_body
+    from backend.domain.routers.market_sources import _read_manual_body
     from backend.domain.market_sources import MarketSourceFailure
 
     calls = {"count": 0}

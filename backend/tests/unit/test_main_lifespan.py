@@ -14,7 +14,7 @@ from backend.gateways.planning_provider import PlanningProviderGateway
 from backend.gateways.chapter_outline_provider import (
     ChapterOutlineProviderGateway,
 )
-from backend.routers import chapter_outlines, finalization, planning
+from backend.domain.routers import chapter_outlines, finalization, planning
 from backend.runtime import draft_operation_tasks
 from backend.runtime.draft_operation_tasks import DraftOperationTaskRegistry
 from backend.schema_version import SchemaMismatch

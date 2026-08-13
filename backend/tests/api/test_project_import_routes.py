@@ -17,7 +17,7 @@ from backend.repositories.project_imports import (
     ProjectImportCommandConflict, ProjectImportCommandStateConflict,
     ProjectImportCommandView, ProjectImportPersistenceError,
 )
-from backend.routers import project_imports
+from backend.domain.routers import project_imports
 
 
 COMMAND = "11111111-1111-4111-8111-111111111111"

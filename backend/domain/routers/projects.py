@@ -12,7 +12,7 @@ from backend.repositories.model_bindings import ModelBindingRepository
 from backend.repositories.chapter_outlines import ChapterOutlineRepository
 from backend.repositories.chapter_sessions import ChapterSessionRepository
 from backend.repositories.projects import ProjectRepository
-from backend.routers.contracts import get_contract_service
+from backend.domain.routers.contracts import get_contract_service
 from backend.services.model_bindings import ModelBindingService
 from backend.services.project_lifecycle import (
     CreateProject,

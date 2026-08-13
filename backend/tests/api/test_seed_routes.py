@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from backend.domain.seeds import SeedMutationCapabilities, SeedPayload
 from backend.http_errors import SeedAlreadyConfirmed, SeedNotFound
-from backend.routers import seeds
+from backend.domain.routers import seeds
 from backend.security.redaction import install_error_handlers
 from backend.services.seeds import (
     ActiveSeedSelection,

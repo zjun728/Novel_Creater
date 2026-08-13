@@ -9,7 +9,7 @@ from backend.domain.drafts import (
     DraftCandidateView,
     WorkingDraftView,
 )
-from backend.routers import chapter_sessions
+from backend.domain.routers import chapter_sessions
 from backend.security.redaction import install_error_handlers
 
 

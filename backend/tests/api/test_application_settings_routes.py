@@ -17,7 +17,7 @@ PRIVATE_URL = "https://application-route-private.example/v1"
 
 def router_module():
     try:
-        return importlib.import_module("backend.routers.application_settings")
+        return importlib.import_module("backend.domain.routers.application_settings")
     except ModuleNotFoundError as exc:
         pytest.fail(f"application settings router is missing: {exc}")
 

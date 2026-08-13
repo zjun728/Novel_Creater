@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.repositories.seeds import SeedRepository
-from backend.routers import seeds
+from backend.domain.routers import seeds
 from backend.security.redaction import install_error_handlers
 from backend.services.seeds import CreateSeed, SeedService, SelectSeed
 from backend.tests.integration.test_seed_revisions import (
