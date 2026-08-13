@@ -102,6 +102,8 @@ test('Phase 6B browser spec uses visible UI, real downloads, ZIP verification an
   assert.match(spec, /phase6b-library-load-error/u)
   assert.match(spec, /phase6b-library-empty/u)
   assert.match(spec, /phase6b-library-card-missing/u)
+  assert.match(spec, /Phase6A finalized download/u)
+  assert.doesNotMatch(spec, /contract integration/u)
   assert.match(body, /归档/u)
   assert.match(body, /Novel Creator 项目库/u)
   assert.match(spec, /X-Package-SHA256|x-package-sha256/u)

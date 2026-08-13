@@ -71,7 +71,7 @@ test('@phase6b backs up active and archived project with consumer cleanup', asyn
   assert.equal([200, 304].includes(activeListResponse.status()), true, `active-list-status-${activeListResponse.status()}`)
   await expect(page.getByRole('heading', { name: '项目库' })).toBeVisible()
   await expect(page.locator('.project-library-sheet')).toHaveAttribute('aria-busy', 'false', { timeout: uiTimeout })
-  const card = page.locator('.project-card').filter({ hasText: 'contract integration' })
+  const card = page.locator('.project-card').filter({ hasText: 'Phase6A finalized download' })
   if (await page.locator('.project-library-error').isVisible()) throw new Error('phase6b-library-load-error')
   if (await page.locator('.project-empty').isVisible()) throw new Error('phase6b-library-empty')
   if (await card.count() === 0) throw new Error('phase6b-library-card-missing')
