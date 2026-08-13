@@ -6,6 +6,19 @@ Approved design for the first Phase 7 slice. Phase 7A closes only the reliabilit
 deferred by the Phase 6A, Phase 6B, and Phase 6C acceptance records. It does not add product features,
 public states, schema, routes, a metrics platform, or a shared reliability framework.
 
+One separately approved companion contract is implemented on the same branch because it was the
+first product cause exposed by the hardened Phase 6A observer: an existing chapter session with no
+finalization attempt changes from HTTP 404 to the closed HTTP 200 projection `{ "state": "empty" }`.
+That exception is specified and accepted independently by
+`2026-08-12-finalization-review-empty-state-design.md`; it is not counted among Phase 7A's nine
+no-contract-change reliability items. Missing session authority remains HTTP 404.
+
+The final Phase 6 direct-first-cause closure also corrects the value semantics of existing backup
+fields `indexPayload.fragmentId` and `indexPayload.chapterId`: physical database UUIDs are replaced
+by the package's existing portable logical identities and mapped back to target UUIDs on import.
+This changes backup bytes but adds no route, DTO key, schema, UI state, or Provider behavior. Phase
+6A/6B/6C public-fixture alignment and the Phase 2C dispatcher-test isolation are test-boundary fixes.
+
 ## Goal
 
 Make the accepted Phase 6 finalized-download, deterministic-backup, and atomic-import boundaries
@@ -46,7 +59,7 @@ is a direct first cause that prevents one of these nine items from being closed.
 ## Design constraints
 
 - Preserve all public routes, request/response shapes, error codes, UI labels, blocking phases, and
-  navigation behavior.
+  navigation behavior except for the separately approved finalization empty-state contract above.
 - Add no schema, migration, job, workflow, scheduler, visibility state, Provider placeholder, metrics
   backend, or general retry library.
 - Keep retry/deadline helpers local to the module that owns the resource.
@@ -101,7 +114,8 @@ The finalization order is:
 | failed or cancelled | succeeded | original primary error |
 | failed or cancelled | failed | original primary error plus fixed safe warning |
 | succeeded | succeeded | snapshot |
-| succeeded | failed | existing fixed, sanitized project-package error |
+| succeeded | ordinary cleanup `Exception` | existing fixed, sanitized project-package error |
+| succeeded | cleanup flow-control `BaseException` | propagate that flow-control exception |
 
 Neither cleanup exception text nor connection data reaches logs or public errors.
 

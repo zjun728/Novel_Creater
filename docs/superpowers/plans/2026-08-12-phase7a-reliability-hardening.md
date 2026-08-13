@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Close the nine reliability items explicitly deferred by Phase 6 without changing any public route, DTO, schema, UI state, Provider behavior, or accepted product boundary.
+**Goal:** Close the nine reliability items explicitly deferred by Phase 6 without changing their public route, DTO, schema, UI state, Provider behavior, or accepted product boundary. Record the separately approved finalization empty-state companion contract as an explicit exception, not as a Phase 7A reliability change.
+
+The same branch records one Phase 6 direct-first-cause data correction: existing corpus index identity values in backup packages become portable logical identities rather than physical database UUIDs. This changes deterministic archive bytes without changing route or DTO shape.
 
 **Architecture:** Implement five narrow fixes in their existing owner modules: deadline-based corpus-claim waiting, backend cleanup precedence and safe warnings, frontend state/download cleanup, and Phase 6A runner-wide observation and cleanup assurance. Each slice has its own local seam and tests; no shared retry, logging, or reliability framework is introduced.
 
@@ -13,7 +15,7 @@
 ## Scope guard
 
 - Implement only `docs/superpowers/specs/2026-08-12-phase7a-reliability-hardening-design.md`.
-- Preserve every public HTTP route, request/response body, error code, UI label, blocking phase, navigation rule, schema table, and column.
+- Preserve every public HTTP route, request/response body, error code, UI label, blocking phase, navigation rule, schema table, and column in the nine-item reliability slice. The separately approved `2026-08-12-finalization-review-empty-state-design.md` companion changes only existing-session/no-attempt from 404 to closed 200 `{ "state": "empty" }`; missing authority remains 404.
 - Add no shared retry/deadline/logging framework and no new production module.
 - Keep Provider calls, outbound calls, and product-database reads/writes at zero. Tests may use disposable `novel_creator_test_%` databases, owned local files, the owned deny proxy, and owned local browsers.
 - Stop on a newly discovered concern unless it is the direct first cause preventing one of the nine approved items from closing.
@@ -745,7 +747,9 @@ anchor finally cleanup: covered
 context-wide Phase6A observation: covered
 fixture public-boundary rule: covered
 runner cleanup fault injection/residue: covered
-public API/schema/UI change: none
+Phase 7A reliability API/schema/UI change: none
+separately approved finalization empty-state exception: recorded
+Phase 6 corpus package identity value correction: recorded
 ```
 
 Run a specification review and a quality review. Active Critical/Important findings must be `0/0` before continuing; deferred Minor findings must be recorded without widening Phase 7A.
@@ -759,8 +763,13 @@ Create `docs/acceptance/2026-08-12-phase-7a-reliability-hardening.md` with:
 
 ## Accepted boundary
 
-Phase 7A closes the nine reliability items deferred by Phase 6 while preserving all public routes,
+Phase 7A closes the nine reliability items deferred by Phase 6 while preserving their public routes,
 DTOs, schema, UI states, Provider behavior, atomicity, idempotency, cancellation, and security bounds.
+The separately approved finalization empty-state companion changes only existing-session/no-attempt
+from HTTP 404 to the closed HTTP 200 projection `{ "state": "empty" }`; missing authority remains 404.
+The Phase 6 direct-first-cause closure also changes existing corpus index identity values in backup
+bytes from physical database UUIDs to portable logical identities; it adds no route, DTO key, schema,
+UI state, or Provider behavior.
 
 ## Evidence
 
