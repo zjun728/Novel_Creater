@@ -58,6 +58,16 @@ test('Phase 6B owns one disposable UI-only browser lifecycle and verifier', asyn
   assert.match(runnerSource, /manifest\.get\('format'\) != 'novel-creator-project'/u)
   assert.doesNotMatch(runnerSource, /novel-creator-project-package/u)
   assert.doesNotMatch(runnerSource, /OPENAI_API_KEY|ANTHROPIC_API_KEY|mysqld/iu)
+  assert.match(runnerSource, /PHASE6B_VERIFY_STATE_PATH/u)
+  assert.match(runnerSource, /phase6bVerifierCause/u)
+
+  const verifierFailure = new Error('hidden')
+  verifierFailure.phase6bStage = 'package-verifier'
+  verifierFailure.phase6bVerifierCause = 'active-lifecycle'
+  assert.deepEqual(JSON.parse(runner.safeClassifyFailure(verifierFailure)), {
+    firstStage: 'package-verifier', errorCount: 1, browserCause: null,
+    fixtureCause: null, verifierCause: 'active-lifecycle',
+  })
 
   const fixture = source('backend/scripts/prepare_phase6b_browser_db.py')
   assert.match(fixture, /DraftOperationService/u)
