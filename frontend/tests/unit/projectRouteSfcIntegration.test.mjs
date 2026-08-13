@@ -436,7 +436,9 @@ test('mounted Writer replays an active Session with GET, checks pins, and render
       const path = new URL(String(url)).pathname
       requests.push([options.method || 'GET', path])
       if (path.endsWith('/finalization')) {
-        return new Response('{}', { status: 404 })
+        return new Response(JSON.stringify({ state: 'empty' }), {
+          headers: { 'content-type': 'application/json' },
+        })
       }
       const body = path.endsWith('/chapter-outlines/current')
         ? current
@@ -482,7 +484,9 @@ test('mounted Writer creates only after confirmed current authority and sends th
         })
       }
       if (path.endsWith('/finalization')) {
-        return new Response('{}', { status: 404 })
+        return new Response(JSON.stringify({ state: 'empty' }), {
+          headers: { 'content-type': 'application/json' },
+        })
       }
       createBody = JSON.parse(options.body)
       return new Response(JSON.stringify(sessionWorkspace(1)), {
@@ -562,7 +566,9 @@ test('mounted Writer fences a late old-route current before any old Session requ
         })
       }
       if (path.endsWith('/finalization')) {
-        return new Response('{}', { status: 404 })
+        return new Response(JSON.stringify({ state: 'empty' }), {
+          headers: { 'content-type': 'application/json' },
+        })
       }
       return new Response(JSON.stringify(sessionWorkspace(2)), {
         status: 201,
