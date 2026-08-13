@@ -38,6 +38,7 @@ from backend.security.paths import (
 )
 from backend.config import require_corpus_root, require_managed_corpus_root
 from backend.services.corpus_library import normalize_corpus_metadata
+from backend.services import project_imports as project_import_claims
 
 
 DISCOVERY_DEFAULT_LIMIT = 50
@@ -683,19 +684,39 @@ class CorpusImportService:
         try:
             stage, final = self._stage(raw, source_hash)
             decoded, prepared = self._parse(raw)
-            return await self._publish(
-                idempotency_key=idempotency_key,
-                request_hash=request_hash,
-                relative_path=relative_path,
-                decoded=decoded,
-                prepared=prepared,
-                metadata=metadata,
-                metadata_explicit=metadata_explicit,
-                source_id=source_id,
-                create_distinct_source=create_distinct_source,
-                stage=stage,
-                final=final,
+            claim_owner = project_import_claims._digest_claim_owner(
+                require_managed_corpus_root(self.managed_root),
+                owner_id=str(uuid4()),
+                blobs=(project_import_claims.StagedBlob(
+                    source_hash, len(raw), managed_corpus_storage_key(source_hash), False,
+                ),),
             )
+            claim = await claim_owner._acquire_claim(claim_owner.blobs[0])
+            claim_owner._held_claims[source_hash] = claim
+            primary_error = None
+            try:
+                return await self._publish(
+                    idempotency_key=idempotency_key,
+                    request_hash=request_hash,
+                    relative_path=relative_path,
+                    decoded=decoded,
+                    prepared=prepared,
+                    metadata=metadata,
+                    metadata_explicit=metadata_explicit,
+                    source_id=source_id,
+                    create_distinct_source=create_distinct_source,
+                    stage=stage,
+                    final=final,
+                )
+            except BaseException as error:
+                primary_error = error
+                raise
+            finally:
+                try:
+                    claim_owner._release_held_claims()
+                except BaseException:
+                    if primary_error is None:
+                        raise CorpusImportFailed() from None
         except (
             CorpusImportConflict,
             CorpusLifecycleConflict,

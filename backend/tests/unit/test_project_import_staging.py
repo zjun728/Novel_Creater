@@ -10,9 +10,11 @@ from backend.domain.project_imports import ProjectImportInvalid
 from backend.repositories.project_imports import (
     ProjectImportCommandStateConflict,
     ProjectImportPersistenceError,
+    ProjectImportRecoveryCommand,
 )
 from backend.security.paths import managed_corpus_blob_path
 from backend.services import project_imports
+from backend.services.corpus_import import CorpusImportService
 from backend.services.project_imports import ProjectImportService
 from contextlib import asynccontextmanager
 
@@ -198,7 +200,7 @@ async def test_same_digest_waits_for_delayed_manifest_winner_and_leaves_no_resid
         except FileExistsError:
             if Path(destination) == claim:
                 claim_collisions += 1
-                assert claim.read_text("ascii") == COMMAND
+                assert claim.read_text("ascii") == first._claim_token
             raise
 
     async def controlled_sleep(_delay):
@@ -881,13 +883,13 @@ async def test_claim_acl_is_applied_before_publication(tmp_path, monkeypatch):
             file_acl_targets.append(Path(path))
             assert Path(path) != claim
             assert not claim.exists()
-            assert Path(path).read_text("ascii") == COMMAND
+            assert Path(path).read_text("ascii") == staging._claim_token
 
     monkeypatch.setattr(project_imports, "apply_private_permissions", inspect_acl)
     acquired = await staging._acquire_claim(staging.blobs[0])
     try:
         assert acquired == claim
-        assert claim.read_text("ascii") == COMMAND
+        assert claim.read_text("ascii") == staging._claim_token
         assert len(file_acl_targets) == 1
     finally:
         staging._release_claim(claim)
@@ -1064,8 +1066,6 @@ def test_held_claim_release_retries_first_failure_and_still_releases_every_claim
     second_digest = sha256(b"second").hexdigest()
     first_claim = claim_parent / first_digest
     second_claim = claim_parent / second_digest
-    first_claim.write_text(COMMAND, encoding="ascii")
-    second_claim.write_text(COMMAND, encoding="ascii")
     staging = project_imports.ProjectImportStaging(
         managed, COMMAND, root,
         (
@@ -1073,6 +1073,8 @@ def test_held_claim_release_retries_first_failure_and_still_releases_every_claim
             project_imports.StagedBlob(second_digest, 6, "second", False),
         ),
     )
+    first_claim.write_text(staging._claim_token, encoding="ascii")
+    second_claim.write_text(staging._claim_token, encoding="ascii")
     staging._held_claims.update({
         first_digest: first_claim,
         second_digest: second_claim,
@@ -1107,8 +1109,6 @@ def test_held_claim_release_attempts_all_claims_before_fixed_permanent_error(
     second_digest = sha256(b"second").hexdigest()
     first_claim = claim_parent / first_digest
     second_claim = claim_parent / second_digest
-    first_claim.write_text(COMMAND, encoding="ascii")
-    second_claim.write_text(COMMAND, encoding="ascii")
     staging = project_imports.ProjectImportStaging(
         managed, COMMAND, root,
         (
@@ -1116,6 +1116,8 @@ def test_held_claim_release_attempts_all_claims_before_fixed_permanent_error(
             project_imports.StagedBlob(second_digest, 6, "second", False),
         ),
     )
+    first_claim.write_text(staging._claim_token, encoding="ascii")
+    second_claim.write_text(staging._claim_token, encoding="ascii")
     staging._held_claims.update({
         first_digest: first_claim,
         second_digest: second_claim,
@@ -1374,7 +1376,7 @@ async def test_claim_wait_cancellation_preserves_existing_owner(tmp_path, monkey
     with pytest.raises(asyncio.CancelledError):
         await acquisition
     claim = owner.root.parent / project_imports.CLAIM_DIRECTORY / digest
-    assert claim.read_text("ascii") == COMMAND
+    assert claim.read_text("ascii") == owner._claim_token
     release_manifest.set()
     await owner_task
     owner.cleanup_root()
@@ -1578,6 +1580,224 @@ async def test_failed_installer_cleanup_cannot_delete_later_same_digest_publicat
 
 
 @pytest.mark.asyncio
+async def test_failed_project_cleanup_cannot_delete_later_corpus_import_reference(
+    tmp_path, monkeypatch,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    temp = tmp_path / "temp"
+    corpus_root = tmp_path / "corpus"
+    managed.mkdir()
+    temp.mkdir()
+    corpus_root.mkdir()
+    raw = b"shared corpus bytes"
+    (corpus_root / "shared.txt").write_bytes(raw)
+    package, plan, digest = _package(tmp_path, raw)
+    failed = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    await failed.promote(lambda _value: None)
+    assert failed._installed_hashes == {digest}
+
+    cleanup_checked = asyncio.Event()
+    release_cleanup_check = asyncio.Event()
+    corpus_published = asyncio.Event()
+    referenced = False
+
+    class ProjectRepository:
+        async def corpus_blob_is_referenced(self, session, *, content_hash):
+            assert content_hash == digest
+            observed = referenced
+            cleanup_checked.set()
+            await release_cleanup_check.wait()
+            return observed
+
+    @asynccontextmanager
+    async def session():
+        yield object()
+
+    project_service = ProjectImportService(
+        repository=ProjectRepository(), managed_corpus_root=managed,
+        temp_parent=temp, connection_factory=session,
+    )
+    corpus_service = CorpusImportService(
+        object(), corpus_root=corpus_root, managed_root=managed,
+        transaction_factory=session, connection_factory=session,
+    )
+    decoded = SimpleNamespace(source_hash=digest, raw_bytes=raw)
+    monkeypatch.setattr(corpus_service, "_parse", lambda _raw: (decoded, ()))
+
+    async def publish(**kwargs):
+        nonlocal referenced
+        corpus_service._finalize_stage(
+            kwargs["stage"], kwargs["final"], source_hash=digest,
+            byte_length=len(raw),
+        )
+        referenced = True
+        corpus_published.set()
+        return {"status": "succeeded"}
+
+    monkeypatch.setattr(corpus_service, "_publish", publish)
+    cleanup = asyncio.create_task(
+        project_service._cleanup_unreferenced_created(failed),
+    )
+    await cleanup_checked.wait()
+    corpus_import = asyncio.create_task(corpus_service.import_source(
+        "shared.txt", "same_corpus_key1",
+    ))
+    # Unsafe corpus publication reaches its commit seam while project cleanup
+    # is paused after observing the old unreferenced database state. Shared
+    # digest coordination instead keeps it waiting until cleanup is complete.
+    for _ in range(10):
+        if corpus_published.is_set():
+            break
+        await asyncio.sleep(0)
+    release_cleanup_check.set()
+    await asyncio.gather(cleanup, corpus_import)
+
+    assert referenced is True
+    assert managed_corpus_blob_path(managed, digest).read_bytes() == raw
+    failed.cleanup_root()
+    assert not (
+        managed / project_imports.STAGING_DIRECTORY / project_imports.CLAIM_DIRECTORY
+    ).exists()
+
+
+@pytest.mark.asyncio
+async def test_public_reconciler_cannot_delete_later_project_import_reference(
+    tmp_path, monkeypatch,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    temp = tmp_path / "temp"
+    managed.mkdir()
+    temp.mkdir()
+    package, plan, digest = _package(tmp_path, b"shared")
+    package.package_hash = "a" * 64
+    package.manifest_hash = "b" * 64
+    package.summary = SimpleNamespace(package_version=1)
+    plan.target_project_id = "target"
+    failed = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    await failed.promote(lambda _value: None)
+    candidate = ProjectImportRecoveryCommand(
+        COMMAND, "failed", project_imports.canonical_json(dict(failed.manifest)),
+    )
+    cleanup_checked = asyncio.Event()
+    release_cleanup_check = asyncio.Event()
+    project_published = asyncio.Event()
+    referenced = False
+    winner_command = "22222222-2222-4222-8222-222222222222"
+    running = SimpleNamespace(status="running")
+    succeeded = SimpleNamespace(status="succeeded")
+
+    class Repository:
+        async def list_recovery_commands(self, session, **kwargs):
+            return (candidate,)
+
+        async def fence_recovery_command(self, session, **kwargs):
+            return candidate
+
+        async def corpus_blob_is_referenced(self, session, *, content_hash):
+            assert content_hash == digest
+            observed = referenced
+            cleanup_checked.set()
+            await release_cleanup_check.wait()
+            return observed
+
+        async def reserve_command(self, session, **kwargs):
+            return running
+
+        async def acquire_lease(self, session, **kwargs):
+            return running
+
+        async def persist_staging_manifest(self, session, **kwargs):
+            return None
+
+        async def publish_project(self, session, actual_plan, **kwargs):
+            nonlocal referenced
+            assert actual_plan is plan
+            referenced = True
+            project_published.set()
+
+        async def read_command(self, session, **kwargs):
+            return succeeded
+
+    repository = Repository()
+
+    @asynccontextmanager
+    async def session():
+        yield object()
+
+    service = ProjectImportService(
+        repository=repository, managed_corpus_root=managed, temp_parent=temp,
+        connection_factory=session, transaction_factory=session,
+        clock=lambda: 10, owner_factory=lambda: "winner-owner",
+    )
+
+    class Quarantine:
+        def cleanup(self):
+            return None
+
+    async def verified(_upload):
+        return Quarantine(), package
+
+    monkeypatch.setattr(service, "_verified", verified)
+    monkeypatch.setattr(project_imports, "build_publication_plan", lambda *_args: plan)
+    cleanup = asyncio.create_task(project_imports.reconcile_project_import_staging(
+        managed_corpus_root=managed, connection_factory=session,
+        transaction_factory=session, repository=repository, now_ms=10,
+    ))
+    await cleanup_checked.wait()
+    winner = asyncio.create_task(service.import_project(
+        object(), project_imports.ImportProjectRequest(
+            winner_command, "later_import_key1", package.package_hash, "Imported",
+        ),
+    ))
+    for _ in range(10):
+        if project_published.is_set():
+            break
+        await asyncio.sleep(0)
+    release_cleanup_check.set()
+    await asyncio.gather(cleanup, winner)
+
+    assert referenced is True
+    assert managed_corpus_blob_path(managed, digest).read_bytes() == b"shared"
+    assert not (
+        managed / project_imports.STAGING_DIRECTORY / project_imports.CLAIM_DIRECTORY
+    ).exists()
+
+
+@pytest.mark.asyncio
+async def test_old_same_command_release_cannot_delete_retry_claim(tmp_path, monkeypatch):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    package, plan, digest = _package(tmp_path, b"shared")
+    old = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    retry = project_imports.ProjectImportStaging(
+        old.managed_root, COMMAND, old.root, old.blobs,
+    )
+    old_claim = await old._acquire_claim(old.blobs[0])
+    old._release_claim(old_claim)
+    retry_claim = await retry._acquire_claim(retry.blobs[0])
+
+    # Delayed cleanup from the expired runner sees the same path and command,
+    # but must not own the retry's unique claim incarnation.
+    old._release_claim(old_claim)
+    try:
+        assert retry_claim.read_text("ascii") == retry._claim_token
+    finally:
+        retry._release_claim(retry_claim)
+        old.cleanup_root()
+
+    assert not retry_claim.parent.exists()
+
+
+@pytest.mark.asyncio
 async def test_recovery_cleanup_reclaims_its_stale_digest_claim_before_revalidation(
     tmp_path, monkeypatch,
 ):
@@ -1619,6 +1839,70 @@ async def test_recovery_cleanup_reclaims_its_stale_digest_claim_before_revalidat
         staging.cleanup_root()
 
     assert not managed_corpus_blob_path(managed, digest).exists()
+    assert not claim_parent.exists()
+
+
+@pytest.mark.asyncio
+async def test_multi_blob_cleanup_retries_first_release_and_processes_every_blob(
+    tmp_path, monkeypatch,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    temp = tmp_path / "temp"
+    root = managed / project_imports.STAGING_DIRECTORY / COMMAND
+    managed.mkdir()
+    temp.mkdir()
+    root.mkdir(parents=True)
+    values = tuple(sorted((
+        (sha256(b"first").hexdigest(), b"first"),
+        (sha256(b"second").hexdigest(), b"second"),
+    )))
+    blobs = tuple(project_imports.StagedBlob(
+        digest, len(data), f"sha256/{digest[:2]}/{digest}", True,
+    ) for digest, data in values)
+    staging = project_imports.ProjectImportStaging(
+        managed, COMMAND, root, blobs,
+    )
+    staging._installed_hashes.update(digest for digest, _data in values)
+    for digest, data in values:
+        destination = managed_corpus_blob_path(managed, digest)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(data)
+
+    class Repository:
+        async def corpus_blob_is_referenced(self, session, *, content_hash):
+            return False
+
+    @asynccontextmanager
+    async def connect():
+        yield object()
+
+    service = ProjectImportService(
+        repository=Repository(), managed_corpus_root=managed, temp_parent=temp,
+        connection_factory=connect,
+    )
+    claim_parent = root.parent / project_imports.CLAIM_DIRECTORY
+    first_claim = claim_parent / values[0][0]
+    real_unlink = project_imports.Path.unlink
+    first_release_attempts = 0
+
+    def flaky_first_release(path, *args, **kwargs):
+        nonlocal first_release_attempts
+        if path == first_claim:
+            first_release_attempts += 1
+            if first_release_attempts == 1:
+                raise OSError("secret first claim")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(project_imports.Path, "unlink", flaky_first_release)
+    await service._cleanup_unreferenced_created(staging)
+
+    assert first_release_attempts == 2
+    assert all(
+        not managed_corpus_blob_path(managed, digest).exists()
+        for digest, _data in values
+    )
+    assert staging._held_claims == {}
     assert not claim_parent.exists()
 
 

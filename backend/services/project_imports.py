@@ -162,6 +162,10 @@ class ProjectImportStaging:
     _installed_hashes: set[str] = field(default_factory=set, init=False)
     _retain_claims: bool = field(default=False, init=False, repr=False)
     _held_claims: dict[str, Path] = field(default_factory=dict, init=False, repr=False)
+    _claim_token: str = field(default="", init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._claim_token = f"{self.command_id}:{uuid4().hex}"
 
     @classmethod
     def stage(
@@ -334,7 +338,7 @@ class ProjectImportStaging:
                     raise
                 descriptor = None
                 try:
-                    output.write(self.command_id)
+                    output.write(self._claim_token)
                     output.flush()
                     output.close()
                 except BaseException:
@@ -397,7 +401,25 @@ class ProjectImportStaging:
 
     def _release_claim(self, claim: Path) -> None:
         try:
-            if claim.is_file() and not claim.is_symlink() and claim.read_text("ascii") == self.command_id:
+            if (
+                claim.is_file()
+                and not claim.is_symlink()
+                and claim.read_text("ascii") == self._claim_token
+            ):
+                claim.unlink()
+                try:
+                    claim.parent.rmdir()
+                except OSError:
+                    pass
+        except (OSError, UnicodeError):
+            raise _invalid() from None
+
+    def _release_stale_command_claim(self, claim: Path) -> None:
+        try:
+            if not claim.is_file() or claim.is_symlink():
+                return
+            owner = claim.read_text("ascii")
+            if owner == self.command_id or owner.startswith(f"{self.command_id}:"):
                 claim.unlink()
                 try:
                     claim.parent.rmdir()
@@ -412,36 +434,44 @@ class ProjectImportStaging:
             self._release_claim(claim)
             self._held_claims.pop(content_hash, None)
 
-    def _release_held_claims(self) -> None:
-        errors: list[BaseException] = []
-        for content_hash in reversed(tuple(self._held_claims)):
-            control_error: BaseException | None = None
-            for attempt in range(2):
-                try:
-                    self._release_held_claim(content_hash)
-                except (asyncio.CancelledError, KeyboardInterrupt, SystemExit) as error:
-                    if control_error is None:
-                        control_error = error
-                    if attempt:
-                        errors.append(control_error)
-                except BaseException:
-                    if attempt:
-                        errors.append(
-                            control_error
-                            if control_error is not None
-                            else ProjectImportPersistenceError()
-                        )
-                else:
+    def _release_held_claim_with_retry(self, content_hash: str) -> None:
+        control_error: BaseException | None = None
+        for attempt in range(2):
+            try:
+                self._release_held_claim(content_hash)
+            except (asyncio.CancelledError, KeyboardInterrupt, SystemExit) as error:
+                if control_error is None:
+                    control_error = error
+                if attempt:
+                    raise control_error
+            except BaseException:
+                if attempt:
                     if control_error is not None:
-                        errors.append(control_error)
-                    break
+                        raise control_error
+                    raise ProjectImportPersistenceError() from None
+            else:
+                if control_error is not None:
+                    raise control_error
+                return
+
+    @staticmethod
+    def _raise_cleanup_errors(errors: list[BaseException]) -> None:
         if errors:
             for error in errors:
                 if isinstance(
                     error, (asyncio.CancelledError, KeyboardInterrupt, SystemExit),
                 ):
                     raise error
-            raise ProjectImportPersistenceError() from None
+            raise errors[0]
+
+    def _release_held_claims(self) -> None:
+        errors: list[BaseException] = []
+        for content_hash in reversed(tuple(self._held_claims)):
+            try:
+                self._release_held_claim_with_retry(content_hash)
+            except BaseException as error:
+                errors.append(error)
+        self._raise_cleanup_errors(errors)
 
     async def promote(self, persist_manifest: Callable[[str], object]) -> None:
         values = list(self.blobs)
@@ -502,6 +532,32 @@ class ProjectImportStaging:
             self._cleaned = True
 
 
+def _digest_claim_owner(
+    managed_corpus_root: Path, *, owner_id: str, blobs: tuple[StagedBlob, ...],
+) -> ProjectImportStaging:
+    """Create an internal owner for the shared per-digest publication protocol."""
+    try:
+        managed = Path(managed_corpus_root).resolve(strict=True)
+        staging_parent = managed / STAGING_DIRECTORY
+        staging_parent.mkdir(exist_ok=True)
+        if (
+            staging_parent.is_symlink()
+            or not staging_parent.is_dir()
+            or staging_parent.resolve(strict=True).parent != managed
+        ):
+            raise ProjectImportPersistenceError()
+        apply_private_permissions(staging_parent, is_directory=True)
+        owner = ProjectImportStaging(
+            managed, owner_id, staging_parent / owner_id, blobs,
+        )
+        owner._retain_claims = True
+        return owner
+    except ProjectImportPersistenceError:
+        raise
+    except (OSError, PrivateFilePermissionsError, RuntimeError, ValueError):
+        raise ProjectImportPersistenceError() from None
+
+
 class ProjectImportService:
     def __init__(
         self, *, repository: ProjectImportRepository, managed_corpus_root: Path,
@@ -553,24 +609,25 @@ class ProjectImportService:
         self, staging: ProjectImportStaging, *, recovery_manifest: bool = False,
     ) -> None:
         """Remove only this command's byte-identical, still-unreferenced promotions."""
+        errors: list[BaseException] = []
         for item in staging.blobs:
             if (
                 item.content_hash not in staging._installed_hashes
                 and not (recovery_manifest and item.created)
             ):
                 continue
-            claim = staging._held_claims.get(item.content_hash)
-            if claim is None:
-                if recovery_manifest:
-                    # A crashed attempt may have left its own claim behind.
-                    # The command lease makes that owner stale; another
-                    # command's claim is preserved and waited on normally.
-                    staging._release_claim(
-                        staging.root.parent / CLAIM_DIRECTORY / item.content_hash,
-                    )
-                claim = await staging._acquire_claim(item)
-                staging._held_claims[item.content_hash] = claim
             try:
+                claim = staging._held_claims.get(item.content_hash)
+                if claim is None:
+                    if recovery_manifest:
+                        # A crashed attempt may have left its own claim behind.
+                        # The command lease makes that owner stale; another
+                        # command's claim is preserved and waited on normally.
+                        staging._release_stale_command_claim(
+                            staging.root.parent / CLAIM_DIRECTORY / item.content_hash,
+                        )
+                    claim = await staging._acquire_claim(item)
+                    staging._held_claims[item.content_hash] = claim
                 async with self._connection() as session:
                     referenced = await self._repository.corpus_blob_is_referenced(
                         session, content_hash=item.content_hash,
@@ -583,8 +640,15 @@ class ProjectImportService:
                 data = path.read_bytes()
                 if len(data) == item.byte_length and sha256(data).hexdigest() == item.content_hash:
                     path.unlink()
+            except BaseException as error:
+                errors.append(error)
             finally:
-                staging._release_held_claim(item.content_hash)
+                if item.content_hash in staging._held_claims:
+                    try:
+                        staging._release_held_claim_with_retry(item.content_hash)
+                    except BaseException as error:
+                        errors.append(error)
+        staging._raise_cleanup_errors(errors)
 
     async def _clear_reclaimed_command_root(self, command_id: str) -> None:
         """Reconcile the exact root after this service has acquired its command lease."""
@@ -799,25 +863,51 @@ async def reconcile_project_import_staging(
                     seen.add(blob["contentHash"])
                 if not valid:
                     continue
+                recovery_blobs = tuple(StagedBlob(
+                    blob["contentHash"], blob["byteLength"],
+                    blob["storageKey"], blob["created"],
+                ) for blob in manifest["blobs"])
+                claim_owner = _digest_claim_owner(
+                    managed, owner_id=command.command_id, blobs=recovery_blobs,
+                )
                 for blob in manifest["blobs"]:
                     digest = blob["contentHash"]
-                    if blob["created"] is True:
-                        referenced = await repo.corpus_blob_is_referenced(
-                            session, content_hash=digest,
-                        )
-                        if not referenced:
-                            path = managed_corpus_blob_path(managed, digest)
-                            if path.is_file() and not path.is_symlink():
-                                data = path.read_bytes()
-                                if len(data) == blob["byteLength"] and sha256(data).hexdigest() == digest:
-                                    path.unlink()
                     claim = parent / CLAIM_DIRECTORY / digest
-                    if claim.is_file() and not claim.is_symlink() and claim.read_text("ascii") == command.command_id:
-                        claim.unlink()
-                        try:
-                            claim.parent.rmdir()
-                        except OSError:
-                            pass
+                    claim_owner._release_stale_command_claim(claim)
+                    if claim.exists():
+                        # A live owner from another command has priority; a
+                        # later recovery pass can retry without blocking the
+                        # bounded startup scan on the full contention timeout.
+                        continue
+                    claim = await claim_owner._acquire_claim(
+                        next(item for item in recovery_blobs if item.content_hash == digest),
+                    )
+                    claim_owner._held_claims[digest] = claim
+                    try:
+                        # The command row is fenced by this transaction. Re-read
+                        # disk authority after taking the digest claim so neither
+                        # side of the file/DB decision predates the shared lock.
+                        if (
+                            manifest_path.read_text("utf-8") != disk_text
+                            or canonical_json(json.loads(command.staging_manifest_json))
+                            != disk_text
+                        ):
+                            raise ValueError
+                        if blob["created"] is True:
+                            referenced = await repo.corpus_blob_is_referenced(
+                                session, content_hash=digest,
+                            )
+                            if not referenced:
+                                path = managed_corpus_blob_path(managed, digest)
+                                if path.is_file() and not path.is_symlink():
+                                    data = path.read_bytes()
+                                    if (
+                                        len(data) == blob["byteLength"]
+                                        and sha256(data).hexdigest() == digest
+                                    ):
+                                        path.unlink()
+                    finally:
+                        claim_owner._release_held_claim(digest)
                 _cleanup_owned_directory(root, parent)
         except (OSError, ValueError, TypeError, json.JSONDecodeError, UnsafeLocalPath):
             continue
