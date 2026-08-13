@@ -80,6 +80,7 @@ test('dispatcher owns one closed Phase 2C runner and validates MySQL before spaw
   assert.equal(runSuites(['browser-phase2c'], {
     rootDirectory: repositoryRoot,
     environment: completeEnvironment,
+    pytestTempLifecycle: { prepare() {}, cleanupStage() {}, cleanupAll() {} },
     spawnSyncImpl(command, args, options) {
       calls.push({ command, args, options })
       return { status: 0 }
@@ -96,6 +97,7 @@ test('dispatcher owns one closed Phase 2C runner and validates MySQL before spaw
   assert.equal(runSuites(['browser-phase2c'], {
     rootDirectory: repositoryRoot,
     environment: incompleteEnvironment,
+    pytestTempLifecycle: { prepare() {}, cleanupStage() {}, cleanupAll() {} },
     stderr: { write(chunk) { stderr += chunk } },
     spawnSyncImpl() {
       calls.push('spawned')
