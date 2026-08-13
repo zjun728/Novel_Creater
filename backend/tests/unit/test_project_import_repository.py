@@ -107,6 +107,34 @@ async def test_recovery_fence_loses_to_fresh_runtime_lease_without_mutation():
     assert [kind for kind, _, _ in session.calls] == ["fetchone"]
 
 
+@pytest.mark.asyncio
+async def test_cleanup_owner_is_row_locked_and_requires_exact_live_lease():
+    owner = "30000000-0000-4000-8000-000000000001"
+    row = {
+        "status": "running", "request_fingerprint": FINGERPRINT,
+        "owner_token": owner, "lease_expires_at": 101,
+    }
+    repository = ProjectImportRepository()
+    session = RecordingSession(row)
+
+    assert await repository.lock_cleanup_owner(
+        session, command_id=COMMAND_ID, request_fingerprint=FINGERPRINT,
+        owner_token=owner, now_ms=100,
+    ) is True
+    _, sql, args = session.calls[0]
+    assert "for update" in " ".join(sql.lower().split())
+    assert args == (COMMAND_ID,)
+
+    for change in (
+        {"status": "failed"}, {"request_fingerprint": "b" * 64},
+        {"owner_token": "replacement"}, {"lease_expires_at": 100},
+    ):
+        assert await repository.lock_cleanup_owner(
+            RecordingSession({**row, **change}), command_id=COMMAND_ID,
+            request_fingerprint=FINGERPRINT, owner_token=owner, now_ms=100,
+        ) is False
+
+
 def _row(**changes):
     row = {
         "id": COMMAND_ID,

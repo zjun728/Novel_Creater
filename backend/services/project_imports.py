@@ -163,6 +163,7 @@ class ProjectImportStaging:
     _retain_claims: bool = field(default=False, init=False, repr=False)
     _held_claims: dict[str, Path] = field(default_factory=dict, init=False, repr=False)
     _claim_token: str = field(default="", init=False, repr=False)
+    _cleanup_authority: tuple[str, str] | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._claim_token = f"{self.command_id}:{uuid4().hex}"
@@ -609,7 +610,8 @@ class ProjectImportService:
         self, staging: ProjectImportStaging, *, recovery_manifest: bool = False,
     ) -> None:
         """Remove only this command's byte-identical, still-unreferenced promotions."""
-        errors: list[BaseException] = []
+        operation_errors: list[BaseException] = []
+        cleanup_errors: list[BaseException] = []
         for item in staging.blobs:
             if (
                 item.content_hash not in staging._installed_hashes
@@ -628,27 +630,46 @@ class ProjectImportService:
                         )
                     claim = await staging._acquire_claim(item)
                     staging._held_claims[item.content_hash] = claim
-                async with self._connection() as session:
+                boundary = (
+                    self._transaction
+                    if staging._cleanup_authority is not None
+                    else self._connection
+                )
+                async with boundary() as session:
+                    if staging._cleanup_authority is not None:
+                        fingerprint, owner_token = staging._cleanup_authority
+                        authorized = await self._repository.lock_cleanup_owner(
+                            session, command_id=staging.command_id,
+                            request_fingerprint=fingerprint,
+                            owner_token=owner_token, now_ms=self._clock(),
+                        )
+                        if not authorized:
+                            continue
                     referenced = await self._repository.corpus_blob_is_referenced(
                         session, content_hash=item.content_hash,
                     )
-                if referenced:
-                    continue
-                path = managed_corpus_blob_path(self._managed_root, item.content_hash)
-                if not path.is_file() or path.is_symlink():
-                    continue
-                data = path.read_bytes()
-                if len(data) == item.byte_length and sha256(data).hexdigest() == item.content_hash:
-                    path.unlink()
+                    if referenced:
+                        continue
+                    path = managed_corpus_blob_path(self._managed_root, item.content_hash)
+                    if not path.is_file() or path.is_symlink():
+                        continue
+                    data = path.read_bytes()
+                    if (
+                        len(data) == item.byte_length
+                        and sha256(data).hexdigest() == item.content_hash
+                    ):
+                        path.unlink()
             except BaseException as error:
-                errors.append(error)
+                operation_errors.append(error)
             finally:
                 if item.content_hash in staging._held_claims:
                     try:
                         staging._release_held_claim_with_retry(item.content_hash)
                     except BaseException as error:
-                        errors.append(error)
-        staging._raise_cleanup_errors(errors)
+                        cleanup_errors.append(error)
+        if operation_errors:
+            raise operation_errors[0]
+        staging._raise_cleanup_errors(cleanup_errors)
 
     async def _clear_reclaimed_command_root(self, command_id: str) -> None:
         """Reconcile the exact root after this service has acquired its command lease."""
@@ -746,6 +767,7 @@ class ProjectImportService:
             )
             if isinstance(staging, ProjectImportStaging):
                 staging._retain_claims = True
+                staging._cleanup_authority = (fingerprint, owner_token)
             await self._persist_manifest(
                 command_id=request.command_id, fingerprint=fingerprint,
                 owner_token=owner_token,
@@ -870,6 +892,7 @@ async def reconcile_project_import_staging(
                 claim_owner = _digest_claim_owner(
                     managed, owner_id=command.command_id, blobs=recovery_blobs,
                 )
+                all_blobs_processed = True
                 for blob in manifest["blobs"]:
                     digest = blob["contentHash"]
                     claim = parent / CLAIM_DIRECTORY / digest
@@ -878,6 +901,7 @@ async def reconcile_project_import_staging(
                         # A live owner from another command has priority; a
                         # later recovery pass can retry without blocking the
                         # bounded startup scan on the full contention timeout.
+                        all_blobs_processed = False
                         continue
                     claim = await claim_owner._acquire_claim(
                         next(item for item in recovery_blobs if item.content_hash == digest),
@@ -907,9 +931,16 @@ async def reconcile_project_import_staging(
                                     ):
                                         path.unlink()
                     finally:
-                        claim_owner._release_held_claim(digest)
-                _cleanup_owned_directory(root, parent)
-        except (OSError, ValueError, TypeError, json.JSONDecodeError, UnsafeLocalPath):
+                        try:
+                            claim_owner._release_held_claim_with_retry(digest)
+                        except BaseException:
+                            all_blobs_processed = False
+                if all_blobs_processed:
+                    _cleanup_owned_directory(root, parent)
+        except (
+            OSError, ValueError, TypeError, json.JSONDecodeError, UnsafeLocalPath,
+            ProjectImportInvalid, ProjectImportPersistenceError,
+        ):
             continue
     return len(commands)
 

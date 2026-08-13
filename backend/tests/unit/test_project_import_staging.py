@@ -1798,6 +1798,76 @@ async def test_old_same_command_release_cannot_delete_retry_claim(tmp_path, monk
 
 
 @pytest.mark.asyncio
+async def test_fenced_old_runner_cleanup_cannot_delete_new_owner_blob(tmp_path, monkeypatch):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    temp = tmp_path / "temp"
+    managed.mkdir()
+    temp.mkdir()
+    package, plan, digest = _package(tmp_path, b"shared")
+    old = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    old._retain_claims = True
+    old._cleanup_authority = ("old-fingerprint", "old-owner")
+    await old.promote(lambda _value: None)
+    manifest_json = (old.root / project_imports.STAGING_MANIFEST).read_text("utf-8")
+    candidate = ProjectImportRecoveryCommand(
+        COMMAND, "running", manifest_json,
+    )
+
+    class RecoveryRepository:
+        async def list_recovery_commands(self, session, **kwargs):
+            return (candidate,)
+
+        async def fence_recovery_command(self, session, **kwargs):
+            return candidate
+
+        async def corpus_blob_is_referenced(self, session, *, content_hash):
+            return False
+
+    @asynccontextmanager
+    async def transaction():
+        yield object()
+
+    # The real startup reconciler fences the expired runner and reclaims its
+    # exact command claim before cleaning the old unreferenced installation.
+    await project_imports.reconcile_project_import_staging(
+        managed_corpus_root=managed, connection_factory=transaction,
+        transaction_factory=transaction, repository=RecoveryRepository(), now_ms=10,
+    )
+    assert not managed_corpus_blob_path(managed, digest).exists()
+
+    # A retry then republishes and commits the same digest under a new token.
+    new = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    new._retain_claims = True
+    await new.promote(lambda _value: None)
+    new_claim = new._held_claims[digest]
+    new._release_held_claims()
+
+    class Repository:
+        async def lock_cleanup_owner(self, session, **kwargs):
+            return False
+
+        async def corpus_blob_is_referenced(self, session, *, content_hash):
+            raise AssertionError("fenced owner reached reference/delete decision")
+
+    service = ProjectImportService(
+        repository=Repository(), managed_corpus_root=managed, temp_parent=temp,
+        connection_factory=transaction, transaction_factory=transaction,
+    )
+    await service._cleanup_unreferenced_created(old)
+    try:
+        assert managed_corpus_blob_path(managed, digest).read_bytes() == b"shared"
+        assert not new_claim.exists()
+    finally:
+        new.cleanup_root()
+        old.cleanup_root()
+
+
+@pytest.mark.asyncio
 async def test_recovery_cleanup_reclaims_its_stale_digest_claim_before_revalidation(
     tmp_path, monkeypatch,
 ):
@@ -1904,6 +1974,65 @@ async def test_multi_blob_cleanup_retries_first_release_and_processes_every_blob
     )
     assert staging._held_claims == {}
     assert not claim_parent.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("release_error", [OSError("release"), asyncio.CancelledError()])
+async def test_multi_blob_cleanup_operation_error_precedes_every_release_error(
+    tmp_path, monkeypatch, release_error,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    temp = tmp_path / "temp"
+    root = managed / project_imports.STAGING_DIRECTORY / COMMAND
+    managed.mkdir()
+    temp.mkdir()
+    root.mkdir(parents=True)
+    values = tuple(sorted((
+        (sha256(b"first").hexdigest(), b"first"),
+        (sha256(b"second").hexdigest(), b"second"),
+    )))
+    blobs = tuple(project_imports.StagedBlob(
+        digest, len(data), f"sha256/{digest[:2]}/{digest}", True,
+    ) for digest, data in values)
+    staging = project_imports.ProjectImportStaging(managed, COMMAND, root, blobs)
+    staging._installed_hashes.update(digest for digest, _data in values)
+    primary = RuntimeError("operation")
+    operation_calls: list[str] = []
+
+    class Repository:
+        async def corpus_blob_is_referenced(self, session, *, content_hash):
+            operation_calls.append(content_hash)
+            raise primary
+
+    @asynccontextmanager
+    async def connect():
+        yield object()
+
+    service = ProjectImportService(
+        repository=Repository(), managed_corpus_root=managed, temp_parent=temp,
+        connection_factory=connect,
+    )
+    real_release = project_imports.ProjectImportStaging._release_held_claim_with_retry
+    release_calls: list[str] = []
+
+    def release_then_fail(self, content_hash):
+        release_calls.append(content_hash)
+        real_release(self, content_hash)
+        raise release_error
+
+    monkeypatch.setattr(
+        project_imports.ProjectImportStaging,
+        "_release_held_claim_with_retry", release_then_fail,
+    )
+    with pytest.raises(RuntimeError) as raised:
+        await service._cleanup_unreferenced_created(staging)
+
+    assert raised.value is primary
+    assert operation_calls == [digest for digest, _data in values]
+    assert release_calls == operation_calls
+    assert staging._held_claims == {}
+    assert not (root.parent / project_imports.CLAIM_DIRECTORY).exists()
 
 
 def test_stage_cleanup_retries_one_owned_filesystem_failure(tmp_path, monkeypatch):

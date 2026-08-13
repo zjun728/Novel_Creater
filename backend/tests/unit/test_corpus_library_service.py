@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from hashlib import sha256
@@ -388,6 +389,99 @@ async def test_blob_tombstone_is_restored_when_database_commit_fails(
 
     assert blob.read_bytes() == b"managed synthetic bytes"
     assert not (managed_root / ".deleting").exists()
+    assert not (managed_root / ".project-import-staging" / ".claims").exists()
+
+
+@pytest.mark.asyncio
+async def test_permanent_delete_cancellation_releases_every_partially_acquired_claim(
+    workspace_tmp_path, monkeypatch,
+):
+    managed_root = workspace_tmp_path / "managed"
+    managed_root.mkdir()
+    repository = MemoryCorpusRepository()
+    repository.row["archived_at"] = 1_900_000_000_000
+    values = tuple((sha256(data).hexdigest(), data) for data in (b"first", b"second"))
+    repository.blob_candidates = tuple({
+        "content_hash": digest,
+        "byte_length": len(data),
+        "storage_key": f"sha256/{digest[:2]}/{digest}",
+    } for digest, data in values)
+    claims = importlib.import_module("backend.services.project_imports")
+    real_acquire = claims.ProjectImportStaging._acquire_claim
+    calls = 0
+
+    async def cancel_second(self, item):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise asyncio.CancelledError()
+        return await real_acquire(self, item)
+
+    monkeypatch.setattr(claims.ProjectImportStaging, "_acquire_claim", cancel_second)
+    with pytest.raises(asyncio.CancelledError):
+        await service(repository, managed_root=managed_root).permanently_delete(
+            SOURCE_ID, 2, True,
+        )
+
+    assert calls == 2
+    assert repository.deleted is False
+    assert not (managed_root / ".project-import-staging" / ".claims").exists()
+
+
+@pytest.mark.asyncio
+async def test_permanent_delete_waits_for_same_digest_publisher_commit(
+    workspace_tmp_path, monkeypatch,
+):
+    raw = b"shared publication bytes"
+    content_hash = sha256(raw).hexdigest()
+    managed_root = workspace_tmp_path / "managed"
+    blob = managed_root / "sha256" / content_hash[:2] / content_hash
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(raw)
+    repository = MemoryCorpusRepository()
+    repository.row["archived_at"] = 1_900_000_000_000
+    repository.blob_candidates = ({
+        "content_hash": content_hash,
+        "byte_length": len(raw),
+        "storage_key": f"sha256/{content_hash[:2]}/{content_hash}",
+    },)
+    publisher_committed = False
+
+    async def delete_unreferenced(_session, candidates):
+        return () if publisher_committed else tuple(candidates)
+
+    repository.delete_unreferenced_blobs = delete_unreferenced
+    claims = importlib.import_module("backend.services.project_imports")
+    owner = claims._digest_claim_owner(
+        managed_root, owner_id="publisher",
+        blobs=(claims.StagedBlob(
+            content_hash, len(raw),
+            f"sha256/{content_hash[:2]}/{content_hash}", False,
+        ),),
+    )
+    claim = await owner._acquire_claim(owner.blobs[0])
+    owner._held_claims[content_hash] = claim
+    waiting = asyncio.Event()
+
+    async def controlled_sleep(_delay):
+        waiting.set()
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(claims, "_claim_sleep", controlled_sleep)
+    deletion = asyncio.create_task(
+        service(repository, managed_root=managed_root).permanently_delete(
+            SOURCE_ID, 2, True,
+        )
+    )
+    await waiting.wait()
+    assert repository.deleted is False
+    publisher_committed = True
+    owner._release_held_claims()
+    await deletion
+
+    assert repository.deleted is True
+    assert blob.read_bytes() == raw
+    assert not claim.parent.exists()
 
 
 @pytest.mark.asyncio
