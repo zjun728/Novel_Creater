@@ -120,6 +120,106 @@ def _legacy_import_lines(path: Path) -> list[int]:
     ]
 
 
+def _legacy_namespace_literal_lines(path: Path) -> list[int]:
+    if path.resolve() == Path(__file__).resolve():
+        return []
+    return [
+        line_number
+        for line_number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        )
+        if LEGACY_NAMESPACE in line
+    ]
+
+
+@pytest.mark.parametrize(
+    "suffix, source, expected",
+    [
+        (
+            ".py",
+            "from importlib import import_module as load_module\n"
+            "load_module('backend.routers.projects')\n",
+            [2],
+        ),
+        (
+            ".py",
+            "import importlib as il\n"
+            "il.import_module('backend.routers.projects')\n",
+            [2],
+        ),
+        (
+            ".py",
+            "import importlib\n"
+            "importlib.import_module(name='backend.routers.projects')\n",
+            [2],
+        ),
+        (
+            ".py",
+            "sys.modules.__setitem__('backend.routers.projects', alias)\n",
+            [1],
+        ),
+        (
+            ".py",
+            "monkeypatch.setitem(sys.modules, 'backend.routers.projects', alias)\n",
+            [1],
+        ),
+        (
+            ".py",
+            "from sys import modules\n"
+            "modules['backend.routers.projects'] = alias\n",
+            [2],
+        ),
+        (".mjs", "await import('backend.routers.projects');\n", [1]),
+        (".py", "safe = True\n# backend.routers is retired\n", [2]),
+        (".py", "message = 'backend.routers is retired'\n", [1]),
+    ],
+    ids=[
+        "import-module-alias",
+        "importlib-alias",
+        "keyword-argument",
+        "sys-modules-setitem",
+        "monkeypatch-setitem",
+        "imported-modules-assignment",
+        "mjs-dynamic-import",
+        "comment",
+        "string",
+    ],
+)
+def test_literal_scanner_detects_retired_namespace_anywhere(
+    tmp_path: Path, suffix: str, source: str, expected: list[int]
+) -> None:
+    path = tmp_path / f"source{suffix}"
+    path.write_text(source, encoding="utf-8")
+
+    assert _legacy_namespace_literal_lines(path) == expected
+
+
+@pytest.mark.parametrize(
+    "suffix, source",
+    [
+        (".py", "value = 'backend.domain.routers.projects'\n"),
+        (".mjs", "await import('backend.domain.routers.projects');\n"),
+    ],
+)
+def test_literal_scanner_ignores_canonical_namespace(
+    tmp_path: Path, suffix: str, source: str
+) -> None:
+    path = tmp_path / f"source{suffix}"
+    path.write_text(source, encoding="utf-8")
+
+    assert _legacy_namespace_literal_lines(path) == []
+
+
+def test_literal_scanner_exempts_only_this_resolved_test_file(
+    tmp_path: Path,
+) -> None:
+    lookalike = tmp_path / Path(__file__).name
+    lookalike.write_text("# backend.routers\n", encoding="utf-8")
+
+    assert _legacy_namespace_literal_lines(Path(__file__)) == []
+    assert _legacy_namespace_literal_lines(lookalike) == [1]
+
+
 @pytest.mark.parametrize(
     "source",
     [
@@ -220,7 +320,9 @@ def test_no_legacy_router_imports_remain() -> None:
         for path in root.rglob("*"):
             if not path.is_file() or path.suffix not in SOURCE_SUFFIXES:
                 continue
-            for line in _legacy_import_lines(path):
+            lines = set(_legacy_import_lines(path))
+            lines.update(_legacy_namespace_literal_lines(path))
+            for line in sorted(lines):
                 locations.append(f"{path.relative_to(REPOSITORY_ROOT)}:{line}")
 
     assert locations == [], "Legacy router imports remain:\n" + "\n".join(locations)
