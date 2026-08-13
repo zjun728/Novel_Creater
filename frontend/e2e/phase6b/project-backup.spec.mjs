@@ -40,7 +40,9 @@ async function createBackup(page, filename, { fenceNavigation = false } = {}) {
   if (response.status() !== 200) void downloadPromise.catch(() => {})
   assert.equal(response.status(), 200, `backup-status-${response.status()}`)
   const download = await downloadPromise
-  return saveVerifiedDownload(download, response, filename)
+  const target = await saveVerifiedDownload(download, response, filename)
+  await expect(page.getByRole('dialog', { name: '正在建立一致快照' })).toBeHidden({ timeout: uiTimeout })
+  return target
 }
 
 test('@phase6b backs up active and archived project with consumer cleanup', async ({ page, context }) => {

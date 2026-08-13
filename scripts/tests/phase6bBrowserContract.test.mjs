@@ -86,6 +86,11 @@ test('Phase 6B browser spec uses visible UI, real downloads, ZIP verification an
   assert.match(body, /consumerPage\.close/u)
   assert.match(body, /创建项目备份/u)
   assert.match(spec, /正在建立一致快照|正在写入备份包/u)
+  assert.match(
+    spec,
+    /await expect\(page\.getByRole\('dialog', \{ name: '正在建立一致快照' \}\)\)\.toBeHidden/u,
+    'backup helper waits for its blocking operation to finish before later UI actions',
+  )
   assert.match(body, /归档/u)
   assert.match(body, /Novel Creator 项目库/u)
   assert.match(spec, /X-Package-SHA256|x-package-sha256/u)
