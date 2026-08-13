@@ -71,12 +71,32 @@ is a direct first cause that prevents one of these nine items from being closed.
 
 ## Architecture
 
-Phase 7A has four independent slices. They share policy but not a new implementation abstraction.
+Phase 7A has four reliability slices. Managed corpus-blob publication and deletion share one narrow
+internal per-digest claim protocol in the existing project-import module; this is not a general retry,
+locking, or reliability framework and introduces no production module.
 
 ### 1. Import digest-claim waiting
 
-`backend/services/project_imports.py` retains its per-digest `O_CREAT | O_EXCL` claim and existing
-promotion ownership rules. Only the contention wait changes.
+`backend/services/project_imports.py` owns the per-digest exclusive claim and no-overwrite promotion
+rules. Four managed-blob participants use the same claim namespace: project-import publication and
+compensating cleanup, ordinary corpus-import publication, startup project-import recovery cleanup,
+and corpus-library permanent deletion. Each acquisition has a unique incarnation token in addition
+to its logical owner identity, so an old process cannot release a retry's claim. Contention uses a
+bounded deadline.
+
+The claim covers both the filesystem decision and the corresponding database publication,
+reference check, or deletion transaction. A project-import owner retains it through publication or
+compensating cleanup. Runtime cleanup additionally holds an exact fingerprint/owner/live-lease row
+fence while it rechecks references and removes bytes, so a fenced old runner cannot delete a later
+publisher's blob. Corpus import and permanent deletion retain the claim through transaction
+commit/rollback.
+
+Startup recovery keeps scanning the current manifest after a live foreign owner or claim-release
+failure; other manifest, database, or file-operation failures defer the remaining work to a later
+pass. Every deferred case preserves the complete root and manifest. Project-import compensating
+cleanup attempts every blob and claim; an existing operation failure remains primary, while in the
+absence of an operation failure a cleanup flow-control exception takes precedence over an ordinary
+cleanup error.
 
 Constants:
 
@@ -89,10 +109,12 @@ remaining duration using a monotonic clock, fails with the existing fixed
 `ProjectImportCommandStateConflict` when the deadline is exhausted, and otherwise awaits the smaller
 of the current backoff and remaining duration. The backoff doubles after each wait until the cap.
 
-`CancelledError` and other `BaseException` values propagate immediately. The wait does not acquire
-cleanup ownership. Once the command acquires the claim, it follows the existing promotion path and
-rechecks the destination blob's content hash, byte length, and managed storage key. There is no second
-blob-verification implementation.
+`CancelledError` and other flow-control `BaseException` values propagate immediately from claim
+waiting. A claim alone never grants project-import compensation ownership; the database fence does.
+Once a publisher acquires the claim, it follows the existing promotion path and rechecks the
+destination blob's content hash, byte length, and managed storage key. There is no second
+blob-verification implementation. Internal claim failures in corpus-library permanent deletion map
+to the existing `CorpusLifecycleConflict` boundary rather than introducing a new public error.
 
 The clock and sleeper have narrow test seams so unit tests can prove the 30-second boundary without a
 wall-clock wait. Production uses the event loop and monotonic clock.
@@ -186,6 +208,9 @@ No `page.request`, `page.route`, `page.evaluate`, direct `fetch`, or `axios` sho
 Expected production changes are limited to:
 
 - `backend/services/project_imports.py`
+- `backend/repositories/project_imports.py`
+- `backend/services/corpus_import.py`
+- `backend/services/corpus_library.py`
 - `backend/repositories/project_packages.py`
 - `backend/services/project_packages.py`
 - `frontend/src/api/db/client.js`
@@ -204,6 +229,14 @@ design change and is not implied by this specification.
 
 - Two different commands promote the same digest while the winner's async manifest persistence is
   deliberately delayed; both complete correctly and exactly one command installs the blob.
+- Project import, ordinary corpus import, startup recovery, and corpus-library permanent deletion
+  cannot concurrently publish/delete the same digest outside the shared claim. Claims remain held
+  until their database transaction commits or rolls back.
+- A fenced old runner and a reclaimed retry with the same command identity use different incarnation
+  tokens; the old runner cannot release the retry's claim or delete its blob.
+- Startup recovery preserves the complete root whenever work is deferred, then completes on a later
+  pass. Project-import compensating multi-blob cleanup attempts all items and preserves the declared
+  primary-error/flow-control precedence.
 - A fake clock/sleeper proves the initial delay, exponential sequence, 250ms cap, and exact 30-second
   deadline without sleeping in real time.
 - Cancellation during a wait propagates unchanged.

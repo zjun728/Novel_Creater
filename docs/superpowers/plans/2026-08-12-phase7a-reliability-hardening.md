@@ -6,7 +6,7 @@
 
 The same branch records one Phase 6 direct-first-cause data correction: existing corpus index identity values in backup packages become portable logical identities rather than physical database UUIDs. This changes deterministic archive bytes without changing route or DTO shape.
 
-**Architecture:** Implement five narrow fixes in their existing owner modules: deadline-based corpus-claim waiting, backend cleanup precedence and safe warnings, frontend state/download cleanup, and Phase 6A runner-wide observation and cleanup assurance. Each slice has its own local seam and tests; no shared retry, logging, or reliability framework is introduced.
+**Architecture:** Implement five narrow fixes in their existing owner modules: deadline-based managed-blob claim coordination, backend cleanup precedence and safe warnings, frontend state/download cleanup, and Phase 6A runner-wide observation and cleanup assurance. Project import publication/compensation, ordinary corpus import publication, startup recovery, and corpus-library permanent deletion share one internal per-digest claim namespace in the existing project-import module. No general retry, logging, or reliability framework and no new production module is introduced.
 
 **Tech Stack:** Python 3.12, asyncio, pytest, aiomysql/disposable MySQL, JavaScript ES modules, Vue 3, Node test runner, Playwright, Vite, PowerShell-hosted npm scripts.
 
@@ -25,7 +25,7 @@ The same branch records one Phase 6 direct-first-cause data correction: existing
 
 | Responsibility | Production files | Test files |
 | --- | --- | --- |
-| Digest-claim deadline | `backend/services/project_imports.py` | `backend/tests/unit/test_project_import_staging.py` |
+| Managed-blob digest claim and DB fence | `backend/services/project_imports.py`, `backend/repositories/project_imports.py`, `backend/services/corpus_import.py`, `backend/services/corpus_library.py` | `backend/tests/unit/test_project_import_staging.py`, `backend/tests/unit/test_project_import_service.py`, `backend/tests/unit/test_corpus_library_service.py`, `backend/tests/api/test_corpus_routes.py`, focused corpus/project-import integration tests |
 | Snapshot connection finalization | `backend/repositories/project_packages.py` | `backend/tests/unit/test_project_package_repository.py` |
 | Package temp cleanup and stale warnings | `backend/services/project_packages.py` | `backend/tests/unit/test_project_package_service.py`, `backend/tests/unit/test_project_package_temp_cleanup.py`, `backend/tests/unit/test_main_lifespan.py` |
 | Frontend download hardening | `frontend/src/api/db/client.js`, `frontend/src/application/downloads/novelDownloadController.js`, `frontend/src/components/projects/ProjectBackupPanel.vue` | `frontend/tests/unit/projectBackupApi.test.mjs`, `frontend/tests/unit/novelDownloadController.test.mjs`, `frontend/tests/unit/projectBackupPanel.test.mjs` |
@@ -51,7 +51,7 @@ All backend package warnings use `logging.getLogger("backend.project_packages")`
 - Modify: `backend/services/project_imports.py:5-15,43-47,144-151,239-263`
 - Test: `backend/tests/unit/test_project_import_staging.py:115-196`
 
-- [ ] **Step 1: Add a fake-clock RED test for the exact backoff and deadline**
+- [x] **Step 1: Add a fake-clock RED test for the exact backoff and deadline**
 
 Add a deterministic seam fixture and test to `test_project_import_staging.py`:
 
@@ -91,7 +91,7 @@ async def test_claim_wait_uses_capped_backoff_and_exact_monotonic_deadline(
     assert sum(clock.delays) == pytest.approx(30.0)
 ```
 
-- [ ] **Step 2: Run the deadline test and confirm RED**
+- [x] **Step 2: Run the deadline test and confirm RED**
 
 Run:
 
@@ -101,7 +101,7 @@ python -m pytest backend/tests/unit/test_project_import_staging.py::test_claim_w
 
 Expected: FAIL because `ProjectImportStaging` has no `_monotonic` or `_sleep` constructor fields and still uses `CLAIM_ATTEMPTS` plus `asyncio.sleep(0)`.
 
-- [ ] **Step 3: Add delayed-winner and cancellation RED tests**
+- [x] **Step 3: Add delayed-winner and cancellation RED tests**
 
 Extend the existing same-digest fixture so the first command blocks inside an async `persist_manifest`, the second command starts while the claim exists, then the first is released. Assert both `promote()` calls succeed, exactly one staging instance owns the installed digest, the destination bytes/hash are exact, and the claim directory is empty. Add this cancellation test:
 
@@ -127,7 +127,7 @@ async def test_claim_wait_propagates_cancellation_without_claim_ownership(
 
 Run both new tests and expect the delayed-winner test to fail with `ProjectImportCommandStateConflict` and the cancellation test to expose the missing sleeper seam.
 
-- [ ] **Step 4: Implement the local monotonic deadline**
+- [x] **Step 4: Implement the local monotonic deadline**
 
 In `backend/services/project_imports.py`, import `Awaitable`, replace `CLAIM_ATTEMPTS`, and add narrow dataclass seams:
 
@@ -180,9 +180,15 @@ while True:
         raise
 ```
 
-Do not catch cancellation around `_sleep`, and do not alter `promote()` destination verification or ownership bookkeeping.
+Do not catch cancellation around `_sleep`, and do not weaken `promote()` destination verification.
+Use a unique incarnation token for every acquisition. Retain each acquired digest claim through the
+participant's publication, compensating cleanup, recovery decision, or permanent-delete transaction.
+Project-import compensation additionally requires the exact database fingerprint/owner/live-lease
+fence. A fenced old runner must preserve the root/manifest; startup recovery must preserve the whole
+root when any blob is deferred, and project-import compensating multi-blob cleanup must attempt all
+items before applying the declared operation-primary/cleanup-flow-control precedence.
 
-- [ ] **Step 5: Run focused claim tests GREEN**
+- [x] **Step 5: Run focused claim tests GREEN**
 
 Run:
 
@@ -190,9 +196,11 @@ Run:
 python -m pytest backend/tests/unit/test_project_import_staging.py -q --basetemp=.pytest-phase7a-claim-green
 ```
 
-Expected: all tests pass; the delayed persistence case takes no wall-clock 30-second wait; all command roots and claim entries are removed by their existing cleanup assertions.
+Expected: all tests pass; the delayed persistence case takes no wall-clock 30-second wait; completed
+commands leave no claim/root residue; deferred recovery retains its complete root/manifest; project
+import, corpus import, recovery, and permanent deletion cannot race the same managed digest.
 
-- [ ] **Step 6: Commit the claim slice**
+- [x] **Step 6: Commit the claim slice**
 
 ```powershell
 git add backend/services/project_imports.py backend/tests/unit/test_project_import_staging.py
@@ -205,7 +213,7 @@ git commit -m "fix: wait safely for import blob claims"
 - Modify: `backend/repositories/project_packages.py:1-20,1782-1805,2492-2500`
 - Test: `backend/tests/unit/test_project_package_repository.py:624-670,670-696`
 
-- [ ] **Step 1: Write the cleanup precedence matrix RED tests**
+- [x] **Step 1: Write the cleanup precedence matrix RED tests**
 
 Add `_CleanupSession` and `_CleanupPool` test doubles that independently raise fixed sentinel exceptions from `rollback()` and `release()`. Cover these cases:
 
@@ -233,7 +241,7 @@ async def test_snapshot_primary_error_survives_cleanup_failures_and_release_is_a
 
 Also test `primary_active=False`: rollback-only, release-only, and both failures each raise `ProjectPackageInvalid` with the existing fixed text/cause policy; successful cleanup returns normally. Assert the warning record has `args == ()` and does not contain either cleanup sentinel.
 
-- [ ] **Step 2: Run the matrix and confirm RED**
+- [x] **Step 2: Run the matrix and confirm RED**
 
 Run:
 
@@ -243,7 +251,7 @@ python -m pytest backend/tests/unit/test_project_package_repository.py -q -k "cl
 
 Expected: FAIL because rollback currently prevents release and no cleanup-precedence helper exists.
 
-- [ ] **Step 3: Implement nested finalization with fixed warning output**
+- [x] **Step 3: Implement nested finalization with fixed warning output**
 
 Add `import logging` and `import sys`, define `_logger = logging.getLogger("backend.project_packages")`, and add this module-local helper immediately before `ProjectPackageRepository`:
 
@@ -281,7 +289,7 @@ finally:
 
 This intentionally treats a cleanup failure after a successful return as a fixed package error, but never replaces an active business exception or `CancelledError`.
 
-- [ ] **Step 4: Run repository tests GREEN**
+- [x] **Step 4: Run repository tests GREEN**
 
 Run:
 
@@ -291,7 +299,7 @@ python -m pytest backend/tests/unit/test_project_package_repository.py -q --base
 
 Expected: all repository tests pass, every matrix case records one release attempt, and log checks expose only the fixed event.
 
-- [ ] **Step 5: Commit the repository slice**
+- [x] **Step 5: Commit the repository slice**
 
 ```powershell
 git add backend/repositories/project_packages.py backend/tests/unit/test_project_package_repository.py
@@ -306,7 +314,7 @@ git commit -m "fix: preserve project package cleanup precedence"
 - Test: `backend/tests/unit/test_project_package_temp_cleanup.py:39-76`
 - Test: `backend/tests/unit/test_main_lifespan.py:201-281`
 
-- [ ] **Step 1: Write service-failure cleanup RED tests**
+- [x] **Step 1: Write service-failure cleanup RED tests**
 
 Monkeypatch `ProjectPackageTempOwner.cleanup` so it fails once and then delegates to the real method. Cross this with a zip `RuntimeError` and `asyncio.CancelledError`; assert the original object is raised, cleanup is attempted twice, and no `TEMP_PREFIX` root remains. Add a permanent-failure case:
 
@@ -338,13 +346,13 @@ async def test_permanent_temp_cleanup_failure_keeps_primary_and_logs_one_fixed_w
     assert cleanup_secret not in caplog.text
 ```
 
-- [ ] **Step 2: Write stale scan warning RED tests**
+- [x] **Step 2: Write stale scan warning RED tests**
 
 Create three stale owned-prefix directories. Monkeypatch `shutil.rmtree` to fail for the first candidate and succeed for the next two. Assert `examined == 3`, the latter two are deleted, the first remains, and exactly one `project_package_stale_candidate_cleanup_failed` warning with `record.args == ()` is emitted. Separately monkeypatch `Path.iterdir` to raise a secret-bearing error and assert return `0`, one `project_package_stale_scan_failed` warning, and no secret/path text.
 
 Keep the existing lifespan test that monkeypatches the helper itself to raise; it proves the outer startup boundary remains non-blocking and uses `project_package_stale_cleanup_failed`.
 
-- [ ] **Step 3: Run new cleanup tests and confirm RED**
+- [x] **Step 3: Run new cleanup tests and confirm RED**
 
 Run:
 
@@ -354,7 +362,7 @@ python -m pytest backend/tests/unit/test_project_package_service.py backend/test
 
 Expected: FAIL because service cleanup is one-shot and stale cleanup currently swallows both failure classes.
 
-- [ ] **Step 4: Implement the local two-attempt failure-path helper**
+- [x] **Step 4: Implement the local two-attempt failure-path helper**
 
 Add `import logging`, `_logger = logging.getLogger("backend.project_packages")`, and:
 
@@ -379,7 +387,7 @@ except BaseException:
 
 Do not use this helper after response handoff; the router wrapper remains the sole owner there.
 
-- [ ] **Step 5: Emit fixed stale candidate and scan warnings**
+- [x] **Step 5: Emit fixed stale candidate and scan warnings**
 
 Change the two existing swallowed exception sites to:
 
@@ -399,7 +407,7 @@ except (OSError, RuntimeError, TypeError, ValueError):
 
 Do not pass the exception, path, candidate, or any formatting argument to either warning.
 
-- [ ] **Step 6: Run the complete package cleanup/lifespan focus GREEN**
+- [x] **Step 6: Run the complete package cleanup/lifespan focus GREEN**
 
 Run:
 
@@ -409,7 +417,7 @@ python -m pytest backend/tests/unit/test_project_package_service.py backend/test
 
 Expected: all tests pass; first-attempt cleanup failures recover; permanent failures preserve the primary exception; candidate scanning stays capped at 32.
 
-- [ ] **Step 7: Commit the service cleanup slice**
+- [x] **Step 7: Commit the service cleanup slice**
 
 ```powershell
 git add backend/services/project_packages.py backend/tests/unit/test_project_package_service.py backend/tests/unit/test_project_package_temp_cleanup.py backend/tests/unit/test_main_lifespan.py
@@ -426,15 +434,15 @@ git commit -m "fix: harden project package temporary cleanup"
 - Test: `frontend/tests/unit/projectBackupApi.test.mjs:111-179`
 - Test: `frontend/tests/unit/projectBackupPanel.test.mjs:171-245`
 
-- [ ] **Step 1: Write controller RED tests**
+- [x] **Step 1: Write controller RED tests**
 
 Add one test whose `operationStore.finish` throws only on its first invocation. The first download must reject with that exact store error, expose `下载失败，请重试。`, and end with `busy.value === false`; a second call must reach the API, proving `inFlight` was cleared. Extend the option-disposal test to assert `loading.value === false` immediately after `dispose()` and that the late promise changes neither `options` nor `error`.
 
-- [ ] **Step 2: Write backup timeout and anchor RED tests**
+- [x] **Step 2: Write backup timeout and anchor RED tests**
 
 Change the timeout spy expectation from `30_000` to `1_200_000` and retain assertions for fixed `request_timeout`, cleared timer, and removed external abort listener. In the panel test, make the created anchor's `click()` throw a sentinel; assert the action rejects, that exact anchor has `removed === true`, the controller's existing revoke spy receives the URL once, and the button becomes usable again.
 
-- [ ] **Step 3: Run frontend focus and confirm RED**
+- [x] **Step 3: Run frontend focus and confirm RED**
 
 Run:
 
@@ -444,7 +452,7 @@ node --test frontend/tests/unit/novelDownloadController.test.mjs frontend/tests/
 
 Expected: the finish-throw test leaves `busy` true, dispose leaves `loading` true, the timeout is 30,000ms, and a throwing click leaves the anchor attached.
 
-- [ ] **Step 4: Implement controller-owned cleanup precedence**
+- [x] **Step 4: Implement controller-owned cleanup precedence**
 
 Replace the inner download-finalization block with:
 
@@ -478,7 +486,7 @@ inFlight?.abortController.abort()
 busyState.value = false
 ```
 
-- [ ] **Step 5: Implement the backup-specific timeout and anchor `finally`**
+- [x] **Step 5: Implement the backup-specific timeout and anchor `finally`**
 
 Add beside the other request constants:
 
@@ -507,7 +515,7 @@ try {
 
 Do not move URL revocation into the component.
 
-- [ ] **Step 6: Run frontend focus GREEN and build the touched app**
+- [x] **Step 6: Run frontend focus GREEN and build the touched app**
 
 Run:
 
@@ -518,7 +526,7 @@ npm --prefix frontend run build
 
 Expected: focused tests pass; Vite build exits 0; other API calls retain their existing default timeouts.
 
-- [ ] **Step 7: Commit the frontend slice**
+- [x] **Step 7: Commit the frontend slice**
 
 ```powershell
 git add frontend/src/api/db/client.js frontend/src/application/downloads/novelDownloadController.js frontend/src/components/projects/ProjectBackupPanel.vue frontend/tests/unit/projectBackupApi.test.mjs frontend/tests/unit/novelDownloadController.test.mjs frontend/tests/unit/projectBackupPanel.test.mjs
@@ -536,7 +544,7 @@ git commit -m "fix: harden project download cleanup and timeout"
 - Create: `frontend/e2e/phase6a/runtime-observer.test.mjs`
 - Modify: `scripts/tests/phase6aBrowserContract.test.mjs:13-83`
 
-- [ ] **Step 1: Add source-contract RED assertions for the full runner boundary**
+- [x] **Step 1: Add source-contract RED assertions for the full runner boundary**
 
 Extend `phase6aBrowserContract.test.mjs` to require:
 
@@ -558,7 +566,7 @@ for (const marker of ['context.on(\'page\'', "page.on('pageerror'", "page.on('re
 
 Also assert the Playwright config retains one context-wide proxy and exact owned-origin bypass, and runner safe output contains fixed cleanup category counts rather than exception strings.
 
-- [ ] **Step 2: Add runtime-observer unit RED tests**
+- [x] **Step 2: Add runtime-observer unit RED tests**
 
 Create `runtime-observer.test.mjs` with small EventEmitter-based fake context/page/request/response objects. Cover:
 
@@ -583,7 +591,7 @@ Use this exact evidence shape:
 }
 ```
 
-- [ ] **Step 3: Run runner contracts and confirm RED**
+- [x] **Step 3: Run runner contracts and confirm RED**
 
 Run:
 
@@ -593,7 +601,7 @@ node --test scripts/tests/phase6aBrowserContract.test.mjs frontend/e2e/phase6a/r
 
 Expected: FAIL because observation is page-local, starts mid-scenario, stores raw URL/error strings, and the fixture imports test helpers/router-private services.
 
-- [ ] **Step 4: Replace the observer with context-owned fixed counters**
+- [x] **Step 4: Replace the observer with context-owned fixed counters**
 
 Implement `observeRuntime(context, { allowedOrigins })`. Attach each existing page, subscribe to `context.on('page', onPage)`, and for every page attach `console`, `pageerror`, `request`, `requestfinished`, `requestfailed`, and `response`. Track pending request objects in a `Set`; check origins via `new URL(request.url()).origin`; retain only integer counters. `finish()` must remove the context listener and every per-page listener before returning the frozen evidence object above.
 
@@ -614,7 +622,7 @@ export function assertRuntimeEvidenceHealthy(evidence) {
 
 In the spec, receive `context` from Playwright, call `observeRuntime(context, { allowedOrigins })` before the first `page.goto`, and retain the existing final `finish()` assertion after both downloads.
 
-- [ ] **Step 5: Remove fixture test/private-router dependencies**
+- [x] **Step 5: Remove fixture test/private-router dependencies**
 
 In `prepare_phase6a_browser_db.py`, replace `backend.tests.*` imports and `backend.routers.finalization` with public repositories, domain DTOs, and service constructors. Use `backend.database.transaction` directly for all product services. Construct finalization dependencies explicitly:
 
@@ -642,7 +650,7 @@ atomic_finalization_service = AtomicFinalizationService(
 
 Change `_finalize` to accept these two services and invoke only `prepare`, `confirm`, and `commit`. Build the confirmed contract/planning/outline/session authority through `ContractService`, `PlanningService`, `ChapterOutlineService`, and `ChapterSessionService`; keep fixture payloads as Pydantic/domain inputs, not copied hash or state-transition functions. Preserve the existing fixed project id, two finalized chapters, one non-final chapter, and postcondition SQL. The source contract must reject any direct `backend.tests`, `backend.routers`, private service, or hash-builder dependency.
 
-- [ ] **Step 6: Add bounded cleanup fault injection and safe counts to the runner**
+- [x] **Step 6: Add bounded cleanup fault injection and safe counts to the runner**
 
 Export `cleanupRoot` with an optional tools object containing `waitForPortReleaseImpl` and `removeOwnedRootImpl`. Wrap each operation in a local two-attempt helper. A first-attempt injected failure increments one of the fixed counters `portReleaseRetries`, `rootAuditRetries`, or `rootRemovalRetries`; a second failure is wrapped with `phase6aCleanupCategory` set to the corresponding fixed category. Never put the cause text/path/port in the summary.
 
@@ -659,7 +667,7 @@ Extend `safeCliFailureSummary` to return only:
 
 The exact values vary by injected category, but the keys are closed and integer-only. Contract tests must inject one first-attempt failure followed by success and assert the owned root is removed; inject a permanent failure and assert the fixed category appears without the sentinel error/path.
 
-- [ ] **Step 7: Run the runner contract, syntax, and fixture focus GREEN**
+- [x] **Step 7: Run the runner contract, syntax, and fixture focus GREEN**
 
 Run:
 
@@ -674,7 +682,7 @@ python -m py_compile backend/scripts/prepare_phase6a_browser_db.py
 
 Expected: all Node contract tests pass and all five syntax/compile commands exit 0.
 
-- [ ] **Step 8: Run the formal Phase 6A browser gate once**
+- [x] **Step 8: Run the formal Phase 6A browser gate once**
 
 Run:
 
@@ -684,7 +692,7 @@ npm run test:browser:phase6a
 
 Expected: `1/1 scenarios passed`; full-window counters are zero; disposable DB, process, ports, temp, downloads, artifacts, Vite, Provider, and outbound residue are zero. If it fails, stop, preserve the first fixed stage/category, use `systematic-debugging`, and do not blindly rerun.
 
-- [ ] **Step 9: Commit the runner slice**
+- [x] **Step 9: Commit the runner slice**
 
 ```powershell
 git add backend/scripts/prepare_phase6a_browser_db.py frontend/e2e/run-phase6a.mjs frontend/e2e/playwright.phase6a.config.mjs frontend/e2e/phase6a/finalized-novel-download.spec.mjs frontend/e2e/phase6a/runtime-observer.mjs frontend/e2e/phase6a/runtime-observer.test.mjs scripts/tests/phase6aBrowserContract.test.mjs
@@ -697,7 +705,7 @@ git commit -m "test: harden phase6a browser lifecycle"
 - Create: `docs/acceptance/2026-08-12-phase-7a-reliability-hardening.md`
 - Verify: every file changed by Tasks 1–5
 
-- [ ] **Step 1: Run the focused Phase 7A gate**
+- [x] **Step 1: Run the focused Phase 7A gate**
 
 Run serially with unique worktree-owned pytest roots:
 
@@ -710,7 +718,7 @@ git diff --check
 
 Expected: all tests pass, compile exits 0, and diff check reports no whitespace errors. Remove only the exact `.pytest-phase7a-focused` directory after resolving and verifying it is inside this worktree.
 
-- [ ] **Step 2: Run the full unit and integration gates once**
+- [x] **Step 2: Run the full unit and integration gates once**
 
 Run serially and do not impose a wrapper timeout shorter than the previously observed integration duration:
 
@@ -721,7 +729,7 @@ npm run test:integration
 
 Expected: both commands exit 0 with terminal summaries; disposable database ledger reports created equals cleaned and remaining zero. On the first observed failure, stop the matrix and diagnose that first cause before any rerun.
 
-- [ ] **Step 3: Run build and the three accepted browser gates once each**
+- [x] **Step 3: Run build and the three accepted browser gates once each**
 
 ```powershell
 npm run build
@@ -732,7 +740,7 @@ npm run test:browser:phase6c
 
 Expected: build exits 0; each browser suite reports `1/1`; owned DB/process/port/temp/quarantine/staging/download/artifact/Vite residue is zero; Provider/outbound is zero; product DB reads/writes are `0/0`.
 
-- [ ] **Step 4: Perform the required self-review and code review gates**
+- [x] **Step 4: Perform the required self-review and code review gates**
 
 Review the final diff against every item in the design inventory. Confirm:
 
@@ -754,7 +762,7 @@ Phase 6 corpus package identity value correction: recorded
 
 Run a specification review and a quality review. Active Critical/Important findings must be `0/0` before continuing; deferred Minor findings must be recorded without widening Phase 7A.
 
-- [ ] **Step 5: Write the acceptance record**
+- [x] **Step 5: Write the acceptance record**
 
 Create `docs/acceptance/2026-08-12-phase-7a-reliability-hardening.md` with:
 
@@ -792,7 +800,7 @@ remains Phase 7C; deployment, live-site security operations, and monitoring rema
 
 Replace each “exact terminal counts recorded from this run” phrase with the actual observed counts before committing. Do not estimate or recover truncated counts.
 
-- [ ] **Step 6: Verify the final tree and commit acceptance**
+- [x] **Step 6: Verify the final tree and commit acceptance**
 
 ```powershell
 git status --short
