@@ -61,7 +61,14 @@ test('@phase6b backs up active and archived project with consumer cleanup', asyn
   await expect(activeBackupButton).toBeEnabled({ timeout: uiTimeout })
   await createBackup(page, 'active-project-backup.zip', { fenceNavigation: true })
 
+  const activeListResponsePromise = page.waitForResponse(response => {
+    const url = new URL(response.url())
+    return url.pathname.endsWith('/api/projects')
+      && response.request().method() === 'GET'
+  }, { timeout: uiTimeout })
   await page.getByRole('link', { name: 'Novel Creator 项目库' }).click()
+  const activeListResponse = await activeListResponsePromise
+  assert.equal([200, 304].includes(activeListResponse.status()), true, `active-list-status-${activeListResponse.status()}`)
   await expect(page.getByRole('heading', { name: '项目库' })).toBeVisible()
   const card = page.locator('.project-card').filter({ hasText: 'contract integration' })
   await expect(card).toBeVisible({ timeout: uiTimeout })

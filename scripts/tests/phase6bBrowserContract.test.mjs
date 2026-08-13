@@ -97,6 +97,8 @@ test('Phase 6B browser spec uses visible UI, real downloads, ZIP verification an
     /await expect\(card\)\.toBeVisible\(\{ timeout: uiTimeout \}\)/u,
     'library actions wait for the asynchronously loaded project card',
   )
+  assert.match(spec, /activeListResponsePromise/u)
+  assert.match(spec, /pathname\.endsWith\('\/api\/projects'\)/u)
   assert.match(body, /归档/u)
   assert.match(body, /Novel Creator 项目库/u)
   assert.match(spec, /X-Package-SHA256|x-package-sha256/u)
