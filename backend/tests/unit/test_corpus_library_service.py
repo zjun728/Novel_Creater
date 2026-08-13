@@ -429,6 +429,42 @@ async def test_permanent_delete_cancellation_releases_every_partially_acquired_c
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("error_name", [
+    "ProjectImportCommandStateConflict", "ProjectImportPersistenceError",
+])
+async def test_permanent_delete_maps_digest_claim_failure_to_lifecycle_conflict(
+    workspace_tmp_path, monkeypatch, error_name,
+):
+    managed_root = workspace_tmp_path / "managed"
+    managed_root.mkdir()
+    repository = MemoryCorpusRepository()
+    repository.row["archived_at"] = 1_900_000_000_000
+    digest = sha256(b"shared").hexdigest()
+    repository.blob_candidates = ({
+        "content_hash": digest, "byte_length": 6,
+        "storage_key": f"sha256/{digest[:2]}/{digest}",
+    },)
+    claims = importlib.import_module("backend.services.project_imports")
+    claim_error = getattr(
+        importlib.import_module("backend.repositories.project_imports"), error_name,
+    )()
+
+    async def fail_acquire(self, item):
+        raise claim_error
+
+    monkeypatch.setattr(claims.ProjectImportStaging, "_acquire_claim", fail_acquire)
+    with pytest.raises(http_errors_module().CorpusLifecycleConflict) as raised:
+        await service(repository, managed_root=managed_root).permanently_delete(
+            SOURCE_ID, 2, True,
+        )
+
+    assert raised.value.code == "CorpusLifecycleConflict"
+    assert raised.value.__cause__ is None
+    assert str(raised.value) == str(http_errors_module().CorpusLifecycleConflict())
+    assert repository.deleted is False
+
+
+@pytest.mark.asyncio
 async def test_permanent_delete_waits_for_same_digest_publisher_commit(
     workspace_tmp_path, monkeypatch,
 ):

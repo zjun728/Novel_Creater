@@ -1230,6 +1230,7 @@ async def test_successful_publication_does_not_swallow_permanent_claim_release_f
     assert release_attempts == 2
     assert caught.value.args == ("project import persistence failed",)
     assert caught.value.__cause__ is None
+    assert not (managed / project_imports.STAGING_DIRECTORY / COMMAND).exists()
 
 
 @pytest.mark.asyncio
@@ -1268,6 +1269,9 @@ async def test_primary_publish_error_precedes_held_claim_release_error(
             raise primary_error
 
         async def corpus_blob_is_referenced(self, session, *, content_hash):
+            return True
+
+        async def lock_cleanup_owner(self, session, **kwargs):
             return True
 
         async def mark_failed(self, session, **kwargs):
@@ -1309,9 +1313,112 @@ async def test_primary_publish_error_precedes_held_claim_release_error(
         )
 
     assert caught.value is primary_error
+    assert not (managed / project_imports.STAGING_DIRECTORY / COMMAND).exists()
     assert not (
         managed / project_imports.STAGING_DIRECTORY / project_imports.CLAIM_DIRECTORY
     ).exists()
+
+
+@pytest.mark.asyncio
+async def test_runtime_losing_cleanup_authority_preserves_manifest_for_later_recovery(
+    tmp_path, monkeypatch,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    temp = tmp_path / "temp"
+    managed.mkdir()
+    temp.mkdir()
+    package, plan, digest = _package(tmp_path, b"shared")
+    package.package_hash = "a" * 64
+    package.manifest_hash = "b" * 64
+    package.summary = SimpleNamespace(package_version=1)
+    plan.target_project_id = "target"
+    running = SimpleNamespace(status="running")
+    primary = RuntimeError("expired runner resumed")
+    persisted_manifest = ""
+
+    class Repository:
+        async def reserve_command(self, session, **kwargs):
+            return running
+
+        async def acquire_lease(self, session, **kwargs):
+            return running
+
+        async def persist_staging_manifest(self, session, *, manifest_json, **kwargs):
+            nonlocal persisted_manifest
+            persisted_manifest = manifest_json
+
+        async def publish_project(self, session, actual_plan, **kwargs):
+            assert actual_plan is plan
+            claim = (
+                managed / project_imports.STAGING_DIRECTORY
+                / project_imports.CLAIM_DIRECTORY / digest
+            )
+            claim.unlink()
+            claim.write_text("foreign-publisher:token", encoding="ascii")
+            raise primary
+
+        async def lock_cleanup_owner(self, session, **kwargs):
+            return False
+
+        async def corpus_blob_is_referenced(self, session, *, content_hash):
+            assert content_hash == digest
+            return False
+
+        async def mark_failed(self, session, **kwargs):
+            return None
+
+        async def list_recovery_commands(self, session, **kwargs):
+            return (ProjectImportRecoveryCommand(
+                COMMAND, "failed", persisted_manifest,
+            ),)
+
+        async def fence_recovery_command(self, session, *, candidate, **kwargs):
+            return candidate
+
+    @asynccontextmanager
+    async def session():
+        yield object()
+
+    class Quarantine:
+        def cleanup(self):
+            return None
+
+    service = ProjectImportService(
+        repository=Repository(), managed_corpus_root=managed, temp_parent=temp,
+        connection_factory=session, transaction_factory=session,
+        clock=lambda: 10, owner_factory=lambda: "expired-owner",
+    )
+
+    async def verified(_upload):
+        return Quarantine(), package
+
+    monkeypatch.setattr(service, "_verified", verified)
+    monkeypatch.setattr(project_imports, "build_publication_plan", lambda *_args: plan)
+    with pytest.raises(RuntimeError) as raised:
+        await service.import_project(
+            object(), project_imports.ImportProjectRequest(
+                COMMAND, "same_import_key1", package.package_hash, "Imported",
+            ),
+        )
+    assert raised.value is primary
+
+    root = managed / project_imports.STAGING_DIRECTORY / COMMAND
+    manifest = root / project_imports.STAGING_MANIFEST
+    claim = root.parent / project_imports.CLAIM_DIRECTORY / digest
+    assert manifest.read_text("utf-8") == persisted_manifest
+    assert claim.read_text("ascii") == "foreign-publisher:token"
+    assert managed_corpus_blob_path(managed, digest).read_bytes() == b"shared"
+
+    # The foreign publisher fails and releases its claim. Preserved authority
+    # lets the next real startup recovery remove both orphan and root.
+    claim.unlink()
+    await project_imports.reconcile_project_import_staging(
+        managed_corpus_root=managed, connection_factory=session,
+        transaction_factory=session, repository=service._repository, now_ms=10,
+    )
+    assert not root.exists()
+    assert not managed_corpus_blob_path(managed, digest).exists()
 
 
 @pytest.mark.asyncio

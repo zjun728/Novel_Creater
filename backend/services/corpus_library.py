@@ -21,6 +21,10 @@ from backend.http_errors import (
     CorpusRequestInvalid,
     CorpusResourceNotFound,
 )
+from backend.repositories.project_imports import (
+    ProjectImportCommandStateConflict,
+    ProjectImportPersistenceError,
+)
 from backend.security.paths import (
     UnsafeLocalPath,
     managed_corpus_blob_path,
@@ -492,6 +496,10 @@ class CorpusLibraryService:
                     "corpus deletion failed and blob restore needs retry",
                     [operation_error, restore_error],
                 )
+            if isinstance(operation_error, (
+                ProjectImportCommandStateConflict, ProjectImportPersistenceError,
+            )):
+                raise CorpusLifecycleConflict() from None
             raise
         finally:
             try:

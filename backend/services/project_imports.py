@@ -608,10 +608,11 @@ class ProjectImportService:
 
     async def _cleanup_unreferenced_created(
         self, staging: ProjectImportStaging, *, recovery_manifest: bool = False,
-    ) -> None:
+    ) -> bool:
         """Remove only this command's byte-identical, still-unreferenced promotions."""
         operation_errors: list[BaseException] = []
         cleanup_errors: list[BaseException] = []
+        cleanup_authorized = True
         for item in staging.blobs:
             if (
                 item.content_hash not in staging._installed_hashes
@@ -644,6 +645,7 @@ class ProjectImportService:
                             owner_token=owner_token, now_ms=self._clock(),
                         )
                         if not authorized:
+                            cleanup_authorized = False
                             continue
                     referenced = await self._repository.corpus_blob_is_referenced(
                         session, content_hash=item.content_hash,
@@ -670,6 +672,7 @@ class ProjectImportService:
         if operation_errors:
             raise operation_errors[0]
         staging._raise_cleanup_errors(cleanup_errors)
+        return cleanup_authorized
 
     async def _clear_reclaimed_command_root(self, command_id: str) -> None:
         """Reconcile the exact root after this service has acquired its command lease."""
@@ -794,9 +797,11 @@ class ProjectImportService:
         finally:
             if staging is not None:
                 try:
+                    cleanup_root = published
                     if not published:
-                        await self._cleanup_unreferenced_created(staging)
-                    staging.cleanup_root()
+                        cleanup_root = await self._cleanup_unreferenced_created(staging)
+                    if cleanup_root:
+                        staging.cleanup_root()
                 except BaseException:
                     pass
                 finally:
