@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from pathlib import Path
 import re
 from types import MappingProxyType
@@ -666,6 +668,278 @@ class _SnapshotPool:
         self.session.calls.append(("RELEASE", None))
 
 
+class _CleanupMatrixSession(_SnapshotSession):
+    def __init__(self, primary: str, *, rollback_fails: bool):
+        super().__init__({
+            "projects": [_owned_row(
+                "projects", id="project-db", lifecycle_revision=7, title="P",
+            )],
+        })
+        self.primary = primary
+        self.rollback_fails = rollback_fails
+        self.business_error = ProjectPackageNotFound("project package not found")
+        self.cancellation = asyncio.CancelledError("primary-cancellation-sensitive")
+
+    async def fetchone(self, sql, args=None):
+        if sql == "SELECT id,lifecycle_revision FROM projects WHERE id=%s":
+            if self.primary == "failure":
+                self.calls.append((sql, args))
+                raise self.business_error
+            if self.primary == "cancel":
+                self.calls.append((sql, args))
+                raise self.cancellation
+        return await super().fetchone(sql, args)
+
+    async def rollback(self):
+        await super().rollback()
+        if self.rollback_fails:
+            raise RuntimeError("rollback-sensitive-path/C:/private/project.db")
+
+
+class _CleanupMatrixPool(_SnapshotPool):
+    def __init__(self, session, *, release_fails: bool):
+        super().__init__(session)
+        self.release_fails = release_fails
+
+    def release(self, raw):
+        super().release(raw)
+        if self.release_fails:
+            raise RuntimeError("release-sensitive-path/C:/private/project.db")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("primary", ("success", "failure", "cancel"))
+@pytest.mark.parametrize("rollback_fails", (False, True))
+@pytest.mark.parametrize("release_fails", (False, True))
+async def test_read_snapshot_cleanup_preserves_primary_outcome_and_sanitizes_cleanup_failures(
+    primary: str,
+    rollback_fails: bool,
+    release_fails: bool,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session = _CleanupMatrixSession(primary, rollback_fails=rollback_fails)
+    pool = _CleanupMatrixPool(session, release_fails=release_fails)
+    repository = ProjectPackageRepository(pool=pool, session_factory=lambda value: value)
+
+    with caplog.at_level(logging.WARNING, logger="backend.project_packages"):
+        if primary == "success" and not (rollback_fails or release_fails):
+            snapshot = await repository.read_snapshot("project-db", 7)
+            assert snapshot.source_project_logical_id == "project:1"
+        elif primary == "success":
+            with pytest.raises(ProjectPackageInvalid, match=r"^invalid package value$") as raised:
+                await repository.read_snapshot("project-db", 7)
+            assert raised.value.__cause__ is None
+        elif primary == "failure":
+            with pytest.raises(ProjectPackageNotFound, match=r"^project package not found$") as raised:
+                await repository.read_snapshot("project-db", 7)
+            assert raised.value is session.business_error
+        else:
+            with pytest.raises(asyncio.CancelledError) as raised:
+                await repository.read_snapshot("project-db", 7)
+            assert raised.value is session.cancellation
+
+    assert session.calls[-2:] == [("ROLLBACK", None), ("RELEASE", None)]
+    cleanup_records = [
+        record for record in caplog.records
+        if record.name == "backend.project_packages"
+    ]
+    if rollback_fails or release_fails:
+        assert len(cleanup_records) == 1
+        record = cleanup_records[0]
+        assert record.msg == "project_package_repository_cleanup_failed"
+        assert record.args == ()
+        assert record.exc_info is None
+    else:
+        assert cleanup_records == []
+    assert "sensitive" not in caplog.text
+    assert "private/project.db" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_read_snapshot_success_does_not_inherit_callers_handled_exception_as_primary(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session = _CleanupMatrixSession("success", rollback_fails=True)
+    repository = ProjectPackageRepository(
+        pool=_CleanupMatrixPool(session, release_fails=False),
+        session_factory=lambda value: value,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="backend.project_packages"):
+        try:
+            raise LookupError("caller-sensitive-context")
+        except LookupError:
+            with pytest.raises(ProjectPackageInvalid, match=r"^invalid package value$") as raised:
+                await repository.read_snapshot("project-db", 7)
+
+    assert raised.value.__cause__ is None
+    assert session.calls[-2:] == [("ROLLBACK", None), ("RELEASE", None)]
+    assert [
+        record for record in caplog.records
+        if record.name == "backend.project_packages"
+    ][0].msg == "project_package_repository_cleanup_failed"
+    assert "caller-sensitive-context" not in caplog.text
+
+
+class _CleanupFlowControlSession(_CleanupMatrixSession):
+    def __init__(self, rollback_error: BaseException, *, primary: str = "success"):
+        super().__init__(primary, rollback_fails=False)
+        self.rollback_error = rollback_error
+
+    async def rollback(self):
+        await super().rollback()
+        raise self.rollback_error
+
+
+class _CleanupFlowControlPool(_SnapshotPool):
+    def __init__(self, session, release_error: BaseException | None):
+        super().__init__(session)
+        self.release_error = release_error
+
+    def release(self, raw):
+        super().release(raw)
+        if self.release_error is not None:
+            raise self.release_error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "flow_control",
+    (
+        asyncio.CancelledError("rollback-cancel-sensitive"),
+        KeyboardInterrupt("rollback-interrupt-sensitive"),
+        SystemExit("rollback-exit-sensitive"),
+    ),
+    ids=("cancelled", "keyboard-interrupt", "system-exit"),
+)
+@pytest.mark.parametrize("release_fails", (False, True))
+async def test_read_snapshot_preserves_rollback_flow_control_and_always_releases(
+    flow_control: BaseException,
+    release_fails: bool,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session = _CleanupFlowControlSession(flow_control)
+    release_error = RuntimeError("release-sensitive-path") if release_fails else None
+    repository = ProjectPackageRepository(
+        pool=_CleanupFlowControlPool(session, release_error),
+        session_factory=lambda value: value,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="backend.project_packages"):
+        with pytest.raises(type(flow_control)) as raised:
+            await repository.read_snapshot("project-db", 7)
+
+    assert raised.value is flow_control
+    assert session.calls[-2:] == [("ROLLBACK", None), ("RELEASE", None)]
+    cleanup_records = [
+        record for record in caplog.records
+        if record.name == "backend.project_packages"
+    ]
+    if release_fails:
+        assert len(cleanup_records) == 1
+        assert cleanup_records[0].msg == "project_package_repository_cleanup_failed"
+        assert cleanup_records[0].args == ()
+        assert cleanup_records[0].exc_info is None
+    else:
+        assert cleanup_records == []
+    assert "sensitive" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("primary", ("failure", "cancel"))
+async def test_read_snapshot_business_primary_precedes_cleanup_flow_control(
+    primary: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cleanup_flow = asyncio.CancelledError("cleanup-cancel-sensitive")
+    session = _CleanupFlowControlSession(cleanup_flow, primary=primary)
+    repository = ProjectPackageRepository(
+        pool=_CleanupFlowControlPool(session, None),
+        session_factory=lambda value: value,
+    )
+
+    expected = session.business_error if primary == "failure" else session.cancellation
+    with caplog.at_level(logging.WARNING, logger="backend.project_packages"):
+        with pytest.raises(type(expected)) as raised:
+            await repository.read_snapshot("project-db", 7)
+
+    assert raised.value is expected
+    assert session.calls[-2:] == [("ROLLBACK", None), ("RELEASE", None)]
+    cleanup_records = [
+        record for record in caplog.records
+        if record.name == "backend.project_packages"
+    ]
+    assert len(cleanup_records) == 1
+    assert cleanup_records[0].msg == "project_package_repository_cleanup_failed"
+    assert cleanup_records[0].args == ()
+    assert cleanup_records[0].exc_info is None
+    assert "sensitive" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("primary", ("success", "failure", "cancel"))
+async def test_read_snapshot_logger_failure_never_replaces_primary_or_sanitized_cleanup_error(
+    primary: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _CleanupMatrixSession(primary, rollback_fails=True)
+    repository = ProjectPackageRepository(
+        pool=_CleanupMatrixPool(session, release_fails=False),
+        session_factory=lambda value: value,
+    )
+
+    def fail_warning(*_args, **_kwargs):
+        raise LookupError("logger-sensitive-path")
+
+    monkeypatch.setattr(logging.getLogger("backend.project_packages"), "warning", fail_warning)
+    if primary == "success":
+        with pytest.raises(ProjectPackageInvalid, match=r"^invalid package value$") as raised:
+            await repository.read_snapshot("project-db", 7)
+        assert raised.value.__cause__ is None
+    elif primary == "failure":
+        with pytest.raises(ProjectPackageNotFound) as raised:
+            await repository.read_snapshot("project-db", 7)
+        assert raised.value is session.business_error
+    else:
+        with pytest.raises(asyncio.CancelledError) as raised:
+            await repository.read_snapshot("project-db", 7)
+        assert raised.value is session.cancellation
+
+    assert session.calls[-2:] == [("ROLLBACK", None), ("RELEASE", None)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "flow_control",
+    (
+        asyncio.CancelledError("release-cancel-sensitive"),
+        KeyboardInterrupt("release-interrupt-sensitive"),
+        SystemExit("release-exit-sensitive"),
+    ),
+    ids=("cancelled", "keyboard-interrupt", "system-exit"),
+)
+async def test_read_snapshot_preserves_release_flow_control(
+    flow_control: BaseException,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session = _CleanupMatrixSession("success", rollback_fails=False)
+    repository = ProjectPackageRepository(
+        pool=_CleanupFlowControlPool(session, flow_control),
+        session_factory=lambda value: value,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="backend.project_packages"):
+        with pytest.raises(type(flow_control)) as raised:
+            await repository.read_snapshot("project-db", 7)
+
+    assert raised.value is flow_control
+    assert session.calls[-2:] == [("ROLLBACK", None), ("RELEASE", None)]
+    assert [
+        record for record in caplog.records
+        if record.name == "backend.project_packages"
+    ] == []
+
+
 @pytest.mark.asyncio
 async def test_repository_materializes_every_owned_plan_and_returns_secret_free_public_records() -> None:
     secret = "SECRET_SENTINEL_MUST_STAY_PRIVATE"
@@ -1179,7 +1453,13 @@ async def test_repository_freezes_referenced_corpus_revision_and_blob_descriptor
                 "fragment_id": "fragment-db",
                 "fragment_order": 1, "chapter_char_start": 0, "chapter_char_end": 9,
                 "normalized_text": "fragment text", "content_hash": "e" * 64,
-                "analysis_version": "v1", "index_payload": '{"terms":[]}', "created_at": 4,
+                "analysis_version": "v1", "index_payload": json.dumps({
+                    "schemaVersion": "corpus-index-v1",
+                    "fragmentId": "fragment-db",
+                    "chapterId": "chapter-db",
+                    "contentHash": "e" * 64,
+                    "normalizerVersion": "n1",
+                }), "created_at": 4,
             }],
         },
     )
@@ -1194,6 +1474,13 @@ async def test_repository_freezes_referenced_corpus_revision_and_blob_descriptor
     assert snapshot.corpus_revision_records[0].data["fragments"][0]["fragmentOrder"] == 1
     assert snapshot.corpus_revision_records[0].data["chapters"][0]["normalizedText"] == "chapter text"
     assert snapshot.corpus_revision_records[0].data["fragments"][0]["logicalId"] == "corpus-fragment:1"
+    assert snapshot.corpus_revision_records[0].data["fragments"][0]["indexPayload"] == {
+        "schemaVersion": "corpus-index-v1",
+        "fragmentId": "corpus-fragment:1",
+        "chapterId": "corpus-chapter:1",
+        "contentHash": "e" * 64,
+        "normalizerVersion": "n1",
+    }
     assert "chapter-db" not in repr(snapshot.corpus_revision_records[0].to_public_dict())
     assert snapshot.corpus_blobs == (FrozenCorpusBlob("corpus-blob:1", "d" * 64, 9, storage_key),)
     corpus_ref = next(record for record in snapshot.graph_records if record.entity_type == "creation-contract-corpus-ref")

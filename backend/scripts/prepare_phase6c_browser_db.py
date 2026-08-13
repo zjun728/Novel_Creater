@@ -28,7 +28,7 @@ from backend.scripts.prepare_phase6b_browser_db import (
     BASE_URL_SENTINEL,
     CORPUS_HASH,
     PROJECT,
-    PROVIDER,
+    PROVIDER_NAME,
     ProviderMustNotRun,
     SECRET_SENTINEL,
     prepare as prepare_phase6b_browser_db,
@@ -226,7 +226,8 @@ async def verify_postconditions(database_name: str) -> None:
             (target,),
         )
         provider = await session.fetchone(
-            "SELECT api_key,base_url FROM provider_profiles WHERE id=%s", (PROVIDER,)
+            "SELECT api_key,base_url FROM provider_profiles WHERE name=%s",
+            (PROVIDER_NAME,),
         )
         blob = await session.fetchone(
             "SELECT byte_length,storage_key FROM corpus_blobs WHERE content_hash=%s",

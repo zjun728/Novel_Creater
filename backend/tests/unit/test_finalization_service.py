@@ -152,12 +152,13 @@ class FakeRepository:
         self.advanced = []
         self.confirmed = []
         self.view = None
+        self.session = _session()
 
     async def lock_project(self, session, project_id):
         return {"id": project_id}
 
     async def lock_session(self, session, project_id, session_id):
-        return _session()
+        return self.session
 
     async def lock_candidate(self, session, project_id, session_id, candidate_id):
         return _candidate()
@@ -618,3 +619,26 @@ async def test_get_review_returns_repository_public_view_without_provider():
     assert await service.get_review("project-1", "session-1") == repository.view
     assert transactions.count == 1
     assert quality.calls == extraction.calls == []
+
+
+@pytest.mark.asyncio
+async def test_get_review_returns_closed_empty_state_for_existing_session_without_attempt():
+    repository = FakeRepository()
+    repository.view = None
+    repository.session = {"id": "session-1"}
+    service, transactions, quality, extraction = _review_service(repository)
+
+    assert await service.get_review("project-1", "session-1") == {"state": "empty"}
+    assert transactions.count == 1
+    assert quality.calls == extraction.calls == []
+
+
+@pytest.mark.asyncio
+async def test_get_review_keeps_missing_session_not_found():
+    repository = FakeRepository()
+    repository.view = None
+    repository.session = None
+    service, *_ = _review_service(repository)
+
+    with pytest.raises(FinalizationConflict, match="FINALIZATION_NOT_FOUND"):
+        await service.get_review("project-1", "session-1")

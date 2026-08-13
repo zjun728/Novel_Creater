@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from hashlib import sha256
 import json
+import logging
 import re
 from types import MappingProxyType
 
@@ -18,6 +19,16 @@ from backend.domain.planning import DraftPlanningAggregate, PlanningAggregate
 from backend.domain.project_packages import PackageRecord, RECORD_FIELD_ALLOWLISTS, ProjectPackageBusy, ProjectPackageConflict, ProjectPackageInvalid, ProjectPackageNotFound, freeze_json_value
 from backend.database import DatabaseSession
 from backend.security.paths import UnsafeLocalPath, managed_corpus_storage_key
+
+
+_logger = logging.getLogger("backend.project_packages")
+
+
+def _safe_warning(event: str) -> None:
+    try:
+        _logger.warning(event)
+    except BaseException:
+        pass
 
 
 PROJECT_OWNED_TABLES = frozenset({
@@ -1782,6 +1793,7 @@ class ProjectPackageRepository:
     async def read_snapshot(self, project_id: str, expected_lifecycle_revision: int) -> ProjectPackageSnapshot:
         raw = await self._pool.acquire()
         session = self._session_factory(raw)
+        snapshot_completed = False
         try:
             await session.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             await session.execute("START TRANSACTION READ ONLY, WITH CONSISTENT SNAPSHOT")
@@ -2138,6 +2150,24 @@ class ProjectPackageRepository:
                                 fragment["chapter_char_start"],
                                 fragment["chapter_char_end"],
                             )
+                            index_payload = _json_value(fragment["index_payload"])
+                            if isinstance(index_payload, dict) and (
+                                "fragmentId" in index_payload or "chapterId" in index_payload
+                            ):
+                                if (
+                                    index_payload.get("fragmentId") != fragment["fragment_id"]
+                                    or index_payload.get("chapterId") != chapter["chapter_id"]
+                                    or (
+                                        "contentHash" in index_payload
+                                        and index_payload["contentHash"] != fragment["content_hash"]
+                                    )
+                                ):
+                                    raise _invalid()
+                                index_payload = {
+                                    **index_payload,
+                                    "fragmentId": fragment_logical_id,
+                                    "chapterId": chapter_logical_id,
+                                }
                             fragments_data.append({
                                 "logicalId": fragment_logical_id,
                                 "chapterOrder": chapter_order, "fragmentOrder": fragment["fragment_order"],
@@ -2146,7 +2176,7 @@ class ProjectPackageRepository:
                                 "normalizedText": fragment["normalized_text"],
                                 "contentHash": fragment["content_hash"], "createdAt": fragment["created_at"],
                                 "analysisVersion": fragment["analysis_version"],
-                                "indexPayload": _json_value(fragment["index_payload"]),
+                                "indexPayload": index_payload,
                             })
                     corpus_revision_records.append(PackageRecord(
                         "corpus-revision",
@@ -2476,7 +2506,7 @@ class ProjectPackageRepository:
                         hashes.append(content_hash)
                     projection_validation[name] = {"count": len(hashes), "hashes": tuple(hashes)}
 
-                return ProjectPackageSnapshot(
+                snapshot = ProjectPackageSnapshot(
                     source_project_logical_id=identity_maps["projects"].get(project_id, ""),
                     lifecycle_revision=expected_lifecycle_revision,
                     graph_records=tuple(graph_records),
@@ -2489,12 +2519,41 @@ class ProjectPackageRepository:
                     referenced_secret_values=tuple(referenced_secret_values),
                     counts=counts,
                 )
+                snapshot_completed = True
+                return snapshot
             except (KeyError, TypeError, ValueError, UnicodeError, ProjectPackageInvalid):
                 raise _invalid() from None
         except (KeyError, TypeError, ValueError, UnicodeError, ProjectPackageInvalid):
             raise _invalid() from None
         finally:
+            cleanup_flow_control: BaseException | None = None
+            cleanup_regular_failed = False
+            cleanup_failure_count = 0
             rollback = getattr(raw, "rollback", None)
             if rollback is not None:
-                await rollback()
-            self._pool.release(raw)
+                try:
+                    await rollback()
+                except BaseException as error:
+                    cleanup_failure_count += 1
+                    if isinstance(error, Exception):
+                        cleanup_regular_failed = True
+                    else:
+                        cleanup_flow_control = error
+            try:
+                self._pool.release(raw)
+            except BaseException as error:
+                cleanup_failure_count += 1
+                if isinstance(error, Exception):
+                    cleanup_regular_failed = True
+                elif cleanup_flow_control is None:
+                    cleanup_flow_control = error
+            if cleanup_failure_count:
+                if not snapshot_completed:
+                    _safe_warning("project_package_repository_cleanup_failed")
+                elif cleanup_flow_control is not None:
+                    if cleanup_failure_count > 1:
+                        _safe_warning("project_package_repository_cleanup_failed")
+                    raise cleanup_flow_control from None
+                elif cleanup_regular_failed:
+                    _safe_warning("project_package_repository_cleanup_failed")
+                    raise _invalid() from None

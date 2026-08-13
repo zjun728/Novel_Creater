@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from hashlib import sha256
 import json
@@ -10,6 +11,7 @@ from pathlib import Path
 import stat
 import time
 import unicodedata
+from uuid import uuid4
 
 from backend.config import require_managed_corpus_root
 from backend.domain.corpus import PREVIEW_MAX_CHARS
@@ -19,11 +21,16 @@ from backend.http_errors import (
     CorpusRequestInvalid,
     CorpusResourceNotFound,
 )
+from backend.repositories.project_imports import (
+    ProjectImportCommandStateConflict,
+    ProjectImportPersistenceError,
+)
 from backend.security.paths import (
     UnsafeLocalPath,
     managed_corpus_blob_path,
     managed_corpus_storage_key,
 )
+from backend.services import project_imports as project_import_claims
 
 
 MAX_DISPLAY_NAME_CHARS = 300
@@ -400,7 +407,18 @@ class CorpusLibraryService:
         moves: list[tuple[Path, Path]] = []
         tombstones = list(self._tombstones_from_command(prepared))
         cancelled_error: Exception | None = None
+        claim_owner = project_import_claims._digest_claim_owner(
+            require_managed_corpus_root(self.managed_root),
+            owner_id=f"corpus-delete-{uuid4()}",
+            blobs=tuple(project_import_claims.StagedBlob(
+                item["contentHash"], 0, item["storageKey"], False,
+            ) for item in sorted(tombstones, key=lambda value: value["contentHash"])),
+        )
+        primary_error: BaseException | None = None
         try:
+            for item in claim_owner.blobs:
+                claim = await claim_owner._acquire_claim(item)
+                claim_owner._held_claims[item.content_hash] = claim
             async with self.transaction_factory() as session:
                 await self.repository.lock_schema_guard(session)
                 command = await self.repository.lock_source_deletion(
@@ -462,17 +480,38 @@ class CorpusLibraryService:
                             tombstones=tombstones,
                             now=self.clock(),
                         )
-        except Exception as operation_error:
+            if cancelled_error is not None:
+                raise cancelled_error
+        except BaseException as operation_error:
+            primary_error = operation_error
             try:
                 self._restore_blob_deletions(moves)
-            except Exception as restore_error:
+            except BaseException as restore_error:
+                if isinstance(
+                    operation_error,
+                    (asyncio.CancelledError, KeyboardInterrupt, SystemExit),
+                ):
+                    raise operation_error
                 raise CorpusLifecycleConflict() from BaseExceptionGroup(
                     "corpus deletion failed and blob restore needs retry",
                     [operation_error, restore_error],
                 )
+            if isinstance(operation_error, (
+                ProjectImportCommandStateConflict, ProjectImportPersistenceError,
+            )):
+                raise CorpusLifecycleConflict() from None
             raise
-        if cancelled_error is not None:
-            raise cancelled_error
+        finally:
+            try:
+                claim_owner._release_held_claims()
+            except BaseException as release_error:
+                if primary_error is None:
+                    if isinstance(
+                        release_error,
+                        (asyncio.CancelledError, KeyboardInterrupt, SystemExit),
+                    ):
+                        raise release_error
+                    raise CorpusLifecycleConflict() from None
         try:
             self._finish_blob_deletions(moves)
         except (OSError, RuntimeError, ValueError, UnsafeLocalPath):

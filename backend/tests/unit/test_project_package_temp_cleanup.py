@@ -55,6 +55,140 @@ def test_startup_cleanup_is_prefix_age_and_scan_bounded(tmp_path: Path) -> None:
     assert any(path.name.startswith(TEMP_PREFIX) for path in parent.iterdir())
 
 
+def test_stale_cleanup_skips_nonowned_and_consumes_only_first_32_owned_children(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    parent = tmp_path / "temp"
+    parent.mkdir()
+    resolved_parent = parent.resolve()
+    nonowned = [parent / f"unowned-{index:02d}" for index in range(40)]
+    owned = [parent / f"{TEMP_PREFIX}{index:02d}" for index in range(33)]
+    children = [*nonowned, *owned]
+    for child in children:
+        child.mkdir()
+        os.utime(child, (0, 0))
+
+    original_iterdir = Path.iterdir
+    consumed = 0
+
+    def bounded_iterdir(path):
+        if path != resolved_parent:
+            return original_iterdir(path)
+
+        def iterator():
+            nonlocal consumed
+            for child in children:
+                consumed += 1
+                if consumed > len(nonowned) + 32:
+                    raise AssertionError("scanner consumed beyond its owned-child limit")
+                yield child
+
+        return iterator()
+
+    monkeypatch.setattr(Path, "iterdir", bounded_iterdir)
+
+    assert cleanup_stale_project_package_roots(parent, now=200_000.0) == 32
+    assert consumed == len(nonowned) + 32
+    assert all(candidate.exists() for candidate in nonowned)
+    assert all(not candidate.exists() for candidate in owned[:32])
+    assert owned[32].exists()
+
+
+def test_stale_cleanup_continues_after_candidate_failure_and_logs_fixed_warning(
+    tmp_path: Path, monkeypatch, caplog,
+) -> None:
+    parent = tmp_path / "temp"
+    parent.mkdir()
+    candidates = [parent / f"{TEMP_PREFIX}{index}" for index in range(3)]
+    for candidate in candidates:
+        candidate.mkdir()
+        os.utime(candidate, (0, 0))
+    original_rmtree = __import__("shutil").rmtree
+
+    def fail_first(candidate):
+        if Path(candidate).name == candidates[0].name:
+            raise OSError("PRIVATE_STALE_CANDIDATE_SECRET")
+        original_rmtree(candidate)
+
+    monkeypatch.setattr("backend.services.project_packages.shutil.rmtree", fail_first)
+    with caplog.at_level("WARNING", logger="backend.project_packages"):
+        examined = cleanup_stale_project_package_roots(parent, now=200_000.0)
+
+    assert examined == 3
+    assert candidates[0].exists()
+    assert not candidates[1].exists()
+    assert not candidates[2].exists()
+    records = [record for record in caplog.records if record.name == "backend.project_packages"]
+    assert [record.getMessage() for record in records] == [
+        "project_package_stale_candidate_cleanup_failed"
+    ]
+    assert records[0].args == ()
+    assert "PRIVATE_STALE_CANDIDATE_SECRET" not in caplog.text
+
+
+def test_stale_cleanup_parent_scan_failure_logs_only_fixed_warning(
+    tmp_path: Path, monkeypatch, caplog,
+) -> None:
+    parent = tmp_path / "temp"
+    parent.mkdir()
+    original_iterdir = Path.iterdir
+
+    def fail_owned_parent(path):
+        if path == parent.resolve():
+            raise OSError("PRIVATE_STALE_PARENT_SECRET")
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", fail_owned_parent)
+    with caplog.at_level("WARNING", logger="backend.project_packages"):
+        assert cleanup_stale_project_package_roots(parent, now=200_000.0) == 0
+
+    records = [record for record in caplog.records if record.name == "backend.project_packages"]
+    assert [record.getMessage() for record in records] == [
+        "project_package_stale_scan_failed"
+    ]
+    assert records[0].args == ()
+    assert "PRIVATE_STALE_PARENT_SECRET" not in caplog.text
+
+
+def test_stale_cleanup_warning_sink_failure_never_stops_cleanup_or_escapes(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    candidate_parent = tmp_path / "candidate-temp"
+    candidate_parent.mkdir()
+    candidates = [candidate_parent / f"{TEMP_PREFIX}{index}" for index in range(2)]
+    for candidate in candidates:
+        candidate.mkdir()
+        os.utime(candidate, (0, 0))
+    original_rmtree = __import__("shutil").rmtree
+
+    def fail_first(candidate):
+        if Path(candidate).name == candidates[0].name:
+            raise OSError("candidate cleanup failed")
+        original_rmtree(candidate)
+
+    def fail_warning(_event):
+        raise KeyboardInterrupt("logging unavailable")
+
+    monkeypatch.setattr("backend.services.project_packages.shutil.rmtree", fail_first)
+    monkeypatch.setattr("backend.services.project_packages._logger.warning", fail_warning)
+
+    assert cleanup_stale_project_package_roots(candidate_parent, now=200_000.0) == 2
+    assert candidates[0].exists()
+    assert not candidates[1].exists()
+
+    parent_failure = tmp_path / "parent-failure-temp"
+    parent_failure.mkdir()
+    original_iterdir = Path.iterdir
+
+    def fail_parent(path):
+        if path == parent_failure.resolve():
+            raise OSError("parent scan failed")
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", fail_parent)
+    assert cleanup_stale_project_package_roots(parent_failure, now=200_000.0) == 0
+
+
 class _FailingRepository:
     async def read_snapshot(self, project_id, revision):
         raise ProjectPackageIntegrity("repository failed safely")

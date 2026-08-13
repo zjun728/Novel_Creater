@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { createPinia, setActivePinia } from 'pinia'
 
 import { createProjectBackupController } from '../../src/application/project/projectBackupController.js'
+import { createOperationStore } from '../../src/stores/operationStore.js'
 
 const PHASES = [
   '正在核对项目状态',
@@ -155,6 +157,73 @@ test('a revoke failure cannot leave the operation or busy state behind', async (
   assert.equal(item.controller.error.value, '创建项目备份失败，请重试。')
   assert.deepEqual(item.operations.at(-1), ['finish', 'op-1'])
   assert.equal(item.controller.busy.value, false)
+})
+
+test('a save failure remains primary when revoke also fails and cleanup permits retry', async () => {
+  const saveFailure = new Error('primary save failure')
+  const revokeFailure = new Error('secondary revoke failure')
+  let saves = 0
+  let revokes = 0
+  const item = harness({
+    saveBlob: () => {
+      saves += 1
+      if (saves === 1) throw saveFailure
+    },
+    revokeObjectURL: () => {
+      revokes += 1
+      if (revokes === 1) throw revokeFailure
+    },
+  })
+
+  await assert.rejects(
+    () => item.controller.backup('p', 1),
+    failure => failure === saveFailure,
+  )
+  assert.equal(revokes, 1)
+  assert.deepEqual(item.operations.at(-1), ['finish', 'op-1'])
+  assert.equal(item.controller.busy.value, false)
+
+  assert.equal(await item.controller.backup('p', 1), true)
+  assert.equal(item.requests.length, 2)
+  assert.equal(revokes, 2)
+})
+
+test('a save failure remains primary while transient real-store finish cleanup clears blocking for retry', async () => {
+  const saveFailure = new Error('primary save failure')
+  const finishFailure = new Error('secondary finish failure')
+  let saves = 0
+  let finishes = 0
+  setActivePinia(createPinia())
+  const operationStore = createOperationStore(`backup-cross-cleanup-${Date.now()}`)()
+  const realFinish = operationStore.finish.bind(operationStore)
+  operationStore.finish = operationId => {
+    finishes += 1
+    if (finishes === 1) throw finishFailure
+    return realFinish(operationId)
+  }
+  const item = harness({
+    operationStore,
+    saveBlob: () => {
+      saves += 1
+      if (saves === 1) throw saveFailure
+    },
+  })
+
+  await assert.rejects(
+    () => item.controller.backup('p', 1),
+    failure => failure === saveFailure,
+  )
+  assert.deepEqual(item.revoked, ['blob:backup'])
+  assert.equal(item.controller.busy.value, false)
+  assert.equal(operationStore.blocking, false)
+  assert.equal(operationStore.active, false)
+  assert.equal(finishes, 2)
+
+  assert.equal(await item.controller.backup('p', 1), true)
+  assert.equal(item.requests.length, 2)
+  assert.equal(finishes, 3)
+  assert.equal(operationStore.blocking, false)
+  assert.equal(operationStore.active, false)
 })
 
 test('dispose aborts the request and fences a late binary result', async () => {

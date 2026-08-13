@@ -116,7 +116,8 @@ export function createNovelDownloadController({
       options.value = loaded
       return loaded
     } catch (failure) {
-      if (active()) error.value = '下载选项加载失败，请重试。'
+      if (!active()) return false
+      error.value = '下载选项加载失败，请重试。'
       throw failure
     } finally {
       if (active()) loadingState.value = false
@@ -138,26 +139,59 @@ export function createNovelDownloadController({
     busyState.value = true
     error.value = ''
     let objectUrl = null
+    let hasPrimaryFailure = false
+    let cleanupFailureCanSurface = true
     try {
       const result = await api.novelDownloads.download(projectId, selector, {
         signal: abortController.signal,
       })
-      if (!active()) return false
+      if (!active()) {
+        cleanupFailureCanSurface = false
+        return false
+      }
       objectUrl = createObjectURL(result?.blob)
       const filename = filenameFromContentDisposition(result?.contentDisposition, selector)
       saveBlob(objectUrl, filename)
       return true
     } catch (failure) {
-      if (active()) error.value = '下载失败，请重试。'
+      if (!active()) {
+        cleanupFailureCanSurface = false
+        return false
+      }
+      hasPrimaryFailure = true
+      error.value = '下载失败，请重试。'
       throw failure
     } finally {
       try {
         if (objectUrl !== null) revokeObjectURL(objectUrl)
+      } catch (failure) {
+        if (active()) error.value = '下载失败，请重试。'
+        if (!hasPrimaryFailure && cleanupFailureCanSurface) {
+          hasPrimaryFailure = true
+          throw failure
+        }
       } finally {
-        operationStore.finish(operationId)
-        if (inFlight?.token === token) {
-          inFlight = null
-          busyState.value = false
+        let finishFailure
+        let hasFinishFailure = false
+        try {
+          operationStore.finish(operationId)
+        } catch (failure) {
+          hasFinishFailure = true
+          finishFailure = failure
+          if (active()) error.value = '下载失败，请重试。'
+          try {
+            operationStore.finish(operationId)
+          } catch {
+            // The public operation API has no stronger recovery primitive.
+          }
+        } finally {
+          if (inFlight?.token === token) {
+            inFlight = null
+            busyState.value = false
+          }
+        }
+        if (hasFinishFailure && !hasPrimaryFailure && cleanupFailureCanSurface) {
+          throw finishFailure
         }
       }
     }
@@ -167,8 +201,9 @@ export function createNovelDownloadController({
     if (disposed) return
     disposed = true
     loadGeneration += 1
-    inFlight?.abortController.abort()
+    loadingState.value = false
     busyState.value = false
+    inFlight?.abortController.abort()
   }
 
   return {

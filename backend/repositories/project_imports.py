@@ -177,6 +177,26 @@ class ProjectImportRepository:
         )
         return row is not None
 
+    async def lock_cleanup_owner(
+        self, session, *, command_id: str, request_fingerprint: str,
+        owner_token: str, now_ms: int,
+    ) -> bool:
+        """Fence file cleanup to the still-current command lease owner."""
+        row = await _fetchone(
+            session,
+            """SELECT status,request_fingerprint,owner_token,lease_expires_at
+               FROM project_package_import_commands WHERE id=%s FOR UPDATE""",
+            (command_id,),
+        )
+        return bool(
+            row is not None
+            and row["status"] == "running"
+            and row["request_fingerprint"] == request_fingerprint
+            and row["owner_token"] == owner_token
+            and type(row["lease_expires_at"]) is int
+            and row["lease_expires_at"] > now_ms
+        )
+
     async def fence_recovery_command(
         self, session, *, candidate: ProjectImportRecoveryCommand, now_ms: int,
     ) -> ProjectImportRecoveryCommand | None:

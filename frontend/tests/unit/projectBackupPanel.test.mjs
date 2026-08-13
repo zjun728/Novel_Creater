@@ -104,7 +104,12 @@ test.before(async () => {
 
 test.after(async () => { await vite?.close() })
 
-async function mountPanel({ archived = false, flushCurrentDraft = async () => true, request } = {}) {
+async function mountPanel({
+  archived = false,
+  flushCurrentDraft = async () => true,
+  request,
+  clickFailures = 0,
+} = {}) {
   const originalFetch = global.fetch
   const originalDocument = global.document
   const originalCreateObjectURL = URL.createObjectURL
@@ -113,6 +118,7 @@ async function mountPanel({ archived = false, flushCurrentDraft = async () => tr
   const links = []
   const appended = []
   const revoked = []
+  let remainingClickFailures = clickFailures
 
   global.fetch = async (url, init = {}) => {
     requests.push([String(url), init])
@@ -130,7 +136,13 @@ async function mountPanel({ archived = false, flushCurrentDraft = async () => tr
       assert.equal(tag, 'a')
       const link = {
         href: '', download: '', hidden: false, clicked: false, removed: false,
-        click() { this.clicked = true },
+        click() {
+          this.clicked = true
+          if (remainingClickFailures > 0) {
+            remainingClickFailures -= 1
+            throw new Error('private anchor detail')
+          }
+        },
         remove() { this.removed = true },
       }
       links.push(link)
@@ -242,5 +254,25 @@ test('backup failure exposes fixed retryable copy and restores the action withou
     assert.match(text(item.target), /创建项目备份失败，请重试。/)
     assert.doesNotMatch(text(item.target), /private transport token/)
     assert.equal(find(item.target, node => node.type === 'button' && /取消/.test(text(node))), null)
+  } finally { item.dispose() }
+})
+
+test('anchor click failure still removes the link, revokes once, and permits retry', async () => {
+  const item = await mountPanel({ clickFailures: 1 })
+  try {
+    const button = find(item.target, node => node.type === 'button' && /创建项目备份/.test(text(node)))
+    await button.props.onClick()
+    await flush()
+
+    assert.equal(item.links[0].removed, true)
+    assert.deepEqual(item.revoked, ['blob:project-backup'])
+    assert.match(text(item.target), /创建项目备份失败，请重试。/)
+    assert.doesNotMatch(text(item.target), /private anchor detail/)
+    assert.equal(button.props.disabled, false)
+
+    await button.props.onClick()
+    await flush()
+    assert.equal(item.links[1].removed, true)
+    assert.deepEqual(item.revoked, ['blob:project-backup', 'blob:project-backup'])
   } finally { item.dispose() }
 })

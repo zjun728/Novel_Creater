@@ -103,6 +103,41 @@ def test_rewrites_typed_seed_authority_and_keeps_corpus_byte_hash_unchanged() ->
     assert corpus["content_hash"] == "c" * 64
 
 
+def test_rewrites_corpus_index_identity_slots_to_target_ids() -> None:
+    corpus = PackageRecord("corpus-revision", "corpus-revision:1", revision=1, data={
+        "sourceKey": "import/source", "revision": 1, "relativePath": "source.txt",
+        "displayName": "Source", "author": "Author", "referenceTags": [],
+        "notes": "notes", "provenance": {}, "contentHash": "c" * 64,
+        "byteLength": 7, "encoding": "utf-8", "parserVersion": "v1",
+        "normalizerVersion": "v1", "fragmenterVersion": "v1", "indexVersion": "v1",
+        "status": "analyzed", "importedAt": 1, "analyzedAt": 2, "createdAt": 1,
+        "chapters": [{
+            "logicalId": "corpus-chapter:1", "chapterOrder": 1, "title": "Chapter",
+            "rawByteStart": 0, "rawByteEnd": 7, "normalizedCharStart": 0,
+            "normalizedCharEnd": 7, "normalizedText": "content", "contentHash": "d" * 64,
+            "createdAt": 1,
+        }],
+        "fragments": [{
+            "logicalId": "corpus-fragment:1", "chapterOrder": 1, "fragmentOrder": 1,
+            "chapterCharStart": 0, "chapterCharEnd": 7, "normalizedText": "content",
+            "contentHash": "e" * 64, "analysisVersion": "v1", "createdAt": 1,
+            "indexPayload": {
+                "schemaVersion": "corpus-index-v1", "fragmentId": "corpus-fragment:1",
+                "chapterId": "corpus-chapter:1", "contentHash": "e" * 64,
+                "normalizerVersion": "v1",
+            },
+        }],
+    })
+
+    plan = build_publication_plan(_package((_project_record(), corpus)), COMMAND_ID, "Imported")
+
+    chapter = _rows(plan, "corpus_chapters")[0]
+    fragment = _rows(plan, "corpus_fragments")[0]
+    index_payload = json.loads(fragment["index_payload"])
+    assert index_payload["chapterId"] == chapter["id"]
+    assert index_payload["fragmentId"] == fragment["id"]
+
+
 def test_reconstructs_each_binding_revision_as_exact_unbound_task_set() -> None:
     revision = PackageRecord("project-model-binding-revision", "project-model-binding-revision:1", revision=3, data={
         "revision": 3, "contentHash": "d" * 64, "sourceProjectLogicalId": "project:1", "createdAt": 3,

@@ -80,10 +80,13 @@ import hashlib, json, os, pathlib, stat, sys, zipfile
 
 archives = [pathlib.Path(value) for value in sys.argv[1:3]]
 corpus_root = pathlib.Path(os.environ['MANAGED_CORPUS_ROOT'])
+state_path = pathlib.Path(os.environ['PHASE6B_VERIFY_STATE_PATH'])
+def checkpoint(value): state_path.write_text(str(value), encoding='ascii')
 secret = os.environ['PHASE6B_VERIFY_SECRET'].encode()
 base_url = os.environ['PHASE6B_VERIFY_BASE_URL'].encode()
 working = os.environ['PHASE6B_VERIFY_WORKING'].encode()
 candidate = os.environ['PHASE6B_VERIFY_CANDIDATE'].encode()
+checkpoint(10)
 blob_files = [item for item in corpus_root.rglob('*') if item.is_file()]
 if len(blob_files) != 1: raise RuntimeError('owned corpus file count mismatch')
 blob = blob_files[0].read_bytes()
@@ -102,17 +105,27 @@ def records(package, name):
     return [json.loads(line) for line in raw.splitlines()]
 
 for index, archive in enumerate(archives):
+    stage = 20 + index * 10
+    checkpoint(stage)
     if not archive.is_file(): raise RuntimeError('browser download is missing')
     with zipfile.ZipFile(archive, 'r') as package:
+        checkpoint(stage * 10 + 1)
         if package.comment != b'': raise RuntimeError('zip comment is not deterministic')
         infos = package.infolist()
+        checkpoint(stage * 10 + 2)
         if [info.filename for info in infos] != expected_names: raise RuntimeError('zip entry order/set mismatch')
         for info in infos:
+            checkpoint(stage * 10 + 3)
             if info.date_time != (1980, 1, 1, 0, 0, 0): raise RuntimeError('zip timestamp mismatch')
+            checkpoint(stage * 10 + 4)
             if info.compress_type != zipfile.ZIP_STORED: raise RuntimeError('zip compression mismatch')
+            checkpoint(stage * 10 + 5)
             if info.create_system != 3 or stat.S_IMODE(info.external_attr >> 16) != 0o600: raise RuntimeError('zip mode mismatch')
+            checkpoint(stage * 10 + 6)
             if info.extra or info.comment or info.flag_bits & 0x08: raise RuntimeError('zip metadata mismatch')
+        checkpoint(stage * 10 + 7)
         if package.read(blob_path) != blob: raise RuntimeError('corpus blob is incomplete')
+        checkpoint(stage + 1)
         manifest_bytes = package.read('manifest.json')
         manifest = json.loads(manifest_bytes)
         if package.read('manifest.sha256') != hashlib.sha256(manifest_bytes).hexdigest().encode('ascii') + b'\n':
@@ -132,6 +145,7 @@ for index, archive in enumerate(archives):
         providers = records(package, 'history/providers.jsonl')
         projections = json.loads(package.read('validation/projections.json'))
         graph_bytes = package.read('project/graph.jsonl')
+        checkpoint(stage + 2)
         project = [record for record in graph if record.get('entityType') == 'project']
         project_data = project[0].get('data', {}) if len(project) == 1 else {}
         expected_revision = index
@@ -139,12 +153,15 @@ for index, archive in enumerate(archives):
         if (len(project) != 1 or project_data.get('lifecycleRevision') != expected_revision
                 or (project_data.get('archivedAt') is not None) != expected_archived):
             raise RuntimeError('project lifecycle snapshot mismatch')
+        checkpoint(stage + 3)
         if working not in graph_bytes or candidate not in graph_bytes: raise RuntimeError('draft authority is absent')
         if not any(record.get('entityType') == 'final-chapter' for record in graph): raise RuntimeError('final chapter is absent')
         asset_types = {record.get('entityType') for record in assets}
         if not {'asset'} <= asset_types or len(assets) < 2: raise RuntimeError('frozen assets are absent')
+        checkpoint(stage + 4)
         if not corpus or not operations or not providers or not isinstance(projections, dict) or not projections:
             raise RuntimeError('package evidence is incomplete')
+        checkpoint(stage + 5)
         for name in expected_names:
             data = package.read(name)
             if secret in data or base_url in data: raise RuntimeError('referenced secret leaked')
@@ -163,6 +180,7 @@ function createRoots(owned) {
     denyProxyPath: path.join(owned, 'deny-proxy.cjs'), viteConfigPath: path.join(owned, 'vite.config.mjs'),
     resultPath: path.join(owned, 'browser-result.json'),
     fixtureStatePath: path.join(owned, 'fixture-state.txt'),
+    verifierStatePath: path.join(owned, 'verifier-state.txt'),
     outboundLedgerPath: path.join(owned, 'outbound-ledger.log'),
     denyProxyLedgerPath: path.join(owned, 'deny-proxy.log'),
   }
@@ -260,13 +278,45 @@ async function runStage(stage, action) {
   }
 }
 
-function classifyBrowserFailure(resultPath) {
+function reportErrors(report) {
+  const found = []
+  const visit = value => {
+    if (Array.isArray(value)) { value.forEach(visit); return }
+    if (!value || typeof value !== 'object') return
+    if (Array.isArray(value.errors)) {
+      for (const error of value.errors) if (error && typeof error.message === 'string') found.push(error)
+    }
+    for (const child of Object.values(value)) visit(child)
+  }
+  visit(report)
+  return found
+}
+
+function browserErrorLine(error) {
+  if (error.location?.file?.endsWith('project-backup.spec.mjs') && Number.isInteger(error.location.line)) {
+    return String(error.location.line)
+  }
+  return error.stack?.match(/project-backup\.spec\.mjs:(\d+):\d+/u)?.[1] || 'unknown'
+}
+
+export function classifyBrowserFailure(resultPath) {
   try {
-    const rendered = JSON.stringify(JSON.parse(readFileSync(resultPath, 'utf8')))
-    const line = rendered.match(/project-backup\.spec\.mjs:(\d+)/u)?.[1] || 'unknown'
-    const status = rendered.match(/backup-status-(\d{3})/u)?.[1]
+    const errors = reportErrors(JSON.parse(readFileSync(resultPath, 'utf8')))
+    const error = errors[0]
+    if (!error) return 'unclassified'
+    const line = browserErrorLine(error)
+    const status = error.message.match(/backup-status-(\d{3})/u)?.[1]
     if (status) return `backup-status-${status}`
-    return `${/timed out|timeout/iu.test(rendered) ? 'timeout' : /locator/iu.test(rendered) ? 'locator' : 'assertion'}@${line}`
+    const libraryMarker = error.message.match(/phase6b-library-(?:load-error|empty|card-missing)/u)?.[0]
+    if (libraryMarker) return libraryMarker
+    if (/locator\.click/iu.test(error.message) && /timed out|timeout/iu.test(error.message)) {
+      if (/intercepts pointer events/iu.test(error.message)) return `locator-intercepted@${line}`
+      if (/element is not enabled|disabled/iu.test(error.message)) return `locator-disabled@${line}`
+      if (/element is not visible/iu.test(error.message)) return `locator-hidden@${line}`
+      if (!/locator resolved to/iu.test(error.message)) return `locator-missing@${line}`
+      return `locator-timeout@${line}`
+    }
+    return `${/timed out|timeout/iu.test(error.message) ? 'timeout' : /locator/iu.test(error.message) ? 'locator' : 'assertion'}@${line}`
   } catch { return 'unclassified' }
 }
 
@@ -274,11 +324,13 @@ export function safeClassifyFailure(error) {
   const stages = []
   let browserCause = null
   let fixtureCause = null
+  let verifierCause = null
   const visit = value => {
     if (!value || typeof value !== 'object') return
     if (typeof value.phase6bStage === 'string') stages.push(value.phase6bStage)
     if (typeof value.phase6bBrowserCause === 'string') browserCause ||= value.phase6bBrowserCause
     if (typeof value.phase6bFixtureCause === 'string') fixtureCause ||= value.phase6bFixtureCause
+    if (typeof value.phase6bVerifierCause === 'string') verifierCause ||= value.phase6bVerifierCause
     if (typeof value.message === 'string') {
       if (/status 61/u.test(value.message)) fixtureCause ||= 'preparation-snapshot-timeout'
       if (/status 62/u.test(value.message)) fixtureCause ||= 'contract-head-timeout'
@@ -288,7 +340,7 @@ export function safeClassifyFailure(error) {
     if (value instanceof AggregateError) value.errors.forEach(visit)
   }
   visit(error)
-  return JSON.stringify({ firstStage: stages[0] || 'lifecycle', errorCount: Math.max(stages.length, 1), browserCause, fixtureCause })
+  return JSON.stringify({ firstStage: stages[0] || 'lifecycle', errorCount: Math.max(stages.length, 1), browserCause, fixtureCause, verifierCause })
 }
 
 export async function runPhase6B({ environment = process.env, log = console.log, deadlines = {} } = {}) {
@@ -345,7 +397,7 @@ export async function runPhase6B({ environment = process.env, log = console.log,
       const verifierEnvironment = {
         ...backendEnvironment, PHASE6B_VERIFY_SECRET: SECRET_SENTINEL,
         PHASE6B_VERIFY_BASE_URL: BASE_URL_SENTINEL, PHASE6B_VERIFY_WORKING: WORKING_SENTINEL,
-        PHASE6B_VERIFY_CANDIDATE: CANDIDATE_SENTINEL,
+        PHASE6B_VERIFY_CANDIDATE: CANDIDATE_SENTINEL, PHASE6B_VERIFY_STATE_PATH: roots.verifierStatePath,
       }
 
       await runStage('database-preparation', () => runBoundedOwnedCommand(
@@ -406,10 +458,27 @@ export async function runPhase6B({ environment = process.env, log = console.log,
       await runStage('response-cleanup-audit', () => waitForPackageTempCleanup(roots.packageTempRoot))
       const archives = ['active-project-backup.zip', 'archived-project-backup.zip'].map(name => path.join(roots.downloadRoot, name))
       if (archives.some(target => !existsSync(target) || !statSync(target).isFile())) throw new Error('Phase6B saved download is missing')
-      await runStage('package-verifier', () => runBoundedOwnedCommand(
-        python, [roots.verifierPath, ...archives], options(root, verifierEnvironment),
-        { label: 'Phase6B package verifier', sensitiveValues, timeoutMs: limits.commandMs, stopTimeoutMs: limits.stopMs, states: servers },
-      ))
+      await runStage('package-verifier', async () => {
+        try {
+          return await runBoundedOwnedCommand(
+            python, [roots.verifierPath, ...archives], options(root, verifierEnvironment),
+            { label: 'Phase6B package verifier', sensitiveValues, timeoutMs: limits.commandMs, stopTimeoutMs: limits.stopMs, states: servers },
+          )
+        } catch (error) {
+          const code = existsSync(roots.verifierStatePath) ? readFileSync(roots.verifierStatePath, 'ascii').trim() : ''
+          error.phase6bVerifierCause = ({
+            10: 'corpus-envelope', 20: 'active-zip-envelope', 21: 'active-manifest',
+            201: 'active-zip-comment', 202: 'active-entry-set', 203: 'active-zip-timestamp',
+            204: 'active-zip-compression', 205: 'active-zip-mode', 206: 'active-zip-metadata', 207: 'active-corpus-blob',
+            22: 'active-lifecycle', 23: 'active-authority', 24: 'active-evidence', 25: 'active-secret-scan',
+            30: 'archived-zip-envelope', 31: 'archived-manifest', 32: 'archived-lifecycle',
+            301: 'archived-zip-comment', 302: 'archived-entry-set', 303: 'archived-zip-timestamp',
+            304: 'archived-zip-compression', 305: 'archived-zip-mode', 306: 'archived-zip-metadata', 307: 'archived-corpus-blob',
+            33: 'archived-authority', 34: 'archived-evidence', 35: 'archived-secret-scan',
+          })[code] || null
+          throw error
+        }
+      })
       await runStage('outbound-audit', () => {
         if (readFileSync(roots.outboundLedgerPath, 'utf8').trim()) throw new Error('Phase6B backend made an outbound request')
       })

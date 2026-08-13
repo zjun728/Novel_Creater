@@ -40,7 +40,9 @@ async function createBackup(page, filename, { fenceNavigation = false } = {}) {
   if (response.status() !== 200) void downloadPromise.catch(() => {})
   assert.equal(response.status(), 200, `backup-status-${response.status()}`)
   const download = await downloadPromise
-  return saveVerifiedDownload(download, response, filename)
+  const target = await saveVerifiedDownload(download, response, filename)
+  await expect(page.getByRole('dialog', { name: '正在建立一致快照' })).toBeHidden({ timeout: uiTimeout })
+  return target
 }
 
 test('@phase6b backs up active and archived project with consumer cleanup', async ({ page, context }) => {
@@ -59,9 +61,21 @@ test('@phase6b backs up active and archived project with consumer cleanup', asyn
   await expect(activeBackupButton).toBeEnabled({ timeout: uiTimeout })
   await createBackup(page, 'active-project-backup.zip', { fenceNavigation: true })
 
+  const activeListResponsePromise = page.waitForResponse(response => {
+    const url = new URL(response.url())
+    return url.pathname.endsWith('/api/projects')
+      && response.request().method() === 'GET'
+  }, { timeout: uiTimeout })
   await page.getByRole('link', { name: 'Novel Creator 项目库' }).click()
+  const activeListResponse = await activeListResponsePromise
+  assert.equal([200, 304].includes(activeListResponse.status()), true, `active-list-status-${activeListResponse.status()}`)
   await expect(page.getByRole('heading', { name: '项目库' })).toBeVisible()
-  const card = page.locator('.project-card').filter({ hasText: 'contract integration' })
+  await expect(page.locator('.project-library-sheet')).toHaveAttribute('aria-busy', 'false', { timeout: uiTimeout })
+  const card = page.locator('.project-card').filter({ hasText: 'Phase6A finalized download' })
+  if (await page.locator('.project-library-error').isVisible()) throw new Error('phase6b-library-load-error')
+  if (await page.locator('.project-empty').isVisible()) throw new Error('phase6b-library-empty')
+  if (await card.count() === 0) throw new Error('phase6b-library-card-missing')
+  await expect(card).toBeVisible({ timeout: uiTimeout })
   await card.getByText('更多', { exact: true }).click()
   await card.getByRole('button', { name: '归档' }).click()
   await expect(page.getByText('项目已归档')).toBeVisible()

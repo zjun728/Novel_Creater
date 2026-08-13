@@ -26,7 +26,8 @@ function assertFinalizedBytes(bytes, extension) {
   for (const sentinel of excluded) assert.equal(bytes.includes(sentinel), false, `${sentinel} is excluded`)
 }
 
-test('@phase6a downloads finalized TXT from Overview and Markdown after archive', async ({ page }) => {
+test('@phase6a downloads finalized TXT from Overview and Markdown after archive', async ({ page, context }) => {
+  const runtime = observeRuntime(context, { allowedOrigins })
   await page.goto(`/projects/${projectId}/overview`)
   await page.getByRole('link', { name: '继续章节写作' }).click()
   await expect(page.getByRole('heading', { name: '章节工作台' })).toBeVisible()
@@ -47,7 +48,6 @@ test('@phase6a downloads finalized TXT from Overview and Markdown after archive'
   await expect(editor).toHaveValue(UNSAVED_SENTINEL)
   await expect(page.getByText('未暂存', { exact: true })).toBeVisible()
 
-  const runtime = observeRuntime(overview, { allowedOrigins })
   await overview.bringToFront()
   const overviewDownload = overview.waitForEvent('download')
   await overview.getByRole('button', { name: '下载整本定稿' }).click()

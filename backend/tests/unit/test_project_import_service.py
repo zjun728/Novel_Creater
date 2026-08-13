@@ -194,6 +194,162 @@ async def test_terminal_recovery_never_removes_claim_owned_by_another_command(tm
         transaction_factory=connect, repository=Repository(), now_ms=10,
     )
     assert claim.read_text("ascii") == other
+    assert root.is_dir()
+
+    claim.unlink()
+    await reconcile_project_import_staging(
+        managed_corpus_root=managed, connection_factory=connect,
+        transaction_factory=connect, repository=Repository(), now_ms=10,
+    )
+    assert not root.exists()
+    assert not claims.exists()
+
+
+@pytest.mark.asyncio
+async def test_recovery_keeps_full_multi_blob_authority_when_one_claim_is_blocked(tmp_path):
+    managed = tmp_path / "managed"
+    parent = managed / ".project-import-staging"
+    claims = parent / ".claims"
+    claims.mkdir(parents=True)
+    command = "11111111-1111-4111-8111-111111111111"
+    values = tuple((sha256(data).hexdigest(), data) for data in (b"first", b"second"))
+    manifest = {
+        "blobs": [{
+            "byteLength": len(data), "contentHash": digest, "created": False,
+            "storageKey": managed_corpus_storage_key(digest),
+        } for digest, data in values],
+        "commandId": command, "idMapHash": "a" * 64,
+    }
+    root = parent / command
+    root.mkdir()
+    manifest_path = root / "manifest.json"
+    manifest_path.write_text(canonical_json(manifest), encoding="utf-8")
+    blocked = claims / values[0][0]
+    blocked.write_text("other:token", encoding="ascii")
+    candidate = ProjectImportRecoveryCommand(command, "failed", canonical_json(manifest))
+
+    class Repository:
+        async def list_recovery_commands(self, session, **kwargs): return (candidate,)
+        async def fence_recovery_command(self, session, **kwargs): return candidate
+
+    @asynccontextmanager
+    async def connect(): yield object()
+
+    await reconcile_project_import_staging(
+        managed_corpus_root=managed, connection_factory=connect,
+        transaction_factory=connect, repository=Repository(), now_ms=10,
+    )
+
+    assert root.is_dir()
+    assert manifest_path.read_text("utf-8") == canonical_json(manifest)
+    assert blocked.read_text("ascii") == "other:token"
+
+
+@pytest.mark.asyncio
+async def test_recovery_retries_transient_claim_release_before_removing_authority(
+    tmp_path, monkeypatch,
+):
+    managed = tmp_path / "managed"
+    parent = managed / project_imports.STAGING_DIRECTORY
+    parent.mkdir(parents=True)
+    command = "11111111-1111-4111-8111-111111111111"
+    digest = sha256(b"claim").hexdigest()
+    manifest = {
+        "blobs": [{
+            "byteLength": 5, "contentHash": digest, "created": False,
+            "storageKey": managed_corpus_storage_key(digest),
+        }],
+        "commandId": command, "idMapHash": "a" * 64,
+    }
+    root = parent / command
+    root.mkdir()
+    (root / "manifest.json").write_text(canonical_json(manifest), encoding="utf-8")
+    candidate = ProjectImportRecoveryCommand(command, "failed", canonical_json(manifest))
+
+    class Repository:
+        async def list_recovery_commands(self, session, **kwargs): return (candidate,)
+        async def fence_recovery_command(self, session, **kwargs): return candidate
+
+    @asynccontextmanager
+    async def connect(): yield object()
+
+    claim = parent / project_imports.CLAIM_DIRECTORY / digest
+    real_unlink = project_imports.Path.unlink
+    attempts = 0
+
+    def fail_once(path, *args, **kwargs):
+        nonlocal attempts
+        if path == claim:
+            attempts += 1
+            if attempts == 1:
+                raise OSError("transient release")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(project_imports.Path, "unlink", fail_once)
+    assert await reconcile_project_import_staging(
+        managed_corpus_root=managed, connection_factory=connect,
+        transaction_factory=connect, repository=Repository(), now_ms=10,
+    ) == 1
+
+    assert attempts == 2
+    assert not root.exists()
+    assert not claim.parent.exists()
+
+
+@pytest.mark.asyncio
+async def test_recovery_permanent_release_failure_preserves_authority_and_scans_next(
+    tmp_path, monkeypatch,
+):
+    managed = tmp_path / "managed"
+    parent = managed / project_imports.STAGING_DIRECTORY
+    parent.mkdir(parents=True)
+    commands = (
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+    )
+    digests = (sha256(b"first").hexdigest(), sha256(b"second").hexdigest())
+    candidates = []
+    roots = []
+    for command, digest in zip(commands, digests, strict=True):
+        manifest = {
+            "blobs": [{
+                "byteLength": 0, "contentHash": digest, "created": False,
+                "storageKey": managed_corpus_storage_key(digest),
+            }],
+            "commandId": command, "idMapHash": "a" * 64,
+        }
+        root = parent / command
+        root.mkdir()
+        (root / "manifest.json").write_text(canonical_json(manifest), encoding="utf-8")
+        roots.append(root)
+        candidates.append(ProjectImportRecoveryCommand(
+            command, "failed", canonical_json(manifest),
+        ))
+
+    class Repository:
+        async def list_recovery_commands(self, session, **kwargs): return tuple(candidates)
+        async def fence_recovery_command(self, session, *, candidate, **kwargs): return candidate
+
+    @asynccontextmanager
+    async def connect(): yield object()
+
+    blocked_claim = parent / project_imports.CLAIM_DIRECTORY / digests[0]
+    real_unlink = project_imports.Path.unlink
+
+    def fail_first_claim(path, *args, **kwargs):
+        if path == blocked_claim:
+            raise OSError("permanent release")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(project_imports.Path, "unlink", fail_first_claim)
+    assert await reconcile_project_import_staging(
+        managed_corpus_root=managed, connection_factory=connect,
+        transaction_factory=connect, repository=Repository(), now_ms=10,
+    ) == 2
+
+    assert roots[0].is_dir()
+    assert blocked_claim.is_file()
+    assert not roots[1].exists()
 
 
 @pytest.mark.asyncio

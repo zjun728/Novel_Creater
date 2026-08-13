@@ -5,6 +5,7 @@ import { unicodeScalarLength } from '../../utils/unicodeScalarText.js'
 
 const BASE = (import.meta.env?.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api').replace(/\/+$/, '')
 const DEFAULT_TIMEOUT = 30000
+const PROJECT_BACKUP_TIMEOUT = 1_200_000
 const DRAFT_OPERATION_TIMEOUT = 1_200_000
 const BIBLE_GENERATION_TIMEOUT = 210_000
 const PLANNING_GENERATION_TIMEOUT = 210_000
@@ -1969,6 +1970,10 @@ function finalizationChangeSet(value) {
 
 function finalizationReview(value) {
   const source = finalizationObject(value, 'review')
+  if (Object.hasOwn(source, 'state')) {
+    if (source.state === 'empty' && Object.keys(source).length === 1) return null
+    throw new TypeError('Invalid finalization state')
+  }
   if (!FINALIZATION_STATUSES.has(source.status)) {
     throw new TypeError('Invalid finalization status')
   }
@@ -2053,6 +2058,7 @@ export const api = {
         method: 'POST',
         body: { expectedLifecycleRevision },
         signal: options?.signal,
+        timeoutMs: PROJECT_BACKUP_TIMEOUT,
         includePackageSha256: true,
       },
     ),

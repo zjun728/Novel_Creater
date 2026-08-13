@@ -40,6 +40,19 @@ class FakeFinalizationService:
         self.corrected = []
         self.confirmed = []
         self.error = None
+        self.review = {
+            "attemptId": "attempt-1", "status": "awaiting_author",
+            "candidateId": "candidate-1", "candidateHash": HASH_A,
+            "qualityReport": {
+                "status": "completed", "deterministicBlocks": [],
+                "findings": [], "contentHash": HASH_B,
+            },
+            "changeSet": {
+                "revision": 1, "contentHash": HASH_A,
+                "source": "extraction", "payload": _change_set(),
+            },
+            "confirmation": None,
+        }
 
     async def prepare(self, command):
         if self.error:
@@ -54,19 +67,7 @@ class FakeFinalizationService:
     async def get_review(self, project_id, session_id):
         if self.error:
             raise self.error
-        return {
-            "attemptId": "attempt-1", "status": "awaiting_author",
-            "candidateId": "candidate-1", "candidateHash": HASH_A,
-            "qualityReport": {
-                "status": "completed", "deterministicBlocks": [],
-                "findings": [], "contentHash": HASH_B,
-            },
-            "changeSet": {
-                "revision": 1, "contentHash": HASH_A,
-                "source": "extraction", "payload": _change_set(),
-            },
-            "confirmation": None,
-        }
+        return self.review
 
     async def correct(self, command):
         if self.error:
@@ -174,6 +175,34 @@ def test_strict_bodies_reject_unknown_keys_and_malformed_full_payload():
 
     assert unknown.status_code == malformed.status_code == 422
     assert service.corrected == service.confirmed == []
+
+
+def test_get_finalization_returns_200_empty_projection_for_existing_session():
+    client, service, _ = _client()
+    service.review = {"state": "empty"}
+
+    response = client.get(
+        "/api/projects/project-1/chapter-sessions/session-1/finalization"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"state": "empty"}
+
+
+def test_get_finalization_keeps_true_not_found_fixed():
+    client, service, _ = _client()
+    service.error = FinalizationConflict("FINALIZATION_NOT_FOUND")
+
+    response = client.get(
+        "/api/projects/project-1/chapter-sessions/missing/finalization"
+    )
+
+    assert response.status_code == 404
+    body = response.json()
+    assert set(body) == {"code", "message", "correlationId"}
+    assert body["code"] == "FinalizationNotFound"
+    assert body["message"] == "Finalization or chapter session was not found"
+    assert body["correlationId"]
 
 
 def test_service_errors_are_stable_and_do_not_return_internal_text():

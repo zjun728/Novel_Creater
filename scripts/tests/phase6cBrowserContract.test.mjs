@@ -59,6 +59,9 @@ test('Phase 6C owns one disposable browser lifecycle and formal gate', async () 
     'managed_corpus_storage_key',
   ]) assert.equal(fixture.includes(marker), true, marker)
   assert.doesNotMatch(fixture, /provider_profile_revision/u)
+  assert.match(fixture, /PROVIDER_NAME/u)
+  assert.match(fixture, /WHERE name=%s/u)
+  assert.doesNotMatch(fixture, /\bPROVIDER\b/u)
 
   const config = source('frontend/e2e/playwright.phase6c.config.mjs')
   for (const marker of [

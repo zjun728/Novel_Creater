@@ -19,7 +19,11 @@ from backend.domain.project_packages import (
 )
 from backend.repositories.project_packages import FrozenCorpusBlob, ProjectPackageSnapshot
 from backend.security.paths import ensure_managed_corpus_blob_parent
-from backend.services.project_packages import ProjectPackageService, cleanup_project_package_file
+from backend.services.project_packages import (
+    ProjectPackageService,
+    ProjectPackageTempOwner,
+    cleanup_project_package_file,
+)
 
 
 def _snapshot(
@@ -341,6 +345,151 @@ async def test_service_cancellation_is_not_reclassified_and_cleans(tmp_path: Pat
     service = _service(tmp_path, _snapshot(), zip_writer=cancel_zip)
     with pytest.raises(asyncio.CancelledError):
         await service.create_backup("project-db", 7)
+    assert list((tmp_path / "temp").iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_service_failure_retries_owned_temp_cleanup_once_and_keeps_primary(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    primary = ProjectPackageIntegrity("fixed primary")
+    attempts = 0
+    original_cleanup = ProjectPackageTempOwner.cleanup
+
+    def fail_zip(*_args, **_kwargs):
+        raise primary
+
+    def fail_cleanup_once(owner):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ProjectPackageIntegrity("fixed cleanup")
+        original_cleanup(owner)
+
+    monkeypatch.setattr(ProjectPackageTempOwner, "cleanup", fail_cleanup_once)
+    service = _service(tmp_path, _snapshot(), zip_writer=fail_zip)
+
+    with pytest.raises(ProjectPackageIntegrity) as captured:
+        await service.create_backup("project-db", 7)
+
+    assert captured.value is primary
+    assert attempts == 2
+    assert list((tmp_path / "temp").iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_permanent_cleanup_failure_keeps_cancellation_and_logs_only_fixed_warning(
+    tmp_path: Path, monkeypatch, caplog,
+) -> None:
+    primary = asyncio.CancelledError()
+    cleanup_secret = "PRIVATE_CLEANUP_PATH_SECRET_SENTINEL"
+    attempts = 0
+    owners: list[ProjectPackageTempOwner] = []
+    original_cleanup = ProjectPackageTempOwner.cleanup
+
+    def cancel_zip(*_args, **_kwargs):
+        raise primary
+
+    def fail_cleanup(owner):
+        nonlocal attempts
+        attempts += 1
+        owners.append(owner)
+        raise RuntimeError(cleanup_secret)
+
+    monkeypatch.setattr(ProjectPackageTempOwner, "cleanup", fail_cleanup)
+    service = _service(tmp_path, _snapshot(), zip_writer=cancel_zip)
+    with caplog.at_level("WARNING", logger="backend.project_packages"):
+        with pytest.raises(asyncio.CancelledError) as captured:
+            await service.create_backup("project-db", 7)
+
+    assert captured.value is primary
+    assert attempts == 2
+    records = [
+        record for record in caplog.records
+        if record.name == "backend.project_packages"
+    ]
+    assert [record.getMessage() for record in records] == [
+        "project_package_service_cleanup_failed"
+    ]
+    assert records[0].args == ()
+    assert cleanup_secret not in caplog.text
+
+    monkeypatch.setattr(ProjectPackageTempOwner, "cleanup", original_cleanup)
+    original_cleanup(owners[-1])
+    assert list((tmp_path / "temp").iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_permanent_cleanup_failure_keeps_ordinary_primary_and_one_fixed_warning(
+    tmp_path: Path, monkeypatch, caplog,
+) -> None:
+    primary = ProjectPackageIntegrity("fixed primary")
+    attempts = 0
+    owners: list[ProjectPackageTempOwner] = []
+    original_cleanup = ProjectPackageTempOwner.cleanup
+
+    def fail_zip(*_args, **_kwargs):
+        raise primary
+
+    def fail_cleanup(owner):
+        nonlocal attempts
+        attempts += 1
+        owners.append(owner)
+        raise RuntimeError("PRIVATE_ORDINARY_CLEANUP_SECRET")
+
+    monkeypatch.setattr(ProjectPackageTempOwner, "cleanup", fail_cleanup)
+    service = _service(tmp_path, _snapshot(), zip_writer=fail_zip)
+    with caplog.at_level("WARNING", logger="backend.project_packages"):
+        with pytest.raises(ProjectPackageIntegrity) as captured:
+            await service.create_backup("project-db", 7)
+
+    assert captured.value is primary
+    assert attempts == 2
+    records = [
+        record for record in caplog.records
+        if record.name == "backend.project_packages"
+    ]
+    assert [record.getMessage() for record in records] == [
+        "project_package_service_cleanup_failed"
+    ]
+    assert records[0].args == ()
+    assert "PRIVATE_ORDINARY_CLEANUP_SECRET" not in caplog.text
+
+    monkeypatch.setattr(ProjectPackageTempOwner, "cleanup", original_cleanup)
+    original_cleanup(owners[-1])
+    assert list((tmp_path / "temp").iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_cleanup_warning_sink_failure_cannot_replace_ordinary_primary(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    primary = ProjectPackageIntegrity("fixed primary")
+    owners: list[ProjectPackageTempOwner] = []
+    original_cleanup = ProjectPackageTempOwner.cleanup
+
+    def fail_zip(*_args, **_kwargs):
+        raise primary
+
+    def fail_cleanup(owner):
+        owners.append(owner)
+        raise RuntimeError("cleanup failed")
+
+    def fail_warning(_event):
+        raise SystemExit("logging unavailable")
+
+    monkeypatch.setattr(ProjectPackageTempOwner, "cleanup", fail_cleanup)
+    monkeypatch.setattr("backend.services.project_packages._logger.warning", fail_warning)
+    service = _service(tmp_path, _snapshot(), zip_writer=fail_zip)
+
+    with pytest.raises(ProjectPackageIntegrity) as captured:
+        await service.create_backup("project-db", 7)
+
+    assert captured.value is primary
+    assert len(owners) == 2
+
+    monkeypatch.setattr(ProjectPackageTempOwner, "cleanup", original_cleanup)
+    original_cleanup(owners[-1])
     assert list((tmp_path / "temp").iterdir()) == []
 
 

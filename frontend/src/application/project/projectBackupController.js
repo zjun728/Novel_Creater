@@ -76,6 +76,7 @@ export function createProjectBackupController({
     const active = () => !disposed && inFlight?.token === token
     let operationId = null
     let objectUrl = null
+    let hasPrimaryFailure = false
 
     try {
       if (!archived) {
@@ -115,6 +116,7 @@ export function createProjectBackupController({
       return true
     } catch (failure) {
       if (!active()) return false
+      hasPrimaryFailure = true
       if (!error.value) error.value = BACKUP_ERROR
       throw failure
     } finally {
@@ -122,10 +124,21 @@ export function createProjectBackupController({
         if (objectUrl !== null) revokeObjectURL(objectUrl)
       } catch (failure) {
         if (active()) error.value = BACKUP_ERROR
-        throw failure
+        if (!hasPrimaryFailure) {
+          hasPrimaryFailure = true
+          throw failure
+        }
       } finally {
         try {
           if (operationId !== null) operationStore.finish(operationId)
+        } catch (failure) {
+          if (active()) error.value = BACKUP_ERROR
+          try {
+            operationStore.finish(operationId)
+          } catch {
+            // The public operation API has no stronger recovery primitive.
+          }
+          if (!hasPrimaryFailure) throw failure
         } finally {
           if (inFlight?.token === token) {
             inFlight = null
