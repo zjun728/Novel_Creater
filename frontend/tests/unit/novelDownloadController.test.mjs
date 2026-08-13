@@ -165,6 +165,23 @@ test('a save failure remains primary when revoke also fails and real-store clean
   assert.equal(operationStore.blocking, false)
 })
 
+test('a thrown null save failure remains primary when revoke also fails', async () => {
+  const revokeFailure = new Error('secondary revoke failure')
+  const item = harness({
+    saveBlob: () => { throw null },
+    revokeObjectURL: () => { throw revokeFailure },
+  })
+  await item.controller.loadOptions('p')
+
+  await assert.rejects(
+    () => item.controller.download('p', selector),
+    failure => failure === null,
+  )
+  assert.deepEqual(item.operations.at(-1), ['finish', 'op-1'])
+  assert.equal(item.controller.error.value, '下载失败，请重试。')
+  assert.equal(item.controller.busy.value, false)
+})
+
 test('a transient real-store finish failure clears the blocker and permits retry', async () => {
   let downloads = 0
   setActivePinia(createPinia())
@@ -194,6 +211,28 @@ test('a transient real-store finish failure clears the blocker and permits retry
   assert.equal(finishes, 2)
   assert.equal(await item.controller.download('p', selector), true)
   assert.equal(downloads, 2)
+})
+
+test('a thrown undefined finish failure surfaces without a primary failure', async () => {
+  let finishes = 0
+  const item = harness({
+    operationStore: {
+      start: () => 'op-1',
+      finish: () => {
+        finishes += 1
+        if (finishes === 1) throw undefined
+      },
+    },
+  })
+  await item.controller.loadOptions('p')
+
+  await assert.rejects(
+    () => item.controller.download('p', selector),
+    failure => failure === undefined,
+  )
+  assert.equal(finishes, 2)
+  assert.equal(item.controller.error.value, '下载失败，请重试。')
+  assert.equal(item.controller.busy.value, false)
 })
 
 test('finish cleanup failure never replaces an API or revoke failure', async () => {

@@ -139,7 +139,7 @@ export function createNovelDownloadController({
     busyState.value = true
     error.value = ''
     let objectUrl = null
-    let primaryFailure = null
+    let hasPrimaryFailure = false
     let cleanupFailureCanSurface = true
     try {
       const result = await api.novelDownloads.download(projectId, selector, {
@@ -158,7 +158,7 @@ export function createNovelDownloadController({
         cleanupFailureCanSurface = false
         return false
       }
-      primaryFailure = failure
+      hasPrimaryFailure = true
       error.value = '下载失败，请重试。'
       throw failure
     } finally {
@@ -166,15 +166,17 @@ export function createNovelDownloadController({
         if (objectUrl !== null) revokeObjectURL(objectUrl)
       } catch (failure) {
         if (active()) error.value = '下载失败，请重试。'
-        if (primaryFailure === null && cleanupFailureCanSurface) {
-          primaryFailure = failure
+        if (!hasPrimaryFailure && cleanupFailureCanSurface) {
+          hasPrimaryFailure = true
           throw failure
         }
       } finally {
-        let finishFailure = null
+        let finishFailure
+        let hasFinishFailure = false
         try {
           operationStore.finish(operationId)
         } catch (failure) {
+          hasFinishFailure = true
           finishFailure = failure
           if (active()) error.value = '下载失败，请重试。'
           try {
@@ -188,7 +190,7 @@ export function createNovelDownloadController({
             busyState.value = false
           }
         }
-        if (finishFailure && primaryFailure === null && cleanupFailureCanSurface) {
+        if (hasFinishFailure && !hasPrimaryFailure && cleanupFailureCanSurface) {
           throw finishFailure
         }
       }
