@@ -897,6 +897,422 @@ async def test_claim_acl_is_applied_before_publication(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_published_claim_retries_transient_temporary_unlink_and_leaves_no_residue(
+    tmp_path, monkeypatch,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    package, plan, digest = _package(tmp_path, b"shared")
+    staging = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    claim_parent = staging.root.parent / project_imports.CLAIM_DIRECTORY
+    real_unlink = project_imports.Path.unlink
+    temporary_unlinks = 0
+
+    def flaky_temporary_unlink(path, *args, **kwargs):
+        nonlocal temporary_unlinks
+        if path.parent == claim_parent and path.name.endswith(".tmp"):
+            temporary_unlinks += 1
+            if temporary_unlinks == 1:
+                raise OSError("secret temporary claim path")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(project_imports.Path, "unlink", flaky_temporary_unlink)
+    await staging.promote(lambda _value: None)
+    staging.cleanup_root()
+
+    assert temporary_unlinks == 2
+    assert not claim_parent.exists()
+
+
+@pytest.mark.asyncio
+async def test_published_claim_permanent_temporary_unlink_is_fixed_persistence_error(
+    tmp_path, monkeypatch,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    package, plan, _ = _package(tmp_path, b"shared")
+    staging = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    claim_parent = staging.root.parent / project_imports.CLAIM_DIRECTORY
+    real_unlink = project_imports.Path.unlink
+    temporary_unlinks = 0
+
+    def fail_temporary_unlink(path, *args, **kwargs):
+        nonlocal temporary_unlinks
+        if path.parent == claim_parent and path.name.endswith(".tmp"):
+            temporary_unlinks += 1
+            raise OSError("secret temporary claim path")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(project_imports.Path, "unlink", fail_temporary_unlink)
+    try:
+        with pytest.raises(ProjectImportPersistenceError) as caught:
+            await staging.promote(lambda _value: None)
+    finally:
+        monkeypatch.setattr(project_imports.Path, "unlink", real_unlink)
+        if claim_parent.exists():
+            for child in claim_parent.iterdir():
+                child.unlink()
+            claim_parent.rmdir()
+        staging.cleanup_root()
+
+    assert temporary_unlinks == 2
+    assert caught.value.args == ("project import persistence failed",)
+    assert caught.value.__cause__ is None
+
+
+@pytest.mark.asyncio
+async def test_published_claim_transient_cancel_cleans_alias_before_preserving_cancellation(
+    tmp_path, monkeypatch,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    package, plan, _ = _package(tmp_path, b"shared")
+    staging = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    claim_parent = staging.root.parent / project_imports.CLAIM_DIRECTORY
+    real_unlink = project_imports.Path.unlink
+    temporary_unlinks = 0
+
+    def cancel_temporary_unlink(path, *args, **kwargs):
+        nonlocal temporary_unlinks
+        if path.parent == claim_parent and path.name.endswith(".tmp"):
+            temporary_unlinks += 1
+            if temporary_unlinks == 1:
+                raise asyncio.CancelledError()
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(project_imports.Path, "unlink", cancel_temporary_unlink)
+    residue = []
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await staging.promote(lambda _value: None)
+    finally:
+        monkeypatch.setattr(project_imports.Path, "unlink", real_unlink)
+        if claim_parent.exists():
+            residue = list(claim_parent.iterdir())
+        for child in residue:
+            child.unlink()
+        if claim_parent.exists():
+            claim_parent.rmdir()
+        staging.cleanup_root()
+
+    assert temporary_unlinks == 2
+    assert residue == []
+    assert not claim_parent.exists()
+
+
+@pytest.mark.asyncio
+async def test_published_claim_permanent_cancel_is_preserved_with_explicit_alias_residue(
+    tmp_path, monkeypatch,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    package, plan, digest = _package(tmp_path, b"shared")
+    staging = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    claim_parent = staging.root.parent / project_imports.CLAIM_DIRECTORY
+    real_unlink = project_imports.Path.unlink
+    temporary_unlinks = 0
+
+    def cancel_temporary_unlink(path, *args, **kwargs):
+        nonlocal temporary_unlinks
+        if path.parent == claim_parent and path.name.endswith(".tmp"):
+            temporary_unlinks += 1
+            raise asyncio.CancelledError()
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(project_imports.Path, "unlink", cancel_temporary_unlink)
+    residue = []
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await staging.promote(lambda _value: None)
+        residue = list(claim_parent.iterdir())
+        assert len(residue) == 1
+        assert residue[0].name.startswith(f".{digest}.")
+        assert residue[0].name.endswith(".tmp")
+        assert not (claim_parent / digest).exists()
+    finally:
+        monkeypatch.setattr(project_imports.Path, "unlink", real_unlink)
+        if claim_parent.exists():
+            for child in claim_parent.iterdir():
+                child.unlink()
+            claim_parent.rmdir()
+        staging.cleanup_root()
+
+    assert temporary_unlinks == 2
+
+
+def test_held_claim_release_retries_first_failure_and_still_releases_every_claim(
+    tmp_path, monkeypatch,
+):
+    managed = tmp_path / "managed"
+    root = managed / project_imports.STAGING_DIRECTORY / COMMAND
+    claim_parent = root.parent / project_imports.CLAIM_DIRECTORY
+    root.mkdir(parents=True)
+    claim_parent.mkdir()
+    first_digest = sha256(b"first").hexdigest()
+    second_digest = sha256(b"second").hexdigest()
+    first_claim = claim_parent / first_digest
+    second_claim = claim_parent / second_digest
+    first_claim.write_text(COMMAND, encoding="ascii")
+    second_claim.write_text(COMMAND, encoding="ascii")
+    staging = project_imports.ProjectImportStaging(
+        managed, COMMAND, root,
+        (
+            project_imports.StagedBlob(first_digest, 5, "first", False),
+            project_imports.StagedBlob(second_digest, 6, "second", False),
+        ),
+    )
+    staging._held_claims.update({
+        first_digest: first_claim,
+        second_digest: second_claim,
+    })
+    real_unlink = project_imports.Path.unlink
+    releases = []
+
+    def flaky_first_release(path, *args, **kwargs):
+        if path in (first_claim, second_claim):
+            releases.append(path)
+            if path == second_claim and releases.count(second_claim) == 1:
+                raise OSError("secret claim path")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(project_imports.Path, "unlink", flaky_first_release)
+    staging._release_held_claims()
+
+    assert releases == [second_claim, second_claim, first_claim]
+    assert staging._held_claims == {}
+    assert not claim_parent.exists()
+
+
+def test_held_claim_release_attempts_all_claims_before_fixed_permanent_error(
+    tmp_path, monkeypatch,
+):
+    managed = tmp_path / "managed"
+    root = managed / project_imports.STAGING_DIRECTORY / COMMAND
+    claim_parent = root.parent / project_imports.CLAIM_DIRECTORY
+    root.mkdir(parents=True)
+    claim_parent.mkdir()
+    first_digest = sha256(b"first").hexdigest()
+    second_digest = sha256(b"second").hexdigest()
+    first_claim = claim_parent / first_digest
+    second_claim = claim_parent / second_digest
+    first_claim.write_text(COMMAND, encoding="ascii")
+    second_claim.write_text(COMMAND, encoding="ascii")
+    staging = project_imports.ProjectImportStaging(
+        managed, COMMAND, root,
+        (
+            project_imports.StagedBlob(first_digest, 5, "first", False),
+            project_imports.StagedBlob(second_digest, 6, "second", False),
+        ),
+    )
+    staging._held_claims.update({
+        first_digest: first_claim,
+        second_digest: second_claim,
+    })
+    real_unlink = project_imports.Path.unlink
+    releases = []
+
+    def fail_second_claim(path, *args, **kwargs):
+        if path in (first_claim, second_claim):
+            releases.append(path)
+            if path == second_claim:
+                raise OSError("secret claim path")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(project_imports.Path, "unlink", fail_second_claim)
+    try:
+        with pytest.raises(ProjectImportPersistenceError) as caught:
+            staging._release_held_claims()
+    finally:
+        monkeypatch.setattr(project_imports.Path, "unlink", real_unlink)
+        if claim_parent.exists():
+            for child in claim_parent.iterdir():
+                child.unlink()
+            claim_parent.rmdir()
+
+    assert releases == [second_claim, second_claim, first_claim]
+    assert caught.value.args == ("project import persistence failed",)
+    assert caught.value.__cause__ is None
+    assert not first_claim.exists()
+
+
+@pytest.mark.asyncio
+async def test_successful_publication_does_not_swallow_permanent_claim_release_failure(
+    tmp_path, monkeypatch,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    temp = tmp_path / "temp"
+    managed.mkdir()
+    temp.mkdir()
+    package, plan, digest = _package(tmp_path, b"shared")
+    package.package_hash = "a" * 64
+    package.manifest_hash = "b" * 64
+    package.summary = SimpleNamespace(package_version=1)
+    plan.target_project_id = "target"
+    running = SimpleNamespace(status="running")
+    succeeded = SimpleNamespace(status="succeeded")
+
+    class Repository:
+        async def reserve_command(self, session, **kwargs):
+            return running
+
+        async def acquire_lease(self, session, **kwargs):
+            return running
+
+        async def persist_staging_manifest(self, session, **kwargs):
+            return None
+
+        async def publish_project(self, session, actual_plan, **kwargs):
+            assert actual_plan is plan
+
+        async def read_command(self, session, **kwargs):
+            return succeeded
+
+    @asynccontextmanager
+    async def session():
+        yield object()
+
+    class Quarantine:
+        def cleanup(self):
+            return None
+
+    service = ProjectImportService(
+        repository=Repository(), managed_corpus_root=managed, temp_parent=temp,
+        connection_factory=session, transaction_factory=session,
+        clock=lambda: 10, owner_factory=lambda: "owner",
+    )
+
+    async def verified(_upload):
+        return Quarantine(), package
+
+    monkeypatch.setattr(service, "_verified", verified)
+    monkeypatch.setattr(project_imports, "build_publication_plan", lambda *_args: plan)
+    claim = managed / project_imports.STAGING_DIRECTORY / project_imports.CLAIM_DIRECTORY / digest
+    real_unlink = project_imports.Path.unlink
+    release_attempts = 0
+
+    def fail_claim_release(path, *args, **kwargs):
+        nonlocal release_attempts
+        if path == claim:
+            release_attempts += 1
+            raise OSError("secret claim path")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(project_imports.Path, "unlink", fail_claim_release)
+    try:
+        with pytest.raises(ProjectImportPersistenceError) as caught:
+            await service.import_project(
+                object(), project_imports.ImportProjectRequest(
+                    COMMAND, "same_import_key1", package.package_hash, "Imported",
+                ),
+            )
+    finally:
+        monkeypatch.setattr(project_imports.Path, "unlink", real_unlink)
+        if claim.exists():
+            claim.unlink()
+        if claim.parent.exists():
+            claim.parent.rmdir()
+
+    assert release_attempts == 2
+    assert caught.value.args == ("project import persistence failed",)
+    assert caught.value.__cause__ is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "primary_error",
+    [RuntimeError("primary publish failure"), asyncio.CancelledError()],
+    ids=["failure", "cancel"],
+)
+async def test_primary_publish_error_precedes_held_claim_release_error(
+    tmp_path, monkeypatch, primary_error,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    temp = tmp_path / "temp"
+    managed.mkdir()
+    temp.mkdir()
+    package, plan, _ = _package(tmp_path, b"shared")
+    package.package_hash = "a" * 64
+    package.manifest_hash = "b" * 64
+    package.summary = SimpleNamespace(package_version=1)
+    plan.target_project_id = "target"
+    running = SimpleNamespace(status="running")
+
+    class Repository:
+        async def reserve_command(self, session, **kwargs):
+            return running
+
+        async def acquire_lease(self, session, **kwargs):
+            return running
+
+        async def persist_staging_manifest(self, session, **kwargs):
+            return None
+
+        async def publish_project(self, session, actual_plan, **kwargs):
+            assert actual_plan is plan
+            raise primary_error
+
+        async def corpus_blob_is_referenced(self, session, *, content_hash):
+            return True
+
+        async def mark_failed(self, session, **kwargs):
+            return None
+
+    @asynccontextmanager
+    async def session():
+        yield object()
+
+    class Quarantine:
+        def cleanup(self):
+            return None
+
+    service = ProjectImportService(
+        repository=Repository(), managed_corpus_root=managed, temp_parent=temp,
+        connection_factory=session, transaction_factory=session,
+        clock=lambda: 10, owner_factory=lambda: "owner",
+    )
+
+    async def verified(_upload):
+        return Quarantine(), package
+
+    def fail_final_release(_staging):
+        raise ProjectImportPersistenceError()
+
+    monkeypatch.setattr(service, "_verified", verified)
+    monkeypatch.setattr(project_imports, "build_publication_plan", lambda *_args: plan)
+    monkeypatch.setattr(
+        project_imports.ProjectImportStaging,
+        "_release_held_claims",
+        fail_final_release,
+    )
+
+    with pytest.raises(type(primary_error)) as caught:
+        await service.import_project(
+            object(), project_imports.ImportProjectRequest(
+                COMMAND, "same_import_key1", package.package_hash, "Imported",
+            ),
+        )
+
+    assert caught.value is primary_error
+    assert not (
+        managed / project_imports.STAGING_DIRECTORY / project_imports.CLAIM_DIRECTORY
+    ).exists()
+
+
+@pytest.mark.asyncio
 async def test_claim_parent_file_is_persistence_failure_without_contention_wait(
     tmp_path, monkeypatch,
 ):
@@ -1063,6 +1479,147 @@ async def test_prewritten_owner_with_link_failure_never_deletes_later_winner(
     )
     await service._cleanup_unreferenced_created(failed)
     assert managed_corpus_blob_path(managed, digest).read_bytes() == b"shared"
+
+
+@pytest.mark.asyncio
+async def test_failed_installer_cleanup_cannot_delete_later_same_digest_publication(
+    tmp_path, monkeypatch,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    temp = tmp_path / "temp"
+    managed.mkdir()
+    temp.mkdir()
+    package, plan, digest = _package(tmp_path, b"shared")
+    package.package_hash = "a" * 64
+    package.manifest_hash = "b" * 64
+    package.summary = SimpleNamespace(package_version=1)
+    plan.target_project_id = "target"
+    failed = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    await failed.promote(lambda _value: None)
+    assert failed._installed_hashes == {digest}
+
+    cleanup_checked = asyncio.Event()
+    release_cleanup_check = asyncio.Event()
+    published = asyncio.Event()
+    referenced = False
+    winner_command = "22222222-2222-4222-8222-222222222222"
+    running = SimpleNamespace(status="running")
+    succeeded = SimpleNamespace(status="succeeded")
+
+    class Repository:
+        async def corpus_blob_is_referenced(self, session, *, content_hash):
+            assert content_hash == digest
+            observed = referenced
+            cleanup_checked.set()
+            await release_cleanup_check.wait()
+            return observed
+
+        async def reserve_command(self, session, **kwargs):
+            return running
+
+        async def acquire_lease(self, session, **kwargs):
+            return running
+
+        async def persist_staging_manifest(self, session, **kwargs):
+            return None
+
+        async def publish_project(self, session, actual_plan, **kwargs):
+            nonlocal referenced
+            assert actual_plan is plan
+            referenced = True
+            published.set()
+
+        async def read_command(self, session, **kwargs):
+            return succeeded
+
+    @asynccontextmanager
+    async def session():
+        yield object()
+
+    class Quarantine:
+        def cleanup(self):
+            return None
+
+    service = ProjectImportService(
+        repository=Repository(), managed_corpus_root=managed, temp_parent=temp,
+        connection_factory=session, transaction_factory=session,
+        clock=lambda: 10, owner_factory=lambda: "winner-owner",
+    )
+
+    async def verified(_upload):
+        return Quarantine(), package
+
+    monkeypatch.setattr(service, "_verified", verified)
+    monkeypatch.setattr(project_imports, "build_publication_plan", lambda *_args: plan)
+
+    cleanup = asyncio.create_task(service._cleanup_unreferenced_created(failed))
+    await cleanup_checked.wait()
+    winner = asyncio.create_task(service.import_project(
+        object(), project_imports.ImportProjectRequest(
+            winner_command, "later_import_key1", package.package_hash, "Imported",
+        ),
+    ))
+    # Under the unsafe implementation the winner reaches publication while
+    # cleanup is paused after observing "unreferenced". Under the synchronized
+    # implementation it waits for cleanup's digest claim instead.
+    for _ in range(10):
+        if published.is_set():
+            break
+        await asyncio.sleep(0)
+    release_cleanup_check.set()
+    await asyncio.gather(cleanup, winner)
+
+    assert referenced is True
+    assert managed_corpus_blob_path(managed, digest).read_bytes() == b"shared"
+    failed.cleanup_root()
+
+
+@pytest.mark.asyncio
+async def test_recovery_cleanup_reclaims_its_stale_digest_claim_before_revalidation(
+    tmp_path, monkeypatch,
+):
+    _no_acl(monkeypatch)
+    managed = tmp_path / "managed"
+    temp = tmp_path / "temp"
+    managed.mkdir()
+    temp.mkdir()
+    package, plan, digest = _package(tmp_path, b"shared")
+    staging = project_imports.ProjectImportStaging.stage(
+        package, plan, managed_corpus_root=managed, command_id=COMMAND,
+    )
+    await staging.promote(lambda _value: None)
+    claim_parent = staging.root.parent / project_imports.CLAIM_DIRECTORY
+    claim_parent.mkdir()
+    (claim_parent / digest).write_text(COMMAND, encoding="ascii")
+
+    class Repository:
+        async def corpus_blob_is_referenced(self, session, *, content_hash):
+            assert content_hash == digest
+            return False
+
+    @asynccontextmanager
+    async def connect():
+        yield object()
+
+    service = ProjectImportService(
+        repository=Repository(), managed_corpus_root=managed, temp_parent=temp,
+        connection_factory=connect,
+    )
+    monkeypatch.setattr(project_imports, "CLAIM_WAIT_SECONDS", 0.0)
+    try:
+        await service._cleanup_unreferenced_created(staging, recovery_manifest=True)
+    finally:
+        if claim_parent.exists():
+            for child in claim_parent.iterdir():
+                child.unlink()
+            claim_parent.rmdir()
+        staging.cleanup_root()
+
+    assert not managed_corpus_blob_path(managed, digest).exists()
+    assert not claim_parent.exists()
 
 
 def test_stage_cleanup_retries_one_owned_filesystem_failure(tmp_path, monkeypatch):

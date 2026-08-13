@@ -877,6 +877,38 @@ async def test_read_snapshot_business_primary_precedes_cleanup_flow_control(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("primary", ("success", "failure", "cancel"))
+async def test_read_snapshot_logger_failure_never_replaces_primary_or_sanitized_cleanup_error(
+    primary: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _CleanupMatrixSession(primary, rollback_fails=True)
+    repository = ProjectPackageRepository(
+        pool=_CleanupMatrixPool(session, release_fails=False),
+        session_factory=lambda value: value,
+    )
+
+    def fail_warning(*_args, **_kwargs):
+        raise LookupError("logger-sensitive-path")
+
+    monkeypatch.setattr(logging.getLogger("backend.project_packages"), "warning", fail_warning)
+    if primary == "success":
+        with pytest.raises(ProjectPackageInvalid, match=r"^invalid package value$") as raised:
+            await repository.read_snapshot("project-db", 7)
+        assert raised.value.__cause__ is None
+    elif primary == "failure":
+        with pytest.raises(ProjectPackageNotFound) as raised:
+            await repository.read_snapshot("project-db", 7)
+        assert raised.value is session.business_error
+    else:
+        with pytest.raises(asyncio.CancelledError) as raised:
+            await repository.read_snapshot("project-db", 7)
+        assert raised.value is session.cancellation
+
+    assert session.calls[-2:] == [("ROLLBACK", None), ("RELEASE", None)]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "flow_control",
     (

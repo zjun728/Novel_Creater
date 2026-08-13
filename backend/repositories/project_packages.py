@@ -24,6 +24,13 @@ from backend.security.paths import UnsafeLocalPath, managed_corpus_storage_key
 _logger = logging.getLogger("backend.project_packages")
 
 
+def _safe_warning(event: str) -> None:
+    try:
+        _logger.warning(event)
+    except BaseException:
+        pass
+
+
 PROJECT_OWNED_TABLES = frozenset({
     "projects", "creative_seeds", "creative_seed_revisions", "creative_seed_heads",
     "project_seed_selection_revisions", "project_selected_seeds", "project_model_binding_revisions",
@@ -2542,11 +2549,11 @@ class ProjectPackageRepository:
                     cleanup_flow_control = error
             if cleanup_failure_count:
                 if not snapshot_completed:
-                    _logger.warning("project_package_repository_cleanup_failed")
+                    _safe_warning("project_package_repository_cleanup_failed")
                 elif cleanup_flow_control is not None:
                     if cleanup_failure_count > 1:
-                        _logger.warning("project_package_repository_cleanup_failed")
+                        _safe_warning("project_package_repository_cleanup_failed")
                     raise cleanup_flow_control from None
                 elif cleanup_regular_failed:
-                    _logger.warning("project_package_repository_cleanup_failed")
+                    _safe_warning("project_package_repository_cleanup_failed")
                     raise _invalid() from None

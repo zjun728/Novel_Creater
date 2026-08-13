@@ -160,6 +160,8 @@ class ProjectImportStaging:
     blobs: tuple[StagedBlob, ...]
     _cleaned: bool = False
     _installed_hashes: set[str] = field(default_factory=set, init=False)
+    _retain_claims: bool = field(default=False, init=False, repr=False)
+    _held_claims: dict[str, Path] = field(default_factory=dict, init=False, repr=False)
 
     @classmethod
     def stage(
@@ -265,10 +267,28 @@ class ProjectImportStaging:
         def cleanup_temporary_claim(temporary: Path | None) -> None:
             if temporary is None:
                 return
-            try:
-                temporary.unlink()
-            except BaseException:
-                pass
+            control_error: BaseException | None = None
+            for attempt in range(2):
+                try:
+                    temporary.unlink()
+                except FileNotFoundError:
+                    if control_error is not None:
+                        raise control_error
+                    return
+                except (asyncio.CancelledError, KeyboardInterrupt, SystemExit) as error:
+                    if control_error is None:
+                        control_error = error
+                    if attempt:
+                        raise control_error
+                except BaseException:
+                    if attempt:
+                        if control_error is not None:
+                            raise control_error
+                        raise ProjectImportPersistenceError() from None
+                else:
+                    if control_error is not None:
+                        raise control_error
+                    return
 
         def cleanup_empty_claim_parent() -> None:
             try:
@@ -333,7 +353,18 @@ class ProjectImportStaging:
                     temporary = None
                     await wait_for_retry()
                     continue
-                cleanup_temporary_claim(temporary)
+                try:
+                    cleanup_temporary_claim(temporary)
+                except BaseException:
+                    # The public name must not outlive a failed acquisition.
+                    # Cleanup errors must not replace cancellation, so this
+                    # release is deliberately best-effort here.
+                    try:
+                        self._release_claim(claim)
+                    except BaseException:
+                        pass
+                    temporary = None
+                    raise
                 return claim
             except FileNotFoundError:
                 cleanup_failed_attempt(
@@ -351,10 +382,17 @@ class ProjectImportStaging:
                     temporary=temporary, parent_created=parent_created,
                 )
                 raise ProjectImportPersistenceError() from None
-            except BaseException:
-                cleanup_failed_attempt(
-                    temporary=temporary, parent_created=parent_created,
-                )
+            except BaseException as error:
+                try:
+                    cleanup_failed_attempt(
+                        temporary=temporary, parent_created=parent_created,
+                    )
+                except BaseException:
+                    if isinstance(
+                        error, (asyncio.CancelledError, KeyboardInterrupt, SystemExit),
+                    ):
+                        raise error
+                    raise
                 raise
 
     def _release_claim(self, claim: Path) -> None:
@@ -367,6 +405,43 @@ class ProjectImportStaging:
                     pass
         except (OSError, UnicodeError):
             raise _invalid() from None
+
+    def _release_held_claim(self, content_hash: str) -> None:
+        claim = self._held_claims.get(content_hash)
+        if claim is not None:
+            self._release_claim(claim)
+            self._held_claims.pop(content_hash, None)
+
+    def _release_held_claims(self) -> None:
+        errors: list[BaseException] = []
+        for content_hash in reversed(tuple(self._held_claims)):
+            control_error: BaseException | None = None
+            for attempt in range(2):
+                try:
+                    self._release_held_claim(content_hash)
+                except (asyncio.CancelledError, KeyboardInterrupt, SystemExit) as error:
+                    if control_error is None:
+                        control_error = error
+                    if attempt:
+                        errors.append(control_error)
+                except BaseException:
+                    if attempt:
+                        errors.append(
+                            control_error
+                            if control_error is not None
+                            else ProjectImportPersistenceError()
+                        )
+                else:
+                    if control_error is not None:
+                        errors.append(control_error)
+                    break
+        if errors:
+            for error in errors:
+                if isinstance(
+                    error, (asyncio.CancelledError, KeyboardInterrupt, SystemExit),
+                ):
+                    raise error
+            raise ProjectImportPersistenceError() from None
 
     async def promote(self, persist_manifest: Callable[[str], object]) -> None:
         values = list(self.blobs)
@@ -384,6 +459,8 @@ class ProjectImportStaging:
         for index, item in enumerate(values):
             source = self.root / item.content_hash
             claim = await self._acquire_claim(item)
+            if self._retain_claims:
+                self._held_claims[item.content_hash] = claim
             try:
                 destination = managed_corpus_blob_path(self.managed_root, item.content_hash)
                 created = False
@@ -414,7 +491,8 @@ class ProjectImportStaging:
                     await persist_decision(index, item, True)
                 source.unlink(missing_ok=True)
             finally:
-                self._release_claim(claim)
+                if not self._retain_claims:
+                    self._release_claim(claim)
 
     def cleanup_root(self) -> None:
         if not self._cleaned:
@@ -475,16 +553,28 @@ class ProjectImportService:
         self, staging: ProjectImportStaging, *, recovery_manifest: bool = False,
     ) -> None:
         """Remove only this command's byte-identical, still-unreferenced promotions."""
-        async with self._connection() as session:
-            for item in staging.blobs:
-                if (
-                    item.content_hash not in staging._installed_hashes
-                    and not (recovery_manifest and item.created)
-                ):
-                    continue
-                referenced = await self._repository.corpus_blob_is_referenced(
-                    session, content_hash=item.content_hash,
-                )
+        for item in staging.blobs:
+            if (
+                item.content_hash not in staging._installed_hashes
+                and not (recovery_manifest and item.created)
+            ):
+                continue
+            claim = staging._held_claims.get(item.content_hash)
+            if claim is None:
+                if recovery_manifest:
+                    # A crashed attempt may have left its own claim behind.
+                    # The command lease makes that owner stale; another
+                    # command's claim is preserved and waited on normally.
+                    staging._release_claim(
+                        staging.root.parent / CLAIM_DIRECTORY / item.content_hash,
+                    )
+                claim = await staging._acquire_claim(item)
+                staging._held_claims[item.content_hash] = claim
+            try:
+                async with self._connection() as session:
+                    referenced = await self._repository.corpus_blob_is_referenced(
+                        session, content_hash=item.content_hash,
+                    )
                 if referenced:
                     continue
                 path = managed_corpus_blob_path(self._managed_root, item.content_hash)
@@ -493,6 +583,8 @@ class ProjectImportService:
                 data = path.read_bytes()
                 if len(data) == item.byte_length and sha256(data).hexdigest() == item.content_hash:
                     path.unlink()
+            finally:
+                staging._release_held_claim(item.content_hash)
 
     async def _clear_reclaimed_command_root(self, command_id: str) -> None:
         """Reconcile the exact root after this service has acquired its command lease."""
@@ -553,6 +645,7 @@ class ProjectImportService:
         leased = False
         published = False
         primary_error: BaseException | None = None
+        held_claim_release_error: BaseException | None = None
         try:
             if package.package_hash != request.expected_package_hash:
                 raise _invalid()
@@ -587,6 +680,8 @@ class ProjectImportService:
                 package, plan, managed_corpus_root=self._managed_root,
                 command_id=request.command_id,
             )
+            if isinstance(staging, ProjectImportStaging):
+                staging._retain_claims = True
             await self._persist_manifest(
                 command_id=request.command_id, fingerprint=fingerprint,
                 owner_token=owner_token,
@@ -618,6 +713,12 @@ class ProjectImportService:
                     staging.cleanup_root()
                 except BaseException:
                     pass
+                finally:
+                    if isinstance(staging, ProjectImportStaging):
+                        try:
+                            staging._release_held_claims()
+                        except BaseException as error:
+                            held_claim_release_error = error
             if primary_error is not None and leased and fingerprint:
                 try:
                     async with self._transaction() as session:
@@ -632,6 +733,8 @@ class ProjectImportService:
                 _cleanup_quarantine(quarantine)
             except BaseException:
                 pass
+            if primary_error is None and held_claim_release_error is not None:
+                raise held_claim_release_error
 
 
 async def reconcile_project_import_staging(
