@@ -1,5 +1,8 @@
+import ast
 import re
 from pathlib import Path
+
+import pytest
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -11,8 +14,12 @@ SCAN_ROOTS = (
     REPOSITORY_ROOT / "scripts",
 )
 SOURCE_SUFFIXES = {".py", ".mjs"}
-LEGACY_IMPORT_PATTERN = re.compile(
-    r"^\s*(?:from|import)\s+backend\.routers(?:\b|\.)",
+LEGACY_NAMESPACE = "backend.routers"
+EMBEDDED_LEGACY_IMPORT_PATTERN = re.compile(
+    r"(?:^|;)[^\S\r\n]*(?:"
+    r"(?:from|import)\s+backend\.routers(?:\b|\.)"
+    r"|from\s+backend\s+import\s+routers\b"
+    r")",
     re.MULTILINE,
 )
 EXPECTED_ROUTER_FILES = {
@@ -41,6 +48,155 @@ EXPECTED_ROUTER_FILES = {
 }
 
 
+def _is_legacy_namespace(value: object) -> bool:
+    return isinstance(value, str) and (
+        value == LEGACY_NAMESPACE or value.startswith(f"{LEGACY_NAMESPACE}.")
+    )
+
+
+def _is_dynamic_legacy_import(node: ast.Call) -> bool:
+    if not node.args or not isinstance(node.args[0], ast.Constant):
+        return False
+    if not _is_legacy_namespace(node.args[0].value):
+        return False
+    function = node.func
+    return (
+        isinstance(function, ast.Name)
+        and function.id == "__import__"
+        or isinstance(function, ast.Attribute)
+        and function.attr == "import_module"
+        and isinstance(function.value, ast.Name)
+        and function.value.id == "importlib"
+    )
+
+
+def _is_legacy_sys_modules_target(node: ast.expr) -> bool:
+    if not isinstance(node, ast.Subscript):
+        return False
+    container = node.value
+    return (
+        isinstance(container, ast.Attribute)
+        and container.attr == "modules"
+        and isinstance(container.value, ast.Name)
+        and container.value.id == "sys"
+        and isinstance(node.slice, ast.Constant)
+        and _is_legacy_namespace(node.slice.value)
+    )
+
+
+def _python_legacy_import_lines(text: str) -> list[int]:
+    lines: set[int] = set()
+    for node in ast.walk(ast.parse(text)):
+        if isinstance(node, ast.Import) and any(
+            _is_legacy_namespace(alias.name) for alias in node.names
+        ):
+            lines.add(node.lineno)
+        elif isinstance(node, ast.ImportFrom) and (
+            _is_legacy_namespace(node.module)
+            or node.module == "backend"
+            and any(alias.name == "routers" for alias in node.names)
+        ):
+            lines.add(node.lineno)
+        elif isinstance(node, ast.Call) and _is_dynamic_legacy_import(node):
+            lines.add(node.lineno)
+        elif isinstance(node, ast.Assign) and any(
+            _is_legacy_sys_modules_target(target) for target in node.targets
+        ):
+            lines.add(node.lineno)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)) and (
+            _is_legacy_sys_modules_target(node.target)
+        ):
+            lines.add(node.lineno)
+    return sorted(lines)
+
+
+def _legacy_import_lines(path: Path) -> list[int]:
+    text = path.read_text(encoding="utf-8")
+    if path.suffix == ".py":
+        return _python_legacy_import_lines(text)
+    return [
+        text.count("\n", 0, match.start()) + 1
+        for match in EMBEDDED_LEGACY_IMPORT_PATTERN.finditer(text)
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import backend.routers\n",
+        "import backend.routers.projects as projects\n",
+        "from backend.routers import projects\n",
+        "from backend.routers.projects import router\n",
+        "from backend import routers as legacy_routers\n",
+        "importlib.import_module('backend.routers.projects')\n",
+        "__import__('backend.routers.projects')\n",
+        "configure(); import backend.routers.projects\n",
+        "sys.modules['backend.routers'] = legacy_routers\n",
+        "sys.modules['backend.routers.projects']: object = projects\n",
+        "sys.modules['backend.routers'] += legacy_routers\n",
+    ],
+    ids=[
+        "import-package",
+        "import-child",
+        "from-package",
+        "from-child",
+        "from-backend-import-routers",
+        "importlib-import-module",
+        "builtin-import",
+        "semicolon-import",
+        "sys-modules-assign",
+        "sys-modules-annassign",
+        "sys-modules-augassign",
+    ],
+)
+def test_python_scanner_detects_legacy_router_forms(
+    tmp_path: Path, source: str
+) -> None:
+    path = tmp_path / "source.py"
+    path.write_text(source, encoding="utf-8")
+
+    assert _legacy_import_lines(path) == [1]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import backend.domain.routers\n",
+        "from backend.domain.routers import projects\n",
+        "from backend.domain import routers\n",
+        "importlib.import_module('backend.domain.routers.projects')\n",
+        "__import__('backend.domain.routers.projects')\n",
+        "sys.modules['backend.domain.routers'] = routers\n",
+        "value = 'backend.routers.projects'\n",
+    ],
+)
+def test_python_scanner_ignores_canonical_and_non_import_references(
+    tmp_path: Path, source: str
+) -> None:
+    path = tmp_path / "source.py"
+    path.write_text(source, encoding="utf-8")
+
+    assert _legacy_import_lines(path) == []
+
+
+@pytest.mark.parametrize(
+    "source, expected",
+    [
+        ("from backend.routers.projects import router\n", [1]),
+        ("bootstrap(); from backend.routers import projects\n", [1]),
+        ("from backend.domain.routers import projects\n", []),
+    ],
+    ids=["line-leading", "semicolon", "canonical"],
+)
+def test_mjs_scanner_handles_embedded_python_imports(
+    tmp_path: Path, source: str, expected: list[int]
+) -> None:
+    path = tmp_path / "source.mjs"
+    path.write_text(source, encoding="utf-8")
+
+    assert _legacy_import_lines(path) == expected
+
+
 def test_domain_router_inventory_is_exact() -> None:
     actual = {
         path.relative_to(DOMAIN_ROUTER_ROOT).as_posix()
@@ -64,9 +220,7 @@ def test_no_legacy_router_imports_remain() -> None:
         for path in root.rglob("*"):
             if not path.is_file() or path.suffix not in SOURCE_SUFFIXES:
                 continue
-            text = path.read_text(encoding="utf-8")
-            for match in LEGACY_IMPORT_PATTERN.finditer(text):
-                line = text.count("\n", 0, match.start()) + 1
+            for line in _legacy_import_lines(path):
                 locations.append(f"{path.relative_to(REPOSITORY_ROOT)}:{line}")
 
     assert locations == [], "Legacy router imports remain:\n" + "\n".join(locations)
