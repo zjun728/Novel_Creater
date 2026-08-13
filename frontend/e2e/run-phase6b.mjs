@@ -289,6 +289,8 @@ export function classifyBrowserFailure(resultPath) {
     const line = browserErrorLine(error)
     const status = error.message.match(/backup-status-(\d{3})/u)?.[1]
     if (status) return `backup-status-${status}`
+    const libraryMarker = error.message.match(/phase6b-library-(?:load-error|empty|card-missing)/u)?.[0]
+    if (libraryMarker) return libraryMarker
     if (/locator\.click/iu.test(error.message) && /timed out|timeout/iu.test(error.message)) {
       if (/intercepts pointer events/iu.test(error.message)) return `locator-intercepted@${line}`
       if (/element is not enabled|disabled/iu.test(error.message)) return `locator-disabled@${line}`

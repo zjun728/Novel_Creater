@@ -99,6 +99,9 @@ test('Phase 6B browser spec uses visible UI, real downloads, ZIP verification an
   )
   assert.match(spec, /activeListResponsePromise/u)
   assert.match(spec, /pathname\.endsWith\('\/api\/projects'\)/u)
+  assert.match(spec, /phase6b-library-load-error/u)
+  assert.match(spec, /phase6b-library-empty/u)
+  assert.match(spec, /phase6b-library-card-missing/u)
   assert.match(body, /归档/u)
   assert.match(body, /Novel Creator 项目库/u)
   assert.match(spec, /X-Package-SHA256|x-package-sha256/u)
@@ -130,6 +133,12 @@ test('Phase 6B classifies only actual Playwright errors with fixed locator categ
       location: { file: 'project-backup.spec.mjs', line: 67 },
     }] }] }] }] }] }))
     assert.equal(classifyBrowserFailure(resultPath), 'locator-intercepted@67')
+
+    writeFileSync(resultPath, JSON.stringify({ suites: [{ specs: [{ tests: [{ results: [{ errors: [{
+      message: 'phase6b-library-empty',
+      location: { file: 'project-backup.spec.mjs', line: 74 },
+    }] }] }] }] }] }))
+    assert.equal(classifyBrowserFailure(resultPath), 'phase6b-library-empty')
   } finally {
     rmSync(rootPath, { recursive: true, force: true })
   }
