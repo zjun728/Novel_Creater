@@ -43,9 +43,9 @@ EXPECTED_ROUTER_FILES = {
 
 def test_domain_router_inventory_is_exact() -> None:
     actual = {
-        path.name
-        for path in DOMAIN_ROUTER_ROOT.iterdir()
-        if path.is_file() and path.suffix == ".py"
+        path.relative_to(DOMAIN_ROUTER_ROOT).as_posix()
+        for path in DOMAIN_ROUTER_ROOT.rglob("*.py")
+        if path.is_file()
     }
 
     assert actual == EXPECTED_ROUTER_FILES
