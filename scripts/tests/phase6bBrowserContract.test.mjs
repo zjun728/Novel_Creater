@@ -60,6 +60,9 @@ test('Phase 6B owns one disposable UI-only browser lifecycle and verifier', asyn
   assert.doesNotMatch(runnerSource, /OPENAI_API_KEY|ANTHROPIC_API_KEY|mysqld/iu)
   assert.match(runnerSource, /PHASE6B_VERIFY_STATE_PATH/u)
   assert.match(runnerSource, /phase6bVerifierCause/u)
+  for (const marker of ['active-entry-set', 'active-zip-mode', 'active-corpus-blob']) {
+    assert.equal(runnerSource.includes(marker), true, marker)
+  }
 
   const verifierFailure = new Error('hidden')
   verifierFailure.phase6bStage = 'package-verifier'

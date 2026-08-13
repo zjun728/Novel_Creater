@@ -109,14 +109,21 @@ for index, archive in enumerate(archives):
     checkpoint(stage)
     if not archive.is_file(): raise RuntimeError('browser download is missing')
     with zipfile.ZipFile(archive, 'r') as package:
+        checkpoint(stage * 10 + 1)
         if package.comment != b'': raise RuntimeError('zip comment is not deterministic')
         infos = package.infolist()
+        checkpoint(stage * 10 + 2)
         if [info.filename for info in infos] != expected_names: raise RuntimeError('zip entry order/set mismatch')
         for info in infos:
+            checkpoint(stage * 10 + 3)
             if info.date_time != (1980, 1, 1, 0, 0, 0): raise RuntimeError('zip timestamp mismatch')
+            checkpoint(stage * 10 + 4)
             if info.compress_type != zipfile.ZIP_STORED: raise RuntimeError('zip compression mismatch')
+            checkpoint(stage * 10 + 5)
             if info.create_system != 3 or stat.S_IMODE(info.external_attr >> 16) != 0o600: raise RuntimeError('zip mode mismatch')
+            checkpoint(stage * 10 + 6)
             if info.extra or info.comment or info.flag_bits & 0x08: raise RuntimeError('zip metadata mismatch')
+        checkpoint(stage * 10 + 7)
         if package.read(blob_path) != blob: raise RuntimeError('corpus blob is incomplete')
         checkpoint(stage + 1)
         manifest_bytes = package.read('manifest.json')
@@ -461,8 +468,12 @@ export async function runPhase6B({ environment = process.env, log = console.log,
           const code = existsSync(roots.verifierStatePath) ? readFileSync(roots.verifierStatePath, 'ascii').trim() : ''
           error.phase6bVerifierCause = ({
             10: 'corpus-envelope', 20: 'active-zip-envelope', 21: 'active-manifest',
+            201: 'active-zip-comment', 202: 'active-entry-set', 203: 'active-zip-timestamp',
+            204: 'active-zip-compression', 205: 'active-zip-mode', 206: 'active-zip-metadata', 207: 'active-corpus-blob',
             22: 'active-lifecycle', 23: 'active-authority', 24: 'active-evidence', 25: 'active-secret-scan',
             30: 'archived-zip-envelope', 31: 'archived-manifest', 32: 'archived-lifecycle',
+            301: 'archived-zip-comment', 302: 'archived-entry-set', 303: 'archived-zip-timestamp',
+            304: 'archived-zip-compression', 305: 'archived-zip-mode', 306: 'archived-zip-metadata', 307: 'archived-corpus-blob',
             33: 'archived-authority', 34: 'archived-evidence', 35: 'archived-secret-scan',
           })[code] || null
           throw error
