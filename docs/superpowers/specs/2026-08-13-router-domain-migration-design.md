@@ -101,7 +101,8 @@ Implementation follows RED/GREEN:
 ## Acceptance criteria
 
 - `backend/routers` no longer exists.
-- `backend/domain/routers` contains the exact 22-module router inventory plus `__init__.py`.
+- `backend/domain/routers` contains the exact 22 Python files: 21 router/helper modules plus
+  `__init__.py`.
 - Repository source contains zero `backend.routers` Python-import references.
 - `backend.main` imports and registers the full route inventory once.
 - Focused API/unit tests, full unit suite, build, compilation, and diff checks pass.
