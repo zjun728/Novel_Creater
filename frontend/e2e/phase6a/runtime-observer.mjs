@@ -102,7 +102,8 @@ export function observeRuntime(context, {
     },
     response: response => {
       recordResponseOutcome(response)
-      if (response.status() < 200 || response.status() >= 300) counters.non2xx += 1
+      const status = response.status()
+      if (status !== 304 && (status < 200 || status >= 300)) counters.non2xx += 1
     },
   }
   const onPage = (page, popup = true) => {

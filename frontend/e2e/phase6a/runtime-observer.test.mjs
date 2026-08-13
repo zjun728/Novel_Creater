@@ -105,6 +105,18 @@ test('redirect responses are non2xx and remain unhealthy', async () => {
   assert.throws(() => assertRuntimeEvidenceHealthy(evidence), /phase6a-runtime-non2xx-count-1/u)
 })
 
+test('304 cache revalidation is healthy while other 3xx remain fail closed', async () => {
+  const context = new Context([new Page()])
+  const runtime = observeRuntime(context, { allowedOrigins: ['http://127.0.0.1:4000'] })
+  const cached = request('http://127.0.0.1:4000/cached-resource')
+  context.emit('request', cached)
+  context.emit('response', { status: () => 304, request: () => cached })
+  context.emit('requestfinished', cached)
+  const evidence = await runtime.finish()
+  assert.equal(evidence.non2xx, 0)
+  assert.doesNotThrow(() => assertRuntimeEvidenceHealthy(evidence))
+})
+
 test('observer records only fixed counters and balances pending requests', async () => {
   const page = new Page(); const context = new Context([page])
   const runtime = observeRuntime(context, { allowedOrigins: ['http://127.0.0.1:4000'] })
