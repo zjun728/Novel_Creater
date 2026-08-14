@@ -31,7 +31,6 @@ from backend.domain.product_database_readiness import (
     LEGACY_DATABASE,
     BackupReceipt,
     DatabaseInventory,
-    ProductDatabaseReadinessError,
     ReadinessState,
     inventory_hash,
     validate_database_role,
@@ -68,10 +67,6 @@ class ProductDatabaseBackupError(RuntimeError):
     """A fixed, public-safe failure at the logical backup boundary."""
 
 
-class _SafeBoundaryGroup(BaseExceptionGroup):
-    """An already-sanitized operation/cleanup precedence group."""
-
-
 class _OwnedDeletePending(Exception):
     pass
 
@@ -106,8 +101,24 @@ def _fixed(message: str) -> ProductDatabaseBackupError:
     return ProductDatabaseBackupError(message)
 
 
-def _raise_fixed(message: str) -> None:
-    raise _fixed(message) from None
+def _normalize_exception_tree(
+    error: BaseException,
+    message: str,
+) -> BaseException:
+    """Rebuild an untrusted exception tree without retaining ordinary details."""
+
+    if isinstance(error, BaseExceptionGroup):
+        return BaseExceptionGroup(
+            message,
+            [_normalize_exception_tree(child, message) for child in error.exceptions],
+        )
+    if isinstance(error, _FLOW_CONTROL):
+        return error
+    return _fixed(message)
+
+
+def _raise_normalized(error: BaseException, message: str) -> None:
+    raise _normalize_exception_tree(error, message) from None
 
 
 def _is_reparse(path: Path) -> bool:
@@ -282,10 +293,8 @@ def preflight_client_pair(
         if dump_version != mysql_version:
             raise ValueError
         return MySQLClientPair(dump, mysql, dump_version)
-    except _FLOW_CONTROL:
-        raise
-    except BaseException:
-        _raise_fixed(_CLIENT_ERROR)
+    except BaseException as error:
+        _raise_normalized(error, _CLIENT_ERROR)
 
 
 def _validated_pair(pair: object) -> MySQLClientPair:
@@ -312,10 +321,8 @@ def dump_command(
     try:
         pair = _validated_pair(pair)
         option = _validated_option_file(option_file)
-    except _FLOW_CONTROL:
-        raise
-    except BaseException:
-        _raise_fixed(_CLIENT_ERROR)
+    except BaseException as error:
+        _raise_normalized(error, _CLIENT_ERROR)
     return [
         str(pair.mysqldump),
         f"--defaults-extra-file={option}",
@@ -340,10 +347,8 @@ def restore_command(
     try:
         pair = _validated_pair(pair)
         option = _validated_option_file(option_file)
-    except _FLOW_CONTROL:
-        raise
-    except BaseException:
-        _raise_fixed(_CLIENT_ERROR)
+    except BaseException as error:
+        _raise_normalized(error, _CLIENT_ERROR)
     return [
         str(pair.mysql),
         f"--defaults-extra-file={option}",
@@ -380,10 +385,8 @@ def preflight_client_connection(
         if _SERVER_VERSION.fullmatch(output) is None:
             raise ValueError
         return output
-    except _FLOW_CONTROL:
-        raise
-    except BaseException:
-        _raise_fixed(_CONNECTION_ERROR)
+    except BaseException as error:
+        _raise_normalized(error, _CONNECTION_ERROR)
 
 
 def _validated_config(config: object) -> tuple[str, int, str, str]:
@@ -666,33 +669,26 @@ def _delete_owned_twice(
     return last
 
 
-def _cleanup_exception(error: BaseException, message: str) -> BaseException:
-    if _contains_flow_control(error):
-        return error
-    return _fixed(message)
-
-
-def _contains_flow_control(error: BaseException) -> bool:
-    if isinstance(error, _FLOW_CONTROL):
-        return True
-    if isinstance(error, BaseExceptionGroup):
-        return any(_contains_flow_control(nested) for nested in error.exceptions)
-    return False
-
-
 def _finish_with_cleanup(
     primary: BaseException | None,
     cleanup_errors: list[BaseException],
     cleanup_message: str,
     *,
     group_message: str | None = None,
-    safe_group: bool = False,
+    primary_message: str | None = None,
 ) -> None:
-    clean = [_cleanup_exception(error, cleanup_message) for error in cleanup_errors]
+    clean = [
+        _normalize_exception_tree(error, cleanup_message)
+        for error in cleanup_errors
+    ]
     if primary is not None:
+        if primary_message is not None or isinstance(primary, BaseExceptionGroup):
+            primary = _normalize_exception_tree(
+                primary,
+                primary_message or group_message or cleanup_message,
+            )
         if clean:
-            group_type = _SafeBoundaryGroup if safe_group else BaseExceptionGroup
-            raise group_type(
+            raise BaseExceptionGroup(
                 group_message or cleanup_message, [primary, *clean]
             ) from None
         raise primary from None
@@ -741,7 +737,7 @@ def private_mysql_option_file(
         closing_handle = handle
         handle = None
         closing_handle.close()
-    except _FLOW_CONTROL as error:
+    except BaseException as error:
         cleanup: list[BaseException] = []
         if handle is not None:
             try:
@@ -756,24 +752,13 @@ def private_mysql_option_file(
         unlink_error = _delete_owned_twice(path, lease, owned_delete)
         if unlink_error is not None:
             cleanup.append(unlink_error)
-        _finish_with_cleanup(error, cleanup, _OPTION_CLEANUP_ERROR)
-        raise AssertionError("unreachable")
-    except BaseException:
-        cleanup = []
-        if handle is not None:
-            try:
-                handle.close()
-            except BaseException as close_error:
-                cleanup.append(close_error)
-        elif descriptor is not None:
-            try:
-                os.close(descriptor)
-            except BaseException as close_error:
-                cleanup.append(close_error)
-        unlink_error = _delete_owned_twice(path, lease, owned_delete)
-        if unlink_error is not None:
-            cleanup.append(unlink_error)
-        _finish_with_cleanup(_fixed(_OPTION_ERROR), cleanup, _OPTION_CLEANUP_ERROR)
+        _finish_with_cleanup(
+            error,
+            cleanup,
+            _OPTION_CLEANUP_ERROR,
+            group_message=_OPTION_ERROR,
+            primary_message=_OPTION_ERROR,
+        )
         raise AssertionError("unreachable")
 
     primary: BaseException | None = None
@@ -787,7 +772,12 @@ def private_mysql_option_file(
     if unlink_error is not None:
         cleanup.append(unlink_error)
     if primary is not None or cleanup:
-        _finish_with_cleanup(primary, cleanup, _OPTION_CLEANUP_ERROR)
+        _finish_with_cleanup(
+            primary,
+            cleanup,
+            _OPTION_CLEANUP_ERROR,
+            group_message=_OPTION_ERROR,
+        )
 
 
 def preflight_backup_directory(
@@ -808,10 +798,8 @@ def preflight_backup_directory(
         if checked != directory or not os.path.samestat(identity, after):
             raise ValueError
         return directory
-    except _FLOW_CONTROL:
-        raise
-    except BaseException:
-        _raise_fixed(_DIRECTORY_ERROR)
+    except BaseException as error:
+        _raise_normalized(error, _DIRECTORY_ERROR)
 
 
 def _source_hash(
@@ -888,12 +876,8 @@ def create_logical_backup(
         source_hash = _source_hash(source_inventory, source_inventory_hash, source_database)
         if backup_dir is None:
             raise ValueError
-    except _FLOW_CONTROL:
-        raise
-    except ProductDatabaseReadinessError:
-        _raise_fixed(_BACKUP_ERROR)
-    except BaseException:
-        _raise_fixed(_BACKUP_ERROR)
+    except BaseException as error:
+        _raise_normalized(error, _BACKUP_ERROR)
 
     # Capability failure must occur before any backup file is created.
     preflight_client_connection(pair, option, runner)
@@ -941,10 +925,8 @@ def create_logical_backup(
             cleanup.append(unlink_error)
         else:
             temporary = None
-    except _FLOW_CONTROL as error:
+    except BaseException as error:
         primary = error
-    except BaseException:
-        primary = _fixed(_BACKUP_ERROR)
     finally:
         if handle is not None:
             try:
@@ -962,7 +944,13 @@ def create_logical_backup(
                 cleanup.append(unlink_error)
 
     if primary is not None or cleanup:
-        _finish_with_cleanup(primary, cleanup, _BACKUP_CLEANUP_ERROR)
+        _finish_with_cleanup(
+            primary,
+            cleanup,
+            _BACKUP_CLEANUP_ERROR,
+            group_message=_BACKUP_ERROR,
+            primary_message=_BACKUP_ERROR,
+        )
 
     try:
         return BackupReceipt(
@@ -975,10 +963,8 @@ def create_logical_backup(
             client_version=pair.version,
             source_inventory_hash=source_hash,
         )
-    except _FLOW_CONTROL:
-        raise
-    except BaseException:
-        _raise_fixed(_BACKUP_ERROR)
+    except BaseException as error:
+        _raise_normalized(error, _BACKUP_ERROR)
 
 
 def _validate_expected_backup(expected_sha256: object, expected_length: object) -> None:
@@ -1040,7 +1026,6 @@ def _open_verified_backup(
         handle.seek(0)
         return raw, handle
     except BaseException as error:
-        primary = error if _contains_flow_control(error) else _fixed(error_message)
         cleanup: list[BaseException] = []
         if handle is not None:
             closing_handle = handle
@@ -1055,11 +1040,11 @@ def _open_verified_backup(
             else error_message
         )
         _finish_with_cleanup(
-            primary,
+            error,
             cleanup,
             cleanup_message,
             group_message=error_message,
-            safe_group=error_message == _RESTORE_ERROR,
+            primary_message=error_message,
         )
         raise AssertionError("unreachable")
 
@@ -1079,9 +1064,7 @@ def verify_backup_file(path: Path, expected_sha256: str, expected_length: int) -
         handle = None
         closing_handle.close()  # type: ignore[attr-defined]
     except BaseException as error:
-        if _contains_flow_control(error):
-            raise
-        _raise_fixed(_VERIFY_ERROR)
+        _raise_normalized(error, _VERIFY_ERROR)
 
 
 def restore_logical_backup(
@@ -1098,16 +1081,15 @@ def restore_logical_backup(
     """Verify a backup and stream it to an explicit Phase 7B restore database."""
 
     command = restore_command(pair, option_file, restore_database)
-    handle: Any | None = None
+    path, handle = _open_verified_backup(
+        backup_path,
+        expected_sha256,
+        expected_length,
+        error_message=_RESTORE_ERROR,
+    )
     primary: BaseException | None = None
     cleanup: list[BaseException] = []
     try:
-        path, handle = _open_verified_backup(
-            backup_path,
-            expected_sha256,
-            expected_length,
-            error_message=_RESTORE_ERROR,
-        )
         if after_verification is not None:
             after_verification(path, handle)
         result = runner(
@@ -1120,11 +1102,7 @@ def restore_logical_backup(
         if type(getattr(result, "returncode", None)) is not int or result.returncode != 0:
             raise OSError
     except BaseException as error:
-        primary = (
-            error
-            if isinstance(error, _SafeBoundaryGroup) or _contains_flow_control(error)
-            else _fixed(_RESTORE_ERROR)
-        )
+        primary = error
     finally:
         if handle is not None:
             try:
@@ -1137,4 +1115,5 @@ def restore_logical_backup(
             cleanup,
             _RESTORE_CLEANUP_ERROR,
             group_message=_RESTORE_ERROR,
+            primary_message=_RESTORE_ERROR,
         )

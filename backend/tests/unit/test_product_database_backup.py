@@ -5,6 +5,7 @@ from dataclasses import FrozenInstanceError
 import hashlib
 import os
 from pathlib import Path
+import traceback
 from types import SimpleNamespace
 
 import pytest
@@ -1642,3 +1643,171 @@ def test_restore_flow_control_matrix_is_preserved(
             runner,
         )
     assert raised.value is flow
+
+
+def _assert_safe_exception_tree(
+    error: BaseException,
+    *,
+    message: str,
+    preserved_flow: BaseException,
+) -> tuple[int, int]:
+    if isinstance(error, BaseExceptionGroup):
+        assert error.message == message
+        counts = [
+            _assert_safe_exception_tree(
+                child,
+                message=message,
+                preserved_flow=preserved_flow,
+            )
+            for child in error.exceptions
+        ]
+        return sum(count[0] for count in counts), sum(count[1] for count in counts)
+    if error is preserved_flow:
+        return 1, 0
+    assert type(error) is backup.ProductDatabaseBackupError
+    assert str(error) == message
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    return 0, 1
+
+
+def test_connection_preflight_recursively_sanitizes_untrusted_exception_groups(
+    tmp_path: Path,
+):
+    pair, _ = make_clients(tmp_path)
+    option = make_option(tmp_path)
+    secret = "password=connection-group-secret"
+    flow = KeyboardInterrupt()
+
+    def runner(*_args: object, **_kwargs: object) -> object:
+        raise BaseExceptionGroup(
+            secret,
+            [
+                BaseExceptionGroup(secret, [flow, RuntimeError(secret)]),
+                ValueError(secret),
+            ],
+        )
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        backup.preflight_client_connection(pair, option, runner)
+
+    assert _assert_safe_exception_tree(
+        raised.value,
+        message="mysql connection preflight failed",
+        preserved_flow=flow,
+    ) == (1, 2)
+    assert secret not in "".join(traceback.format_exception(raised.value))
+
+
+def test_restore_recursively_rebuilds_forged_safe_groups_and_fixed_errors(
+    tmp_path: Path,
+):
+    pair, _ = make_clients(tmp_path)
+    option = make_option(tmp_path)
+    dump = tmp_path / "backup.sql"
+    payload = b"verified restore"
+    dump.write_bytes(payload)
+    secret = "password=forged-safe-group-secret"
+    flow = KeyboardInterrupt()
+    prior = backup.ProductDatabaseBackupError("logical restore failed")
+    prior.__context__ = RuntimeError(secret)
+    forged_type = getattr(
+        backup,
+        "_SafeBoundaryGroup",
+        type("_SafeBoundaryGroup", (BaseExceptionGroup,), {}),
+    )
+
+    def runner(*_args: object, **_kwargs: object) -> object:
+        raise forged_type(
+            secret,
+            [
+                BaseExceptionGroup(secret, [flow, prior]),
+                RuntimeError(secret),
+            ],
+        )
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        backup.restore_logical_backup(
+            pair,
+            option,
+            dump,
+            hashlib.sha256(payload).hexdigest(),
+            len(payload),
+            RESTORE_DATABASE,
+            runner,
+        )
+
+    assert _assert_safe_exception_tree(
+        raised.value,
+        message="logical restore failed",
+        preserved_flow=flow,
+    ) == (1, 2)
+    assert prior not in tuple(raised.value.exceptions)
+    assert secret not in "".join(traceback.format_exception(raised.value))
+
+
+def test_restore_recursively_classifies_operation_and_cleanup_groups(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    pair, _ = make_clients(tmp_path)
+    option = make_option(tmp_path)
+    dump = tmp_path / "backup.sql"
+    payload = b"verified restore"
+    dump.write_bytes(payload)
+    secret = "password=combined-group-secret"
+    cleanup_flow = KeyboardInterrupt()
+    operation = backup.ProductDatabaseBackupError("logical restore failed")
+    operation.__context__ = RuntimeError(secret)
+    real_open = Path.open
+
+    class CloseGroupFailure:
+        def __init__(self, wrapped: object):
+            self.wrapped = wrapped
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self.wrapped, name)
+
+        def close(self) -> None:
+            self.wrapped.close()
+            raise BaseExceptionGroup(
+                secret,
+                [
+                    BaseExceptionGroup(
+                        secret,
+                        [cleanup_flow, RuntimeError(secret)],
+                    )
+                ],
+            )
+
+    def staged_open(path: Path, *args: object, **kwargs: object):
+        opened = real_open(path, *args, **kwargs)
+        return CloseGroupFailure(opened) if path == dump else opened
+
+    def runner(*_args: object, **_kwargs: object) -> object:
+        raise operation
+
+    monkeypatch.setattr(Path, "open", staged_open)
+    with pytest.raises(BaseExceptionGroup) as raised:
+        backup.restore_logical_backup(
+            pair,
+            option,
+            dump,
+            hashlib.sha256(payload).hexdigest(),
+            len(payload),
+            RESTORE_DATABASE,
+            runner,
+        )
+
+    assert raised.value.message == "logical restore failed"
+    restored, cleanup = raised.value.exceptions
+    assert restored is not operation
+    assert type(restored) is backup.ProductDatabaseBackupError
+    assert str(restored) == "logical restore failed"
+    assert restored.__cause__ is None
+    assert restored.__context__ is None
+    assert _assert_safe_exception_tree(
+        cleanup,
+        message="logical restore cleanup failed",
+        preserved_flow=cleanup_flow,
+    ) == (1, 1)
+    assert secret not in "".join(traceback.format_exception(raised.value))
