@@ -59,7 +59,7 @@ STRUCTURE_QUERIES = (
     "AND tc.CONSTRAINT_NAME=cc.CONSTRAINT_NAME "
     "WHERE tc.TABLE_SCHEMA=%s AND tc.CONSTRAINT_TYPE='CHECK' "
     "ORDER BY tc.TABLE_NAME, cc.CONSTRAINT_NAME",
-    "SELECT TABLE_NAME, VIEW_DEFINITION, CHECK_OPTION, IS_UPDATABLE, SECURITY_TYPE, "
+    "SELECT TABLE_NAME, VIEW_DEFINITION, CHECK_OPTION, IS_UPDATABLE, DEFINER, SECURITY_TYPE, "
     "CHARACTER_SET_CLIENT, COLLATION_CONNECTION FROM information_schema.VIEWS "
     "WHERE TABLE_SCHEMA=%s ORDER BY TABLE_NAME",
     "SELECT TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, PARTITION_ORDINAL_POSITION, "
@@ -78,21 +78,24 @@ STRUCTURE_KEYS = (
     frozenset({"CONSTRAINT_NAME", "TABLE_NAME", "REFERENCED_TABLE_NAME", "UNIQUE_CONSTRAINT_SCHEMA", "UNIQUE_CONSTRAINT_NAME", "MATCH_OPTION", "UPDATE_RULE", "DELETE_RULE"}),
     frozenset({"CONSTRAINT_NAME", "TABLE_NAME", "CONSTRAINT_TYPE", "ENFORCED"}),
     frozenset({"TABLE_NAME", "CONSTRAINT_NAME", "CHECK_CLAUSE"}),
-    frozenset({"TABLE_NAME", "VIEW_DEFINITION", "CHECK_OPTION", "IS_UPDATABLE", "SECURITY_TYPE", "CHARACTER_SET_CLIENT", "COLLATION_CONNECTION"}),
+    frozenset({"TABLE_NAME", "VIEW_DEFINITION", "CHECK_OPTION", "IS_UPDATABLE", "DEFINER", "SECURITY_TYPE", "CHARACTER_SET_CLIENT", "COLLATION_CONNECTION"}),
     frozenset({"TABLE_NAME", "PARTITION_NAME", "SUBPARTITION_NAME", "PARTITION_ORDINAL_POSITION", "SUBPARTITION_ORDINAL_POSITION", "PARTITION_METHOD", "SUBPARTITION_METHOD", "PARTITION_EXPRESSION", "SUBPARTITION_EXPRESSION", "PARTITION_DESCRIPTION"}),
 )
 
 
 def structure_rows(database: str = LEGACY_DATABASE) -> list[list[dict[str, object]]]:
     return [
-        [{"TABLE_NAME": "schema_metadata", "TABLE_TYPE": "BASE TABLE", "ENGINE": "InnoDB", "TABLE_COLLATION": "utf8mb4_0900_ai_ci", "ROW_FORMAT": "Dynamic", "CREATE_OPTIONS": ""}],
+        [
+            {"TABLE_NAME": "metadata_view", "TABLE_TYPE": "VIEW", "ENGINE": None, "TABLE_COLLATION": None, "ROW_FORMAT": None, "CREATE_OPTIONS": None},
+            {"TABLE_NAME": "schema_metadata", "TABLE_TYPE": "BASE TABLE", "ENGINE": "InnoDB", "TABLE_COLLATION": "utf8mb4_0900_ai_ci", "ROW_FORMAT": "Dynamic", "CREATE_OPTIONS": ""},
+        ],
         [{"TABLE_NAME": "schema_metadata", "COLUMN_NAME": "singleton_id", "ORDINAL_POSITION": 1, "COLUMN_DEFAULT": None, "IS_NULLABLE": "NO", "DATA_TYPE": "bigint", "COLUMN_TYPE": "bigint", "CHARACTER_MAXIMUM_LENGTH": None, "NUMERIC_PRECISION": 20, "NUMERIC_SCALE": 0, "CHARACTER_SET_NAME": None, "COLLATION_NAME": None, "EXTRA": "", "GENERATION_EXPRESSION": "", "SRS_ID": None}],
         [{"TABLE_NAME": "schema_metadata", "INDEX_NAME": "PRIMARY", "NON_UNIQUE": 0, "SEQ_IN_INDEX": 1, "COLUMN_NAME": "singleton_id", "COLLATION": "A", "SUB_PART": None, "INDEX_TYPE": "BTREE", "NULLABLE": "", "EXPRESSION": None, "IS_VISIBLE": "YES"}],
         [{"CONSTRAINT_NAME": "child_fk", "TABLE_NAME": "child", "COLUMN_NAME": "parent_id", "ORDINAL_POSITION": 1, "POSITION_IN_UNIQUE_CONSTRAINT": 1, "REFERENCED_TABLE_SCHEMA": database, "REFERENCED_TABLE_NAME": "parent", "REFERENCED_COLUMN_NAME": "id"}],
         [{"CONSTRAINT_NAME": "child_fk", "TABLE_NAME": "child", "REFERENCED_TABLE_NAME": "parent", "UNIQUE_CONSTRAINT_SCHEMA": database, "UNIQUE_CONSTRAINT_NAME": "PRIMARY", "MATCH_OPTION": "NONE", "UPDATE_RULE": "RESTRICT", "DELETE_RULE": "CASCADE"}],
         [{"CONSTRAINT_NAME": "PRIMARY", "TABLE_NAME": "schema_metadata", "CONSTRAINT_TYPE": "PRIMARY KEY", "ENFORCED": "YES"}],
         [{"TABLE_NAME": "schema_metadata", "CONSTRAINT_NAME": "singleton_check", "CHECK_CLAUSE": "(`singleton_id` = 1)"}],
-        [{"TABLE_NAME": "metadata_view", "VIEW_DEFINITION": "select `schema_metadata`.`schema_version` AS `schema_version` from `schema_metadata`", "CHECK_OPTION": "NONE", "IS_UPDATABLE": "YES", "SECURITY_TYPE": "DEFINER", "CHARACTER_SET_CLIENT": "utf8mb4", "COLLATION_CONNECTION": "utf8mb4_0900_ai_ci"}],
+        [{"TABLE_NAME": "metadata_view", "VIEW_DEFINITION": "select `schema_metadata`.`schema_version` AS `schema_version` from `schema_metadata`", "CHECK_OPTION": "NONE", "IS_UPDATABLE": "YES", "DEFINER": "app@%", "SECURITY_TYPE": "DEFINER", "CHARACTER_SET_CLIENT": "utf8mb4", "COLLATION_CONNECTION": "utf8mb4_0900_ai_ci"}],
         [{"TABLE_NAME": "events", "PARTITION_NAME": "p0", "SUBPARTITION_NAME": None, "PARTITION_ORDINAL_POSITION": 1, "SUBPARTITION_ORDINAL_POSITION": None, "PARTITION_METHOD": "RANGE", "SUBPARTITION_METHOD": None, "PARTITION_EXPRESSION": "year(`created_at`)", "SUBPARTITION_EXPRESSION": None, "PARTITION_DESCRIPTION": "2026"}],
     ]
 
@@ -206,7 +209,7 @@ def test_independent_structure_query_contract_is_explicit_and_ordered():
     assert "CONSTRAINT_TYPE, ENFORCED" in STRUCTURE_QUERIES[5]
     assert "tc.TABLE_SCHEMA=%s" in STRUCTURE_QUERIES[6]
     assert "SECURITY_TYPE" in STRUCTURE_QUERIES[7]
-    assert "DEFINER" not in STRUCTURE_QUERIES[7]
+    assert "DEFINER" in STRUCTURE_QUERIES[7]
     assert "TABLE_ROWS" not in STRUCTURE_QUERIES[8]
     assert "DATA_LENGTH" not in STRUCTURE_QUERIES[8]
 
@@ -223,11 +226,18 @@ async def test_database_name_does_not_enter_structural_fingerprint():
 async def test_structural_category_mutation_changes_fingerprint(section: int):
     baseline = await inventory_database(RecordingSession(), LEGACY_DATABASE)
     changed = structure_rows()
-    if not changed[section]:
-        changed[section].append({"TABLE_NAME": "child", "CONSTRAINT_NAME": "new", "CHECK_CLAUSE": "singleton_id > 0"})
-    else:
-        first_key = next(iter(changed[section][0]))
-        changed[section][0][first_key] = "changed"
+    mutation_keys = (
+        "CREATE_OPTIONS",
+        "COLUMN_NAME",
+        "INDEX_NAME",
+        "CONSTRAINT_NAME",
+        "CONSTRAINT_NAME",
+        "CONSTRAINT_NAME",
+        "CHECK_CLAUSE",
+        "CHECK_OPTION",
+        "PARTITION_DESCRIPTION",
+    )
+    changed[section][0][mutation_keys[section]] = "changed"
     observed = await inventory_database(RecordingSession(structures=changed), LEGACY_DATABASE)
     assert observed.structural_fingerprint != baseline.structural_fingerprint
 
@@ -236,13 +246,14 @@ async def test_structural_category_mutation_changes_fingerprint(section: int):
 @pytest.mark.parametrize(
     ("section", "key", "changed_value"),
     (
-        (0, "TABLE_TYPE", "VIEW"),
+        (0, "TABLE_TYPE", "BASE TABLE"),
         (0, "CREATE_OPTIONS", "partitioned"),
         (1, "SRS_ID", 4326),
         (2, "IS_VISIBLE", "NO"),
         (3, "REFERENCED_TABLE_SCHEMA", "external_schema"),
         (4, "UNIQUE_CONSTRAINT_SCHEMA", "external_schema"),
         (7, "VIEW_DEFINITION", "select 2 AS `schema_version`"),
+        (7, "DEFINER", "other_app@%"),
         (8, "PARTITION_EXPRESSION", "to_days(`created_at`)"),
         (8, "PARTITION_DESCRIPTION", "2027"),
     ),
@@ -255,6 +266,8 @@ async def test_new_structural_attributes_change_fingerprint(
     baseline = await inventory_database(RecordingSession(), LEGACY_DATABASE)
     changed = structure_rows()
     changed[section][0][key] = changed_value
+    if key == "TABLE_TYPE":
+        changed[7] = []
     observed = await inventory_database(
         RecordingSession(structures=changed), LEGACY_DATABASE
     )
@@ -297,6 +310,7 @@ async def test_self_fk_schema_is_name_independent_but_external_schema_identity_i
 async def test_view_differences_change_structure_without_affecting_base_counts():
     baseline = await inventory_database(RecordingSession(), LEGACY_DATABASE)
     without_view = structure_rows()
+    without_view[0] = [row for row in without_view[0] if row["TABLE_TYPE"] != "VIEW"]
     without_view[7] = []
     removed = await inventory_database(
         RecordingSession(structures=without_view), LEGACY_DATABASE
@@ -310,6 +324,75 @@ async def test_view_differences_change_structure_without_affecting_base_counts()
     assert changed.structural_fingerprint != baseline.structural_fingerprint
     assert baseline.table_names == removed.table_names == changed.table_names
     assert baseline.row_counts == removed.row_counts == changed.row_counts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("VIEW_DEFINITION", None),
+        ("VIEW_DEFINITION", ""),
+        ("VIEW_DEFINITION", "   "),
+        ("DEFINER", None),
+        ("DEFINER", ""),
+        ("DEFINER", "   "),
+        ("SECURITY_TYPE", ""),
+        ("SECURITY_TYPE", "OWNER"),
+    ),
+)
+async def test_view_authority_fields_are_closed_and_nonempty(
+    field: str,
+    value: object,
+):
+    sensitive = "password=view-authority-secret"
+    changed = structure_rows()
+    changed[7][0][field] = sensitive if value == "OWNER" else value
+    if field == "SECURITY_TYPE" and value == "OWNER":
+        changed[7][0][field] = value
+    with pytest.raises(ProductDatabaseReadinessError) as captured:
+        await inventory_database(
+            RecordingSession(structures=changed), LEGACY_DATABASE
+        )
+    assert str(captured.value) == "database inventory failed"
+    assert sensitive not in "".join(traceback.format_exception(captured.value))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "inconsistency",
+    ("missing", "duplicate", "extra", "base_table", "duplicate_table_view"),
+)
+async def test_tables_and_views_must_have_an_exact_one_to_one_mapping(
+    inconsistency: str,
+):
+    changed = structure_rows()
+    if inconsistency == "missing":
+        changed[7] = []
+    elif inconsistency == "duplicate":
+        changed[7].append(dict(changed[7][0]))
+    elif inconsistency == "extra":
+        changed[7].append(dict(changed[7][0]) | {"TABLE_NAME": "extra_view"})
+    elif inconsistency == "base_table":
+        changed[7][0]["TABLE_NAME"] = "schema_metadata"
+    else:
+        changed[0].append(dict(changed[0][0]))
+    with pytest.raises(ProductDatabaseReadinessError) as captured:
+        await inventory_database(
+            RecordingSession(structures=changed), LEGACY_DATABASE
+        )
+    assert str(captured.value) == "database inventory failed"
+
+
+@pytest.mark.asyncio
+async def test_null_view_definitions_cannot_create_false_equal_fingerprints():
+    for definer in ("app@%", "other_app@%"):
+        changed = structure_rows()
+        changed[7][0]["VIEW_DEFINITION"] = None
+        changed[7][0]["DEFINER"] = definer
+        with pytest.raises(ProductDatabaseReadinessError, match="^database inventory failed$"):
+            await inventory_database(
+                RecordingSession(structures=changed), LEGACY_DATABASE
+            )
 
 
 @pytest.mark.asyncio

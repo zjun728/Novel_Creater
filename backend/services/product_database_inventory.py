@@ -79,9 +79,7 @@ STRUCTURE_QUERIES: tuple[str, ...] = (
     "AND tc.CONSTRAINT_NAME=cc.CONSTRAINT_NAME "
     "WHERE tc.TABLE_SCHEMA=%s AND tc.CONSTRAINT_TYPE='CHECK' "
     "ORDER BY tc.TABLE_NAME, cc.CONSTRAINT_NAME",
-    # DEFINER is intentionally omitted: account identity is deployment metadata.
-    # SECURITY_TYPE remains included because SQL SECURITY changes view behavior.
-    "SELECT TABLE_NAME, VIEW_DEFINITION, CHECK_OPTION, IS_UPDATABLE, SECURITY_TYPE, "
+    "SELECT TABLE_NAME, VIEW_DEFINITION, CHECK_OPTION, IS_UPDATABLE, DEFINER, SECURITY_TYPE, "
     "CHARACTER_SET_CLIENT, COLLATION_CONNECTION FROM information_schema.VIEWS "
     "WHERE TABLE_SCHEMA=%s ORDER BY TABLE_NAME",
     "SELECT TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, PARTITION_ORDINAL_POSITION, "
@@ -100,7 +98,7 @@ STRUCTURE_KEYS: tuple[frozenset[str], ...] = (
     frozenset({"CONSTRAINT_NAME", "TABLE_NAME", "REFERENCED_TABLE_NAME", "UNIQUE_CONSTRAINT_SCHEMA", "UNIQUE_CONSTRAINT_NAME", "MATCH_OPTION", "UPDATE_RULE", "DELETE_RULE"}),
     frozenset({"CONSTRAINT_NAME", "TABLE_NAME", "CONSTRAINT_TYPE", "ENFORCED"}),
     frozenset({"TABLE_NAME", "CONSTRAINT_NAME", "CHECK_CLAUSE"}),
-    frozenset({"TABLE_NAME", "VIEW_DEFINITION", "CHECK_OPTION", "IS_UPDATABLE", "SECURITY_TYPE", "CHARACTER_SET_CLIENT", "COLLATION_CONNECTION"}),
+    frozenset({"TABLE_NAME", "VIEW_DEFINITION", "CHECK_OPTION", "IS_UPDATABLE", "DEFINER", "SECURITY_TYPE", "CHARACTER_SET_CLIENT", "COLLATION_CONNECTION"}),
     frozenset({"TABLE_NAME", "PARTITION_NAME", "SUBPARTITION_NAME", "PARTITION_ORDINAL_POSITION", "SUBPARTITION_ORDINAL_POSITION", "PARTITION_METHOD", "SUBPARTITION_METHOD", "PARTITION_EXPRESSION", "SUBPARTITION_EXPRESSION", "PARTITION_DESCRIPTION"}),
 )
 STRUCTURE_SCHEMA_KEYS: tuple[frozenset[str], ...] = (
@@ -244,6 +242,47 @@ def _normalize(
     return sorted(normalized, key=canonical_json)
 
 
+def _validate_views(
+    table_rows: list[dict[str, object]],
+    view_rows: list[dict[str, object]],
+) -> None:
+    base_names: list[str] = []
+    table_view_names: list[str] = []
+    for row in table_rows:
+        name = _returned_identifier(row["TABLE_NAME"])
+        table_type = row["TABLE_TYPE"]
+        if table_type == "BASE TABLE":
+            base_names.append(name)
+        elif table_type == "VIEW":
+            table_view_names.append(name)
+        else:
+            raise _InventoryFailure from None
+
+    view_names: list[str] = []
+    for row in view_rows:
+        view_names.append(_returned_identifier(row["TABLE_NAME"]))
+        definition = row["VIEW_DEFINITION"]
+        definer = row["DEFINER"]
+        security_type = row["SECURITY_TYPE"]
+        if (
+            type(definition) is not str
+            or not definition.strip()
+            or type(definer) is not str
+            or not definer.strip()
+            or type(security_type) is not str
+            or security_type not in ("DEFINER", "INVOKER")
+        ):
+            raise _InventoryFailure from None
+
+    if (
+        len(table_view_names) != len(set(table_view_names))
+        or len(view_names) != len(set(view_names))
+        or set(table_view_names) != set(view_names)
+        or set(base_names) & set(view_names)
+    ):
+        raise _InventoryFailure from None
+
+
 async def inventory_database(session: object, database: str) -> DatabaseInventory:
     database = _identifier(database)
     try:
@@ -298,26 +337,26 @@ async def inventory_database(session: object, database: str) -> DatabaseInventor
                 raise _InventoryFailure from None
             row_counts.append((validated_table, count))
 
-        structure: list[dict[str, object]] = []
-        for ordinal, (sql, expected_keys, schema_keys) in enumerate(
-            zip(
-                STRUCTURE_QUERIES,
-                STRUCTURE_KEYS,
-                STRUCTURE_SCHEMA_KEYS,
-                strict=True,
-            )
+        normalized_sections: list[list[dict[str, object]]] = []
+        for sql, expected_keys, schema_keys in zip(
+            STRUCTURE_QUERIES,
+            STRUCTURE_KEYS,
+            STRUCTURE_SCHEMA_KEYS,
+            strict=True,
         ):
-            structure.append(
-                {
-                    "query": ordinal,
-                    "rows": _normalize(
-                        await _fetchall(session, sql, (database,)),
-                        expected_keys,
-                        schema_keys,
-                        database,
-                    ),
-                }
+            normalized_sections.append(
+                _normalize(
+                    await _fetchall(session, sql, (database,)),
+                    expected_keys,
+                    schema_keys,
+                    database,
+                )
             )
+        _validate_views(normalized_sections[0], normalized_sections[7])
+        structure: list[dict[str, object]] = [
+            {"query": ordinal, "rows": rows}
+            for ordinal, rows in enumerate(normalized_sections)
+        ]
         fingerprint = canonical_hash({"structure": structure})
         counts = tuple(row_counts)
         return DatabaseInventory(
