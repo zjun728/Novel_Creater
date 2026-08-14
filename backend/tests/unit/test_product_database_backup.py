@@ -591,6 +591,7 @@ def test_owned_delete_permanent_close_failure_keeps_handle_and_first_error(
     )
 
     assert failure is first_close_error
+    assert not isinstance(failure, BaseExceptionGroup)
     assert lease.cleanup_error is first_close_error
     assert lease.cleanup_handle == deletion_handle
     assert lease.deleted is True
@@ -627,6 +628,62 @@ def test_owned_delete_flow_close_failure_still_retries_pending_handle(
     assert failure is flow
     assert closes == 2
     assert lease.cleanup_handle is None
+
+
+@pytest.mark.parametrize("flow_kind", ("keyboard", "system_exit", "cancelled"))
+def test_owned_delete_keeps_first_ordinary_then_safe_retry_flow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flow_kind: str,
+):
+    identity = backup._OwnedFileIdentity(1, 2, 3)
+    lease = backup._OwnedFileLease(identity, None, prepared=True)
+    deletion_handle = 303
+    secret = f"password={flow_kind}-retry-secret"
+    first_close_error = OSError("password=first-close-secret")
+    if flow_kind == "keyboard":
+        flow: BaseException = KeyboardInterrupt(secret)
+    elif flow_kind == "system_exit":
+        flow = SystemExit(secret)
+    else:
+        flow = asyncio.CancelledError(secret)
+    flow.__cause__ = RuntimeError(secret)
+    flow.add_note(secret)
+    close_errors = iter((first_close_error, flow))
+    closes = 0
+
+    def close_handle(_handle: int) -> None:
+        nonlocal closes
+        closes += 1
+        raise next(close_errors)
+
+    monkeypatch.setattr(
+        backup, "_open_owned_delete_path", lambda _path: deletion_handle
+    )
+    monkeypatch.setattr(backup, "_identity_from_handle", lambda _handle: identity)
+    monkeypatch.setattr(backup, "_link_count_from_handle", lambda _handle: 1)
+    monkeypatch.setattr(backup, "_set_delete_disposition", lambda _handle: None)
+    monkeypatch.setattr(backup, "_close_windows_handle", close_handle)
+
+    failure = backup._delete_owned_twice(
+        tmp_path / "owned.tmp", lease, backup._delete_owned_windows
+    )
+
+    assert isinstance(failure, BaseExceptionGroup)
+    assert failure.exceptions == (first_close_error, flow)
+    assert closes == 2
+    assert lease.cleanup_error is first_close_error
+    assert lease.cleanup_handle == deletion_handle
+
+    message = "private mysql option file cleanup failed"
+    with pytest.raises(BaseExceptionGroup) as raised:
+        backup._finish_with_cleanup(None, [failure], message)
+    assert raised.value.message == message
+    ordinary, cleaned_flow = raised.value.exceptions
+    assert type(ordinary) is backup.ProductDatabaseBackupError
+    assert str(ordinary) == message
+    assert_clean_flow_control(cleaned_flow, flow)
+    assert secret not in "".join(traceback.format_exception(raised.value))
 
 
 def test_delete_capable_create_failure_groups_disposition_and_close_failures(

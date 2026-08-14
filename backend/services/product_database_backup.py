@@ -799,6 +799,7 @@ def _prepare_owned_cleanup(lease: _OwnedFileLease) -> BaseException | None:
 
 def _delete_owned_windows(path: Path, lease: _OwnedFileLease) -> bool:
     errors: list[BaseException] = []
+    retry_flow: BaseException | None = None
     if lease.delete_through_handle:
         if lease.deleted:
             return True
@@ -819,10 +820,14 @@ def _delete_owned_windows(path: Path, lease: _OwnedFileLease) -> bool:
         except BaseException as error:
             if lease.cleanup_error is None:
                 lease.cleanup_error = error
+            elif isinstance(error, _FLOW_CONTROL):
+                retry_flow = error
         else:
             lease.cleanup_handle = None
         if lease.cleanup_error is not None:
             errors.append(lease.cleanup_error)
+        if retry_flow is not None:
+            errors.append(retry_flow)
     if not lease.deleted:
         deletion_handle: int | None = None
         try:
