@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, fields, is_dataclass
 from enum import StrEnum
+from pathlib import PurePosixPath, PureWindowsPath
 import re
 from typing import Mapping
 
@@ -19,7 +20,7 @@ RESTORE_DATABASE_PATTERN = re.compile(
 _HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _PROHIBITED_KEY_PATTERN = re.compile(r"password|secret|dsn|body|sql|provider", re.IGNORECASE)
-_CONTRACT_ERROR = "readiness contract is invalid"
+_CONTRACT_ERROR = "product database readiness contract is invalid"
 _PROHIBITED_DATA_ERROR = "receipt contains prohibited data"
 _SEQUENCE_ERROR = "readiness state sequence is invalid"
 
@@ -42,7 +43,11 @@ class ReadinessState(StrEnum):
 
 
 def _invalid() -> None:
-    raise ProductDatabaseReadinessError(_CONTRACT_ERROR)
+    raise ProductDatabaseReadinessError(_CONTRACT_ERROR) from None
+
+
+def _prohibited() -> None:
+    raise ProductDatabaseReadinessError(_PROHIBITED_DATA_ERROR) from None
 
 
 def _is_hash(value: object) -> bool:
@@ -144,6 +149,10 @@ class BackupReceipt:
             or self.backup_filename in (".", "..")
             or "/" in self.backup_filename
             or "\\" in self.backup_filename
+            or ":" in self.backup_filename
+            or PureWindowsPath(self.backup_filename).drive
+            or PureWindowsPath(self.backup_filename).name != self.backup_filename
+            or PurePosixPath(self.backup_filename).name != self.backup_filename
         ):
             _invalid()
         _require_hash(self.backup_sha256)
@@ -250,22 +259,47 @@ def validate_restore_database(value: str) -> str:
     return value
 
 
-def _reject_prohibited_keys(value: object) -> None:
-    if isinstance(value, Mapping):
-        for key, nested in value.items():
-            if type(key) is not str:
+def _reject_prohibited_keys(value: object, active: set[int] | None = None) -> None:
+    if active is None:
+        active = set()
+    traversable = (
+        isinstance(value, Mapping)
+        or type(value) in (tuple, list)
+        or (not isinstance(value, type) and is_dataclass(value))
+    )
+    if not traversable:
+        return
+    identity = id(value)
+    if identity in active:
+        _invalid()
+    active.add(identity)
+    try:
+        if isinstance(value, Mapping):
+            for key, nested in value.items():
+                if type(key) is not str:
+                    _invalid()
+                if _PROHIBITED_KEY_PATTERN.search(key) is not None:
+                    _prohibited()
+                _reject_prohibited_keys(nested, active)
+        elif type(value) in (tuple, list):
+            for nested in value:
+                _reject_prohibited_keys(nested, active)
+        else:
+            try:
+                storage = vars(value)
+            except TypeError:
                 _invalid()
-            if _PROHIBITED_KEY_PATTERN.search(key) is not None:
-                raise ProductDatabaseReadinessError(_PROHIBITED_DATA_ERROR)
-            _reject_prohibited_keys(nested)
-    elif isinstance(value, (tuple, list)):
-        for nested in value:
-            _reject_prohibited_keys(nested)
-    elif not isinstance(value, type) and is_dataclass(value):
-        for field in fields(value):
-            if _PROHIBITED_KEY_PATTERN.search(field.name) is not None:
-                raise ProductDatabaseReadinessError(_PROHIBITED_DATA_ERROR)
-            _reject_prohibited_keys(getattr(value, field.name))
+            expected = frozenset(field.name for field in fields(value))
+            for key, nested in storage.items():
+                if type(key) is not str:
+                    _invalid()
+                if _PROHIBITED_KEY_PATTERN.search(key) is not None:
+                    _prohibited()
+                _reject_prohibited_keys(nested, active)
+            if frozenset(storage) != expected:
+                _invalid()
+    finally:
+        active.remove(identity)
 
 
 def _mapping_to_contract(value: Mapping[str, object]) -> object:

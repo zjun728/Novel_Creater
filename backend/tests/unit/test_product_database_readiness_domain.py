@@ -87,7 +87,12 @@ def preparation_receipt(**changes: object) -> PreparationReceipt:
     return PreparationReceipt(**values)  # type: ignore[arg-type]
 
 
-def assert_contract_error(callable_: object, *args: object, message: str = "readiness contract is invalid", **kwargs: object) -> None:
+def assert_contract_error(
+    callable_: object,
+    *args: object,
+    message: str = "product database readiness contract is invalid",
+    **kwargs: object,
+) -> None:
     with pytest.raises(ProductDatabaseReadinessError) as captured:
         callable_(*args, **kwargs)  # type: ignore[operator]
     assert str(captured.value) == message
@@ -183,6 +188,9 @@ def test_inventory_rejects_malformed_hashes_tables_and_counts(changes: dict[str,
         {"source_database": StringSubclass(LEGACY_DATABASE)},
         {"backup_filename": "folder/backup.sql"},
         {"backup_filename": "folder\\backup.sql"},
+        {"backup_filename": "C:backup.sql"},
+        {"backup_filename": "C:\\backup.sql"},
+        {"backup_filename": "\\\\server\\share\\backup.sql"},
         {"backup_filename": ".."},
         {"backup_sha256": "short"},
         {"backup_byte_length": -1},
@@ -286,6 +294,28 @@ def test_hashing_revalidates_a_corrupted_frozen_contract():
     assert_contract_error(canonical_receipt_hash, receipt)
 
 
+def test_hashing_rejects_a_corrupted_contract_with_a_deleted_field():
+    receipt = backup_receipt()
+    object.__delattr__(receipt, "backup_sha256")
+    assert_contract_error(canonical_receipt_hash, receipt)
+
+
+def test_hashing_rejects_a_corrupted_contract_with_a_benign_extra_field():
+    receipt = backup_receipt()
+    object.__setattr__(receipt, "unexpected", "value")
+    assert_contract_error(canonical_receipt_hash, receipt)
+
+
+def test_hashing_rejects_a_corrupted_contract_with_a_sensitive_extra_field():
+    sensitive = "do-not-leak-this-value"
+    receipt = backup_receipt()
+    object.__setattr__(receipt, "password", sensitive)
+    with pytest.raises(ProductDatabaseReadinessError) as captured:
+        canonical_receipt_hash(receipt)
+    assert str(captured.value) == "receipt contains prohibited data"
+    assert sensitive not in str(captured.value)
+
+
 def test_hashing_rejects_a_dataclass_type_with_a_fixed_error():
     assert_contract_error(canonical_receipt_hash, DatabaseInventory)
 
@@ -300,6 +330,36 @@ def test_advance_rejects_a_corrupted_previous_receipt_with_sequence_error():
         A_HASH,
         message="readiness state sequence is invalid",
     )
+
+
+def test_advance_rejects_a_previous_receipt_with_a_deleted_field():
+    previous = receipt_chain(ReadinessState.INVENTORY_VERIFIED)[0]
+    object.__delattr__(previous, "evidence_hash")
+    assert_contract_error(
+        advance_receipt,
+        previous,
+        ReadinessState.BACKUP_CREATED,
+        A_HASH,
+        message="readiness state sequence is invalid",
+    )
+
+
+@pytest.mark.parametrize("cycle_kind", ("dict", "list", "mutual"))
+def test_hashing_rejects_recursive_container_cycles_with_a_fixed_error(cycle_kind: str):
+    payload = asdict(backup_receipt())
+    if cycle_kind == "dict":
+        recursive: object = {}
+        recursive["child"] = recursive  # type: ignore[index]
+    elif cycle_kind == "list":
+        recursive = []
+        recursive.append(recursive)  # type: ignore[union-attr]
+    else:
+        left: dict[str, object] = {}
+        right: list[object] = [left]
+        left["child"] = right
+        recursive = left
+    payload["client_version"] = recursive
+    assert_contract_error(canonical_receipt_hash, payload)
 
 
 @pytest.mark.parametrize("key", ("password", "Secret", "connection_dsn", "requestBody", "raw_sql", "Provider"))
@@ -320,5 +380,17 @@ def test_hashing_rejects_noncanonical_data_with_a_fixed_error(unsafe: object):
     payload["client_version"] = unsafe
     with pytest.raises(ProductDatabaseReadinessError) as captured:
         canonical_receipt_hash(payload)
-    assert str(captured.value) == "readiness contract is invalid"
+    assert str(captured.value) == "product database readiness contract is invalid"
     assert "object" not in str(captured.value)
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None or captured.value.__suppress_context__
+
+
+def test_hashing_suppresses_invalid_unicode_serialization_context():
+    payload = asdict(backup_receipt())
+    payload["client_version"] = "\ud800"
+    with pytest.raises(ProductDatabaseReadinessError) as captured:
+        canonical_receipt_hash(payload)
+    assert str(captured.value) == "product database readiness contract is invalid"
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None or captured.value.__suppress_context__
