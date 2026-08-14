@@ -11,6 +11,8 @@ import asyncio
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+import ctypes
+from ctypes import wintypes
 import hashlib
 import os
 from pathlib import Path
@@ -19,6 +21,11 @@ import secrets
 import stat
 import subprocess
 from typing import Any
+
+if os.name == "nt":
+    import msvcrt
+else:  # pragma: no cover - the product boundary deliberately fails closed off Windows.
+    msvcrt = None  # type: ignore[assignment]
 
 from backend.domain.product_database_readiness import (
     LEGACY_DATABASE,
@@ -66,6 +73,19 @@ class MySQLClientPair:
     mysqldump: Path
     mysql: Path
     version: str
+
+
+@dataclass(frozen=True)
+class _PathSnapshot:
+    raw: Path
+    resolved: Path
+    components: tuple[tuple[Path, os.stat_result], ...]
+
+
+@dataclass(frozen=True)
+class _OwnedFileIdentity:
+    volume_serial: int
+    file_index: int
 
 
 def _fixed(message: str) -> ProductDatabaseBackupError:
@@ -146,6 +166,47 @@ def _safe_existing_path(
     return resolved, after
 
 
+def _path_components(path: Path) -> tuple[Path, ...]:
+    return tuple(reversed(path.parents)) + (path,)
+
+
+def _capture_path_snapshot(value: object, repository_root: object) -> _PathSnapshot:
+    raw = _absolute_path(value)
+    components: list[tuple[Path, os.stat_result]] = []
+    for component in _path_components(raw):
+        identity = component.lstat()
+        if component.is_symlink() or _is_reparse(component):
+            raise ValueError
+        components.append((component, identity))
+    resolved = raw.resolve(strict=True)
+    if not stat.S_ISREG(components[-1][1].st_mode):
+        raise ValueError
+    root = _resolved_repository(repository_root)
+    if _inside(resolved, root):
+        raise ValueError
+    if not os.path.samestat(components[-1][1], resolved.stat()):
+        raise ValueError
+    return _PathSnapshot(raw, resolved, tuple(components))
+
+
+def _recheck_path_snapshot(
+    snapshot: _PathSnapshot, repository_root: object
+) -> None:
+    for component, expected in snapshot.components:
+        current = component.lstat()
+        if component.is_symlink() or _is_reparse(component):
+            raise ValueError
+        if not os.path.samestat(expected, current):
+            raise ValueError
+    if snapshot.raw.resolve(strict=True) != snapshot.resolved:
+        raise ValueError
+    if not stat.S_ISREG(snapshot.components[-1][0].lstat().st_mode):
+        raise ValueError
+    root = _resolved_repository(repository_root)
+    if _inside(snapshot.resolved, root):
+        raise ValueError
+
+
 def _result_output(result: object) -> str:
     if type(result) is str:
         return result
@@ -192,21 +253,19 @@ def preflight_client_pair(
     """Validate explicit, repository-external and exactly matched MySQL 8.4 clients."""
 
     try:
-        dump, dump_identity = _safe_existing_path(
-            dump_path, regular_file=True, repository_root=repository_root
-        )
-        mysql, mysql_identity = _safe_existing_path(
-            mysql_path, regular_file=True, repository_root=repository_root
-        )
-        dump_version = _client_semver(
-            _result_output(version_runner(dump)), "mysqldump"
-        )
-        mysql_version = _client_semver(_result_output(version_runner(mysql)), "mysql")
+        dump_snapshot = _capture_path_snapshot(dump_path, repository_root)
+        mysql_snapshot = _capture_path_snapshot(mysql_path, repository_root)
+        dump = dump_snapshot.resolved
+        mysql = mysql_snapshot.resolved
+        dump_result = version_runner(dump)
+        _recheck_path_snapshot(dump_snapshot, repository_root)
+        _recheck_path_snapshot(mysql_snapshot, repository_root)
+        dump_version = _client_semver(_result_output(dump_result), "mysqldump")
+        mysql_result = version_runner(mysql)
+        _recheck_path_snapshot(dump_snapshot, repository_root)
+        _recheck_path_snapshot(mysql_snapshot, repository_root)
+        mysql_version = _client_semver(_result_output(mysql_result), "mysql")
         if dump_version != mysql_version:
-            raise ValueError
-        if not os.path.samestat(dump_identity, dump.stat()):
-            raise ValueError
-        if not os.path.samestat(mysql_identity, mysql.stat()):
             raise ValueError
         return MySQLClientPair(dump, mysql, dump_version)
     except _FLOW_CONTROL:
@@ -341,12 +400,160 @@ def _quote_option(value: str) -> str:
     return f'"{escaped}"'
 
 
-def _random_owned_path(directory: Path, prefix: str, suffix: str) -> tuple[Path, int]:
+class _ByHandleFileInformation(ctypes.Structure):
+    _fields_ = [
+        ("dwFileAttributes", wintypes.DWORD),
+        ("ftCreationTime", wintypes.FILETIME),
+        ("ftLastAccessTime", wintypes.FILETIME),
+        ("ftLastWriteTime", wintypes.FILETIME),
+        ("dwVolumeSerialNumber", wintypes.DWORD),
+        ("nFileSizeHigh", wintypes.DWORD),
+        ("nFileSizeLow", wintypes.DWORD),
+        ("nNumberOfLinks", wintypes.DWORD),
+        ("nFileIndexHigh", wintypes.DWORD),
+        ("nFileIndexLow", wintypes.DWORD),
+    ]
+
+
+class _FileDispositionInformation(ctypes.Structure):
+    _fields_ = [("DeleteFile", wintypes.BOOL)]
+
+
+def _kernel32() -> object:
+    if os.name != "nt":
+        raise OSError
+    return ctypes.WinDLL("kernel32", use_last_error=True)
+
+
+def _identity_from_handle(handle: int) -> _OwnedFileIdentity:
+    kernel32 = _kernel32()
+    information = _ByHandleFileInformation()
+    getter = kernel32.GetFileInformationByHandle  # type: ignore[attr-defined]
+    getter.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ByHandleFileInformation)]
+    getter.restype = wintypes.BOOL
+    if not getter(wintypes.HANDLE(handle), ctypes.byref(information)):
+        raise OSError
+    return _OwnedFileIdentity(
+        int(information.dwVolumeSerialNumber),
+        (int(information.nFileIndexHigh) << 32) | int(information.nFileIndexLow),
+    )
+
+
+def _identity_from_fd(descriptor: int) -> _OwnedFileIdentity:
+    if msvcrt is None:
+        raise OSError
+    return _identity_from_handle(msvcrt.get_osfhandle(descriptor))
+
+
+def _delete_owned_descriptor(descriptor: int) -> None:
+    """Mark the exact descriptor-owned object for deletion, then close it."""
+
+    kernel32 = _kernel32()
+    if msvcrt is None:
+        raise OSError
+    handle = msvcrt.get_osfhandle(descriptor)
+    disposition = _FileDispositionInformation(True)
+    setter = kernel32.SetFileInformationByHandle  # type: ignore[attr-defined]
+    setter.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    setter.restype = wintypes.BOOL
+    failure: BaseException | None = None
+    try:
+        if not setter(
+            wintypes.HANDLE(handle),
+            4,
+            ctypes.byref(disposition),
+            ctypes.sizeof(disposition),
+        ):
+            failure = OSError()
+    finally:
+        try:
+            os.close(descriptor)
+        except BaseException as close_error:
+            failure = failure or close_error
+    if failure is not None:
+        raise failure from None
+
+
+def _delete_owned_windows(path: Path, expected: _OwnedFileIdentity) -> bool:
+    kernel32 = _kernel32()
+    creator = kernel32.CreateFileW  # type: ignore[attr-defined]
+    creator.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    creator.restype = wintypes.HANDLE
+    handle = creator(
+        str(path),
+        0x00010000 | 0x00000080,
+        0x00000001 | 0x00000002 | 0x00000004,
+        None,
+        3,
+        0x00200000,
+        None,
+    )
+    invalid = ctypes.c_void_p(-1).value
+    if handle == invalid:
+        if ctypes.get_last_error() in (2, 3):
+            return True
+        raise OSError
+    close = kernel32.CloseHandle  # type: ignore[attr-defined]
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    try:
+        observed = _identity_from_handle(int(handle))
+        information = _ByHandleFileInformation()
+        getter = kernel32.GetFileInformationByHandle  # type: ignore[attr-defined]
+        getter(wintypes.HANDLE(handle), ctypes.byref(information))
+        if (
+            observed != expected
+            or int(information.dwFileAttributes) & 0x00000400
+        ):
+            return True
+        disposition = _FileDispositionInformation(True)
+        setter = kernel32.SetFileInformationByHandle  # type: ignore[attr-defined]
+        setter.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        setter.restype = wintypes.BOOL
+        if not setter(
+            wintypes.HANDLE(handle),
+            4,
+            ctypes.byref(disposition),
+            ctypes.sizeof(disposition),
+        ):
+            raise OSError
+        return True
+    finally:
+        if not close(wintypes.HANDLE(handle)):
+            raise OSError
+
+
+def _random_owned_path(
+    directory: Path, prefix: str, suffix: str
+) -> tuple[Path, int, _OwnedFileIdentity]:
     for _ in range(32):
         path = directory / f"{prefix}{secrets.token_hex(16)}{suffix}"
         try:
             descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            return path, descriptor
+            try:
+                identity = _identity_from_fd(descriptor)
+            except BaseException:
+                _delete_owned_descriptor(descriptor)
+                raise
+            return path, descriptor, identity
         except FileExistsError:
             continue
     raise OSError
@@ -364,14 +571,19 @@ def _same_owned_file(path: Path, descriptor: int) -> bool:
         return False
 
 
-def _unlink_twice(path: Path | None) -> BaseException | None:
-    if path is None:
+def _delete_owned_twice(
+    path: Path | None,
+    identity: _OwnedFileIdentity | None,
+    owned_delete: Callable[[Path, _OwnedFileIdentity], bool],
+) -> BaseException | None:
+    if path is None or identity is None:
         return None
     last: BaseException | None = None
     for _ in range(2):
         try:
-            path.unlink(missing_ok=True)
-            return None
+            if owned_delete(path, identity) is True:
+                return None
+            last = OSError()
         except BaseException as error:
             if isinstance(error, _FLOW_CONTROL):
                 return error
@@ -383,6 +595,14 @@ def _cleanup_exception(error: BaseException, message: str) -> BaseException:
     if isinstance(error, _FLOW_CONTROL):
         return error
     return _fixed(message)
+
+
+def _contains_flow_control(error: BaseException) -> bool:
+    if isinstance(error, _FLOW_CONTROL):
+        return True
+    if isinstance(error, BaseExceptionGroup):
+        return any(_contains_flow_control(nested) for nested in error.exceptions)
+    return False
 
 
 def _finish_with_cleanup(
@@ -408,18 +628,20 @@ def private_mysql_option_file(
     acl_runner: Callable[[Path], None] = restrict_windows_acl,
     *,
     repository_root: Path | None = None,
+    owned_delete: Callable[[Path, _OwnedFileIdentity], bool] = _delete_owned_windows,
 ) -> Iterator[Path]:
     """Yield a flushed private option file and erase it on every exit path."""
 
     path: Path | None = None
     descriptor: int | None = None
+    identity: _OwnedFileIdentity | None = None
     handle: Any | None = None
     try:
         host, port, user, password = _validated_config(config)
         root, _ = _safe_existing_path(
             temp_root, regular_file=False, repository_root=repository_root
         )
-        path, descriptor = _random_owned_path(root, ".mysql-client-", ".cnf")
+        path, descriptor, identity = _random_owned_path(root, ".mysql-client-", ".cnf")
         acl_runner(path)
         if not _same_owned_file(path, descriptor):
             raise OSError
@@ -450,7 +672,7 @@ def private_mysql_option_file(
                 os.close(descriptor)
             except BaseException as close_error:
                 cleanup.append(close_error)
-        unlink_error = _unlink_twice(path)
+        unlink_error = _delete_owned_twice(path, identity, owned_delete)
         if unlink_error is not None:
             cleanup.append(unlink_error)
         _finish_with_cleanup(error, cleanup, _OPTION_CLEANUP_ERROR)
@@ -467,7 +689,7 @@ def private_mysql_option_file(
                 os.close(descriptor)
             except BaseException as close_error:
                 cleanup.append(close_error)
-        unlink_error = _unlink_twice(path)
+        unlink_error = _delete_owned_twice(path, identity, owned_delete)
         if unlink_error is not None:
             cleanup.append(unlink_error)
         _finish_with_cleanup(_fixed(_OPTION_ERROR), cleanup, _OPTION_CLEANUP_ERROR)
@@ -480,7 +702,7 @@ def private_mysql_option_file(
     except BaseException as error:
         primary = error
     cleanup = []
-    unlink_error = _unlink_twice(path)
+    unlink_error = _delete_owned_twice(path, identity, owned_delete)
     if unlink_error is not None:
         cleanup.append(unlink_error)
     if primary is not None or cleanup:
@@ -574,6 +796,7 @@ def create_logical_backup(
     source_inventory_hash: str | None = None,
     source_database: str = LEGACY_DATABASE,
     repository_root: Path = REPOSITORY_ROOT,
+    owned_delete: Callable[[Path, _OwnedFileIdentity], bool] = _delete_owned_windows,
 ) -> BackupReceipt:
     """Create and absent-only publish a private logical backup."""
 
@@ -597,13 +820,16 @@ def create_logical_backup(
     final = directory / filename
     temporary: Path | None = None
     descriptor: int | None = None
+    identity: _OwnedFileIdentity | None = None
     handle: Any | None = None
     published = False
     primary: BaseException | None = None
     cleanup: list[BaseException] = []
 
     try:
-        temporary, descriptor = _random_owned_path(directory, ".phase7b-backup-", ".tmp")
+        temporary, descriptor, identity = _random_owned_path(
+            directory, ".phase7b-backup-", ".tmp"
+        )
         acl_runner(temporary)
         if not _same_owned_file(temporary, descriptor):
             raise OSError
@@ -629,7 +855,7 @@ def create_logical_backup(
             raise OSError
         os.link(temporary, final)
         published = True
-        unlink_error = _unlink_twice(temporary)
+        unlink_error = _delete_owned_twice(temporary, identity, owned_delete)
         if unlink_error is not None:
             cleanup.append(unlink_error)
         else:
@@ -650,7 +876,7 @@ def create_logical_backup(
             except BaseException as error:
                 cleanup.append(error)
         if temporary is not None and not published:
-            unlink_error = _unlink_twice(temporary)
+            unlink_error = _delete_owned_twice(temporary, identity, owned_delete)
             if unlink_error is not None:
                 cleanup.append(unlink_error)
 
@@ -674,26 +900,95 @@ def create_logical_backup(
         _raise_fixed(_BACKUP_ERROR)
 
 
-def verify_backup_file(path: Path, expected_sha256: str, expected_length: int) -> None:
-    """Stream and verify a non-link regular backup using fixed 64 KiB reads."""
+def _validate_expected_backup(expected_sha256: object, expected_length: object) -> None:
+    if type(expected_sha256) is not str or _HASH.fullmatch(expected_sha256) is None:
+        raise ValueError
+    if type(expected_length) is not int or expected_length < 0:
+        raise ValueError
 
+
+def _hash_handle(handle: object) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    length = 0
+    while True:
+        chunk = handle.read(64 * 1024)  # type: ignore[attr-defined]
+        if not chunk:
+            break
+        if type(chunk) is not bytes:
+            raise OSError
+        digest.update(chunk)
+        length += len(chunk)
+    return digest.hexdigest(), length
+
+
+def _open_verified_backup(
+    path: Path,
+    expected_sha256: str,
+    expected_length: int,
+    *,
+    error_message: str,
+) -> tuple[Path, object]:
+    handle: object | None = None
     try:
-        if type(expected_sha256) is not str or _HASH.fullmatch(expected_sha256) is None:
-            raise ValueError
-        if type(expected_length) is not int or expected_length < 0:
-            raise ValueError
-        backup_path, before = _safe_existing_path(path, regular_file=True)
-        digest, length = _hash_stream(backup_path)
-        after = backup_path.stat()
+        _validate_expected_backup(expected_sha256, expected_length)
+        raw = _absolute_path(path)
+        components: list[tuple[Path, os.stat_result]] = []
+        for component in _path_components(raw):
+            observed = component.lstat()
+            if component.is_symlink() or _is_reparse(component):
+                raise OSError
+            components.append((component, observed))
+        if not stat.S_ISREG(components[-1][1].st_mode):
+            raise OSError
+        handle = raw.open("rb")
+        opened = os.fstat(handle.fileno())
         if (
-            not os.path.samestat(before, after)
-            or length != expected_length
-            or digest != expected_sha256
+            not stat.S_ISREG(opened.st_mode)
+            or not os.path.samestat(components[-1][1], opened)
         ):
-            raise ValueError
-    except _FLOW_CONTROL:
-        raise
-    except BaseException:
+            raise OSError
+        for component, expected in components[:-1]:
+            current = component.lstat()
+            if component.is_symlink() or _is_reparse(component):
+                raise OSError
+            if not os.path.samestat(expected, current):
+                raise OSError
+        digest, length = _hash_handle(handle)
+        if digest != expected_sha256 or length != expected_length:
+            raise OSError
+        handle.seek(0)
+        return raw, handle
+    except BaseException as error:
+        primary = error if _contains_flow_control(error) else _fixed(error_message)
+        cleanup: list[BaseException] = []
+        if handle is not None:
+            closing_handle = handle
+            handle = None
+            try:
+                closing_handle.close()  # type: ignore[attr-defined]
+            except BaseException as close_error:
+                cleanup.append(close_error)
+        _finish_with_cleanup(primary, cleanup, error_message)
+        raise AssertionError("unreachable")
+
+
+def verify_backup_file(path: Path, expected_sha256: str, expected_length: int) -> None:
+    """Open once and verify a non-link regular backup using fixed 64 KiB reads."""
+
+    handle: object | None = None
+    try:
+        _path, handle = _open_verified_backup(
+            path,
+            expected_sha256,
+            expected_length,
+            error_message=_VERIFY_ERROR,
+        )
+        closing_handle = handle
+        handle = None
+        closing_handle.close()  # type: ignore[attr-defined]
+    except BaseException as error:
+        if _contains_flow_control(error):
+            raise
         _raise_fixed(_VERIFY_ERROR)
 
 
@@ -705,17 +1000,24 @@ def restore_logical_backup(
     expected_length: int,
     restore_database: str,
     runner: Callable[..., object] = subprocess.run,
+    *,
+    after_verification: Callable[[Path, object], None] | None = None,
 ) -> None:
     """Verify a backup and stream it to an explicit Phase 7B restore database."""
 
     command = restore_command(pair, option_file, restore_database)
-    verify_backup_file(backup_path, expected_sha256, expected_length)
-    path, _ = _safe_existing_path(backup_path, regular_file=True)
     handle: Any | None = None
     primary: BaseException | None = None
     cleanup: list[BaseException] = []
     try:
-        handle = path.open("rb")
+        path, handle = _open_verified_backup(
+            backup_path,
+            expected_sha256,
+            expected_length,
+            error_message=_RESTORE_ERROR,
+        )
+        if after_verification is not None:
+            after_verification(path, handle)
         result = runner(
             command,
             stdin=handle,
@@ -725,10 +1027,8 @@ def restore_logical_backup(
         )
         if type(getattr(result, "returncode", None)) is not int or result.returncode != 0:
             raise OSError
-    except _FLOW_CONTROL as error:
-        primary = error
-    except BaseException:
-        primary = _fixed(_RESTORE_ERROR)
+    except BaseException as error:
+        primary = error if _contains_flow_control(error) else _fixed(_RESTORE_ERROR)
     finally:
         if handle is not None:
             try:
@@ -736,4 +1036,4 @@ def restore_logical_backup(
             except BaseException as error:
                 cleanup.append(error)
     if primary is not None or cleanup:
-        _finish_with_cleanup(primary, cleanup, _RESTORE_CLEANUP_ERROR)
+        _finish_with_cleanup(primary, cleanup, _RESTORE_ERROR)
