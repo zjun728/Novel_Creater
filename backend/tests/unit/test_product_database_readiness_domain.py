@@ -1,10 +1,12 @@
 from dataclasses import FrozenInstanceError, asdict, replace
+import traceback
 
 import pytest
 
 from backend.domain.json_contracts import canonical_hash
 from backend.domain.product_database_readiness import (
     LEGACY_DATABASE,
+    MAX_CONTRACT_DEPTH,
     NEW_DATABASE,
     BackupReceipt,
     DatabaseInventory,
@@ -202,6 +204,39 @@ def test_backup_receipt_rejects_invalid_state_binding_filename_hash_or_count(cha
     assert_contract_error(backup_receipt, **changes)
 
 
+@pytest.mark.parametrize(
+    "filename",
+    (
+        "NUL",
+        "CON.txt",
+        "prn.SQL",
+        "aux.backup",
+        "com1.sql",
+        "LPT9.dump",
+        "backup.sql.",
+        "backup.sql ",
+        "bad\0.sql",
+        "bad\n.sql",
+        "bad<name.sql",
+        "bad>name.sql",
+        'bad"name.sql',
+        "bad|name.sql",
+        "bad?name.sql",
+        "bad*name.sql",
+    ),
+)
+def test_backup_filename_rejects_nonportable_basenames_without_echo(filename: str):
+    with pytest.raises(ProductDatabaseReadinessError) as captured:
+        backup_receipt(backup_filename=filename)
+    assert str(captured.value) == "product database readiness contract is invalid"
+    assert filename not in str(captured.value)
+
+
+def test_backup_filename_accepts_simple_ascii_and_unicode_basenames():
+    assert backup_receipt(backup_filename="phase7b-backup.sql").backup_filename == "phase7b-backup.sql"
+    assert backup_receipt(backup_filename="阶段七备份.sql").backup_filename == "阶段七备份.sql"
+
+
 def test_state_receipt_rejects_invalid_states_hashes_and_cross_database_replay():
     valid = receipt_chain(ReadinessState.INVENTORY_VERIFIED)[0]
     for changes in (
@@ -362,6 +397,58 @@ def test_hashing_rejects_recursive_container_cycles_with_a_fixed_error(cycle_kin
     assert_contract_error(canonical_receipt_hash, payload)
 
 
+def nested_lists(depth: int, leaf: object) -> object:
+    value = leaf
+    for _ in range(depth):
+        value = [value]
+    return value
+
+
+def test_hashing_traverses_the_maximum_contract_depth():
+    payload = asdict(backup_receipt())
+    payload["client_version"] = nested_lists(
+        MAX_CONTRACT_DEPTH - 1,
+        {"password": "do-not-leak-this-value"},
+    )
+    with pytest.raises(ProductDatabaseReadinessError) as captured:
+        canonical_receipt_hash(payload)
+    assert str(captured.value) == "receipt contains prohibited data"
+
+
+def test_hashing_allows_repeated_noncyclic_shared_containers():
+    empty = DatabaseInventory(
+        database=LEGACY_DATABASE,
+        server_version="8.4.10",
+        schema_version=None,
+        manifest_hash=None,
+        structural_fingerprint=B_HASH,
+        table_names=(),
+        row_counts=(),
+        nonempty_table_count=0,
+        total_row_count=0,
+    )
+    payload = asdict(empty)
+    shared: list[object] = []
+    payload["table_names"] = shared
+    payload["row_counts"] = shared
+    assert canonical_receipt_hash(payload) == canonical_receipt_hash(empty)
+
+
+@pytest.mark.parametrize("depth", (MAX_CONTRACT_DEPTH, 1200))
+def test_hashing_rejects_excessive_depth_without_recursion_error(depth: int):
+    payload = asdict(backup_receipt())
+    payload["client_version"] = nested_lists(
+        depth,
+        {"password": "do-not-leak-this-value"},
+    )
+    with pytest.raises(ProductDatabaseReadinessError) as captured:
+        canonical_receipt_hash(payload)
+    assert str(captured.value) == "product database readiness contract is invalid"
+    assert not isinstance(captured.value, RecursionError)
+    assert captured.value.__cause__ is None
+    assert captured.value.__suppress_context__
+
+
 @pytest.mark.parametrize("key", ("password", "Secret", "connection_dsn", "requestBody", "raw_sql", "Provider"))
 def test_hashing_rejects_secret_bearing_keys_recursively_without_echo(key: str):
     sensitive = "do-not-leak-this-value"
@@ -394,3 +481,32 @@ def test_hashing_suppresses_invalid_unicode_serialization_context():
     assert str(captured.value) == "product database readiness contract is invalid"
     assert captured.value.__cause__ is None
     assert captured.value.__context__ is None or captured.value.__suppress_context__
+
+
+@pytest.mark.parametrize(
+    ("callable_", "message"),
+    (
+        (lambda: validate_database_role("legacy", NEW_DATABASE), "database target is invalid"),
+        (lambda: validate_restore_database(LEGACY_DATABASE), "database target is invalid"),
+        (lambda: backup_receipt(backup_sha256="bad"), "product database readiness contract is invalid"),
+        (
+            lambda: canonical_receipt_hash(asdict(backup_receipt()) | {"password": "hidden"}),
+            "receipt contains prohibited data",
+        ),
+        (
+            lambda: advance_receipt(None, ReadinessState.BACKUP_CREATED, A_HASH),
+            "readiness state sequence is invalid",
+        ),
+    ),
+)
+def test_public_errors_suppress_ambient_sensitive_exception_context(callable_: object, message: str):
+    sentinel = "password=hidden dsn=mysql://private"
+    try:
+        raise RuntimeError(sentinel)
+    except RuntimeError:
+        with pytest.raises(ProductDatabaseReadinessError) as captured:
+            callable_()  # type: ignore[operator]
+    assert str(captured.value) == message
+    assert captured.value.__cause__ is None
+    assert captured.value.__suppress_context__
+    assert sentinel not in "".join(traceback.format_exception(captured.value))

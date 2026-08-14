@@ -7,6 +7,7 @@ from enum import StrEnum
 from pathlib import PurePosixPath, PureWindowsPath
 import re
 from typing import Mapping
+import unicodedata
 
 from backend.domain.json_contracts import canonical_hash
 
@@ -16,13 +17,20 @@ NEW_DATABASE = "novel_creator_v113"
 RESTORE_DATABASE_PATTERN = re.compile(
     r"^novel_creator_phase7b_restore_[0-9a-f]{32}$"
 )
+MAX_CONTRACT_DEPTH = 64
 
 _HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _PROHIBITED_KEY_PATTERN = re.compile(r"password|secret|dsn|body|sql|provider", re.IGNORECASE)
+_WINDOWS_RESERVED_STEM_PATTERN = re.compile(
+    r"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$",
+    re.IGNORECASE,
+)
+_WINDOWS_FORBIDDEN_FILENAME_CHARS = frozenset('<>:"/\\|?*')
 _CONTRACT_ERROR = "product database readiness contract is invalid"
 _PROHIBITED_DATA_ERROR = "receipt contains prohibited data"
 _SEQUENCE_ERROR = "readiness state sequence is invalid"
+_DATABASE_TARGET_ERROR = "database target is invalid"
 
 
 class ProductDatabaseReadinessError(RuntimeError):
@@ -50,6 +58,14 @@ def _prohibited() -> None:
     raise ProductDatabaseReadinessError(_PROHIBITED_DATA_ERROR) from None
 
 
+def _invalid_database_target() -> None:
+    raise ProductDatabaseReadinessError(_DATABASE_TARGET_ERROR) from None
+
+
+def _invalid_sequence() -> None:
+    raise ProductDatabaseReadinessError(_SEQUENCE_ERROR) from None
+
+
 def _is_hash(value: object) -> bool:
     return type(value) is str and _HASH_PATTERN.fullmatch(value) is not None
 
@@ -71,6 +87,29 @@ def _is_database_name(value: object) -> bool:
         value in (LEGACY_DATABASE, NEW_DATABASE)
         or RESTORE_DATABASE_PATTERN.fullmatch(value) is not None
     )
+
+
+def _is_portable_backup_basename(value: object) -> bool:
+    if type(value) is not str or not value or value in (".", ".."):
+        return False
+    if value.endswith((".", " ")):
+        return False
+    if any(
+        character in _WINDOWS_FORBIDDEN_FILENAME_CHARS
+        or unicodedata.category(character) == "Cc"
+        for character in value
+    ):
+        return False
+    windows_path = PureWindowsPath(value)
+    posix_path = PurePosixPath(value)
+    if (
+        windows_path.drive
+        or windows_path.name != value
+        or posix_path.name != value
+    ):
+        return False
+    stem = value.split(".", 1)[0].rstrip(" .")
+    return _WINDOWS_RESERVED_STEM_PATTERN.fullmatch(stem) is None
 
 
 @dataclass(frozen=True)
@@ -143,17 +182,7 @@ class BackupReceipt:
         _require_hash(self.previous_receipt_hash)
         if type(self.source_database) is not str or self.source_database != LEGACY_DATABASE:
             _invalid()
-        if (
-            type(self.backup_filename) is not str
-            or not self.backup_filename
-            or self.backup_filename in (".", "..")
-            or "/" in self.backup_filename
-            or "\\" in self.backup_filename
-            or ":" in self.backup_filename
-            or PureWindowsPath(self.backup_filename).drive
-            or PureWindowsPath(self.backup_filename).name != self.backup_filename
-            or PurePosixPath(self.backup_filename).name != self.backup_filename
-        ):
+        if not _is_portable_backup_basename(self.backup_filename):
             _invalid()
         _require_hash(self.backup_sha256)
         _require_nonnegative_int(self.backup_byte_length)
@@ -244,10 +273,10 @@ def validate_database_role(role: str, value: str) -> str:
     """Return a database name only when it matches its immutable role."""
 
     if type(role) is not str:
-        raise ProductDatabaseReadinessError("database target is invalid")
+        _invalid_database_target()
     expected = {"legacy": LEGACY_DATABASE, "new": NEW_DATABASE}.get(role)
     if expected is None or type(value) is not str or value != expected:
-        raise ProductDatabaseReadinessError("database target is invalid")
+        _invalid_database_target()
     return value
 
 
@@ -255,11 +284,15 @@ def validate_restore_database(value: str) -> str:
     """Accept only a Phase 7B-owned random restore database name."""
 
     if type(value) is not str or RESTORE_DATABASE_PATTERN.fullmatch(value) is None:
-        raise ProductDatabaseReadinessError("database target is invalid")
+        _invalid_database_target()
     return value
 
 
-def _reject_prohibited_keys(value: object, active: set[int] | None = None) -> None:
+def _reject_prohibited_keys(
+    value: object,
+    active: set[int] | None = None,
+    depth: int = 0,
+) -> None:
     if active is None:
         active = set()
     traversable = (
@@ -269,6 +302,8 @@ def _reject_prohibited_keys(value: object, active: set[int] | None = None) -> No
     )
     if not traversable:
         return
+    if depth > MAX_CONTRACT_DEPTH:
+        _invalid()
     identity = id(value)
     if identity in active:
         _invalid()
@@ -280,10 +315,10 @@ def _reject_prohibited_keys(value: object, active: set[int] | None = None) -> No
                     _invalid()
                 if _PROHIBITED_KEY_PATTERN.search(key) is not None:
                     _prohibited()
-                _reject_prohibited_keys(nested, active)
+                _reject_prohibited_keys(nested, active, depth + 1)
         elif type(value) in (tuple, list):
             for nested in value:
-                _reject_prohibited_keys(nested, active)
+                _reject_prohibited_keys(nested, active, depth + 1)
         else:
             try:
                 storage = vars(value)
@@ -295,7 +330,7 @@ def _reject_prohibited_keys(value: object, active: set[int] | None = None) -> No
                     _invalid()
                 if _PROHIBITED_KEY_PATTERN.search(key) is not None:
                     _prohibited()
-                _reject_prohibited_keys(nested, active)
+                _reject_prohibited_keys(nested, active, depth + 1)
             if frozenset(storage) != expected:
                 _invalid()
     finally:
@@ -389,9 +424,9 @@ def advance_receipt(
 
     states = tuple(ReadinessState)
     if type(state) is not ReadinessState:
-        raise ProductDatabaseReadinessError(_SEQUENCE_ERROR)
+        _invalid_sequence()
     if previous is not None and type(previous) is not StateReceipt:
-        raise ProductDatabaseReadinessError(_SEQUENCE_ERROR)
+        _invalid_sequence()
     previous_hash: str | None = None
     if previous is None:
         expected_index = 0
@@ -400,9 +435,9 @@ def advance_receipt(
             previous_hash = canonical_receipt_hash(previous)
             expected_index = states.index(ReadinessState(previous.state)) + 1
         except (ProductDatabaseReadinessError, TypeError, ValueError):
-            raise ProductDatabaseReadinessError(_SEQUENCE_ERROR) from None
+            _invalid_sequence()
     if expected_index >= len(states) or states[expected_index] is not state:
-        raise ProductDatabaseReadinessError(_SEQUENCE_ERROR)
+        _invalid_sequence()
     return StateReceipt(
         state=state.value,
         previous_receipt_hash="0" * 64 if previous_hash is None else previous_hash,
