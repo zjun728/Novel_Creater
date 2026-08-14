@@ -89,16 +89,32 @@ class _PathSnapshot:
 class _OwnedFileIdentity:
     volume_serial: int
     file_index: int
+    creation_time: int
 
 
 @dataclass
 class _OwnedFileLease:
     identity: _OwnedFileIdentity
     handle: int | None
+    delete_through_handle: bool = False
+    deleted: bool = False
+    prepared: bool = False
+    prepare_error: BaseException | None = None
 
 
 def _fixed(message: str) -> ProductDatabaseBackupError:
     return ProductDatabaseBackupError(message)
+
+
+def _clean_flow_control(error: BaseException) -> BaseException:
+    if isinstance(error, asyncio.CancelledError):
+        return asyncio.CancelledError()
+    if isinstance(error, KeyboardInterrupt):
+        return KeyboardInterrupt()
+    if isinstance(error, SystemExit):
+        code = error.code
+        return SystemExit(code) if type(code) is int else SystemExit()
+    raise TypeError
 
 
 def _normalize_exception_tree(
@@ -113,12 +129,22 @@ def _normalize_exception_tree(
             [_normalize_exception_tree(child, message) for child in error.exceptions],
         )
     if isinstance(error, _FLOW_CONTROL):
-        return error
+        return _clean_flow_control(error)
     return _fixed(message)
 
 
+def _raise_public(error: BaseException) -> None:
+    try:
+        raise error from None
+    except BaseException as outgoing:
+        outgoing.__cause__ = None
+        outgoing.__context__ = None
+        outgoing.__suppress_context__ = True
+        raise
+
+
 def _raise_normalized(error: BaseException, message: str) -> None:
-    raise _normalize_exception_tree(error, message) from None
+    _raise_public(_normalize_exception_tree(error, message))
 
 
 def _is_reparse(path: Path) -> bool:
@@ -413,7 +439,15 @@ def _validated_config(config: object) -> tuple[str, int, str, str]:
 
 
 def _quote_option(value: str) -> str:
-    escaped = "".join(("\\" + char) if char in '\\"#;=' else char for char in value)
+    escapes = {
+        "\b": "\\b",
+        "\t": "\\t",
+        "\n": "\\n",
+        "\r": "\\r",
+        "\\": "\\\\",
+        '"': '\\"',
+    }
+    escaped = "".join(escapes.get(char, char) for char in value)
     return f'"{escaped}"'
 
 
@@ -453,6 +487,8 @@ def _identity_from_handle(handle: int) -> _OwnedFileIdentity:
     return _OwnedFileIdentity(
         int(information.dwVolumeSerialNumber),
         (int(information.nFileIndexHigh) << 32) | int(information.nFileIndexLow),
+        (int(information.ftCreationTime.dwHighDateTime) << 32)
+        | int(information.ftCreationTime.dwLowDateTime),
     )
 
 
@@ -502,7 +538,111 @@ def _close_windows_handle(handle: int) -> None:
         raise OSError
 
 
-def _reopen_exact_windows(handle: int, desired_access: int) -> int:
+def _open_owned_delete_path(path: Path) -> int:
+    kernel32 = _kernel32()
+    creator = kernel32.CreateFileW  # type: ignore[attr-defined]
+    creator.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    creator.restype = wintypes.HANDLE
+    opened = creator(
+        str(path),
+        0x00010000 | 0x00000080,
+        0x00000001 | 0x00000002 | 0x00000004,
+        None,
+        3,
+        0x00200000,
+        None,
+    )
+    invalid = ctypes.c_void_p(-1).value
+    if opened == invalid:
+        raise OSError
+    return int(opened)
+
+
+def _size_from_handle(handle: int) -> int:
+    kernel32 = _kernel32()
+    information = _ByHandleFileInformation()
+    getter = kernel32.GetFileInformationByHandle  # type: ignore[attr-defined]
+    getter.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ByHandleFileInformation)]
+    getter.restype = wintypes.BOOL
+    if not getter(wintypes.HANDLE(handle), ctypes.byref(information)):
+        raise OSError
+    return (int(information.nFileSizeHigh) << 32) | int(information.nFileSizeLow)
+
+
+def _set_file_position(handle: int, position: int) -> None:
+    kernel32 = _kernel32()
+    setter = kernel32.SetFilePointerEx  # type: ignore[attr-defined]
+    setter.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_longlong,
+        ctypes.POINTER(ctypes.c_longlong),
+        wintypes.DWORD,
+    ]
+    setter.restype = wintypes.BOOL
+    if not setter(wintypes.HANDLE(handle), position, None, 0):
+        raise OSError
+
+
+def _flush_windows_handle(handle: int) -> None:
+    kernel32 = _kernel32()
+    flush = kernel32.FlushFileBuffers  # type: ignore[attr-defined]
+    flush.argtypes = [wintypes.HANDLE]
+    flush.restype = wintypes.BOOL
+    if not flush(wintypes.HANDLE(handle)):
+        raise OSError
+
+
+def _scrub_owned_windows(handle: int) -> None:
+    length = _size_from_handle(handle)
+    _set_file_position(handle, 0)
+    kernel32 = _kernel32()
+    writer = kernel32.WriteFile  # type: ignore[attr-defined]
+    writer.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPCVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPVOID,
+    ]
+    writer.restype = wintypes.BOOL
+    zeros = bytes(64 * 1024)
+    remaining = length
+    while remaining:
+        amount = min(remaining, len(zeros))
+        written = wintypes.DWORD()
+        if not writer(
+            wintypes.HANDLE(handle),
+            zeros,
+            amount,
+            ctypes.byref(written),
+            None,
+        ) or int(written.value) != amount:
+            raise OSError
+        remaining -= amount
+    _flush_windows_handle(handle)
+    _set_file_position(handle, 0)
+    truncate = kernel32.SetEndOfFile  # type: ignore[attr-defined]
+    truncate.argtypes = [wintypes.HANDLE]
+    truncate.restype = wintypes.BOOL
+    if not truncate(wintypes.HANDLE(handle)):
+        raise OSError
+    _flush_windows_handle(handle)
+
+
+def _reopen_exact_windows(
+    handle: int,
+    desired_access: int,
+    *,
+    share_delete: bool = True,
+) -> int:
     kernel32 = _kernel32()
     reopen = kernel32.ReOpenFile  # type: ignore[attr-defined]
     reopen.argtypes = [
@@ -515,7 +655,7 @@ def _reopen_exact_windows(handle: int, desired_access: int) -> int:
     reopened = reopen(
         wintypes.HANDLE(handle),
         desired_access,
-        0x00000001 | 0x00000002 | 0x00000004,
+        0x00000001 | 0x00000002 | (0x00000004 if share_delete else 0),
         0x00200000,
     )
     if reopened == ctypes.c_void_p(-1).value:
@@ -535,7 +675,11 @@ def _delete_from_owner_handle(owner_handle: int) -> None:
         _close_windows_handle(deletion_handle)
 
 
-def _create_owned_windows(path: Path) -> tuple[int, _OwnedFileLease]:
+def _create_owned_windows(
+    path: Path,
+    *,
+    delete_capable: bool = False,
+) -> tuple[int, _OwnedFileLease]:
     if msvcrt is None:
         raise OSError
     kernel32 = _kernel32()
@@ -552,8 +696,11 @@ def _create_owned_windows(path: Path) -> tuple[int, _OwnedFileLease]:
     creator.restype = wintypes.HANDLE
     handle = creator(
         str(path),
-        0x40000000 | 0x00000080,
-        0x00000001 | 0x00000002 | 0x00000004,
+        0x80000000
+        | 0x40000000
+        | 0x00000080
+        | (0x00010000 if delete_capable else 0),
+        0x00000001 | 0x00000002 | (0 if delete_capable else 0x00000004),
         None,
         1,
         0x00000080 | 0x00200000,
@@ -569,52 +716,136 @@ def _create_owned_windows(path: Path) -> tuple[int, _OwnedFileLease]:
     descriptor: int | None = None
     try:
         identity = _identity_from_handle(creation_handle)
-        owner_handle = _reopen_exact_windows(creation_handle, 0x00000080)
+        if delete_capable:
+            owner_handle = creation_handle
+        else:
+            owner_handle = _reopen_exact_windows(
+                creation_handle,
+                0x80000000 | 0x40000000 | 0x00000080,
+                share_delete=False,
+            )
         descriptor = msvcrt.open_osfhandle(
-            creation_handle, os.O_WRONLY | getattr(os, "O_BINARY", 0)
+            creation_handle, os.O_RDWR | getattr(os, "O_BINARY", 0)
         )
         creation_handle = -1
-        return descriptor, _OwnedFileLease(identity, owner_handle)
-    except BaseException:
+        return descriptor, _OwnedFileLease(
+            identity,
+            owner_handle,
+            delete_through_handle=delete_capable,
+        )
+    except BaseException as primary:
+        cleanup: list[BaseException] = []
         if descriptor is not None:
             try:
                 os.close(descriptor)
-            except BaseException:
-                pass
+            except BaseException as error:
+                cleanup.append(error)
         elif creation_handle != -1:
             try:
                 _delete_from_owner_handle(creation_handle)
-            finally:
+            except BaseException as error:
+                cleanup.append(error)
+            try:
                 _close_windows_handle(creation_handle)
-        if owner_handle is not None:
-            _close_windows_handle(owner_handle)
-        raise
+            except BaseException as error:
+                cleanup.append(error)
+        if owner_handle is not None and owner_handle != creation_handle:
+            try:
+                _close_windows_handle(owner_handle)
+            except BaseException as error:
+                cleanup.append(error)
+        if cleanup:
+            raise BaseExceptionGroup(
+                "owned file creation failed", [primary, *cleanup]
+            ) from None
+        raise primary from None
+
+
+def _prepare_owned_cleanup(lease: _OwnedFileLease) -> BaseException | None:
+    if lease.delete_through_handle or lease.prepared:
+        return lease.prepare_error
+    # A no-share-delete option lease must not request DELETE access: ordinary
+    # MySQL/CRT path readers need not share DELETE.  Scrub through that exact
+    # R/W handle before releasing the rename lock, then identity-check deletion.
+    lease.prepared = True
+    errors: list[BaseException] = []
+    handle = lease.handle
+    if handle is not None:
+        try:
+            if _identity_from_handle(handle) != lease.identity:
+                raise OSError
+            _scrub_owned_windows(handle)
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            try:
+                _close_windows_handle(handle)
+            except BaseException as error:
+                errors.append(error)
+            lease.handle = None
+    if len(errors) == 1:
+        lease.prepare_error = errors[0]
+    elif errors:
+        lease.prepare_error = BaseExceptionGroup(
+            "owned file preparation failed", errors
+        )
+    return lease.prepare_error
 
 
 def _delete_owned_windows(path: Path, lease: _OwnedFileLease) -> bool:
-    del path
-    handle = lease.handle
-    if handle is None:
+    errors: list[BaseException] = []
+    if lease.delete_through_handle:
+        if lease.deleted:
+            return True
+        handle = lease.handle
+        if handle is None or _identity_from_handle(handle) != lease.identity:
+            raise OSError
+        if _link_count_from_handle(handle) != 0:
+            _set_delete_disposition(handle)
+        lease.deleted = True
+        lease.handle = None
         return True
-    if _identity_from_handle(handle) != lease.identity:
-        raise OSError
-    if _link_count_from_handle(handle) != 0:
+    prepare_error = _prepare_owned_cleanup(lease)
+    if prepare_error is not None:
+        errors.append(prepare_error)
+    if not lease.deleted:
+        deletion_handle: int | None = None
         try:
-            _delete_from_owner_handle(handle)
-        except _OwnedDeletePending:
-            pass
-    _close_windows_handle(handle)
-    lease.handle = None
+            deletion_handle = _open_owned_delete_path(path)
+            if _identity_from_handle(deletion_handle) != lease.identity:
+                raise OSError
+            if _link_count_from_handle(deletion_handle) != 0:
+                _set_delete_disposition(deletion_handle)
+            lease.deleted = True
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            if deletion_handle is not None:
+                try:
+                    _close_windows_handle(deletion_handle)
+                except BaseException as error:
+                    errors.append(error)
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise BaseExceptionGroup("owned file cleanup failed", errors)
     return True
 
 
 def _random_owned_path(
-    directory: Path, prefix: str, suffix: str
+    directory: Path,
+    prefix: str,
+    suffix: str,
+    *,
+    delete_capable: bool = False,
 ) -> tuple[Path, int, _OwnedFileLease]:
     for _ in range(32):
         path = directory / f"{prefix}{secrets.token_hex(16)}{suffix}"
         try:
-            descriptor, lease = _create_owned_windows(path)
+            descriptor, lease = _create_owned_windows(
+                path,
+                delete_capable=delete_capable,
+            )
             return path, descriptor, lease
         except FileExistsError:
             continue
@@ -640,18 +871,19 @@ def _delete_owned_twice(
 ) -> BaseException | None:
     if path is None or lease is None:
         return None
+    prepare_error = _prepare_owned_cleanup(lease)
     last: BaseException | None = None
     for _ in range(2):
         try:
             if owned_delete(path, lease) is True:
-                if lease.handle is not None:
+                if not lease.deleted:
                     _delete_owned_windows(path, lease)
-                return None
+                return prepare_error
             last = OSError()
         except BaseException as error:
             if isinstance(error, _FLOW_CONTROL):
                 try:
-                    if lease.handle is not None:
+                    if not lease.deleted:
                         _delete_owned_windows(path, lease)
                 except BaseException as cleanup_error:
                     return BaseExceptionGroup(
@@ -659,13 +891,10 @@ def _delete_owned_twice(
                     )
                 return error
             last = error
-    try:
-        if lease.handle is not None:
-            _delete_owned_windows(path, lease)
-    except BaseException as cleanup_error:
-        if last is None:
-            return cleanup_error
-        return BaseExceptionGroup("owned file cleanup failed", [last, cleanup_error])
+    if prepare_error is not None and last is not prepare_error:
+        return BaseExceptionGroup(
+            "owned file cleanup failed", [prepare_error, last or OSError()]
+        )
     return last
 
 
@@ -682,20 +911,26 @@ def _finish_with_cleanup(
         for error in cleanup_errors
     ]
     if primary is not None:
-        if primary_message is not None or isinstance(primary, BaseExceptionGroup):
+        if (
+            primary_message is not None
+            or isinstance(primary, BaseExceptionGroup)
+            or isinstance(primary, _FLOW_CONTROL)
+        ):
             primary = _normalize_exception_tree(
                 primary,
                 primary_message or group_message or cleanup_message,
             )
         if clean:
-            raise BaseExceptionGroup(
-                group_message or cleanup_message, [primary, *clean]
-            ) from None
-        raise primary from None
+            _raise_public(
+                BaseExceptionGroup(
+                    group_message or cleanup_message, [primary, *clean]
+                )
+            )
+        _raise_public(primary)
     if len(clean) == 1:
-        raise clean[0] from None
+        _raise_public(clean[0])
     if clean:
-        raise BaseExceptionGroup(cleanup_message, clean) from None
+        _raise_public(BaseExceptionGroup(cleanup_message, clean))
 
 
 @contextmanager
@@ -893,12 +1128,15 @@ def create_logical_backup(
 
     try:
         temporary, descriptor, lease = _random_owned_path(
-            directory, ".phase7b-backup-", ".tmp"
+            directory,
+            ".phase7b-backup-",
+            ".tmp",
+            delete_capable=True,
         )
         acl_runner(temporary)
         if not _same_owned_file(temporary, descriptor):
             raise OSError
-        handle = os.fdopen(descriptor, "wb", closefd=True)
+        handle = os.fdopen(descriptor, "w+b", closefd=True)
         descriptor = None
         result = runner(
             dump_command(pair, option, source_database),
@@ -910,24 +1148,29 @@ def create_logical_backup(
             raise OSError
         handle.flush()
         os.fsync(handle.fileno())
-        closing_handle = handle
-        handle = None
-        closing_handle.close()
-        if temporary.stat().st_size <= 0:
-            raise OSError
-        digest, length = _hash_stream(temporary)
+        handle.seek(0)
+        digest, length = _hash_handle(handle)
         if length <= 0:
             raise OSError
         os.link(temporary, final)
         published = True
+        if not _same_owned_file(final, handle.fileno()):
+            raise OSError
         unlink_error = _delete_owned_twice(temporary, lease, owned_delete)
+        temporary = None
         if unlink_error is not None:
             cleanup.append(unlink_error)
-        else:
-            temporary = None
+        closing_handle = handle
+        handle = None
+        closing_handle.close()
     except BaseException as error:
         primary = error
     finally:
+        if temporary is not None:
+            unlink_error = _delete_owned_twice(temporary, lease, owned_delete)
+            temporary = None
+            if unlink_error is not None:
+                cleanup.append(unlink_error)
         if handle is not None:
             try:
                 handle.close()
@@ -938,10 +1181,6 @@ def create_logical_backup(
                 os.close(descriptor)
             except BaseException as error:
                 cleanup.append(error)
-        if temporary is not None and not published:
-            unlink_error = _delete_owned_twice(temporary, lease, owned_delete)
-            if unlink_error is not None:
-                cleanup.append(unlink_error)
 
     if primary is not None or cleanup:
         _finish_with_cleanup(

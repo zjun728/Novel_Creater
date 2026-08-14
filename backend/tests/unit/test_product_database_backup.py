@@ -55,6 +55,52 @@ def make_option(tmp_path: Path) -> Path:
     return option
 
 
+def parse_mysql_quoted_option(value: str) -> str:
+    """Independent oracle for MySQL's documented quoted option escapes."""
+
+    assert value.startswith('"') and value.endswith('"')
+    escapes = {
+        "b": "\b",
+        "t": "\t",
+        "n": "\n",
+        "r": "\r",
+        "s": " ",
+        "\\": "\\",
+        '"': '"',
+    }
+    parsed: list[str] = []
+    index = 1
+    while index < len(value) - 1:
+        character = value[index]
+        if character != "\\":
+            parsed.append(character)
+            index += 1
+            continue
+        index += 1
+        assert index < len(value) - 1
+        assert value[index] in escapes, "unknown MySQL option-file escape"
+        parsed.append(escapes[value[index]])
+        index += 1
+    return "".join(parsed)
+
+
+def assert_clean_flow_control(actual: BaseException, source: BaseException) -> None:
+    if isinstance(source, asyncio.CancelledError):
+        assert type(actual) is asyncio.CancelledError
+        assert actual.args == ()
+    elif isinstance(source, KeyboardInterrupt):
+        assert type(actual) is KeyboardInterrupt
+        assert actual.args == ()
+    else:
+        assert isinstance(source, SystemExit)
+        assert type(actual) is SystemExit
+        expected_code = source.code if type(source.code) is int else None
+        assert actual.code == expected_code  # type: ignore[attr-defined]
+    assert actual.__cause__ is None
+    assert actual.__context__ is None
+    assert not hasattr(actual, "__notes__")
+
+
 def test_client_pair_is_frozen_and_preflight_requires_matching_84_clients(tmp_path: Path):
     repository = tmp_path / "repo"
     repository.mkdir()
@@ -85,7 +131,7 @@ def test_client_preflight_preserves_flow_control(tmp_path: Path, failure: BaseEx
 
     with pytest.raises(type(failure)) as raised:
         backup.preflight_client_pair(pair.mysqldump, pair.mysql, repository, fail)
-    assert raised.value is failure
+    assert_clean_flow_control(raised.value, failure)
 
 
 def test_client_preflight_rejects_relative_repo_inside_link_and_mismatch(tmp_path: Path):
@@ -246,7 +292,7 @@ def test_private_option_file_restricts_before_writing_and_erases_password(tmp_pa
             'host="127.0.0.1"\n'
             'port=3307\n'
             'user="writer"\n'
-            'password="p\\\\a\\"s\\#s\\;w\\=o\\=r\\=d"\n'
+                'password="p\\\\a\\"s#s;w=o=r=d"\n'
             'default-character-set="utf8mb4"\n'
         )
         if os.name != "nt":
@@ -254,6 +300,192 @@ def test_private_option_file_restricts_before_writing_and_erases_password(tmp_pa
     assert events == ["acl", "body"]
     assert not option.exists()
     assert secret not in str(option)
+
+
+def test_private_option_values_round_trip_through_mysql_escape_semantics(tmp_path: Path):
+    private = tmp_path / "private"
+    private.mkdir()
+    values = {
+        "host": "host#name;zone=blue",
+        "port": 3306,
+        "user": 'writer\\name"#;=',
+        "password": 'p\\a"ss#word;key=value\t\b',
+    }
+
+    with backup.private_mysql_option_file(values, private, lambda _path: None) as option:
+        fields = dict(
+            line.split("=", 1)
+            for line in option.read_text(encoding="utf-8").splitlines()[1:]
+        )
+        assert parse_mysql_quoted_option(fields["host"]) == values["host"]
+        assert parse_mysql_quoted_option(fields["user"]) == values["user"]
+        assert parse_mysql_quoted_option(fields["password"]) == values["password"]
+        for key in ("host", "user", "password"):
+            assert "\\#" not in fields[key]
+            assert "\\;" not in fields[key]
+            assert "\\=" not in fields[key]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows share-mode ownership lock")
+def test_private_option_owner_handle_blocks_replacement_for_entire_use(tmp_path: Path):
+    private = tmp_path / "private"
+    private.mkdir()
+
+    with backup.private_mysql_option_file(
+        {"host": "h", "port": 3306, "user": "u", "password": "secret"},
+        private,
+        lambda _path: None,
+    ) as option:
+        moved = option.with_suffix(".moved")
+        with pytest.raises(OSError):
+            option.rename(moved)
+        with pytest.raises(OSError):
+            option.unlink()
+        assert 'password="secret"' in option.read_text(encoding="utf-8")
+        assert not moved.exists()
+    assert not option.exists()
+
+
+def test_private_option_cleanup_race_leaves_only_zeroed_original_and_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    private = tmp_path / "private"
+    private.mkdir()
+    replacement = b"replacement-not-owned"
+    secret = "top-secret-" + ("x" * (128 * 1024 + 17))
+    moved = private / "scrubbed-original.cnf"
+    real_open_delete = backup._open_owned_delete_path
+    attempts = 0
+
+    def replace_after_lease_release(path: Path) -> int:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            path.rename(moved)
+            path.write_bytes(replacement)
+        return real_open_delete(path)
+
+    monkeypatch.setattr(backup, "_open_owned_delete_path", replace_after_lease_release)
+    with pytest.raises(backup.ProductDatabaseBackupError) as raised:
+        with backup.private_mysql_option_file(
+            {"host": "h", "port": 3306, "user": "u", "password": secret},
+            private,
+            lambda _path: None,
+        ) as option:
+            assert option.stat().st_size > 128 * 1024
+            assert "top-secret" in option.read_text(encoding="utf-8")
+
+    assert str(raised.value) == "private mysql option file cleanup failed"
+    assert attempts == 2
+    assert option.read_bytes() == replacement
+    assert moved.read_bytes() == b""
+    assert "top-secret" not in "".join(traceback.format_exception(raised.value))
+
+
+def test_private_option_scrub_flow_is_clean_and_deletion_is_still_attempted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    private = tmp_path / "private"
+    private.mkdir()
+    secret = "password=scrub-flow-secret"
+
+    class SensitiveKeyboardInterrupt(KeyboardInterrupt):
+        pass
+
+    flow = SensitiveKeyboardInterrupt(secret)
+    flow.add_note(secret)
+    monkeypatch.setattr(
+        backup,
+        "_scrub_owned_windows",
+        lambda _handle: (_ for _ in ()).throw(flow),
+    )
+
+    with pytest.raises(KeyboardInterrupt) as raised:
+        with backup.private_mysql_option_file(
+            {"host": "h", "port": 3306, "user": "u", "password": "top-secret"},
+            private,
+            lambda _path: None,
+        ) as option:
+            pass
+
+    assert type(raised.value) is KeyboardInterrupt
+    assert raised.value.args == ()
+    assert not hasattr(raised.value, "__notes__")
+    assert not option.exists()
+    assert secret not in "".join(traceback.format_exception(raised.value))
+
+
+def test_create_owned_failure_attempts_every_creation_and_owner_handle_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    creation_handle = 101
+    owner_handle = 202
+    closes: list[int] = []
+
+    def creator(*_args: object) -> int:
+        return creation_handle
+
+    kernel32 = SimpleNamespace(CreateFileW=creator)
+    monkeypatch.setattr(backup, "_kernel32", lambda: kernel32)
+    monkeypatch.setattr(
+        backup,
+        "_identity_from_handle",
+        lambda _handle: backup._OwnedFileIdentity(1, 2, 3),
+    )
+    monkeypatch.setattr(
+        backup,
+        "_reopen_exact_windows",
+        lambda *_args, **_kwargs: owner_handle,
+    )
+    monkeypatch.setattr(
+        backup,
+        "msvcrt",
+        SimpleNamespace(
+            open_osfhandle=lambda *_args: (_ for _ in ()).throw(
+                OSError("password=open-osfhandle-secret")
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        backup,
+        "_delete_from_owner_handle",
+        lambda _handle: (_ for _ in ()).throw(OSError("password=delete-secret")),
+    )
+
+    def failing_close(handle: int) -> None:
+        closes.append(handle)
+        raise OSError("password=close-secret")
+
+    monkeypatch.setattr(backup, "_close_windows_handle", failing_close)
+    with pytest.raises(BaseExceptionGroup) as raised:
+        backup._create_owned_windows(tmp_path / "owned.tmp")
+    assert closes == [creation_handle, owner_handle]
+    assert len(raised.value.exceptions) == 4
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows process handle accounting")
+def test_owned_file_success_lifecycle_has_no_real_windows_handle_leak(tmp_path: Path):
+    kernel32 = backup._kernel32()
+    counter = kernel32.GetProcessHandleCount  # type: ignore[attr-defined]
+    counter.argtypes = [backup.wintypes.HANDLE, backup.ctypes.POINTER(backup.wintypes.DWORD)]
+    counter.restype = backup.wintypes.BOOL
+    current = kernel32.GetCurrentProcess  # type: ignore[attr-defined]
+    current.restype = backup.wintypes.HANDLE
+
+    def handle_count() -> int:
+        count = backup.wintypes.DWORD()
+        assert counter(current(), backup.ctypes.byref(count))
+        return int(count.value)
+
+    before = handle_count()
+    for index in range(16):
+        path = tmp_path / f"owned-{index}.tmp"
+        descriptor, lease = backup._create_owned_windows(path)
+        os.write(descriptor, b"secret")
+        os.close(descriptor)
+        assert backup._delete_owned_windows(path, lease)
+    assert handle_count() <= before
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize(
@@ -312,7 +544,7 @@ def test_private_option_file_cleans_after_body_and_preserves_flow_control(tmp_pa
             lambda _path: None,
         ):
             raise flow
-    assert raised.value is flow
+    assert_clean_flow_control(raised.value, flow)
     assert list(private.iterdir()) == []
 
 
@@ -339,7 +571,7 @@ def test_private_option_cleanup_does_not_retry_or_swallow_flow_control(
             owned_delete=interrupt_once,
         ):
             pass
-    assert raised.value is flow
+    assert_clean_flow_control(raised.value, flow)
     assert calls == 1
 
 
@@ -412,7 +644,7 @@ def test_create_backup_preflights_before_file_creation_and_publishes_receipt(tmp
     def acl(path: Path) -> None:
         events.append("acl")
         if path.is_file():
-            assert path.read_bytes() == b""
+            assert path.stat().st_size == 0
 
     def runner(argv: list[str], **kwargs: object) -> object:
         if Path(argv[0]) == pair.mysql:
@@ -422,7 +654,7 @@ def test_create_backup_preflights_before_file_creation_and_publishes_receipt(tmp
         events.append("dump")
         assert kwargs["stderr"] == backup.subprocess.PIPE
         handle = kwargs["stdout"]
-        assert getattr(handle, "mode") == "wb"
+        assert getattr(handle, "mode") == "rb+"
         handle.write(b"CREATE TABLE safe(id INT);\n")
         return SimpleNamespace(returncode=0, stderr=b"ignored")
 
@@ -684,36 +916,6 @@ def test_client_preflight_rechecks_after_callback_even_when_output_is_invalid(
     assert post_callback_checks > 0
 
 
-def test_private_option_owner_bound_cleanup_leaves_a_replacement_untouched(
-    tmp_path: Path,
-):
-    private = tmp_path / "private"
-    private.mkdir()
-    delete_calls: list[tuple[Path, object]] = []
-    replacement = b"replacement-must-survive"
-
-    def owner_delete(path: Path, identity: object) -> bool:
-        delete_calls.append((path, identity))
-        # The production primitive compares the open handle identity.  This
-        # seam simulates a mismatch and therefore leaves the replacement.
-        return True
-
-    with backup.private_mysql_option_file(
-        {"host": "h", "port": 1, "user": "u", "password": "p"},
-        private,
-        lambda _path: None,
-        owned_delete=owner_delete,
-    ) as option:
-        original = private / "original-owned-object"
-        option.rename(original)
-        option.write_bytes(replacement)
-    assert option.read_bytes() == replacement
-    assert not original.exists()
-    assert len(delete_calls) == 1
-    assert delete_calls[0][0] == option
-    assert delete_calls[0][1] is not None
-
-
 def test_owner_bound_cleanup_makes_exactly_two_attempts_without_path_unlink(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -908,7 +1110,7 @@ def test_restore_read_flow_control_remains_primary_when_close_also_fails(
             RESTORE_DATABASE,
             lambda *_a, **_k: pytest.fail("runner must not start"),
         )
-    assert raised.value.exceptions[0] is flow
+    assert_clean_flow_control(raised.value.exceptions[0], flow)
     assert isinstance(raised.value.exceptions[1], backup.ProductDatabaseBackupError)
     assert str(raised.value.exceptions[1]) == "logical restore cleanup failed"
     assert "cleanup-secret" not in repr(raised.value)
@@ -1020,7 +1222,7 @@ def test_restore_flow_operation_remains_first_when_close_cleanup_fails(
             RESTORE_DATABASE,
             runner,
         )
-    assert raised.value.exceptions[0] is flow
+    assert_clean_flow_control(raised.value.exceptions[0], flow)
     assert str(raised.value.exceptions[1]) == "logical restore cleanup failed"
 
 
@@ -1200,83 +1402,8 @@ def test_private_option_setup_flow_control_matrix_is_preserved_and_clean(
             acl,
         ):
             raise AssertionError("unreachable")
-    assert raised.value is flow
+    assert_clean_flow_control(raised.value, flow)
     assert list(private.iterdir()) == []
-
-
-def test_owner_delete_window_replacement_is_left_untouched(tmp_path: Path):
-    private = tmp_path / "private"
-    private.mkdir()
-    replacement = b"replacement-at-delete-window"
-
-    def replace_inside_delete(path: Path, _identity: object) -> bool:
-        path.rename(path.with_suffix(".owned"))
-        path.write_bytes(replacement)
-        return True
-
-    with backup.private_mysql_option_file(
-        {"host": "h", "port": 1, "user": "u", "password": "p"},
-        private,
-        lambda _path: None,
-        owned_delete=replace_inside_delete,
-    ) as option:
-        pass
-    assert option.read_bytes() == replacement
-
-
-def test_owner_bound_cleanup_treats_an_already_missing_original_as_complete(
-    tmp_path: Path,
-):
-    private = tmp_path / "private"
-    private.mkdir()
-    with backup.private_mysql_option_file(
-        {"host": "h", "port": 1, "user": "u", "password": "p"},
-        private,
-        lambda _path: None,
-    ) as option:
-        option.unlink()
-    assert list(private.iterdir()) == []
-
-
-@pytest.mark.skipif(os.name != "nt", reason="Windows handle-bound deletion")
-def test_windows_owner_bound_cleanup_does_not_delete_a_real_path_replacement(
-    tmp_path: Path,
-):
-    private = tmp_path / "private"
-    private.mkdir()
-    replacement = b"real-replacement"
-    owned = private / "renamed-owned-secret.cnf"
-    with backup.private_mysql_option_file(
-        {"host": "h", "port": 1, "user": "u", "password": "p"},
-        private,
-        lambda _path: None,
-    ) as option:
-        option.rename(owned)
-        option.write_bytes(replacement)
-    assert option.read_bytes() == replacement
-    assert not owned.exists()
-
-
-@pytest.mark.parametrize("body_error", (RuntimeError("body"), KeyboardInterrupt()))
-def test_renamed_option_owner_is_deleted_on_every_body_exit_while_replacement_survives(
-    tmp_path: Path, body_error: BaseException
-):
-    private = tmp_path / "private"
-    private.mkdir()
-    replacement = b"replacement-survives"
-    owned = private / "renamed-owned-secret.cnf"
-    with pytest.raises(type(body_error)) as raised:
-        with backup.private_mysql_option_file(
-            {"host": "h", "port": 1, "user": "u", "password": "top-secret"},
-            private,
-            lambda _path: None,
-        ) as option:
-            option.rename(owned)
-            option.write_bytes(replacement)
-            raise body_error
-    assert raised.value is body_error
-    assert option.read_bytes() == replacement
-    assert not owned.exists()
 
 
 @pytest.mark.parametrize(
@@ -1335,8 +1462,8 @@ def test_dump_stage_failure_matrix_is_fixed_and_removes_unpublished_temp(
     elif stage == "hash":
         monkeypatch.setattr(
             backup,
-            "_hash_stream",
-            lambda _path: (_ for _ in ()).throw(OSError(secret)),
+            "_hash_handle",
+            lambda _handle: (_ for _ in ()).throw(OSError(secret)),
         )
 
     def acl(_path: Path) -> None:
@@ -1367,7 +1494,10 @@ def test_dump_stage_failure_matrix_is_fixed_and_removes_unpublished_temp(
         )
     assert str(raised.value) == "logical backup failed"
     assert secret not in repr(raised.value)
-    assert list(directory.iterdir()) == []
+    if stage == "close":
+        assert (directory / "phase7b.sql").read_bytes() == b"safe dump"
+    else:
+        assert list(directory.iterdir()) == []
 
 
 def test_published_backup_survives_two_owned_temp_cleanup_failures(tmp_path: Path):
@@ -1417,7 +1547,7 @@ def test_dump_owner_cleanup_window_never_removes_replacement_or_publication(
     directory.mkdir()
     repository = tmp_path / "repo"
     repository.mkdir()
-    replacement = b"replacement-temp"
+    attempts = 0
 
     def runner(argv: list[str], **kwargs: object) -> object:
         if Path(argv[0]) == pair.mysql:
@@ -1426,10 +1556,82 @@ def test_dump_owner_cleanup_window_never_removes_replacement_or_publication(
         return SimpleNamespace(returncode=0, stderr=b"")
 
     def replace_inside_delete(path: Path, _identity: object) -> bool:
+        nonlocal attempts
+        attempts += 1
         path.rename(path.with_suffix(".owned"))
-        path.write_bytes(replacement)
         return True
 
+    with pytest.raises(backup.ProductDatabaseBackupError) as raised:
+        backup.create_logical_backup(
+            pair,
+            option,
+            make_inventory(),
+            directory,
+            "phase7b.sql",
+            HASH_A,
+            runner,
+            lambda _path: None,
+            repository_root=repository,
+            owned_delete=replace_inside_delete,
+        )
+    assert str(raised.value) == "logical backup cleanup failed"
+    assert attempts == 2
+    assert (directory / "phase7b.sql").read_bytes() == b"published-original"
+    temporary = [
+        path
+        for path in directory.iterdir()
+        if path.name.startswith(".phase7b-backup-")
+    ]
+    assert len(temporary) == 1
+    assert temporary[0].read_bytes() == b"published-original"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows share-mode ownership lock")
+def test_dump_hashes_runner_handle_and_locks_source_through_hardlink_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    pair, _ = make_clients(tmp_path)
+    option = make_option(tmp_path)
+    directory = tmp_path / "backups"
+    directory.mkdir()
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    payload = b"same owned dump object"
+    runner_identity: os.stat_result | None = None
+    acl_paths: list[Path] = []
+    real_link = os.link
+    link_checked = False
+
+    def acl(path: Path) -> None:
+        acl_paths.append(path)
+
+    def runner(argv: list[str], **kwargs: object) -> object:
+        nonlocal runner_identity
+        if Path(argv[0]) == pair.mysql:
+            return SimpleNamespace(returncode=0, stdout="8.4.6\n", stderr="")
+        output = kwargs["stdout"]
+        output.write(payload)
+        runner_identity = os.fstat(output.fileno())
+        return SimpleNamespace(returncode=0, stderr=b"")
+
+    def guarded_link(source: Path, final: Path) -> None:
+        nonlocal link_checked
+        moved = source.with_suffix(".moved")
+        with pytest.raises(OSError):
+            source.rename(moved)
+        assert not moved.exists()
+        real_link(source, final)
+        assert runner_identity is not None
+        assert os.path.samestat(runner_identity, final.stat())
+        assert source in acl_paths
+        link_checked = True
+
+    monkeypatch.setattr(
+        backup,
+        "_hash_stream",
+        lambda _path: pytest.fail("dump must be hashed through the runner handle"),
+    )
+    monkeypatch.setattr(os, "link", guarded_link)
     receipt = backup.create_logical_backup(
         pair,
         option,
@@ -1438,14 +1640,17 @@ def test_dump_owner_cleanup_window_never_removes_replacement_or_publication(
         "phase7b.sql",
         HASH_A,
         runner,
-        lambda _path: None,
+        acl,
         repository_root=repository,
-        owned_delete=replace_inside_delete,
     )
-    assert receipt.backup_byte_length == len(b"published-original")
-    assert (directory / "phase7b.sql").read_bytes() == b"published-original"
-    replacements = [path for path in directory.iterdir() if path.name.startswith(".phase7b-backup-")]
-    assert any(path.read_bytes() == replacement for path in replacements)
+
+    final = directory / "phase7b.sql"
+    assert link_checked
+    assert final.read_bytes() == payload
+    assert final.stat().st_nlink == 1
+    assert [path.name for path in directory.iterdir()] == ["phase7b.sql"]
+    assert receipt.backup_sha256 == hashlib.sha256(payload).hexdigest()
+    assert receipt.backup_byte_length == len(payload)
 
 
 def test_dump_runner_flow_control_is_preserved_and_temp_is_removed(tmp_path: Path):
@@ -1474,7 +1679,7 @@ def test_dump_runner_flow_control_is_preserved_and_temp_is_removed(tmp_path: Pat
             lambda _path: None,
             repository_root=repository,
         )
-    assert raised.value is flow
+    assert_clean_flow_control(raised.value, flow)
     assert list(directory.iterdir()) == []
 
 
@@ -1642,7 +1847,7 @@ def test_restore_flow_control_matrix_is_preserved(
             RESTORE_DATABASE,
             runner,
         )
-    assert raised.value is flow
+    assert_clean_flow_control(raised.value, flow)
 
 
 def _assert_safe_exception_tree(
@@ -1662,7 +1867,9 @@ def _assert_safe_exception_tree(
             for child in error.exceptions
         ]
         return sum(count[0] for count in counts), sum(count[1] for count in counts)
-    if error is preserved_flow:
+    if isinstance(error, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+        assert_clean_flow_control(error, preserved_flow)
+        assert error.__traceback__ is None
         return 1, 0
     assert type(error) is backup.ProductDatabaseBackupError
     assert str(error) == message
@@ -1810,4 +2017,71 @@ def test_restore_recursively_classifies_operation_and_cleanup_groups(
         message="logical restore cleanup failed",
         preserved_flow=cleanup_flow,
     ) == (1, 1)
+    assert secret not in "".join(traceback.format_exception(raised.value))
+
+
+def test_exception_groups_rebuild_flow_control_as_clean_builtin_leaves(tmp_path: Path):
+    pair, _ = make_clients(tmp_path)
+    option = make_option(tmp_path)
+    secret = "password=flow-control-secret"
+
+    class SensitiveKeyboardInterrupt(KeyboardInterrupt):
+        pass
+
+    class SensitiveCancelledError(asyncio.CancelledError):
+        pass
+
+    class SensitiveSystemExit(SystemExit):
+        pass
+
+    flows: list[BaseException] = [
+        SensitiveKeyboardInterrupt(secret),
+        SensitiveCancelledError(secret),
+        SensitiveSystemExit(7),
+        SensitiveSystemExit(secret),
+    ]
+    try:
+        raise RuntimeError(secret)
+    except RuntimeError as marker:
+        sensitive_traceback = marker.__traceback__
+    for flow in flows:
+        flow.__cause__ = RuntimeError(secret)
+        flow.__context__ = RuntimeError(secret)
+        flow.__traceback__ = sensitive_traceback
+        flow.add_note(secret)
+
+    def runner(*_args: object, **_kwargs: object) -> object:
+        raise BaseExceptionGroup(
+            secret,
+            [
+                RuntimeError(secret),
+                flows[0],
+                ValueError(secret),
+                flows[1],
+                flows[2],
+                flows[3],
+            ],
+        )
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        backup.preflight_client_connection(pair, option, runner)
+
+    leaves = raised.value.exceptions
+    assert [type(leaf) for leaf in leaves] == [
+        backup.ProductDatabaseBackupError,
+        KeyboardInterrupt,
+        backup.ProductDatabaseBackupError,
+        asyncio.CancelledError,
+        SystemExit,
+        SystemExit,
+    ]
+    assert leaves[1].args == ()
+    assert leaves[3].args == ()
+    assert leaves[4].code == 7  # type: ignore[attr-defined]
+    assert leaves[5].code is None  # type: ignore[attr-defined]
+    for leaf in (leaves[1], leaves[3], leaves[4], leaves[5]):
+        assert leaf.__cause__ is None
+        assert leaf.__context__ is None
+        assert leaf.__traceback__ is None
+        assert not hasattr(leaf, "__notes__")
     assert secret not in "".join(traceback.format_exception(raised.value))
