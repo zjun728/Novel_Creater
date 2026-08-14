@@ -707,7 +707,7 @@ def test_private_option_owner_bound_cleanup_leaves_a_replacement_untouched(
         option.rename(original)
         option.write_bytes(replacement)
     assert option.read_bytes() == replacement
-    assert original.exists()
+    assert not original.exists()
     assert len(delete_calls) == 1
     assert delete_calls[0][0] == option
     assert delete_calls[0][1] is not None
@@ -909,7 +909,118 @@ def test_restore_read_flow_control_remains_primary_when_close_also_fails(
         )
     assert raised.value.exceptions[0] is flow
     assert isinstance(raised.value.exceptions[1], backup.ProductDatabaseBackupError)
+    assert str(raised.value.exceptions[1]) == "logical restore cleanup failed"
     assert "cleanup-secret" not in repr(raised.value)
+
+
+@pytest.mark.parametrize("operation", ("fileno", "read", "runner"))
+def test_restore_operation_and_close_failures_preserve_structured_precedence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+):
+    pair, _ = make_clients(tmp_path)
+    option = make_option(tmp_path)
+    dump = tmp_path / "backup.sql"
+    payload = b"safe restore"
+    dump.write_bytes(payload)
+    real_open = Path.open
+
+    class OperationAndCloseFailure:
+        def __init__(self, wrapped: object):
+            self.wrapped = wrapped
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self.wrapped, name)
+
+        def fileno(self) -> int:
+            if operation == "fileno":
+                raise OSError("password=open-secret")
+            return self.wrapped.fileno()
+
+        def read(self, size: int) -> bytes:
+            if operation == "read":
+                raise OSError("password=read-secret")
+            return self.wrapped.read(size)
+
+        def close(self) -> None:
+            self.wrapped.close()
+            raise OSError("password=close-secret")
+
+    def failing_open(path: Path, *args: object, **kwargs: object):
+        opened = real_open(path, *args, **kwargs)
+        return OperationAndCloseFailure(opened) if path == dump else opened
+
+    def runner(*_args: object, **_kwargs: object) -> object:
+        if operation == "runner":
+            raise OSError("password=runner-secret")
+        return SimpleNamespace(returncode=0, stderr=b"")
+
+    monkeypatch.setattr(Path, "open", failing_open)
+    with pytest.raises(BaseExceptionGroup) as raised:
+        backup.restore_logical_backup(
+            pair,
+            option,
+            dump,
+            hashlib.sha256(payload).hexdigest(),
+            len(payload),
+            RESTORE_DATABASE,
+            runner,
+        )
+    assert len(raised.value.exceptions) == 2
+    assert str(raised.value.exceptions[0]) == "logical restore failed"
+    assert str(raised.value.exceptions[1]) == "logical restore cleanup failed"
+    assert "password" not in repr(raised.value)
+
+
+@pytest.mark.parametrize("operation", ("read", "runner"))
+def test_restore_flow_operation_remains_first_when_close_cleanup_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+):
+    pair, _ = make_clients(tmp_path)
+    option = make_option(tmp_path)
+    dump = tmp_path / "backup.sql"
+    payload = b"safe restore"
+    dump.write_bytes(payload)
+    real_open = Path.open
+    flow = KeyboardInterrupt()
+
+    class FlowAndCloseFailure:
+        def __init__(self, wrapped: object):
+            self.wrapped = wrapped
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self.wrapped, name)
+
+        def read(self, size: int) -> bytes:
+            if operation == "read":
+                raise flow
+            return self.wrapped.read(size)
+
+        def close(self) -> None:
+            self.wrapped.close()
+            raise OSError("password=close-secret")
+
+    def failing_open(path: Path, *args: object, **kwargs: object):
+        opened = real_open(path, *args, **kwargs)
+        return FlowAndCloseFailure(opened) if path == dump else opened
+
+    def runner(*_args: object, **_kwargs: object) -> object:
+        if operation == "runner":
+            raise flow
+        return SimpleNamespace(returncode=0, stderr=b"")
+
+    monkeypatch.setattr(Path, "open", failing_open)
+    with pytest.raises(BaseExceptionGroup) as raised:
+        backup.restore_logical_backup(
+            pair,
+            option,
+            dump,
+            hashlib.sha256(payload).hexdigest(),
+            len(payload),
+            RESTORE_DATABASE,
+            runner,
+        )
+    assert raised.value.exceptions[0] is flow
+    assert str(raised.value.exceptions[1]) == "logical restore cleanup failed"
 
 
 def test_owned_temp_identity_capture_failure_uses_the_creation_handle_for_cleanup(
@@ -917,20 +1028,11 @@ def test_owned_temp_identity_capture_failure_uses_the_creation_handle_for_cleanu
 ):
     private = tmp_path / "private"
     private.mkdir()
-    deleted_by_handle = 0
 
-    def identity_failure(_descriptor: int) -> object:
+    def identity_failure(_handle: int) -> object:
         raise OSError("password=identity-secret")
 
-    def delete_descriptor(descriptor: int) -> None:
-        nonlocal deleted_by_handle
-        deleted_by_handle += 1
-        path = next(private.iterdir())
-        os.close(descriptor)
-        path.unlink()
-
-    monkeypatch.setattr(backup, "_identity_from_fd", identity_failure)
-    monkeypatch.setattr(backup, "_delete_owned_descriptor", delete_descriptor)
+    monkeypatch.setattr(backup, "_identity_from_handle", identity_failure)
     with pytest.raises(backup.ProductDatabaseBackupError) as raised:
         with backup.private_mysql_option_file(
             {"host": "h", "port": 1, "user": "u", "password": "p"},
@@ -939,7 +1041,6 @@ def test_owned_temp_identity_capture_failure_uses_the_creation_handle_for_cleanu
         ):
             raise AssertionError("unreachable")
     assert str(raised.value) == "private mysql option file failed"
-    assert deleted_by_handle == 1
     assert list(private.iterdir()) == []
 
 
@@ -990,7 +1091,11 @@ def test_private_option_setup_failure_matrix_has_no_residue_or_sensitive_error(
             self.wrapped.close()
 
     if stage == "open":
-        monkeypatch.setattr(os, "open", lambda *_a, **_k: (_ for _ in ()).throw(OSError(secret)))
+        monkeypatch.setattr(
+            backup,
+            "_create_owned_windows",
+            lambda *_a, **_k: (_ for _ in ()).throw(OSError(secret)),
+        )
     elif stage == "fdopen":
         monkeypatch.setattr(os, "fdopen", lambda *_a, **_k: (_ for _ in ()).throw(OSError(secret)))
     elif stage in ("write", "flush"):
@@ -1139,14 +1244,38 @@ def test_windows_owner_bound_cleanup_does_not_delete_a_real_path_replacement(
     private = tmp_path / "private"
     private.mkdir()
     replacement = b"real-replacement"
+    owned = private / "renamed-owned-secret.cnf"
     with backup.private_mysql_option_file(
         {"host": "h", "port": 1, "user": "u", "password": "p"},
         private,
         lambda _path: None,
     ) as option:
-        option.rename(option.with_suffix(".owned"))
+        option.rename(owned)
         option.write_bytes(replacement)
     assert option.read_bytes() == replacement
+    assert not owned.exists()
+
+
+@pytest.mark.parametrize("body_error", (RuntimeError("body"), KeyboardInterrupt()))
+def test_renamed_option_owner_is_deleted_on_every_body_exit_while_replacement_survives(
+    tmp_path: Path, body_error: BaseException
+):
+    private = tmp_path / "private"
+    private.mkdir()
+    replacement = b"replacement-survives"
+    owned = private / "renamed-owned-secret.cnf"
+    with pytest.raises(type(body_error)) as raised:
+        with backup.private_mysql_option_file(
+            {"host": "h", "port": 1, "user": "u", "password": "top-secret"},
+            private,
+            lambda _path: None,
+        ) as option:
+            option.rename(owned)
+            option.write_bytes(replacement)
+            raise body_error
+    assert raised.value is body_error
+    assert option.read_bytes() == replacement
+    assert not owned.exists()
 
 
 @pytest.mark.parametrize(
@@ -1187,7 +1316,11 @@ def test_dump_stage_failure_matrix_is_fixed_and_removes_unpublished_temp(
                 raise OSError(secret)
 
     if stage == "create":
-        monkeypatch.setattr(os, "open", lambda *_a, **_k: (_ for _ in ()).throw(OSError(secret)))
+        monkeypatch.setattr(
+            backup,
+            "_create_owned_windows",
+            lambda *_a, **_k: (_ for _ in ()).throw(OSError(secret)),
+        )
     elif stage == "fdopen":
         monkeypatch.setattr(os, "fdopen", lambda *_a, **_k: (_ for _ in ()).throw(OSError(secret)))
     elif stage in ("flush", "close"):
@@ -1447,7 +1580,9 @@ def test_restore_stage_failure_matrix_is_fixed_and_never_leaks_values(
             RESTORE_DATABASE,
             runner,
         )
-    assert str(raised.value) == "logical restore failed"
+    assert str(raised.value) == (
+        "logical restore cleanup failed" if stage == "close" else "logical restore failed"
+    )
     assert secret not in repr(raised.value)
     assert runner_calls == (1 if stage in ("runner", "close") else 0)
 

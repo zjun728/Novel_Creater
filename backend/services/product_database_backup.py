@@ -68,6 +68,14 @@ class ProductDatabaseBackupError(RuntimeError):
     """A fixed, public-safe failure at the logical backup boundary."""
 
 
+class _SafeBoundaryGroup(BaseExceptionGroup):
+    """An already-sanitized operation/cleanup precedence group."""
+
+
+class _OwnedDeletePending(Exception):
+    pass
+
+
 @dataclass(frozen=True)
 class MySQLClientPair:
     mysqldump: Path
@@ -86,6 +94,12 @@ class _PathSnapshot:
 class _OwnedFileIdentity:
     volume_serial: int
     file_index: int
+
+
+@dataclass
+class _OwnedFileLease:
+    identity: _OwnedFileIdentity
+    handle: int | None
 
 
 def _fixed(message: str) -> ProductDatabaseBackupError:
@@ -439,19 +453,25 @@ def _identity_from_handle(handle: int) -> _OwnedFileIdentity:
     )
 
 
+def _link_count_from_handle(handle: int) -> int:
+    kernel32 = _kernel32()
+    information = _ByHandleFileInformation()
+    getter = kernel32.GetFileInformationByHandle  # type: ignore[attr-defined]
+    getter.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ByHandleFileInformation)]
+    getter.restype = wintypes.BOOL
+    if not getter(wintypes.HANDLE(handle), ctypes.byref(information)):
+        raise OSError
+    return int(information.nNumberOfLinks)
+
+
 def _identity_from_fd(descriptor: int) -> _OwnedFileIdentity:
     if msvcrt is None:
         raise OSError
     return _identity_from_handle(msvcrt.get_osfhandle(descriptor))
 
 
-def _delete_owned_descriptor(descriptor: int) -> None:
-    """Mark the exact descriptor-owned object for deletion, then close it."""
-
+def _set_delete_disposition(handle: int) -> None:
     kernel32 = _kernel32()
-    if msvcrt is None:
-        raise OSError
-    handle = msvcrt.get_osfhandle(descriptor)
     disposition = _FileDispositionInformation(True)
     setter = kernel32.SetFileInformationByHandle  # type: ignore[attr-defined]
     setter.argtypes = [
@@ -461,25 +481,60 @@ def _delete_owned_descriptor(descriptor: int) -> None:
         wintypes.DWORD,
     ]
     setter.restype = wintypes.BOOL
-    failure: BaseException | None = None
+    if not setter(
+        wintypes.HANDLE(handle),
+        4,
+        ctypes.byref(disposition),
+        ctypes.sizeof(disposition),
+    ):
+        raise OSError
+
+
+def _close_windows_handle(handle: int) -> None:
+    kernel32 = _kernel32()
+    close = kernel32.CloseHandle  # type: ignore[attr-defined]
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    if not close(wintypes.HANDLE(handle)):
+        raise OSError
+
+
+def _reopen_exact_windows(handle: int, desired_access: int) -> int:
+    kernel32 = _kernel32()
+    reopen = kernel32.ReOpenFile  # type: ignore[attr-defined]
+    reopen.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    reopen.restype = wintypes.HANDLE
+    reopened = reopen(
+        wintypes.HANDLE(handle),
+        desired_access,
+        0x00000001 | 0x00000002 | 0x00000004,
+        0x00200000,
+    )
+    if reopened == ctypes.c_void_p(-1).value:
+        if ctypes.get_last_error() == 303:
+            raise _OwnedDeletePending
+        raise OSError
+    return int(reopened)
+
+
+def _delete_from_owner_handle(owner_handle: int) -> None:
+    deletion_handle = _reopen_exact_windows(
+        owner_handle, 0x00010000 | 0x00000080
+    )
     try:
-        if not setter(
-            wintypes.HANDLE(handle),
-            4,
-            ctypes.byref(disposition),
-            ctypes.sizeof(disposition),
-        ):
-            failure = OSError()
+        _set_delete_disposition(deletion_handle)
     finally:
-        try:
-            os.close(descriptor)
-        except BaseException as close_error:
-            failure = failure or close_error
-    if failure is not None:
-        raise failure from None
+        _close_windows_handle(deletion_handle)
 
 
-def _delete_owned_windows(path: Path, expected: _OwnedFileIdentity) -> bool:
+def _create_owned_windows(path: Path) -> tuple[int, _OwnedFileLease]:
+    if msvcrt is None:
+        raise OSError
     kernel32 = _kernel32()
     creator = kernel32.CreateFileW  # type: ignore[attr-defined]
     creator.argtypes = [
@@ -494,66 +549,70 @@ def _delete_owned_windows(path: Path, expected: _OwnedFileIdentity) -> bool:
     creator.restype = wintypes.HANDLE
     handle = creator(
         str(path),
-        0x00010000 | 0x00000080,
+        0x40000000 | 0x00000080,
         0x00000001 | 0x00000002 | 0x00000004,
         None,
-        3,
-        0x00200000,
+        1,
+        0x00000080 | 0x00200000,
         None,
     )
     invalid = ctypes.c_void_p(-1).value
     if handle == invalid:
-        if ctypes.get_last_error() in (2, 3):
-            return True
+        if ctypes.get_last_error() in (80, 183):
+            raise FileExistsError
         raise OSError
-    close = kernel32.CloseHandle  # type: ignore[attr-defined]
-    close.argtypes = [wintypes.HANDLE]
-    close.restype = wintypes.BOOL
+    creation_handle = int(handle)
+    owner_handle: int | None = None
+    descriptor: int | None = None
     try:
-        observed = _identity_from_handle(int(handle))
-        information = _ByHandleFileInformation()
-        getter = kernel32.GetFileInformationByHandle  # type: ignore[attr-defined]
-        getter(wintypes.HANDLE(handle), ctypes.byref(information))
-        if (
-            observed != expected
-            or int(information.dwFileAttributes) & 0x00000400
-        ):
-            return True
-        disposition = _FileDispositionInformation(True)
-        setter = kernel32.SetFileInformationByHandle  # type: ignore[attr-defined]
-        setter.argtypes = [
-            wintypes.HANDLE,
-            ctypes.c_int,
-            wintypes.LPVOID,
-            wintypes.DWORD,
-        ]
-        setter.restype = wintypes.BOOL
-        if not setter(
-            wintypes.HANDLE(handle),
-            4,
-            ctypes.byref(disposition),
-            ctypes.sizeof(disposition),
-        ):
-            raise OSError
+        identity = _identity_from_handle(creation_handle)
+        owner_handle = _reopen_exact_windows(creation_handle, 0x00000080)
+        descriptor = msvcrt.open_osfhandle(
+            creation_handle, os.O_WRONLY | getattr(os, "O_BINARY", 0)
+        )
+        creation_handle = -1
+        return descriptor, _OwnedFileLease(identity, owner_handle)
+    except BaseException:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except BaseException:
+                pass
+        elif creation_handle != -1:
+            try:
+                _delete_from_owner_handle(creation_handle)
+            finally:
+                _close_windows_handle(creation_handle)
+        if owner_handle is not None:
+            _close_windows_handle(owner_handle)
+        raise
+
+
+def _delete_owned_windows(path: Path, lease: _OwnedFileLease) -> bool:
+    del path
+    handle = lease.handle
+    if handle is None:
         return True
-    finally:
-        if not close(wintypes.HANDLE(handle)):
-            raise OSError
+    if _identity_from_handle(handle) != lease.identity:
+        raise OSError
+    if _link_count_from_handle(handle) != 0:
+        try:
+            _delete_from_owner_handle(handle)
+        except _OwnedDeletePending:
+            pass
+    _close_windows_handle(handle)
+    lease.handle = None
+    return True
 
 
 def _random_owned_path(
     directory: Path, prefix: str, suffix: str
-) -> tuple[Path, int, _OwnedFileIdentity]:
+) -> tuple[Path, int, _OwnedFileLease]:
     for _ in range(32):
         path = directory / f"{prefix}{secrets.token_hex(16)}{suffix}"
         try:
-            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            try:
-                identity = _identity_from_fd(descriptor)
-            except BaseException:
-                _delete_owned_descriptor(descriptor)
-                raise
-            return path, descriptor, identity
+            descriptor, lease = _create_owned_windows(path)
+            return path, descriptor, lease
         except FileExistsError:
             continue
     raise OSError
@@ -573,26 +632,42 @@ def _same_owned_file(path: Path, descriptor: int) -> bool:
 
 def _delete_owned_twice(
     path: Path | None,
-    identity: _OwnedFileIdentity | None,
-    owned_delete: Callable[[Path, _OwnedFileIdentity], bool],
+    lease: _OwnedFileLease | None,
+    owned_delete: Callable[[Path, _OwnedFileLease], bool],
 ) -> BaseException | None:
-    if path is None or identity is None:
+    if path is None or lease is None:
         return None
     last: BaseException | None = None
     for _ in range(2):
         try:
-            if owned_delete(path, identity) is True:
+            if owned_delete(path, lease) is True:
+                if lease.handle is not None:
+                    _delete_owned_windows(path, lease)
                 return None
             last = OSError()
         except BaseException as error:
             if isinstance(error, _FLOW_CONTROL):
+                try:
+                    if lease.handle is not None:
+                        _delete_owned_windows(path, lease)
+                except BaseException as cleanup_error:
+                    return BaseExceptionGroup(
+                        "owned file cleanup failed", [error, cleanup_error]
+                    )
                 return error
             last = error
+    try:
+        if lease.handle is not None:
+            _delete_owned_windows(path, lease)
+    except BaseException as cleanup_error:
+        if last is None:
+            return cleanup_error
+        return BaseExceptionGroup("owned file cleanup failed", [last, cleanup_error])
     return last
 
 
 def _cleanup_exception(error: BaseException, message: str) -> BaseException:
-    if isinstance(error, _FLOW_CONTROL):
+    if _contains_flow_control(error):
         return error
     return _fixed(message)
 
@@ -609,11 +684,17 @@ def _finish_with_cleanup(
     primary: BaseException | None,
     cleanup_errors: list[BaseException],
     cleanup_message: str,
+    *,
+    group_message: str | None = None,
+    safe_group: bool = False,
 ) -> None:
     clean = [_cleanup_exception(error, cleanup_message) for error in cleanup_errors]
     if primary is not None:
         if clean:
-            raise BaseExceptionGroup(cleanup_message, [primary, *clean]) from None
+            group_type = _SafeBoundaryGroup if safe_group else BaseExceptionGroup
+            raise group_type(
+                group_message or cleanup_message, [primary, *clean]
+            ) from None
         raise primary from None
     if len(clean) == 1:
         raise clean[0] from None
@@ -628,20 +709,20 @@ def private_mysql_option_file(
     acl_runner: Callable[[Path], None] = restrict_windows_acl,
     *,
     repository_root: Path | None = None,
-    owned_delete: Callable[[Path, _OwnedFileIdentity], bool] = _delete_owned_windows,
+    owned_delete: Callable[[Path, _OwnedFileLease], bool] = _delete_owned_windows,
 ) -> Iterator[Path]:
     """Yield a flushed private option file and erase it on every exit path."""
 
     path: Path | None = None
     descriptor: int | None = None
-    identity: _OwnedFileIdentity | None = None
+    lease: _OwnedFileLease | None = None
     handle: Any | None = None
     try:
         host, port, user, password = _validated_config(config)
         root, _ = _safe_existing_path(
             temp_root, regular_file=False, repository_root=repository_root
         )
-        path, descriptor, identity = _random_owned_path(root, ".mysql-client-", ".cnf")
+        path, descriptor, lease = _random_owned_path(root, ".mysql-client-", ".cnf")
         acl_runner(path)
         if not _same_owned_file(path, descriptor):
             raise OSError
@@ -672,7 +753,7 @@ def private_mysql_option_file(
                 os.close(descriptor)
             except BaseException as close_error:
                 cleanup.append(close_error)
-        unlink_error = _delete_owned_twice(path, identity, owned_delete)
+        unlink_error = _delete_owned_twice(path, lease, owned_delete)
         if unlink_error is not None:
             cleanup.append(unlink_error)
         _finish_with_cleanup(error, cleanup, _OPTION_CLEANUP_ERROR)
@@ -689,7 +770,7 @@ def private_mysql_option_file(
                 os.close(descriptor)
             except BaseException as close_error:
                 cleanup.append(close_error)
-        unlink_error = _delete_owned_twice(path, identity, owned_delete)
+        unlink_error = _delete_owned_twice(path, lease, owned_delete)
         if unlink_error is not None:
             cleanup.append(unlink_error)
         _finish_with_cleanup(_fixed(_OPTION_ERROR), cleanup, _OPTION_CLEANUP_ERROR)
@@ -702,7 +783,7 @@ def private_mysql_option_file(
     except BaseException as error:
         primary = error
     cleanup = []
-    unlink_error = _delete_owned_twice(path, identity, owned_delete)
+    unlink_error = _delete_owned_twice(path, lease, owned_delete)
     if unlink_error is not None:
         cleanup.append(unlink_error)
     if primary is not None or cleanup:
@@ -796,7 +877,7 @@ def create_logical_backup(
     source_inventory_hash: str | None = None,
     source_database: str = LEGACY_DATABASE,
     repository_root: Path = REPOSITORY_ROOT,
-    owned_delete: Callable[[Path, _OwnedFileIdentity], bool] = _delete_owned_windows,
+    owned_delete: Callable[[Path, _OwnedFileLease], bool] = _delete_owned_windows,
 ) -> BackupReceipt:
     """Create and absent-only publish a private logical backup."""
 
@@ -820,14 +901,14 @@ def create_logical_backup(
     final = directory / filename
     temporary: Path | None = None
     descriptor: int | None = None
-    identity: _OwnedFileIdentity | None = None
+    lease: _OwnedFileLease | None = None
     handle: Any | None = None
     published = False
     primary: BaseException | None = None
     cleanup: list[BaseException] = []
 
     try:
-        temporary, descriptor, identity = _random_owned_path(
+        temporary, descriptor, lease = _random_owned_path(
             directory, ".phase7b-backup-", ".tmp"
         )
         acl_runner(temporary)
@@ -855,7 +936,7 @@ def create_logical_backup(
             raise OSError
         os.link(temporary, final)
         published = True
-        unlink_error = _delete_owned_twice(temporary, identity, owned_delete)
+        unlink_error = _delete_owned_twice(temporary, lease, owned_delete)
         if unlink_error is not None:
             cleanup.append(unlink_error)
         else:
@@ -876,7 +957,7 @@ def create_logical_backup(
             except BaseException as error:
                 cleanup.append(error)
         if temporary is not None and not published:
-            unlink_error = _delete_owned_twice(temporary, identity, owned_delete)
+            unlink_error = _delete_owned_twice(temporary, lease, owned_delete)
             if unlink_error is not None:
                 cleanup.append(unlink_error)
 
@@ -968,7 +1049,18 @@ def _open_verified_backup(
                 closing_handle.close()  # type: ignore[attr-defined]
             except BaseException as close_error:
                 cleanup.append(close_error)
-        _finish_with_cleanup(primary, cleanup, error_message)
+        cleanup_message = (
+            _RESTORE_CLEANUP_ERROR
+            if error_message == _RESTORE_ERROR
+            else error_message
+        )
+        _finish_with_cleanup(
+            primary,
+            cleanup,
+            cleanup_message,
+            group_message=error_message,
+            safe_group=error_message == _RESTORE_ERROR,
+        )
         raise AssertionError("unreachable")
 
 
@@ -1028,7 +1120,11 @@ def restore_logical_backup(
         if type(getattr(result, "returncode", None)) is not int or result.returncode != 0:
             raise OSError
     except BaseException as error:
-        primary = error if _contains_flow_control(error) else _fixed(_RESTORE_ERROR)
+        primary = (
+            error
+            if isinstance(error, _SafeBoundaryGroup) or _contains_flow_control(error)
+            else _fixed(_RESTORE_ERROR)
+        )
     finally:
         if handle is not None:
             try:
@@ -1036,4 +1132,9 @@ def restore_logical_backup(
             except BaseException as error:
                 cleanup.append(error)
     if primary is not None or cleanup:
-        _finish_with_cleanup(primary, cleanup, _RESTORE_ERROR)
+        _finish_with_cleanup(
+            primary,
+            cleanup,
+            _RESTORE_CLEANUP_ERROR,
+            group_message=_RESTORE_ERROR,
+        )
