@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, fields, is_dataclass
 from enum import StrEnum
+import ntpath
 from pathlib import PurePosixPath, PureWindowsPath
 import re
 from typing import Mapping
@@ -22,10 +23,6 @@ MAX_CONTRACT_DEPTH = 64
 _HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _PROHIBITED_KEY_PATTERN = re.compile(r"password|secret|dsn|body|sql|provider", re.IGNORECASE)
-_WINDOWS_RESERVED_STEM_PATTERN = re.compile(
-    r"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$",
-    re.IGNORECASE,
-)
 _WINDOWS_FORBIDDEN_FILENAME_CHARS = frozenset('<>:"/\\|?*')
 _CONTRACT_ERROR = "product database readiness contract is invalid"
 _PROHIBITED_DATA_ERROR = "receipt contains prohibited data"
@@ -92,6 +89,13 @@ def _is_database_name(value: object) -> bool:
 def _is_portable_backup_basename(value: object) -> bool:
     if type(value) is not str or not value or value in (".", ".."):
         return False
+    try:
+        value.encode("utf-8", errors="strict")
+        utf16_value = value.encode("utf-16-le", errors="strict")
+    except UnicodeEncodeError:
+        return False
+    if len(utf16_value) // 2 > 255:
+        return False
     if value.endswith((".", " ")):
         return False
     if any(
@@ -108,8 +112,10 @@ def _is_portable_backup_basename(value: object) -> bool:
         or posix_path.name != value
     ):
         return False
-    stem = value.split(".", 1)[0].rstrip(" .")
-    return _WINDOWS_RESERVED_STEM_PATTERN.fullmatch(stem) is None
+    is_reserved = getattr(ntpath, "isreserved", None)
+    if is_reserved is not None:
+        return not is_reserved(value)
+    return not windows_path.is_reserved()
 
 
 @dataclass(frozen=True)
