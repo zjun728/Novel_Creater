@@ -21,6 +21,14 @@ _INVALID_TARGET = "database inventory target is invalid"
 _COMPARE_FAILED = "database inventory comparison failed"
 _STORAGE_FAILED = "database table storage policy failed"
 
+
+class _InventoryFailure(Exception):
+    pass
+
+
+class _TargetAbsent(Exception):
+    pass
+
 SCHEMA_EXISTS_SQL = (
     "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME=%s"
 )
@@ -84,6 +92,32 @@ def _identifier(value: object) -> str:
     return value
 
 
+def _returned_identifier(value: object) -> str:
+    if type(value) is not str or _IDENTIFIER.fullmatch(value) is None:
+        raise _InventoryFailure from None
+    return value
+
+
+async def _fetchone(
+    session: object,
+    sql: str,
+    params: tuple[object, ...] = (),
+) -> Mapping[str, object] | None:
+    try:
+        result = await session.fetchone(sql, params)  # type: ignore[attr-defined]
+        if result is None:
+            return None
+        if not isinstance(result, Mapping):
+            raise _InventoryFailure
+        return dict(result)
+    except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as error:
+        if type(error) is _InventoryFailure:
+            raise
+        raise _InventoryFailure from None
+
+
 async def _fetchall(
     session: object,
     sql: str,
@@ -98,22 +132,17 @@ async def _fetchall(
         if not isinstance(result, Sequence) or isinstance(
             result, (str, bytes, bytearray)
         ):
-            _raise(_FAILED)
+            raise _InventoryFailure
         rows = list(result)
         if any(not isinstance(row, Mapping) for row in rows):
-            _raise(_FAILED)
+            raise _InventoryFailure
         return [dict(row) for row in rows]
     except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
         raise
-    except Exception:
-        _raise(_FAILED)
-
-
-def _one(rows: list[Mapping[str, object]]) -> Mapping[str, object]:
-    if len(rows) != 1:
-        _raise(_FAILED)
-    return rows[0]
-
+    except Exception as error:
+        if type(error) is _InventoryFailure:
+            raise
+        raise _InventoryFailure from None
 
 async def read_table_storage(session: object, database: str) -> tuple[TableStorage, ...]:
     database = _identifier(database)
@@ -124,22 +153,20 @@ async def read_table_storage(session: object, database: str) -> tuple[TableStora
             name = row.get("TABLE_NAME")
             engine = row.get("ENGINE")
             collation = row.get("TABLE_COLLATION")
-            validated_name = _identifier(name)
+            validated_name = _returned_identifier(name)
             if (
                 type(engine) is not str
                 or not engine
                 or type(collation) is not str
                 or not collation
             ):
-                _raise(_FAILED)
+                raise _InventoryFailure from None
             storage.append(TableStorage(validated_name, engine, collation))
         result = tuple(storage)
         if tuple(item.name for item in result) != tuple(sorted({item.name for item in result})):
-            _raise(_FAILED)
+            raise _InventoryFailure from None
         return result
     except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
-        raise
-    except ProductDatabaseReadinessError:
         raise
     except Exception:
         _raise(_FAILED)
@@ -162,7 +189,7 @@ def _normalize(rows: list[Mapping[str, object]]) -> list[dict[str, object]]:
         for key in sorted(row):
             value = row[key]
             if type(key) is not str or value is not None and type(value) not in (str, int):
-                _raise(_FAILED)
+                raise _InventoryFailure from None
             clean[key] = value
         normalized.append(clean)
     return sorted(normalized, key=canonical_json)
@@ -171,16 +198,19 @@ def _normalize(rows: list[Mapping[str, object]]) -> list[dict[str, object]]:
 async def inventory_database(session: object, database: str) -> DatabaseInventory:
     database = _identifier(database)
     try:
-        existence = await _fetchall(session, SCHEMA_EXISTS_SQL, (database,))
-        if not existence:
-            _raise(_ABSENT)
-        schema_name = _one(existence).get("SCHEMA_NAME")
+        existence = await _fetchone(session, SCHEMA_EXISTS_SQL, (database,))
+        if existence is None:
+            raise _TargetAbsent from None
+        schema_name = existence.get("SCHEMA_NAME")
         if schema_name != database or type(schema_name) is not str:
-            _raise(_FAILED)
+            raise _InventoryFailure from None
 
-        version = _one(await _fetchall(session, SERVER_VERSION_SQL)).get("version")
+        version_row = await _fetchone(session, SERVER_VERSION_SQL)
+        if version_row is None:
+            raise _InventoryFailure from None
+        version = version_row.get("version")
         if type(version) is not str or not version:
-            _raise(_FAILED)
+            raise _InventoryFailure from None
 
         storage = await read_table_storage(session, database)
         table_names = tuple(row.name for row in storage)
@@ -188,25 +218,28 @@ async def inventory_database(session: object, database: str) -> DatabaseInventor
         schema_version: str | None = None
         manifest_hash: str | None = None
         if "schema_metadata" in table_names:
-            metadata = _one(
-                await _fetchall(session, SCHEMA_METADATA_SQL.format(database=database))
+            metadata = await _fetchone(
+                session, SCHEMA_METADATA_SQL.format(database=database)
             )
+            if metadata is None:
+                raise _InventoryFailure from None
             schema_version = metadata.get("schema_version")  # type: ignore[assignment]
             manifest_hash = metadata.get("manifest_hash")  # type: ignore[assignment]
             if type(schema_version) is not str or type(manifest_hash) is not str:
-                _raise(_FAILED)
+                raise _InventoryFailure from None
 
         row_counts: list[tuple[str, int]] = []
         for table in table_names:
-            validated_table = _identifier(table)
-            count = _one(
-                await _fetchall(
-                    session,
-                    f"SELECT COUNT(*) AS count FROM `{database}`.`{validated_table}`",
-                )
-            ).get("count")
+            validated_table = _returned_identifier(table)
+            count_row = await _fetchone(
+                session,
+                f"SELECT COUNT(*) AS count FROM `{database}`.`{validated_table}`",
+            )
+            if count_row is None:
+                raise _InventoryFailure from None
+            count = count_row.get("count")
             if type(count) is not int or count < 0:
-                _raise(_FAILED)
+                raise _InventoryFailure from None
             row_counts.append((validated_table, count))
 
         structure: list[dict[str, object]] = []
@@ -232,8 +265,8 @@ async def inventory_database(session: object, database: str) -> DatabaseInventor
         )
     except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
         raise
-    except ProductDatabaseReadinessError:
-        raise
+    except _TargetAbsent:
+        _raise(_ABSENT)
     except Exception:
         _raise(_FAILED)
 
