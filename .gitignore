@@ -24,6 +24,7 @@ _check_db.py
 小说txt/
 
 # QA browser/runtime artifacts
+.worktrees/
 .playwright-cli/
 .pytest_cache/
 tmp/realistic-flow-qa/chrome-profile/
