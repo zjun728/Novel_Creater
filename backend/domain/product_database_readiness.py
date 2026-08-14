@@ -90,11 +90,11 @@ def _is_portable_backup_basename(value: object) -> bool:
     if type(value) is not str or not value or value in (".", ".."):
         return False
     try:
-        value.encode("utf-8", errors="strict")
+        utf8_value = value.encode("utf-8", errors="strict")
         utf16_value = value.encode("utf-16-le", errors="strict")
     except UnicodeEncodeError:
         return False
-    if len(utf16_value) // 2 > 255:
+    if len(utf8_value) > 255 or len(utf16_value) // 2 > 255:
         return False
     if value.endswith((".", " ")):
         return False

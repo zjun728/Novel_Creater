@@ -230,6 +230,8 @@ def test_backup_receipt_rejects_invalid_state_binding_filename_hash_or_count(cha
         "\ud800.sql",
         "\udfff.sql",
         "a" * 252 + ".sql",
+        "😀" * 63 + ".sql",
+        "😀" * 125 + ".sql",
     ),
 )
 def test_backup_filename_rejects_nonportable_basenames_without_echo(filename: str):
@@ -243,12 +245,19 @@ def test_backup_filename_accepts_simple_ascii_and_unicode_basenames():
     for filename in (
         "phase7b-backup.sql",
         "阶段七备份.sql",
-        "😀" * 125 + ".sql",
         "a" * 251 + ".sql",
     ):
         receipt = backup_receipt(backup_filename=filename)
         assert receipt.backup_filename == filename
         assert len(canonical_receipt_hash(receipt)) == 64
+
+
+def test_backup_filename_accepts_exactly_255_utf8_bytes_and_hashes():
+    filename = "😀" * 62 + "abc.sql"
+    assert len(filename.encode("utf-8")) == 255
+    receipt = backup_receipt(backup_filename=filename)
+    assert receipt.backup_filename == filename
+    assert len(canonical_receipt_hash(receipt)) == 64
 
 
 def test_state_receipt_rejects_invalid_states_hashes_and_cross_database_replay():
