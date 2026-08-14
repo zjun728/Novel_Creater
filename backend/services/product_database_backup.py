@@ -100,6 +100,8 @@ class _OwnedFileLease:
     deleted: bool = False
     prepared: bool = False
     prepare_error: BaseException | None = None
+    cleanup_handle: int | None = None
+    cleanup_error: BaseException | None = None
 
 
 def _fixed(message: str) -> ProductDatabaseBackupError:
@@ -742,7 +744,10 @@ def _create_owned_windows(
                 cleanup.append(error)
         elif creation_handle != -1:
             try:
-                _delete_from_owner_handle(creation_handle)
+                if delete_capable:
+                    _set_delete_disposition(creation_handle)
+                else:
+                    _delete_from_owner_handle(creation_handle)
             except BaseException as error:
                 cleanup.append(error)
             try:
@@ -808,6 +813,16 @@ def _delete_owned_windows(path: Path, lease: _OwnedFileLease) -> bool:
     prepare_error = _prepare_owned_cleanup(lease)
     if prepare_error is not None:
         errors.append(prepare_error)
+    if lease.cleanup_handle is not None:
+        try:
+            _close_windows_handle(lease.cleanup_handle)
+        except BaseException as error:
+            if lease.cleanup_error is None:
+                lease.cleanup_error = error
+        else:
+            lease.cleanup_handle = None
+        if lease.cleanup_error is not None:
+            errors.append(lease.cleanup_error)
     if not lease.deleted:
         deletion_handle: int | None = None
         try:
@@ -824,7 +839,10 @@ def _delete_owned_windows(path: Path, lease: _OwnedFileLease) -> bool:
                 try:
                     _close_windows_handle(deletion_handle)
                 except BaseException as error:
-                    errors.append(error)
+                    lease.cleanup_handle = deletion_handle
+                    if lease.cleanup_error is None:
+                        lease.cleanup_error = error
+                    errors.append(lease.cleanup_error)
     if len(errors) == 1:
         raise errors[0]
     if errors:
@@ -883,9 +901,11 @@ def _delete_owned_twice(
         except BaseException as error:
             if isinstance(error, _FLOW_CONTROL):
                 try:
-                    if not lease.deleted:
+                    if not lease.deleted or lease.cleanup_handle is not None:
                         _delete_owned_windows(path, lease)
                 except BaseException as cleanup_error:
+                    if cleanup_error is error:
+                        return error
                     return BaseExceptionGroup(
                         "owned file cleanup failed", [error, cleanup_error]
                     )

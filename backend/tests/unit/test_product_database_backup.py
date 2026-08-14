@@ -463,6 +463,276 @@ def test_create_owned_failure_attempts_every_creation_and_owner_handle_close(
     assert len(raised.value.exceptions) == 4
 
 
+def test_delete_capable_create_failure_uses_creation_handle_for_disposition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    creation_handle = 101
+    dispositions: list[int] = []
+    closes: list[int] = []
+
+    monkeypatch.setattr(
+        backup,
+        "_kernel32",
+        lambda: SimpleNamespace(CreateFileW=lambda *_args: creation_handle),
+    )
+    monkeypatch.setattr(
+        backup,
+        "_identity_from_handle",
+        lambda _handle: backup._OwnedFileIdentity(1, 2, 3),
+    )
+    monkeypatch.setattr(
+        backup,
+        "msvcrt",
+        SimpleNamespace(
+            open_osfhandle=lambda *_args: (_ for _ in ()).throw(
+                OSError("password=open-osfhandle-secret")
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        backup,
+        "_delete_from_owner_handle",
+        lambda _handle: pytest.fail("must not reopen a DELETE handle"),
+    )
+    monkeypatch.setattr(
+        backup, "_set_delete_disposition", lambda handle: dispositions.append(handle)
+    )
+    monkeypatch.setattr(
+        backup, "_close_windows_handle", lambda handle: closes.append(handle)
+    )
+
+    with pytest.raises(OSError, match="open-osfhandle-secret"):
+        backup._create_owned_windows(
+            tmp_path / "owned.tmp",
+            delete_capable=True,
+        )
+
+    assert dispositions == [creation_handle]
+    assert closes == [creation_handle]
+
+
+def test_owned_delete_retries_pending_close_without_forgetting_first_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    identity = backup._OwnedFileIdentity(1, 2, 3)
+    lease = backup._OwnedFileLease(identity, None, prepared=True)
+    deletion_handle = 303
+    first_close_error = OSError("password=first-close-secret")
+    opens: list[Path] = []
+    dispositions: list[int] = []
+    closes: list[int] = []
+
+    def open_delete(path: Path) -> int:
+        opens.append(path)
+        return deletion_handle
+
+    def close_handle(handle: int) -> None:
+        closes.append(handle)
+        if len(closes) == 1:
+            raise first_close_error
+
+    monkeypatch.setattr(backup, "_open_owned_delete_path", open_delete)
+    monkeypatch.setattr(backup, "_identity_from_handle", lambda _handle: identity)
+    monkeypatch.setattr(backup, "_link_count_from_handle", lambda _handle: 1)
+    monkeypatch.setattr(
+        backup, "_set_delete_disposition", lambda handle: dispositions.append(handle)
+    )
+    monkeypatch.setattr(backup, "_close_windows_handle", close_handle)
+
+    path = tmp_path / "owned.tmp"
+    with pytest.raises(OSError) as first:
+        backup._delete_owned_windows(path, lease)
+    with pytest.raises(OSError) as second:
+        backup._delete_owned_windows(path, lease)
+
+    assert first.value is first_close_error
+    assert second.value is first_close_error
+    assert opens == [path]
+    assert dispositions == [deletion_handle]
+    assert closes == [deletion_handle, deletion_handle]
+    assert lease.cleanup_handle is None
+
+
+def test_owned_delete_permanent_close_failure_keeps_handle_and_first_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    identity = backup._OwnedFileIdentity(1, 2, 3)
+    lease = backup._OwnedFileLease(identity, None, prepared=True)
+    deletion_handle = 303
+    first_close_error = OSError("password=first-close-secret")
+    second_close_error = OSError("password=second-close-secret")
+    close_errors = iter((first_close_error, second_close_error))
+    opens = 0
+    dispositions = 0
+    closes = 0
+
+    def open_delete(_path: Path) -> int:
+        nonlocal opens
+        opens += 1
+        return deletion_handle
+
+    def set_disposition(_handle: int) -> None:
+        nonlocal dispositions
+        dispositions += 1
+
+    def close_handle(_handle: int) -> None:
+        nonlocal closes
+        closes += 1
+        raise next(close_errors)
+
+    monkeypatch.setattr(backup, "_open_owned_delete_path", open_delete)
+    monkeypatch.setattr(backup, "_identity_from_handle", lambda _handle: identity)
+    monkeypatch.setattr(backup, "_link_count_from_handle", lambda _handle: 1)
+    monkeypatch.setattr(backup, "_set_delete_disposition", set_disposition)
+    monkeypatch.setattr(backup, "_close_windows_handle", close_handle)
+
+    failure = backup._delete_owned_twice(
+        tmp_path / "owned.tmp", lease, backup._delete_owned_windows
+    )
+
+    assert failure is first_close_error
+    assert lease.cleanup_error is first_close_error
+    assert lease.cleanup_handle == deletion_handle
+    assert lease.deleted is True
+    assert (opens, dispositions, closes) == (1, 1, 2)
+
+
+def test_owned_delete_flow_close_failure_still_retries_pending_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    identity = backup._OwnedFileIdentity(1, 2, 3)
+    lease = backup._OwnedFileLease(identity, None, prepared=True)
+    deletion_handle = 303
+    flow = KeyboardInterrupt("password=flow-close-secret")
+    closes = 0
+
+    def close_handle(_handle: int) -> None:
+        nonlocal closes
+        closes += 1
+        if closes == 1:
+            raise flow
+
+    monkeypatch.setattr(
+        backup, "_open_owned_delete_path", lambda _path: deletion_handle
+    )
+    monkeypatch.setattr(backup, "_identity_from_handle", lambda _handle: identity)
+    monkeypatch.setattr(backup, "_link_count_from_handle", lambda _handle: 1)
+    monkeypatch.setattr(backup, "_set_delete_disposition", lambda _handle: None)
+    monkeypatch.setattr(backup, "_close_windows_handle", close_handle)
+
+    failure = backup._delete_owned_twice(
+        tmp_path / "owned.tmp", lease, backup._delete_owned_windows
+    )
+
+    assert failure is flow
+    assert closes == 2
+    assert lease.cleanup_handle is None
+
+
+def test_delete_capable_create_failure_groups_disposition_and_close_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    creation_handle = 101
+    events: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        backup,
+        "_kernel32",
+        lambda: SimpleNamespace(CreateFileW=lambda *_args: creation_handle),
+    )
+    monkeypatch.setattr(
+        backup,
+        "_identity_from_handle",
+        lambda _handle: backup._OwnedFileIdentity(1, 2, 3),
+    )
+    monkeypatch.setattr(
+        backup,
+        "msvcrt",
+        SimpleNamespace(
+            open_osfhandle=lambda *_args: (_ for _ in ()).throw(
+                OSError("password=open-secret")
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        backup,
+        "_delete_from_owner_handle",
+        lambda _handle: pytest.fail("must not reopen a DELETE handle"),
+    )
+
+    def fail_disposition(handle: int) -> None:
+        events.append(("disposition", handle))
+        raise OSError("password=disposition-secret")
+
+    def fail_close(handle: int) -> None:
+        events.append(("close", handle))
+        raise OSError("password=close-secret")
+
+    monkeypatch.setattr(backup, "_set_delete_disposition", fail_disposition)
+    monkeypatch.setattr(backup, "_close_windows_handle", fail_close)
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        backup._create_owned_windows(
+            tmp_path / "owned.tmp",
+            delete_capable=True,
+        )
+
+    assert events == [("disposition", creation_handle), ("close", creation_handle)]
+    assert len(raised.value.exceptions) == 3
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-bound deletion")
+def test_owned_delete_second_close_removes_path_and_releases_real_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    private = tmp_path / "private"
+    private.mkdir()
+    kernel32 = backup._kernel32()
+    get_handle_information = kernel32.GetHandleInformation  # type: ignore[attr-defined]
+    get_handle_information.argtypes = [
+        backup.wintypes.HANDLE,
+        backup.ctypes.POINTER(backup.wintypes.DWORD),
+    ]
+    get_handle_information.restype = backup.wintypes.BOOL
+    real_open_delete = backup._open_owned_delete_path
+    real_close = backup._close_windows_handle
+    deletion_handle: int | None = None
+    close_attempts = 0
+
+    def capture_delete_handle(path: Path) -> int:
+        nonlocal deletion_handle
+        deletion_handle = real_open_delete(path)
+        return deletion_handle
+
+    def fail_first_delete_close(handle: int) -> None:
+        nonlocal close_attempts
+        if handle == deletion_handle:
+            close_attempts += 1
+            if close_attempts == 1:
+                raise OSError("password=close-secret")
+        real_close(handle)
+
+    monkeypatch.setattr(backup, "_open_owned_delete_path", capture_delete_handle)
+    monkeypatch.setattr(backup, "_close_windows_handle", fail_first_delete_close)
+
+    with pytest.raises(backup.ProductDatabaseBackupError) as raised:
+        with backup.private_mysql_option_file(
+            {"host": "h", "port": 3306, "user": "u", "password": "secret"},
+            private,
+            lambda _path: None,
+        ) as option:
+            assert option.exists()
+
+    assert str(raised.value) == "private mysql option file cleanup failed"
+    assert close_attempts == 2
+    assert deletion_handle is not None
+    flags = backup.wintypes.DWORD()
+    assert not get_handle_information(
+        backup.wintypes.HANDLE(deletion_handle), backup.ctypes.byref(flags)
+    )
+    assert not option.exists()
+    assert list(private.iterdir()) == []
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows process handle accounting")
 def test_owned_file_success_lifecycle_has_no_real_windows_handle_leak(tmp_path: Path):
     kernel32 = backup._kernel32()
