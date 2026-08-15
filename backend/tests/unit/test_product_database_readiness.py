@@ -24,6 +24,11 @@ from backend.services.product_database_readiness import NewDatabaseBoundaryState
 
 ZERO_HASH = "0" * 64
 RESTORE_DATABASE = "novel_creator_phase7b_restore_0123456789abcdef0123456789abcdef"
+PROOF_DATABASE = "novel_creator_phase7b_restore_fedcba9876543210fedcba9876543210"
+LEGACY_SCHEMA_VERSION = "writer-core-v1.1.0"
+LEGACY_MANIFEST_HASH = "3" * 64
+LEGACY_STRUCTURE_HASH = "1" * 64
+CURRENT_STRUCTURE_HASH = "2" * 64
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ASSET_MANIFEST_PATH = BACKEND_ROOT / "assets" / ASSET_VERSION / "manifest.json"
 MARKET_MANIFEST_PATH = BACKEND_ROOT / "assets" / MARKET_VERSION / "manifest.json"
@@ -57,6 +62,16 @@ class InitializationResult:
 
 
 INITIALIZED = InitializationResult(NEW_DATABASE, EXPECTED_SCHEMA_VERSION, SCHEMA_HASH, len(created_table_names()))
+
+
+def _schema_authority() -> object:
+    return readiness_module.CurrentSchemaAuthority(
+        EXPECTED_SCHEMA_VERSION,
+        SCHEMA_HASH,
+        tuple(sorted(created_table_names())),
+        len(created_table_names()),
+        CURRENT_STRUCTURE_HASH,
+    )
 
 
 def _empty_counts() -> dict[str, int]:
@@ -170,7 +185,7 @@ class AtomicBoundary:
 
 class World:
     def __init__(self, *, target: str = "absent") -> None:
-        self.tables: dict[str, dict[str, int]] = {LEGACY_DATABASE: {"projects": 4}}
+        self.tables: dict[str, dict[str, int]] = {LEGACY_DATABASE: {f"legacy_table_{index:02d}": index % 3 for index in range(49)}}
         self.official_rows: dict[str, dict[str, object]] = {}
         if target == "ready": self.tables[NEW_DATABASE], self.official_rows[NEW_DATABASE] = _ready_counts(), _official_row()
         elif target == "empty": self.tables[NEW_DATABASE] = _empty_counts()
@@ -184,12 +199,18 @@ class World:
         self.malicious_exit_failure: BaseException | None = None
         self.smoke_failure: BaseException | None = None
         self.suppress_body = False
-        self.target_structural_fingerprint = "2" * 64
+        self.target_structural_fingerprint = CURRENT_STRUCTURE_HASH
+        self.authority_override: object | None = None
+        self.authority_failure: BaseException | None = None
+        self.authority_cleanup_failure: BaseException | None = None
         self.smoke_result: object = SmokeResult(0, 0)
 
     def snapshot(self, database: str) -> DatabaseInventory:
-        rows = tuple(sorted(self.tables[database].items())); product = database == NEW_DATABASE
-        return DatabaseInventory(database, "8.4.3", EXPECTED_SCHEMA_VERSION, SCHEMA_HASH, self.target_structural_fingerprint if product else "2" * 64, tuple(name for name, _ in rows), rows, sum(count > 0 for _, count in rows), sum(count for _, count in rows))
+        rows = tuple(sorted(self.tables[database].items())); legacy = database == LEGACY_DATABASE
+        schema_version = LEGACY_SCHEMA_VERSION if legacy else EXPECTED_SCHEMA_VERSION
+        schema_hash = LEGACY_MANIFEST_HASH if legacy else SCHEMA_HASH
+        structure_hash = LEGACY_STRUCTURE_HASH if legacy else self.target_structural_fingerprint if database == NEW_DATABASE else CURRENT_STRUCTURE_HASH
+        return DatabaseInventory(database, "8.4.3", schema_version, schema_hash, structure_hash, tuple(name for name, _ in rows), rows, sum(count > 0 for _, count in rows), sum(count for _, count in rows))
 
     def storage(self, database: str) -> tuple[TableStorage, ...]:
         return tuple(TableStorage(name, "InnoDB", "utf8mb4_0900_ai_ci") for name in sorted(self.tables[database]))
@@ -232,6 +253,23 @@ class World:
     def new_database_boundary(self, database: str) -> AtomicBoundary:
         self.calls.append("boundary-factory"); return AtomicBoundary(self, database)
 
+    async def current_schema_authority(self) -> object:
+        self.calls.append("schema-authority")
+        self.tables[PROOF_DATABASE] = _empty_counts(); self.created.append(PROOF_DATABASE)
+        primary: BaseException | None = None; result: object | None = None
+        try:
+            if self.authority_failure is not None: raise self.authority_failure
+            proof = self.snapshot(PROOF_DATABASE)
+            result = self.authority_override if self.authority_override is not None else readiness_module.CurrentSchemaAuthority(proof.schema_version, proof.manifest_hash, proof.table_names, len(proof.table_names), proof.structural_fingerprint)
+        except BaseException as error:
+            primary = error
+        self.calls.append("schema-authority-cleanup"); del self.tables[PROOF_DATABASE]; self.deleted.append(PROOF_DATABASE)
+        if self.authority_cleanup_failure is not None:
+            if primary is not None: raise BaseExceptionGroup("authority proof failed", [primary, self.authority_cleanup_failure])
+            raise self.authority_cleanup_failure
+        if primary is not None: raise primary
+        return result
+
     async def seed_assets(self, database: str) -> AssetSeedReport:
         self.calls.append("seed-assets"); self._fail("seed-assets"); self.tables[database].update({"style_templates": 10, "style_template_heads": 10, "experience_cards": 64, "experience_card_heads": 64})
         self.official_rows.setdefault(database, {}).update({key: value for key, value in _official_row().items() if key.startswith(("asset_", "style_", "card_"))})
@@ -250,7 +288,7 @@ class World:
         return self.smoke_result
 
     async def run(self, tmp_path: Path):
-        return await prepare_product_database(request=PreparationRequest(LEGACY_DATABASE, NEW_DATABASE, tmp_path.resolve()), inventory=self.inventory, create_backup=self.create_backup, restore_drill=self.restore_drill, new_database_boundary=self.new_database_boundary, seed_assets=self.seed_assets, seed_market=self.seed_market, read_storage=self.read_storage, audit_official_data=self.audit_official_data, smoke=self.smoke)
+        return await prepare_product_database(request=PreparationRequest(LEGACY_DATABASE, NEW_DATABASE, tmp_path.resolve()), inventory=self.inventory, create_backup=self.create_backup, restore_drill=self.restore_drill, current_schema_authority=self.current_schema_authority, new_database_boundary=self.new_database_boundary, seed_assets=self.seed_assets, seed_market=self.seed_market, read_storage=self.read_storage, audit_official_data=self.audit_official_data, smoke=self.smoke)
 
 
 def _flatten(error: BaseException) -> list[BaseException]:
@@ -282,7 +320,9 @@ def _assert_receipts(result: object, world: World, mode: str) -> None:
     backup = BackupReceipt(ReadinessState.BACKUP_CREATED.value, _hash(first), LEGACY_DATABASE, world.backup_path.name, hashlib.sha256(raw).hexdigest(), len(raw), "8.4.3", _hash(asdict(before)))
     official = {"mode": mode, "observed": _audit_payload()}
     if mode == "created": official["seedReports"] = _seed_payload()
-    evidence = (_hash(asdict(before)), _hash(asdict(backup)), _hash({"restoreInventoryHash": _hash(asdict(replace(before, database=RESTORE_DATABASE))), "createdDatabases": (RESTORE_DATABASE,), "cleanedDatabases": (RESTORE_DATABASE,)}), _hash({"databaseName": NEW_DATABASE, "schemaVersion": EXPECTED_SCHEMA_VERSION, "manifestHash": SCHEMA_HASH, "tableCount": len(created_table_names())}), _hash(official), _hash(asdict(target)), _hash({"providerCalls": 0, "outboundRequests": 0}))
+    authority = {"schemaVersion": EXPECTED_SCHEMA_VERSION, "manifestHash": SCHEMA_HASH, "tableNames": tuple(sorted(created_table_names())), "tableCount": len(created_table_names()), "structuralFingerprint": CURRENT_STRUCTURE_HASH}
+    initialized = {"databaseName": NEW_DATABASE, "schemaVersion": EXPECTED_SCHEMA_VERSION, "manifestHash": SCHEMA_HASH, "tableCount": len(created_table_names())}
+    evidence = (_hash(asdict(before)), _hash(asdict(backup)), _hash({"restoreInventoryHash": _hash(asdict(replace(before, database=RESTORE_DATABASE))), "createdDatabases": (RESTORE_DATABASE,), "cleanedDatabases": (RESTORE_DATABASE,)}), _hash({"initialization": initialized, "schemaAuthority": authority}), _hash(official), _hash(asdict(target)), _hash({"providerCalls": 0, "outboundRequests": 0}))
     previous = ZERO_HASH
     for receipt, state, digest in zip(receipts, tuple(state.value for state in tuple(ReadinessState)[:7]), evidence, strict=True):
         expected = {"state": state, "previous_receipt_hash": previous, "legacy_database": LEGACY_DATABASE, "new_database": NEW_DATABASE, "evidence_hash": digest}; assert asdict(receipt) == expected; previous = _hash(expected)
@@ -293,15 +333,20 @@ def _assert_receipts(result: object, world: World, mode: str) -> None:
 async def test_created_boundary_seeds_audits_commits_and_receipts_created_mode(tmp_path: Path) -> None:
     world = World(); result = await world.run(tmp_path)
     assert world.calls[-2:] == ["smoke", "boundary-commit"]
-    assert world.tables[NEW_DATABASE] == _ready_counts() and world.deleted == [RESTORE_DATABASE]
+    assert world.tables[NEW_DATABASE] == _ready_counts() and world.deleted == [RESTORE_DATABASE, PROOF_DATABASE]
+    assert world.calls.index("schema-authority-cleanup") < world.calls.index("boundary-factory")
     _assert_receipts(result, world, "created")
 
 
 @pytest.mark.asyncio
 async def test_preexisting_ready_boundary_is_zero_write_resume(tmp_path: Path) -> None:
     world = World(target="ready"); original = dict(world.tables[NEW_DATABASE]); result = await world.run(tmp_path)
+    legacy = world.snapshot(LEGACY_DATABASE)
+    assert len(legacy.table_names) == 49 and legacy.schema_version == LEGACY_SCHEMA_VERSION
+    assert legacy.structural_fingerprint != CURRENT_STRUCTURE_HASH
     assert world.tables[NEW_DATABASE] == original
     assert not {"initialize", "seed-assets", "seed-market", "boundary-cleanup"} & set(world.calls)
+    assert PROOF_DATABASE not in world.tables and PROOF_DATABASE in world.deleted
     _assert_receipts(result, world, "resume")
 
 
@@ -315,6 +360,27 @@ async def test_target_structural_drift_rejects_with_unchanged_counts_and_storage
         assert NEW_DATABASE not in world.tables and world.deleted.count(NEW_DATABASE) == 1
     else:
         assert NEW_DATABASE in world.tables and "boundary-cleanup" not in world.calls
+
+
+@pytest.mark.asyncio
+async def test_schema_authority_spoof_is_fixed_before_target_boundary(tmp_path: Path) -> None:
+    class EqualitySpoof:
+        def __eq__(self, _other: object) -> bool: return True
+    world = World(target="ready"); original = dict(world.tables[NEW_DATABASE]); world.authority_override = EqualitySpoof()
+    with pytest.raises(ProductDatabaseReadinessError, match="^current schema authority failed$") as raised: await world.run(tmp_path)
+    assert world.tables[NEW_DATABASE] == original and PROOF_DATABASE not in world.tables
+    assert "boundary-factory" not in world.calls
+    _assert_safe(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_schema_authority_cleanup_error_is_fixed_safe_and_never_writes_target(tmp_path: Path) -> None:
+    world = World(target="ready"); original = dict(world.tables[NEW_DATABASE]); world.authority_cleanup_failure = _tainted(RuntimeError("password=secret-proof-cleanup"))
+    with pytest.raises(ProductDatabaseReadinessError, match="^current schema authority failed$") as raised: await world.run(tmp_path)
+    assert world.tables[NEW_DATABASE] == original and PROOF_DATABASE not in world.tables
+    assert "schema-authority-cleanup" in world.calls and "boundary-factory" not in world.calls
+    assert world.backup_path is not None and world.backup_path.is_file()
+    _assert_safe(raised.value)
 
 
 @pytest.mark.asyncio
@@ -552,6 +618,22 @@ def test_boundary_failure_envelopes_separate_enter_primary_from_lifecycle_cleanu
     assert exit_failure.cleanup is cleanup and not hasattr(exit_failure, "primary")
 
 
+def test_current_schema_authority_rejects_malformed_or_spoofed_fields() -> None:
+    authority_type = readiness_module.CurrentSchemaAuthority
+    tables = tuple(sorted(created_table_names()))
+    class Text(str): pass
+    invalid = (
+        (Text(EXPECTED_SCHEMA_VERSION), SCHEMA_HASH, tables, len(tables), CURRENT_STRUCTURE_HASH),
+        (EXPECTED_SCHEMA_VERSION, "A" * 64, tables, len(tables), CURRENT_STRUCTURE_HASH),
+        (EXPECTED_SCHEMA_VERSION, SCHEMA_HASH, tuple(reversed(tables)), len(tables), CURRENT_STRUCTURE_HASH),
+        (EXPECTED_SCHEMA_VERSION, SCHEMA_HASH, tables, True, CURRENT_STRUCTURE_HASH),
+        (EXPECTED_SCHEMA_VERSION, SCHEMA_HASH, tables, len(tables), Text(CURRENT_STRUCTURE_HASH)),
+    )
+    for values in invalid:
+        with pytest.raises(ProductDatabaseReadinessError, match="^current schema authority failed$"):
+            authority_type(*values)
+
+
 def test_restore_storage_and_official_types_are_strict() -> None:
     world = World(target="ready"); target = world.snapshot(NEW_DATABASE); restored = replace(world.snapshot(LEGACY_DATABASE), database=RESTORE_DATABASE); audit = OfficialDataAudit(**_official_row())  # type: ignore[arg-type]
     class Text(str): pass
@@ -559,7 +641,7 @@ def test_restore_storage_and_official_types_are_strict() -> None:
     original = world.storage(NEW_DATABASE)[0]
     for field in ("name", "engine", "collation"):
         rows = list(world.storage(NEW_DATABASE)); rows[0] = replace(original, **{field: Text(getattr(original, field))})
-        with pytest.raises(ProductDatabaseReadinessError): assert_new_database_ready(target, INITIALIZED, audit, tuple(rows), "2" * 64)
+        with pytest.raises(ProductDatabaseReadinessError): assert_new_database_ready(target, INITIALIZED, audit, tuple(rows), _schema_authority())
     with pytest.raises(ProductDatabaseReadinessError): replace(audit, style_count=True)
 
 
@@ -567,7 +649,7 @@ def test_ready_audit_requires_exact_authoritative_structural_fingerprint() -> No
     world = World(target="ready"); target = world.snapshot(NEW_DATABASE); audit = OfficialDataAudit(**_official_row())  # type: ignore[arg-type]
     class Hash(str): pass
     with pytest.raises(ProductDatabaseReadinessError, match="^new database readiness audit failed$"):
-        assert_new_database_ready(replace(target, structural_fingerprint="9" * 64), INITIALIZED, audit, world.storage(NEW_DATABASE), "2" * 64)
+        assert_new_database_ready(replace(target, structural_fingerprint="9" * 64), INITIALIZED, audit, world.storage(NEW_DATABASE), _schema_authority())
     for invalid in (True, Hash("2" * 64), "A" * 64, "f" * 63, " " * 64):
         with pytest.raises(ProductDatabaseReadinessError, match="^new database readiness audit failed$"):
             assert_new_database_ready(target, INITIALIZED, audit, world.storage(NEW_DATABASE), invalid)  # type: ignore[arg-type]
