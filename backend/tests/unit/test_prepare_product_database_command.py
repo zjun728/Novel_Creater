@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager, contextmanager
 import asyncio
 import json
 import stat
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -2460,15 +2461,15 @@ def test_default_dependencies_wire_public_resources_with_exact_arguments(
 
 def _browser_summary(**changes: object) -> str:
     value: dict[str, object] = {
-        "scenario": 1,
+        "firstStage": None,
+        "firstCause": None,
+        "scenarioCount": 1,
         "providerCalls": 0,
         "outboundRequests": 0,
-        "writeAttempts": 0,
-        "non2xxResponses": 0,
-        "originViolations": 0,
-        "consoleErrors": 0,
-        "requestFailures": 0,
-        "resourceLeaks": 0,
+        "processCount": 0,
+        "portCount": 0,
+        "rootCount": 0,
+        "artifactCount": 0,
     }
     value.update(changes)
     return "PHASE7B_BROWSER_SMOKE_SUMMARY=" + canonical_json(value)
@@ -2487,53 +2488,535 @@ async def test_default_smoke_invokes_explicit_browser_runner_and_validates_summa
     assert result == SmokeResult(provider_calls=0, outbound_requests=0)
     assert calls == [
         {
-            "command": ("npm", "run", "test:browser:phase7b"),
+            "command": ("node", "scripts/run-tests.mjs", "browser-phase7b"),
             "cwd": command_module.REPOSITORY_ROOT,
             "environment": {
                 **dict(command_module.os.environ),
                 "MYSQL_DB": NEW_DATABASE,
                 "MARKET_SCHEDULER_ENABLED": "false",
-                "PHASE7B_PRE_CUTOVER_MODE": "true",
             },
             "timeout_seconds": 300,
         }
     ]
 
 
-def test_default_browser_smoke_runner_uses_exact_subprocess_contract(
-    monkeypatch: pytest.MonkeyPatch,
+def test_default_browser_smoke_runner_uses_owned_windows_job_and_exact_task_contract(
+    tmp_path: Path,
 ) -> None:
     calls: list[object] = []
-    completed = object()
-
-    def run(*args: object, **kwargs: object) -> object:
-        calls.append((args, kwargs))
-        return completed
-
-    monkeypatch.setattr(command_module.subprocess, "run", run)
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"")
     environment = {"MYSQL_DB": NEW_DATABASE, "ONLY_TEST": "yes"}
 
+    class Child:
+        returncode = 0
+
+        def communicate(self, *, timeout: float) -> tuple[str, str]:
+            calls.append(("communicate", timeout))
+            return _browser_summary(), "password=secret"
+
+    class Guard:
+        active_processes = 3
+
+        def cleanup(self, *_args: object, **_kwargs: object) -> list[BaseException]:
+            return []
+
+    child = Child()
+    guard = Guard()
+
+    class Lease:
+        def close(self) -> None:
+            calls.append("lease-close")
+
+    def root_lease_factory(path: Path) -> object:
+        calls.append(("lease-open", path))
+        return Lease()
+
+    def spawn_guarded(command: tuple[str, ...], kwargs: dict, **options: object):
+        calls.append(("spawn", command, kwargs, options))
+        return child, guard
+
+    def stop_process(actual_child: object, *, guard: object) -> list[BaseException]:
+        calls.append(("stop-tree", actual_child, guard))
+        Guard.active_processes = 0
+        return []
+
     result = command_module._default_browser_smoke_runner(
-        command=("npm", "run", "test:browser:phase7b"),
+        command=("node", "scripts/run-tests.mjs", "browser-phase7b"),
         cwd=command_module.REPOSITORY_ROOT,
         environment=environment,
         timeout_seconds=300,
+        executable_resolver=lambda name: str(node) if name == "node" else None,
+        guarded_spawn=spawn_guarded,
+        stop_process=stop_process,
+        nonce_factory=lambda: "a" * 32,
+        temp_parent=tmp_path / "owned",
+        root_lease_factory=root_lease_factory,
     )
 
-    assert result is completed
-    assert calls == [
-        (
-            (("npm", "run", "test:browser:phase7b"),),
-            {
-                "cwd": command_module.REPOSITORY_ROOT,
-                "env": environment,
-                "capture_output": True,
-                "text": True,
-                "check": False,
-                "timeout": 300,
-            },
+    assert result.returncode == 0
+    assert result.stdout == _browser_summary()
+    assert result.stderr == "password=secret"
+    assert calls[0][0] == "lease-open"
+    spawn = calls[1]
+    assert spawn[0] == "spawn"
+    assert spawn[1] == (str(node.resolve()), "scripts/run-tests.mjs", "browser-phase7b")
+    assert spawn[2]["cwd"] == command_module.REPOSITORY_ROOT
+    assert spawn[2]["shell"] is False
+    assert spawn[2]["stdout"] is subprocess.PIPE
+    assert spawn[2]["stderr"] is subprocess.PIPE
+    assert spawn[2]["text"] is True
+    assert spawn[2]["env"]["MYSQL_DB"] == NEW_DATABASE
+    assert spawn[2]["env"]["ONLY_TEST"] == "yes"
+    assert spawn[2]["env"]["PHASE7B_BROWSER_TASK_NONCE"] == "a" * 32
+    task_root = Path(spawn[2]["env"]["PHASE7B_BROWSER_TASK_ROOT"])
+    assert task_root.is_absolute()
+    assert spawn[3]["platform_name"] == "nt"
+    assert calls[2] == ("communicate", 240)
+    assert calls[3] == ("stop-tree", child, guard)
+    assert calls[4] == "lease-close"
+    assert Guard.active_processes == 0
+    assert not task_root.exists()
+
+
+@pytest.mark.parametrize(
+    ("primary", "expected_type"),
+    (
+        (subprocess.TimeoutExpired("secret-node", 240), ProductDatabasePreparationCommandError),
+        (asyncio.CancelledError("secret-cancel"), asyncio.CancelledError),
+        (KeyboardInterrupt("secret-keyboard"), KeyboardInterrupt),
+        (SystemExit(7), SystemExit),
+        (SystemExit("secret-exit"), SystemExit),
+    ),
+)
+def test_browser_smoke_runner_keeps_primary_first_and_cleans_tree_and_root(
+    tmp_path: Path, primary: BaseException, expected_type: type[BaseException]
+) -> None:
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"")
+    calls: list[object] = []
+
+    class Child:
+        returncode = None
+
+        def communicate(self, *, timeout: float) -> tuple[str, str]:
+            calls.append(("communicate", timeout))
+            raise primary
+
+    class Guard:
+        active_processes = 4
+
+        def cleanup(self, *_args: object, **_kwargs: object) -> list[BaseException]:
+            return []
+
+    child = Child()
+    guard = Guard()
+
+    def spawn_guarded(*_args: object, **_kwargs: object):
+        return child, guard
+
+    def stop_process(actual_child: object, *, guard: object) -> list[BaseException]:
+        calls.append(("stop-tree", actual_child, guard))
+        Guard.active_processes = 0
+        return [RuntimeError("secret-cleanup")]
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        command_module._default_browser_smoke_runner(
+            command=("node", "scripts/run-tests.mjs", "browser-phase7b"),
+            cwd=command_module.REPOSITORY_ROOT,
+            environment={"MYSQL_DB": NEW_DATABASE},
+            timeout_seconds=300,
+            executable_resolver=lambda _name: str(node),
+            guarded_spawn=spawn_guarded,
+            stop_process=stop_process,
+            nonce_factory=lambda: "b" * 32,
+            temp_parent=tmp_path / "owned",
         )
+
+    first = raised.value.exceptions[0]
+    assert type(first) is expected_type
+    if expected_type is SystemExit:
+        assert first.code == (7 if type(primary.code) is int else None)
+    assert "secret" not in repr(raised.value)
+    assert calls == [
+        ("communicate", 240),
+        ("stop-tree", child, guard),
     ]
+    assert Guard.active_processes == 0
+    assert list((tmp_path / "owned").iterdir()) == []
+
+
+def test_browser_smoke_runner_rejects_unapproved_command_before_spawn(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def resolver(_name: str) -> str:
+        nonlocal called
+        called = True
+        return str(tmp_path / "node.exe")
+
+    with pytest.raises(ProductDatabasePreparationCommandError) as raised:
+        command_module._default_browser_smoke_runner(
+            command=("npm", "run", "test:browser:phase7b"),
+            cwd=command_module.REPOSITORY_ROOT,
+            environment={"MYSQL_DB": NEW_DATABASE},
+            timeout_seconds=300,
+            executable_resolver=resolver,
+            temp_parent=tmp_path / "owned",
+        )
+
+    assert str(raised.value) == "readiness smoke failed"
+    assert called is False
+
+
+@pytest.mark.parametrize("failure", ("spawn", "stop", "root-replacement"))
+def test_browser_smoke_runner_failure_stages_are_safe_and_cleanup_owned_resources(
+    tmp_path: Path, failure: str
+) -> None:
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"")
+    calls: list[object] = []
+    task_root: Path | None = None
+
+    class Child:
+        returncode = 0
+
+        def communicate(self, *, timeout: float) -> tuple[str, str]:
+            calls.append(("communicate", timeout))
+            return _browser_summary(), "secret-stderr"
+
+    child = Child()
+    guard = SimpleNamespace(
+        active_processes=2,
+        cleanup=lambda *_args, **_kwargs: [],
+    )
+
+    def spawn_guarded(_command: object, kwargs: dict, **_options: object):
+        nonlocal task_root
+        task_root = Path(kwargs["env"]["PHASE7B_BROWSER_TASK_ROOT"])
+        calls.append("spawn")
+        if failure == "spawn":
+            raise RuntimeError("secret-spawn")
+        return child, guard
+
+    def stop_process(_child: object, *, guard: object) -> list[BaseException]:
+        calls.append("stop-tree")
+        guard.active_processes = 0
+        if failure == "stop":
+            return [RuntimeError("secret-stop")]
+        return []
+
+    def remove_temp(path: Path) -> None:
+        calls.append("remove-root")
+        command_module.shutil.rmtree(path)
+        if failure == "root-replacement":
+            path.mkdir()
+
+    with pytest.raises(ProductDatabasePreparationCommandError) as raised:
+        command_module._default_browser_smoke_runner(
+            command=("node", "scripts/run-tests.mjs", "browser-phase7b"),
+            cwd=command_module.REPOSITORY_ROOT,
+            environment={"MYSQL_DB": NEW_DATABASE},
+            timeout_seconds=300,
+            executable_resolver=lambda _name: str(node),
+            guarded_spawn=spawn_guarded,
+            stop_process=stop_process,
+            nonce_factory=lambda: "c" * 32,
+            temp_parent=tmp_path / "owned",
+            remove_temp=remove_temp,
+            root_lease_factory=lambda _path: SimpleNamespace(close=lambda: None),
+        )
+
+    assert str(raised.value) == "readiness smoke failed"
+    assert "secret" not in repr(raised.value)
+    assert task_root is not None
+    if failure == "spawn":
+        assert calls == ["spawn", "remove-root"]
+        assert not task_root.exists()
+    elif failure == "stop":
+        assert calls == ["spawn", ("communicate", 240), "stop-tree", "remove-root"]
+        assert guard.active_processes == 0
+        assert not task_root.exists()
+    else:
+        assert calls == ["spawn", ("communicate", 240), "stop-tree", "remove-root"]
+        assert guard.active_processes == 0
+        assert task_root.is_dir()
+
+
+def test_browser_smoke_runner_retries_transient_owned_root_removal(
+    tmp_path: Path,
+) -> None:
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"")
+    removals: list[Path] = []
+
+    class Child:
+        returncode = 0
+
+        def communicate(self, *, timeout: float) -> tuple[str, str]:
+            return _browser_summary(), ""
+
+    def spawn_guarded(_command: object, _kwargs: dict, **_options: object):
+        return Child(), SimpleNamespace(cleanup=lambda *_args, **_kwargs: [])
+
+    def remove_temp(path: Path) -> None:
+        removals.append(path)
+        if len(removals) == 1:
+            raise PermissionError("secret transient sharing violation")
+        command_module.shutil.rmtree(path)
+
+    result = command_module._default_browser_smoke_runner(
+        command=("node", "scripts/run-tests.mjs", "browser-phase7b"),
+        cwd=command_module.REPOSITORY_ROOT,
+        environment={"MYSQL_DB": NEW_DATABASE},
+        timeout_seconds=300,
+        executable_resolver=lambda _name: str(node),
+        guarded_spawn=spawn_guarded,
+        stop_process=lambda *_args, **_kwargs: [],
+        nonce_factory=lambda: "d" * 32,
+        temp_parent=tmp_path / "owned",
+        remove_temp=remove_temp,
+        root_lease_factory=lambda _path: SimpleNamespace(close=lambda: None),
+    )
+
+    assert result.returncode == 0
+    assert len(removals) == 2
+    assert not removals[0].exists()
+
+
+def test_browser_smoke_runner_rejects_malformed_guard_and_stops_returned_child(
+    tmp_path: Path,
+) -> None:
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"")
+    calls: list[object] = []
+
+    class Child:
+        returncode = None
+
+        def communicate(self, *, timeout: float) -> tuple[str, str]:
+            pytest.fail("malformed guard must fail before child execution")
+
+    child = Child()
+
+    def stop_unassigned(actual_child: object) -> list[BaseException]:
+        calls.append(("stop-unassigned", actual_child))
+        return []
+
+    with pytest.raises(ProductDatabasePreparationCommandError) as raised:
+        command_module._default_browser_smoke_runner(
+            command=("node", "scripts/run-tests.mjs", "browser-phase7b"),
+            cwd=command_module.REPOSITORY_ROOT,
+            environment={"MYSQL_DB": NEW_DATABASE},
+            timeout_seconds=300,
+            executable_resolver=lambda _name: str(node),
+            guarded_spawn=lambda *_args, **_kwargs: (child, None),
+            stop_unassigned=stop_unassigned,
+            nonce_factory=lambda: "e" * 32,
+            temp_parent=tmp_path / "owned",
+        )
+
+    assert str(raised.value) == "readiness smoke failed"
+    assert calls == [("stop-unassigned", child)]
+    assert list((tmp_path / "owned").iterdir()) == []
+
+
+def test_browser_smoke_runner_cleans_acquired_identity_not_precleanup_replacement(
+    tmp_path: Path,
+) -> None:
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"")
+    task_root: Path | None = None
+    moved_root: Path | None = None
+
+    class Child:
+        returncode = 0
+
+        def communicate(self, *, timeout: float) -> tuple[str, str]:
+            nonlocal moved_root
+            assert task_root is not None
+            marker = task_root / ".m2-session-owner.json"
+            marker_bytes = marker.read_bytes()
+            moved_root = task_root.with_name(task_root.name + "-moved")
+            task_root.rename(moved_root)
+            task_root.mkdir()
+            (task_root / marker.name).write_bytes(marker_bytes)
+            return _browser_summary(), ""
+
+    def spawn_guarded(_command: object, kwargs: dict, **_options: object):
+        nonlocal task_root
+        task_root = Path(kwargs["env"]["PHASE7B_BROWSER_TASK_ROOT"])
+        return Child(), SimpleNamespace(cleanup=lambda *_args, **_kwargs: [])
+
+    class Lease:
+        def close(self) -> None:
+            return None
+
+    with pytest.raises(ProductDatabasePreparationCommandError) as raised:
+        command_module._default_browser_smoke_runner(
+            command=("node", "scripts/run-tests.mjs", "browser-phase7b"),
+            cwd=command_module.REPOSITORY_ROOT,
+            environment={"MYSQL_DB": NEW_DATABASE},
+            timeout_seconds=300,
+            executable_resolver=lambda _name: str(node),
+            guarded_spawn=spawn_guarded,
+            stop_process=lambda *_args, **_kwargs: [],
+            nonce_factory=lambda: "f" * 32,
+            temp_parent=tmp_path / "owned",
+            root_lease_factory=lambda _path: Lease(),
+        )
+
+    assert str(raised.value) == "readiness smoke failed"
+    assert task_root is not None and task_root.is_dir()
+    assert moved_root is not None and not moved_root.exists()
+
+
+def test_browser_smoke_runner_retries_transient_directory_lease_close(
+    tmp_path: Path,
+) -> None:
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"")
+    closes = 0
+
+    class Child:
+        returncode = 0
+
+        def communicate(self, *, timeout: float) -> tuple[str, str]:
+            return _browser_summary(), ""
+
+    class Lease:
+        def close(self) -> None:
+            nonlocal closes
+            closes += 1
+            if closes == 1:
+                raise PermissionError("secret lease close sharing violation")
+
+    result = command_module._default_browser_smoke_runner(
+        command=("node", "scripts/run-tests.mjs", "browser-phase7b"),
+        cwd=command_module.REPOSITORY_ROOT,
+        environment={"MYSQL_DB": NEW_DATABASE},
+        timeout_seconds=300,
+        executable_resolver=lambda _name: str(node),
+        guarded_spawn=lambda *_args, **_kwargs: (
+            Child(),
+            SimpleNamespace(cleanup=lambda *_args, **_kwargs: []),
+        ),
+        stop_process=lambda *_args, **_kwargs: [],
+        nonce_factory=lambda: "1" * 32,
+        temp_parent=tmp_path / "owned",
+        root_lease_factory=lambda _path: Lease(),
+    )
+
+    assert result.returncode == 0
+    assert closes == 2
+    assert list((tmp_path / "owned").iterdir()) == []
+
+
+def test_browser_smoke_runner_establishes_handle_delete_before_lease_close(
+    tmp_path: Path,
+) -> None:
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"")
+    task_root: Path | None = None
+    escaped = tmp_path / "escaped-owned-root"
+    calls: list[str] = []
+
+    class Child:
+        returncode = 0
+
+        def communicate(self, *, timeout: float) -> tuple[str, str]:
+            return _browser_summary(), ""
+
+    class Lease:
+        def delete_owned(self, path: Path) -> None:
+            calls.append("delete-pending")
+            command_module.shutil.rmtree(path)
+
+        def close(self) -> None:
+            calls.append("lease-close")
+            assert task_root is not None
+            if task_root.exists():
+                task_root.rename(escaped)
+                task_root.mkdir()
+
+    def spawn_guarded(_command: object, kwargs: dict, **_options: object):
+        nonlocal task_root
+        task_root = Path(kwargs["env"]["PHASE7B_BROWSER_TASK_ROOT"])
+        return Child(), SimpleNamespace(cleanup=lambda *_args, **_kwargs: [])
+
+    result = command_module._default_browser_smoke_runner(
+        command=("node", "scripts/run-tests.mjs", "browser-phase7b"),
+        cwd=command_module.REPOSITORY_ROOT,
+        environment={"MYSQL_DB": NEW_DATABASE},
+        timeout_seconds=300,
+        executable_resolver=lambda _name: str(node),
+        guarded_spawn=spawn_guarded,
+        stop_process=lambda *_args, **_kwargs: [],
+        nonce_factory=lambda: "2" * 32,
+        temp_parent=tmp_path / "owned",
+        root_lease_factory=lambda _path: Lease(),
+    )
+
+    assert result.returncode == 0
+    assert calls == ["delete-pending", "lease-close"]
+    assert not escaped.exists()
+    assert task_root is not None and not task_root.exists()
+
+
+def test_browser_root_lease_identity_failure_closes_handle_and_removes_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import backend.services.product_database_backup as backup_module
+
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"")
+    closed: list[int] = []
+    spawn_called = False
+
+    class Creator:
+        argtypes: object = None
+        restype: object = None
+
+        def __call__(self, *_args: object) -> int:
+            return 123
+
+    monkeypatch.setattr(
+        backup_module,
+        "_kernel32",
+        lambda: SimpleNamespace(CreateFileW=Creator()),
+    )
+    monkeypatch.setattr(
+        backup_module,
+        "_identity_from_handle",
+        lambda _handle: (_ for _ in ()).throw(OSError("secret identity read")),
+    )
+    monkeypatch.setattr(
+        backup_module, "_close_windows_handle", lambda handle: closed.append(handle)
+    )
+
+    def spawn_guarded(*_args: object, **_kwargs: object):
+        nonlocal spawn_called
+        spawn_called = True
+        pytest.fail("identity failure must happen before spawn")
+
+    with pytest.raises(ProductDatabasePreparationCommandError) as raised:
+        command_module._default_browser_smoke_runner(
+            command=("node", "scripts/run-tests.mjs", "browser-phase7b"),
+            cwd=command_module.REPOSITORY_ROOT,
+            environment={"MYSQL_DB": NEW_DATABASE},
+            timeout_seconds=300,
+            executable_resolver=lambda _name: str(node),
+            guarded_spawn=spawn_guarded,
+            nonce_factory=lambda: "3" * 32,
+            temp_parent=tmp_path / "owned",
+        )
+
+    assert str(raised.value) == "readiness smoke failed"
+    assert "secret" not in repr(raised.value)
+    assert closed == [123]
+    assert spawn_called is False
+    assert list((tmp_path / "owned").iterdir()) == []
 
 
 @pytest.mark.asyncio
@@ -2544,10 +3027,19 @@ def test_default_browser_smoke_runner_uses_exact_subprocess_contract(
         (0, ""),
         (0, "not-json"),
         (0, _browser_summary() + "\n" + _browser_summary()),
-        (0, _browser_summary(scenario=0)),
+        (0, _browser_summary(scenarioCount=0)),
         (0, _browser_summary(providerCalls=1)),
-        (0, _browser_summary(writeAttempts=True)),
+        (0, _browser_summary(processCount=True)),
+        (0, _browser_summary(firstStage="secret-stage")),
+        (0, _browser_summary(firstCause="secret-cause")),
         (0, _browser_summary(extra=0)),
+        (
+            0,
+            "PHASE7B_BROWSER_SMOKE_SUMMARY="
+            + json.dumps(
+                json.loads(_browser_summary().split("=", 1)[1]), sort_keys=True
+            ),
+        ),
     ),
 )
 async def test_default_smoke_rejects_runner_failure_or_unsafe_summary(
@@ -2570,7 +3062,7 @@ async def test_default_smoke_rejects_runner_failure_or_unsafe_summary(
 @pytest.mark.asyncio
 async def test_default_smoke_normalizes_missing_browser_runner_without_leak() -> None:
     def missing_runner(**_kwargs: object) -> object:
-        raise FileNotFoundError("secret npm path D:/private/npm.cmd")
+        raise FileNotFoundError("secret node path D:/private/node.exe")
 
     with pytest.raises(ProductDatabasePreparationCommandError) as raised:
         await command_module._default_smoke({}, NEW_DATABASE, missing_runner)

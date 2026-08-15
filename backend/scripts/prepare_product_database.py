@@ -12,9 +12,11 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Callable, Mapping, NoReturn, Sequence
 
@@ -64,16 +66,23 @@ _HEX_ID = re.compile(r"^[0-9a-f]{32}$", re.ASCII)
 _MAX_RECEIPT_BYTES = 1_000_000
 _BROWSER_SMOKE_PREFIX = "PHASE7B_BROWSER_SMOKE_SUMMARY="
 _BROWSER_SMOKE_EXPECTED = {
-    "scenario": 1,
+    "firstStage": None,
+    "firstCause": None,
+    "scenarioCount": 1,
     "providerCalls": 0,
     "outboundRequests": 0,
-    "writeAttempts": 0,
-    "non2xxResponses": 0,
-    "originViolations": 0,
-    "consoleErrors": 0,
-    "requestFailures": 0,
-    "resourceLeaks": 0,
+    "processCount": 0,
+    "portCount": 0,
+    "rootCount": 0,
+    "artifactCount": 0,
 }
+_BROWSER_SMOKE_COMMAND = ("node", "scripts/run-tests.mjs", "browser-phase7b")
+_BROWSER_SMOKE_TIMEOUT_SECONDS = 300
+_BROWSER_RUNNER_TIMEOUT_SECONDS = 240
+_BROWSER_ROOT_CLEANUP_SECONDS = 2.0
+_BROWSER_ROOT_CLEANUP_ATTEMPTS = 8
+_BROWSER_TASK_ROOT_KEY = "PHASE7B_BROWSER_TASK_ROOT"
+_BROWSER_TASK_NONCE_KEY = "PHASE7B_BROWSER_TASK_NONCE"
 _REFRESH_AUDIT_COLUMNS = (
     "source_id",
     "last_snapshot_id",
@@ -93,6 +102,69 @@ class ProductDatabasePreparationCommandError(RuntimeError):
 
 class _HelpRequested(BaseException):
     """Private marker for the parser's sole successful early exit."""
+
+
+class _BrowserRootLease:
+    """No-share-delete Windows directory handle held across the child lifetime."""
+
+    def __init__(
+        self,
+        handle: int,
+        closer: Callable[[int], None],
+        identity_reader: Callable[[int], object],
+        delete_disposition: Callable[[int], None],
+    ) -> None:
+        self._handle: int | None = handle
+        self._closer = closer
+        self._identity_reader = identity_reader
+        self._delete_disposition = delete_disposition
+        self._identity = identity_reader(handle)
+
+    def delete_owned(self, path: Path) -> None:
+        handle = self._handle
+        if handle is None or self._identity_reader(handle) != self._identity:
+            raise OSError
+        deadline = time.monotonic() + _BROWSER_ROOT_CLEANUP_SECONDS
+        first_flow: BaseException | None = None
+        last_error: BaseException | None = None
+        for attempt in range(_BROWSER_ROOT_CLEANUP_ATTEMPTS):
+            try:
+                for child in tuple(path.iterdir()):
+                    if child.is_symlink() or child.is_file():
+                        child.unlink()
+                    elif child.is_dir():
+                        shutil.rmtree(child)
+                    else:
+                        raise OSError
+                if tuple(path.iterdir()):
+                    raise OSError
+                if self._identity_reader(handle) != self._identity:
+                    raise OSError
+                self._delete_disposition(handle)
+            except (asyncio.CancelledError, KeyboardInterrupt, SystemExit) as error:
+                if first_flow is None:
+                    first_flow = error
+                last_error = error
+            except BaseException as error:
+                last_error = error
+            else:
+                if first_flow is not None:
+                    raise first_flow
+                return
+            if (
+                attempt + 1 >= _BROWSER_ROOT_CLEANUP_ATTEMPTS
+                or time.monotonic() >= deadline
+            ):
+                raise first_flow or last_error or RuntimeError
+            time.sleep(0.02)
+        raise first_flow or last_error or RuntimeError
+
+    def close(self) -> None:
+        handle = self._handle
+        if handle is None:
+            return
+        self._closer(handle)
+        self._handle = None
 
 
 @dataclass(frozen=True)
@@ -1373,22 +1445,322 @@ async def _default_official_audit(
     )
 
 
+def _remove_owned_browser_root(
+    path: Path,
+    *,
+    parent: Path,
+    owner_identity: tuple[int, int],
+    remove_temp: Callable[[Path], object],
+) -> None:
+    resolved_parent = parent.resolve(strict=True)
+    deadline = time.monotonic() + _BROWSER_ROOT_CLEANUP_SECONDS
+    first_flow: BaseException | None = None
+    last_error: BaseException | None = None
+    for attempt in range(_BROWSER_ROOT_CLEANUP_ATTEMPTS):
+        matches: list[Path] = []
+        for candidate in resolved_parent.iterdir():
+            try:
+                if candidate.is_symlink():
+                    continue
+                current = candidate.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if (current.st_dev, current.st_ino) == owner_identity:
+                matches.append(candidate)
+        if len(matches) > 1:
+            raise RuntimeError
+        if not matches:
+            if path.exists() or path.is_symlink():
+                raise RuntimeError
+            if first_flow is not None:
+                raise first_flow
+            return
+        owned_path = matches[0]
+        try:
+            if owned_path.is_symlink():
+                raise RuntimeError
+            current = owned_path.stat(follow_symlinks=False)
+            if (current.st_dev, current.st_ino) != owner_identity:
+                raise RuntimeError
+            remove_temp(owned_path)
+        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit) as error:
+            if first_flow is None:
+                first_flow = error
+            last_error = error
+        except BaseException as error:
+            last_error = error
+        if (
+            attempt + 1 >= _BROWSER_ROOT_CLEANUP_ATTEMPTS
+            or time.monotonic() >= deadline
+        ):
+            raise first_flow or last_error or RuntimeError
+        time.sleep(0.02)
+    raise first_flow or last_error or RuntimeError
+
+
+def _open_browser_root_lease(path: Path) -> _BrowserRootLease:
+    if os.name != "nt":
+        raise OSError
+    import ctypes
+    from ctypes import wintypes
+    from backend.services import product_database_backup as backup_safety
+
+    kernel32 = backup_safety._kernel32()
+    creator = kernel32.CreateFileW  # type: ignore[attr-defined]
+    creator.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    creator.restype = wintypes.HANDLE
+    opened = creator(
+        str(path),
+        0x00010000 | 0x00000080,
+        0x00000001 | 0x00000002,
+        None,
+        3,
+        0x02000000,
+        None,
+    )
+    invalid = ctypes.c_void_p(-1).value
+    if opened in (None, 0, invalid):
+        raise OSError
+    opened_handle = int(opened)
+    try:
+        return _BrowserRootLease(
+            opened_handle,
+            backup_safety._close_windows_handle,
+            backup_safety._identity_from_handle,
+            backup_safety._set_delete_disposition,
+        )
+    except BaseException as primary:
+        try:
+            backup_safety._close_windows_handle(opened_handle)
+        except BaseException as cleanup:
+            raise BaseExceptionGroup(
+                _SMOKE_ERROR, [primary, cleanup]
+            ) from None
+        raise primary from None
+
+
+def _close_browser_root_lease(lease: object) -> None:
+    close = getattr(lease, "close", None)
+    if not callable(close):
+        raise TypeError
+    deadline = time.monotonic() + _BROWSER_ROOT_CLEANUP_SECONDS
+    first_flow: BaseException | None = None
+    last_error: BaseException | None = None
+    for attempt in range(_BROWSER_ROOT_CLEANUP_ATTEMPTS):
+        try:
+            close()
+        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit) as error:
+            if first_flow is None:
+                first_flow = error
+            last_error = error
+        except BaseException as error:
+            last_error = error
+        else:
+            if first_flow is not None:
+                raise first_flow
+            return
+        if (
+            attempt + 1 >= _BROWSER_ROOT_CLEANUP_ATTEMPTS
+            or time.monotonic() >= deadline
+        ):
+            raise first_flow or last_error or RuntimeError
+        time.sleep(0.02)
+    raise first_flow or last_error or RuntimeError
+
+
 def _default_browser_smoke_runner(
     *,
     command: tuple[str, ...],
     cwd: Path,
     environment: Mapping[str, str],
     timeout_seconds: int,
+    executable_resolver: Callable[[str], str | None] = shutil.which,
+    guarded_spawn: Callable[..., object] | None = None,
+    stop_process: Callable[..., object] | None = None,
+    stop_unassigned: Callable[[object], list[BaseException]] | None = None,
+    nonce_factory: Callable[[], str] = lambda: secrets.token_hex(16),
+    temp_parent: Path | None = None,
+    temp_dir_factory: Callable[[Path], str] | None = None,
+    remove_temp: Callable[[Path], object] = shutil.rmtree,
+    root_lease_factory: Callable[[Path], object] = _open_browser_root_lease,
 ) -> object:
-    return subprocess.run(
-        command,
-        cwd=cwd,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=timeout_seconds,
+    from backend.scripts import run_milestone2_l4_session as process_safety
+
+    errors: list[BaseException] = []
+    child: object | None = None
+    guard: object | None = None
+    task_root: Path | None = None
+    sentinel: object | None = None
+    owner_identity: tuple[int, int] | None = None
+    root_lease: object | None = None
+    result: object | None = None
+    selected_parent = (
+        Path(tempfile.gettempdir()) / "novel-creator-phase7b-private"
+        if temp_parent is None
+        else Path(temp_parent)
     )
+    selected_temp_factory = temp_dir_factory or (
+        lambda prefix: tempfile.mkdtemp(
+            prefix=Path(prefix).name, dir=Path(prefix).parent
+        )
+    )
+    try:
+        if (
+            command != _BROWSER_SMOKE_COMMAND
+            or Path(cwd).resolve(strict=True) != REPOSITORY_ROOT.resolve(strict=True)
+            or type(timeout_seconds) is not int
+            or timeout_seconds <= _BROWSER_RUNNER_TIMEOUT_SECONDS
+            or type(environment) is not dict
+            or any(
+                type(key) is not str or type(value) is not str
+                for key, value in environment.items()
+            )
+        ):
+            raise ValueError
+        resolved_node_value = executable_resolver("node")
+        if type(resolved_node_value) is not str:
+            raise ValueError
+        resolved_node = Path(resolved_node_value).resolve(strict=True)
+        if (
+            not resolved_node.is_absolute()
+            or not resolved_node.is_file()
+            or resolved_node.name.lower() not in ("node", "node.exe")
+        ):
+            raise ValueError
+        nonce = nonce_factory()
+        if type(nonce) is not str or _HEX_ID.fullmatch(nonce) is None:
+            raise ValueError
+        task_root, sentinel = process_safety._create_owned_temp(
+            selected_parent, nonce, "browser", selected_temp_factory
+        )
+        acquired_before_lease = task_root.stat(follow_symlinks=False)
+        owner_identity = (
+            acquired_before_lease.st_dev,
+            acquired_before_lease.st_ino,
+        )
+        root_lease = root_lease_factory(task_root)
+        if not callable(getattr(root_lease, "close", None)):
+            raise TypeError
+        acquired_after_lease = task_root.stat(follow_symlinks=False)
+        if not os.path.samestat(acquired_before_lease, acquired_after_lease):
+            raise RuntimeError
+        process_safety._validate_owned_temp(
+            task_root, selected_parent, nonce, "browser", sentinel
+        )
+        child_environment = dict(environment)
+        child_environment.update(
+            {
+                _BROWSER_TASK_ROOT_KEY: str(task_root),
+                _BROWSER_TASK_NONCE_KEY: nonce,
+            }
+        )
+        spawn = guarded_spawn or process_safety._spawn_guarded_process
+        spawned = spawn(
+            (str(resolved_node), *command[1:]),
+            {
+                "cwd": REPOSITORY_ROOT,
+                "env": child_environment,
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+                "text": True,
+                "encoding": "utf-8",
+                "errors": "replace",
+                "shell": False,
+            },
+            platform_name=os.name,
+        )
+        if type(spawned) is not tuple or len(spawned) != 2:
+            raise TypeError
+        child, guard = spawned
+        if child is None or not callable(getattr(guard, "cleanup", None)):
+            raise TypeError
+        communicate = getattr(child, "communicate", None)
+        if not callable(communicate):
+            raise TypeError
+        stdout, stderr = communicate(timeout=_BROWSER_RUNNER_TIMEOUT_SECONDS)
+        returncode = getattr(child, "returncode", None)
+        if (
+            type(returncode) is not int
+            or type(stdout) is not str
+            or type(stderr) is not str
+        ):
+            raise TypeError
+        result = subprocess.CompletedProcess(
+            args=(str(resolved_node), *command[1:]),
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+        )
+    except BaseException as error:
+        errors.append(error)
+    finally:
+        if child is not None and callable(getattr(guard, "cleanup", None)):
+            try:
+                cleanup_errors = (stop_process or process_safety._stop_process)(
+                    child, guard=guard
+                )
+                if type(cleanup_errors) is not list or any(
+                    not isinstance(error, BaseException) for error in cleanup_errors
+                ):
+                    raise TypeError
+                errors.extend(cleanup_errors)
+            except BaseException as error:
+                errors.append(error)
+        elif child is not None:
+            try:
+                cleanup_errors = (
+                    stop_unassigned or process_safety._stop_unassigned_child
+                )(child)
+                if type(cleanup_errors) is not list or any(
+                    not isinstance(error, BaseException) for error in cleanup_errors
+                ):
+                    raise TypeError
+                errors.extend(cleanup_errors)
+            except BaseException as error:
+                errors.append(error)
+        handle_delete_established = False
+        if root_lease is not None and callable(
+            getattr(root_lease, "delete_owned", None)
+        ):
+            try:
+                root_lease.delete_owned(task_root)  # type: ignore[attr-defined]
+                handle_delete_established = True
+            except BaseException as error:
+                errors.append(error)
+        if root_lease is not None:
+            try:
+                _close_browser_root_lease(root_lease)
+            except BaseException as error:
+                errors.append(error)
+        if handle_delete_established:
+            if task_root is not None and (task_root.exists() or task_root.is_symlink()):
+                errors.append(RuntimeError())
+        elif task_root is not None and owner_identity is not None:
+            try:
+                _remove_owned_browser_root(
+                    task_root,
+                    parent=selected_parent,
+                    owner_identity=owner_identity,
+                    remove_temp=remove_temp,
+                )
+            except BaseException as error:
+                errors.append(error)
+        elif task_root is not None:
+            errors.append(RuntimeError())
+    if errors:
+        _raise_public(_combined(errors, _SMOKE_ERROR))
+    if result is None:
+        _raise_public(ProductDatabasePreparationCommandError(_SMOKE_ERROR))
+    return result
 
 
 async def _default_smoke(
@@ -1408,15 +1780,14 @@ async def _default_smoke(
             {
                 "MYSQL_DB": database,
                 "MARKET_SCHEDULER_ENABLED": "false",
-                "PHASE7B_PRE_CUTOVER_MODE": "true",
             }
         )
         completed = await _invoke(
             runner,
-            command=("npm", "run", "test:browser:phase7b"),
+            command=_BROWSER_SMOKE_COMMAND,
             cwd=REPOSITORY_ROOT,
             environment=environment,
-            timeout_seconds=300,
+            timeout_seconds=_BROWSER_SMOKE_TIMEOUT_SECONDS,
         )
         returncode = getattr(completed, "returncode", None)
         stdout = getattr(completed, "stdout", None)
@@ -1443,8 +1814,8 @@ async def _default_smoke(
         if (
             type(summary) is not dict
             or set(summary) != set(_BROWSER_SMOKE_EXPECTED)
-            or any(type(value) is not int for value in summary.values())
             or summary != _BROWSER_SMOKE_EXPECTED
+            or summaries[0] != canonical_json(summary)
         ):
             raise ValueError
         return SmokeResult(provider_calls=0, outbound_requests=0)
