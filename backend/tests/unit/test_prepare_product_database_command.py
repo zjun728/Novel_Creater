@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from contextlib import contextmanager
+import asyncio
 import json
+import stat
+from types import SimpleNamespace
 
 import pytest
+import backend.scripts.prepare_product_database as command_module
 
 from backend.domain.product_database_readiness import (
     DatabaseInventory,
@@ -14,30 +18,70 @@ from backend.domain.product_database_readiness import (
     NEW_DATABASE,
     PreparationReceipt,
     ReadinessState,
+    StateReceipt,
     advance_receipt,
     canonical_receipt_hash,
     inventory_hash,
 )
-from backend.domain.json_contracts import canonical_json
+from backend.domain.assets import PACKAGE_VERSION as ASSET_VERSION, load_asset_package
+from backend.domain.json_contracts import canonical_hash, canonical_json
+from backend.domain.market_sources import (
+    PACKAGE_VERSION as MARKET_VERSION,
+    load_market_source_package,
+)
 from backend.schema_manifest import created_table_names, manifest_hash
 from backend.schema_version import EXPECTED_SCHEMA_VERSION
 from backend.scripts.prepare_product_database import (
     ProductDatabasePreparationCommandError,
     PreparationCommandDependencies,
+    _default_dependencies,
     _default_transaction_scope,
     _default_connection_scope,
     create_current_schema_proof,
     new_database_boundary,
+    load_preparation_receipt,
+    parse_backup_receipt_document,
+    parse_preparation_receipt_document,
+    parse_state_receipt_document,
     publish_readiness_receipt,
     main,
     run_cli,
 )
+from backend.scripts.initialize_database import InitializationResult
+from backend.services.assets import AssetSeedReport
+from backend.services.market_sources import MarketSourceSeedReport
 from backend.services.product_database_inventory import TableStorage
 from backend.services.product_database_readiness import (
+    CurrentSchemaProof,
     NewDatabaseBoundaryEnterFailure,
     NewDatabaseBoundaryExitFailure,
     NewDatabaseBoundaryState,
+    OfficialDataAudit,
+    RestoreDrillResult,
+    SmokeResult,
+    prepare_product_database,
 )
+
+
+FLOW_CONTROLS = (asyncio.CancelledError, KeyboardInterrupt, SystemExit)
+
+
+def _secret_flow_control(flow_type: type[BaseException]) -> BaseException:
+    return flow_type("secret-flow-control")
+
+
+def _assert_clean_flow_control(
+    error: BaseException, expected_type: type[BaseException]
+) -> None:
+    assert type(error) is expected_type
+    assert "secret" not in repr(error)
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert getattr(error, "__notes__", None) in (None, [])
+    if isinstance(error, SystemExit):
+        assert error.code is None
+    else:
+        assert error.args == ()
 
 
 def _arguments(tmp_path: Path) -> list[str]:
@@ -198,12 +242,14 @@ class BoundarySession:
         drop_error: BaseException | None = None,
         release_error: BaseException | None = None,
         commit_error: BaseException | None = None,
+        close_error: BaseException | None = None,
     ) -> None:
         self.calls = calls
         self.create_error = create_error
         self.drop_error = drop_error
         self.release_error = release_error
         self.commit_error = commit_error
+        self.close_error = close_error
 
     async def fetchone(self, sql: str, params: tuple[object, ...] = ()) -> dict:
         self.calls.append(("fetchone", sql, params))
@@ -226,6 +272,8 @@ class BoundarySession:
 
     async def close(self) -> None:
         self.calls.append("close")
+        if self.close_error is not None:
+            raise self.close_error
 
 
 async def _factory_for(session: BoundarySession) -> BoundarySession:
@@ -326,6 +374,101 @@ async def test_new_database_boundary_existing_race_is_never_owned_or_cleaned() -
         ),
         "close",
     ]
+
+
+@pytest.mark.asyncio
+async def test_two_boundaries_share_one_lock_and_only_the_owner_can_create() -> None:
+    calls: list[object] = []
+    lock_owner: list[object] = []
+    entered = asyncio.Event()
+    finish = asyncio.Event()
+
+    class SharedLockSession(BoundarySession):
+        async def fetchone(
+            self, sql: str, params: tuple[object, ...] = ()
+        ) -> dict[str, int]:
+            self.calls.append(("fetchone", sql, params, self))
+            if sql.startswith("SELECT GET_LOCK"):
+                if lock_owner:
+                    return {"acquired": 0}
+                lock_owner.append(self)
+                return {"acquired": 1}
+            if sql.startswith("SELECT RELEASE_LOCK"):
+                assert lock_owner == [self]
+                lock_owner.clear()
+                return {"released": 1}
+            raise AssertionError(sql)
+
+    sessions = [SharedLockSession(calls), SharedLockSession(calls)]
+
+    async def session_factory() -> SharedLockSession:
+        session = sessions.pop(0)
+        calls.append(("connect", session))
+        return session
+
+    async def owner() -> None:
+        async with new_database_boundary(
+            NEW_DATABASE,
+            session_factory=session_factory,
+            initialize=lambda *_args: {"initialized": NEW_DATABASE},
+            inventory=lambda *_args: pytest.fail("owner inventoried"),
+            now_ms=lambda: 123,
+        ):
+            entered.set()
+            await finish.wait()
+
+    owner_task = asyncio.create_task(owner())
+    await entered.wait()
+    with pytest.raises(ProductDatabasePreparationCommandError) as raised:
+        async with new_database_boundary(
+            NEW_DATABASE,
+            session_factory=session_factory,
+            initialize=lambda *_args: pytest.fail("contender initialized"),
+            inventory=lambda *_args: pytest.fail("contender inventoried"),
+            now_ms=lambda: 123,
+        ):
+            pytest.fail("contender entered")
+    assert str(raised.value) == "new database boundary failed"
+    assert len(lock_owner) == 1
+    assert sum(
+        isinstance(call, tuple)
+        and len(call) > 1
+        and str(call[1]).startswith("CREATE DATABASE")
+        for call in calls
+    ) == 1
+
+    finish.set()
+    await owner_task
+    assert lock_owner == []
+    assert sum(
+        isinstance(call, tuple)
+        and len(call) > 1
+        and str(call[1]).startswith("DROP DATABASE")
+        for call in calls
+    ) == 0
+
+
+@pytest.mark.asyncio
+async def test_numeric_1007_create_ambiguity_is_observed_but_never_owned() -> None:
+    calls: list[object] = []
+    session = BoundarySession(calls, create_error=RuntimeError(1007, "secret-race"))
+    observed = _empty_inventory(NEW_DATABASE)
+
+    async with new_database_boundary(
+        NEW_DATABASE,
+        session_factory=lambda: _factory_for(session),
+        initialize=lambda *_args: pytest.fail("ambiguous existing DB initialized"),
+        inventory=lambda *_args: observed,
+        now_ms=lambda: 123,
+    ) as state:
+        assert state == NewDatabaseBoundaryState("preexisting", None, observed)
+
+    assert not any(
+        isinstance(call, tuple)
+        and len(call) > 1
+        and str(call[1]).startswith("DROP DATABASE")
+        for call in calls
+    )
 
 
 @pytest.mark.asyncio
@@ -523,6 +666,71 @@ async def test_new_database_boundary_never_trusts_fixed_type_from_drop_or_releas
     assert "secret" not in repr(cleanup)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flow_type", FLOW_CONTROLS)
+async def test_boundary_enter_flow_control_is_cloned_and_releases_every_resource(
+    flow_type: type[BaseException],
+) -> None:
+    calls: list[object] = []
+    session = BoundarySession(calls)
+
+    async def fail_initialize(*_args: object) -> object:
+        raise _secret_flow_control(flow_type)
+
+    with pytest.raises(BaseException) as raised:
+        async with new_database_boundary(
+            NEW_DATABASE,
+            session_factory=lambda: _factory_for(session),
+            initialize=fail_initialize,
+            inventory=lambda *_args: pytest.fail("unexpected inventory"),
+            now_ms=lambda: 123,
+        ):
+            pytest.fail("body entered")
+
+    _assert_clean_flow_control(raised.value, flow_type)
+    assert sum(call == "close" for call in calls) == 1
+    assert (
+        "execute",
+        "DROP DATABASE `novel_creator_v113`",
+        (),
+    ) in calls
+    assert calls[-2][1].startswith("SELECT RELEASE_LOCK")  # type: ignore[index]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flow_type", FLOW_CONTROLS)
+@pytest.mark.parametrize("failure_at", ("drop", "release"))
+async def test_boundary_cleanup_flow_control_is_cleanup_only_and_body_safe(
+    flow_type: type[BaseException], failure_at: str
+) -> None:
+    calls: list[object] = []
+    session = BoundarySession(
+        calls,
+        drop_error=(
+            _secret_flow_control(flow_type) if failure_at == "drop" else None
+        ),
+        release_error=(
+            _secret_flow_control(flow_type) if failure_at == "release" else None
+        ),
+    )
+
+    with pytest.raises(NewDatabaseBoundaryExitFailure) as raised:
+        async with new_database_boundary(
+            NEW_DATABASE,
+            session_factory=lambda: _factory_for(session),
+            initialize=lambda *_args: {"initialized": NEW_DATABASE},
+            inventory=lambda *_args: pytest.fail("unexpected inventory"),
+            now_ms=lambda: 123,
+        ):
+            if failure_at == "drop":
+                raise RuntimeError("secret-body-primary")
+
+    assert not hasattr(raised.value, "primary")
+    _assert_clean_flow_control(raised.value.cleanup, flow_type)
+    assert "secret-body-primary" not in repr(raised.value)
+    assert sum(call == "close" for call in calls) == 1
+
+
 def _proof_inventory(database: str) -> DatabaseInventory:
     tables = tuple(sorted(created_table_names()))
     counts = tuple(
@@ -594,6 +802,76 @@ async def test_current_schema_proof_uses_unique_disposable_database_and_closes_l
         ("execute", f"DROP DATABASE `{proof_name}`", ()),
         "close",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flow_type", FLOW_CONTROLS)
+@pytest.mark.parametrize("failure_at", ("initialize", "drop", "close"))
+async def test_current_schema_proof_flow_control_is_clean_and_closes_session(
+    flow_type: type[BaseException], failure_at: str
+) -> None:
+    calls: list[object] = []
+    session = BoundarySession(
+        calls,
+        drop_error=(
+            _secret_flow_control(flow_type) if failure_at == "drop" else None
+        ),
+        close_error=(
+            _secret_flow_control(flow_type) if failure_at == "close" else None
+        ),
+    )
+    proof_name = "novel_creator_phase7b_restore_0123456789abcdef0123456789abcdef"
+    inventory = _proof_inventory(proof_name)
+    storage = tuple(
+        TableStorage(name, "InnoDB", "utf8mb4_0900_ai_ci")
+        for name in inventory.table_names
+    )
+
+    async def initialize(*_args: object) -> object:
+        if failure_at == "initialize":
+            raise _secret_flow_control(flow_type)
+        return object()
+
+    with pytest.raises(BaseException) as raised:
+        await create_current_schema_proof(
+            session_factory=lambda: _factory_for(session),
+            initialize=initialize,
+            inventory=lambda *_args: inventory,
+            read_storage=lambda *_args: storage,
+            id_factory=lambda: "0123456789abcdef0123456789abcdef",
+            now_ms=lambda: 123,
+        )
+
+    _assert_clean_flow_control(raised.value, flow_type)
+    assert sum(call == "close" for call in calls) == 1
+    assert all(NEW_DATABASE not in repr(call) for call in calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flow_type", FLOW_CONTROLS)
+async def test_current_schema_proof_primary_precedes_cleanup_flow_control(
+    flow_type: type[BaseException],
+) -> None:
+    calls: list[object] = []
+    session = BoundarySession(calls, drop_error=_secret_flow_control(flow_type))
+
+    async def fail_initialize(*_args: object) -> object:
+        raise _secret_flow_control(flow_type)
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await create_current_schema_proof(
+            session_factory=lambda: _factory_for(session),
+            initialize=fail_initialize,
+            inventory=lambda *_args: pytest.fail("unexpected inventory"),
+            read_storage=lambda *_args: pytest.fail("unexpected storage"),
+            id_factory=lambda: "0123456789abcdef0123456789abcdef",
+            now_ms=lambda: 123,
+        )
+
+    assert len(raised.value.exceptions) == 2
+    _assert_clean_flow_control(raised.value.exceptions[0], flow_type)
+    _assert_clean_flow_control(raised.value.exceptions[1], flow_type)
+    assert sum(call == "close" for call in calls) == 1
 
 
 @pytest.mark.asyncio
@@ -750,6 +1028,55 @@ class ReceiptWorld:
         return not self.replacement and identity is self.identity
 
 
+class FlowReceiptHandle(ReceiptHandle):
+    def __init__(
+        self,
+        events: list[object],
+        failures: set[str],
+        flow_type: type[BaseException],
+    ) -> None:
+        super().__init__(events)
+        self.failures = failures
+        self.flow_type = flow_type
+        self.failed: set[str] = set()
+
+    def _fail_once(self, name: str) -> None:
+        if name in self.failures and name not in self.failed:
+            self.failed.add(name)
+            raise _secret_flow_control(self.flow_type)
+
+    def write(self, value: str) -> int:
+        self.events.append(("write", value))
+        self._fail_once("write")
+        return len(value)
+
+    def close(self) -> None:
+        self.events.append("close")
+        self._fail_once("close")
+        self.closed = True
+
+
+class FlowReceiptWorld(ReceiptWorld):
+    def __init__(
+        self,
+        root: Path,
+        failures: set[str],
+        flow_type: type[BaseException],
+    ) -> None:
+        super().__init__(root)
+        self.failures = failures
+        self.flow_type = flow_type
+        self.failed: set[str] = set()
+        self.handle = FlowReceiptHandle(self.events, failures, flow_type)
+
+    def unlink_owned(self, path: Path, identity: object) -> bool:
+        self.events.append(("unlink", path, identity))
+        if "unlink" in self.failures and "unlink" not in self.failed:
+            self.failed.add("unlink")
+            raise _secret_flow_control(self.flow_type)
+        return identity is self.identity
+
+
 def test_receipt_publication_is_canonical_private_absent_only_and_owner_bound(
     tmp_path: Path,
 ) -> None:
@@ -769,12 +1096,7 @@ def test_receipt_publication_is_canonical_private_absent_only_and_owner_bound(
         unlink_owned=world.unlink_owned,
     )
 
-    expected = canonical_json(
-        {
-            "preparationReceipt": asdict(receipt),
-            "preparationReceiptHash": canonical_receipt_hash(receipt),
-        }
-    )
+    expected = canonical_json(asdict(receipt))
     assert published == external / "approved-backup.readiness.json"
     assert world.events == [
         ("open", external),
@@ -790,9 +1112,228 @@ def test_receipt_publication_is_canonical_private_absent_only_and_owner_bound(
         ("owner", published, world.identity),
         ("unlink", world.temporary, world.identity),
     ]
-    document = json.loads(expected)
-    assert document["preparationReceiptHash"] == canonical_receipt_hash(receipt)
-    assert canonical_json(document) == expected
+    parsed = parse_preparation_receipt_document(expected)
+    assert parsed == receipt
+    assert canonical_receipt_hash(parsed) == canonical_receipt_hash(receipt)
+    assert canonical_json(json.loads(expected)) == expected
+
+
+def test_receipt_parser_and_loader_are_strict_and_hash_preserving() -> None:
+    receipt = _preparation_receipt()
+    document = canonical_json(asdict(receipt))
+    reads: list[Path] = []
+    payload = document.encode("utf-8")
+
+    class Handle:
+        def __enter__(self) -> Handle:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            reads.append(Path("closed"))
+
+        def fileno(self) -> int:
+            return 41
+
+        def read(self, limit: int) -> bytes:
+            assert limit == len(payload) + 1
+            return payload
+
+    info = SimpleNamespace(
+        st_file_attributes=0,
+        st_mode=stat.S_IFREG,
+        st_dev=1,
+        st_ino=2,
+        st_size=len(payload),
+        st_mtime_ns=3,
+        st_ctime_ns=4,
+    )
+    path = Path("D:/external/approved-backup.readiness.json")
+
+    loaded = load_preparation_receipt(
+        path,
+        opener=lambda value: reads.append(value) or Handle(),
+        resolver=lambda value: value,
+        lstat_reader=lambda _value: info,
+        fstat_reader=lambda _descriptor: info,
+    )
+
+    assert reads == [path, Path("closed")]
+    assert loaded == receipt
+    assert type(loaded) is PreparationReceipt
+    assert all(type(item) is StateReceipt for item in loaded.receipts)
+    assert canonical_receipt_hash(loaded) == canonical_receipt_hash(receipt)
+
+
+@pytest.mark.parametrize(
+    ("path", "size"),
+    [
+        (Path("relative.readiness.json"), 1),
+        (Path("D:/external/not-a-receipt.json"), 1),
+        (
+            command_module.REPOSITORY_ROOT / "inside.readiness.json",
+            1,
+        ),
+        (Path("D:/external/large.readiness.json"), 1_000_001),
+    ],
+)
+def test_receipt_loader_rejects_unsafe_paths_and_oversize_before_read(
+    path: Path, size: int
+) -> None:
+    opens: list[Path] = []
+    info = SimpleNamespace(
+        st_file_attributes=0,
+        st_mode=stat.S_IFREG,
+        st_dev=1,
+        st_ino=2,
+        st_size=size,
+        st_mtime_ns=3,
+        st_ctime_ns=4,
+    )
+
+    class Handle:
+        def __enter__(self) -> Handle:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def fileno(self) -> int:
+            return 41
+
+        def read(self, _limit: int) -> bytes:
+            pytest.fail("unsafe or oversized receipt was read")
+
+    with pytest.raises(ProductDatabasePreparationCommandError) as raised:
+        load_preparation_receipt(
+            path,
+            opener=lambda value: opens.append(value) or Handle(),
+            resolver=lambda value: value,
+            lstat_reader=lambda _value: info,
+            fstat_reader=lambda _descriptor: info,
+        )
+
+    assert str(raised.value) == "readiness receipt document is invalid"
+    if size <= 1_000_000:
+        assert opens == []
+
+
+def test_receipt_loader_rejects_stat_read_size_race() -> None:
+    calls = 0
+    before = SimpleNamespace(
+        st_file_attributes=0,
+        st_mode=stat.S_IFREG,
+        st_dev=1,
+        st_ino=2,
+        st_size=2,
+        st_mtime_ns=3,
+        st_ctime_ns=4,
+    )
+    after = SimpleNamespace(**{**vars(before), "st_mtime_ns": 5})
+
+    class Handle:
+        def __enter__(self) -> Handle:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def fileno(self) -> int:
+            return 41
+
+        def read(self, _limit: int) -> bytes:
+            return b"{}"
+
+    def fstat_reader(_descriptor: int) -> object:
+        nonlocal calls
+        calls += 1
+        return before if calls == 1 else after
+
+    with pytest.raises(ProductDatabasePreparationCommandError) as raised:
+        load_preparation_receipt(
+            Path("D:/external/approved.readiness.json"),
+            opener=lambda _path: Handle(),
+            resolver=lambda value: value,
+            lstat_reader=lambda _path: before,
+            fstat_reader=fstat_reader,
+        )
+
+    assert str(raised.value) == "readiness receipt document is invalid"
+
+
+@pytest.mark.parametrize("failure_at", ("resolved-repository", "reparse"))
+def test_receipt_loader_rejects_resolved_repository_and_reparse_before_open(
+    failure_at: str,
+) -> None:
+    path = Path("D:/external/approved.readiness.json")
+    opens: list[Path] = []
+    info = SimpleNamespace(
+        st_file_attributes=(0x400 if failure_at == "reparse" else 0),
+        st_mode=stat.S_IFREG,
+        st_dev=1,
+        st_ino=2,
+        st_size=2,
+        st_mtime_ns=3,
+        st_ctime_ns=4,
+    )
+
+    with pytest.raises(ProductDatabasePreparationCommandError) as raised:
+        load_preparation_receipt(
+            path,
+            opener=lambda value: opens.append(value) or pytest.fail("opened"),
+            resolver=(
+                (lambda _value: command_module.REPOSITORY_ROOT / "inside.readiness.json")
+                if failure_at == "resolved-repository"
+                else (lambda value: value)
+            ),
+            lstat_reader=lambda _path: info,
+            fstat_reader=lambda _descriptor: info,
+        )
+
+    assert str(raised.value) == "readiness receipt document is invalid"
+    assert opens == []
+
+
+def test_strict_nested_receipt_parsers_accept_only_exact_domain_documents() -> None:
+    receipt = _preparation_receipt()
+    state = receipt.receipts[0]
+    backup = BackupReceipt(
+        state=ReadinessState.BACKUP_CREATED.value,
+        previous_receipt_hash=canonical_receipt_hash(state),
+        source_database=LEGACY_DATABASE,
+        backup_filename="approved.sql",
+        backup_sha256="d" * 64,
+        backup_byte_length=123,
+        client_version="mysqldump  Ver 8.4.0",
+        source_inventory_hash="e" * 64,
+    )
+
+    assert parse_state_receipt_document(canonical_json(asdict(state))) == state
+    assert parse_backup_receipt_document(canonical_json(asdict(backup))) == backup
+    assert parse_preparation_receipt_document(canonical_json(asdict(receipt))) == receipt
+
+    invalid_documents: list[str] = []
+    for value in (asdict(state), asdict(backup), asdict(receipt)):
+        with_extra = dict(value)
+        with_extra["preparationReceiptHash"] = "f" * 64
+        invalid_documents.append(canonical_json(with_extra))
+    spoofed_type = asdict(receipt)
+    spoofed_type["style_count"] = True
+    invalid_documents.append(canonical_json(spoofed_type))
+    broken_chain = asdict(receipt)
+    broken_chain["receipts"][1]["previous_receipt_hash"] = "f" * 64
+    invalid_documents.append(canonical_json(broken_chain))
+    invalid_documents.append('{"state":"x","state":"y"}')
+
+    parsers = (
+        parse_state_receipt_document,
+        parse_backup_receipt_document,
+        parse_preparation_receipt_document,
+    )
+    for document_value in invalid_documents:
+        for parser in parsers:
+            with pytest.raises(ProductDatabasePreparationCommandError) as raised:
+                parser(document_value)
+            assert str(raised.value) == "readiness receipt document is invalid"
 
 
 @pytest.mark.parametrize(
@@ -854,6 +1395,66 @@ def test_receipt_publication_never_deletes_replacement_or_publishes_it(
         world.temporary,
         world.identity,
     ) in world.events
+
+
+@pytest.mark.parametrize("flow_type", FLOW_CONTROLS)
+@pytest.mark.parametrize("failure_at", ("write", "close", "unlink"))
+def test_receipt_flow_control_is_cloned_and_releases_owned_handle(
+    tmp_path: Path,
+    flow_type: type[BaseException],
+    failure_at: str,
+) -> None:
+    external = Path(tmp_path.anchor) / "phase7b-receipt-tests" / tmp_path.name
+    world = FlowReceiptWorld(external, {failure_at}, flow_type)
+
+    with pytest.raises(BaseException) as raised:
+        publish_readiness_receipt(
+            _preparation_receipt(),
+            external / "approved-backup.sql",
+            temporary_opener=world.opener,
+            acl_runner=world.acl,
+            fsync=world.fsync,
+            linker=world.link,
+            same_owner=world.same_owner,
+            unlink_owned=world.unlink_owned,
+        )
+
+    _assert_clean_flow_control(raised.value, flow_type)
+    assert world.handle.closed
+    assert sum(event == "close" for event in world.events) == (
+        2 if failure_at == "close" else 1
+    )
+    assert any(
+        isinstance(event, tuple) and event[0] == "unlink"
+        for event in world.events
+    )
+
+
+@pytest.mark.parametrize("flow_type", FLOW_CONTROLS)
+def test_receipt_primary_precedes_cleanup_flow_and_resources_reach_zero(
+    tmp_path: Path,
+    flow_type: type[BaseException],
+) -> None:
+    external = Path(tmp_path.anchor) / "phase7b-receipt-tests" / tmp_path.name
+    world = FlowReceiptWorld(external, {"close", "unlink"}, flow_type)
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        publish_readiness_receipt(
+            _preparation_receipt(),
+            external / "approved-backup.sql",
+            temporary_opener=world.opener,
+            acl_runner=world.acl,
+            fsync=world.fsync,
+            linker=world.link,
+            same_owner=world.same_owner,
+            unlink_owned=world.unlink_owned,
+        )
+
+    assert len(raised.value.exceptions) == 2
+    _assert_clean_flow_control(raised.value.exceptions[0], flow_type)
+    _assert_clean_flow_control(raised.value.exceptions[1], flow_type)
+    assert world.handle.closed
+    assert sum(event == "close" for event in world.events) == 2
 
 
 class ExecuteWorld:
@@ -1009,12 +1610,173 @@ class ExecuteWorld:
         return backup.with_suffix(".readiness.json")
 
 
+def _ready_inventory(database: str) -> DatabaseInventory:
+    counts = {name: 0 for name in created_table_names()}
+    counts.update(
+        {
+            "schema_metadata": 1,
+            "style_templates": 10,
+            "style_template_heads": 10,
+            "experience_cards": 64,
+            "experience_card_heads": 64,
+            "market_sources": 2,
+            "market_source_policy_revisions": 2,
+            "market_source_policy_heads": 2,
+            "market_source_refresh_states": 2,
+        }
+    )
+    rows = tuple(sorted(counts.items()))
+    return DatabaseInventory(
+        database=database,
+        server_version="8.4.10",
+        schema_version=EXPECTED_SCHEMA_VERSION,
+        manifest_hash=manifest_hash(),
+        structural_fingerprint="2" * 64,
+        table_names=tuple(name for name, _count in rows),
+        row_counts=rows,
+        nonempty_table_count=sum(count > 0 for count in counts.values()),
+        total_row_count=sum(counts.values()),
+    )
+
+
+class RealTask4ExecuteWorld(ExecuteWorld):
+    def __init__(self) -> None:
+        super().__init__(_preparation_receipt())
+        self.target = _ready_inventory(NEW_DATABASE)
+        proof_name = (
+            "novel_creator_phase7b_restore_"
+            "abcdefabcdefabcdefabcdefabcdefab"
+        )
+        proof_inventory = _proof_inventory(proof_name)
+        proof_storage = tuple(
+            TableStorage(name, "InnoDB", "utf8mb4_0900_ai_ci")
+            for name in proof_inventory.table_names
+        )
+        self.proof = CurrentSchemaProof(
+            proof_inventory,
+            proof_storage,
+            (proof_name,),
+            (proof_name,),
+        )
+        self.target_storage = tuple(
+            TableStorage(name, "InnoDB", "utf8mb4_0900_ai_ci")
+            for name in self.target.table_names
+        )
+        backend_root = Path(__file__).resolve().parents[2]
+        assets = load_asset_package(
+            backend_root / "assets" / ASSET_VERSION / "manifest.json",
+            mode="release",
+        )
+        market = load_market_source_package(
+            backend_root / "assets" / MARKET_VERSION / "manifest.json"
+        )
+        self.assets = AssetSeedReport(
+            package_version=assets.package_version,
+            package_hash=canonical_hash(assets.manifest),
+            style_count=len(assets.styles),
+            card_count=len(assets.experience_cards),
+            inserted=len(assets.styles) + len(assets.experience_cards),
+            replayed=0,
+            advanced=0,
+        )
+        self.market = MarketSourceSeedReport(
+            package_version=market.package_version,
+            source_count=len(market.sources),
+            package_hash=canonical_hash(market.manifest),
+            inserted=len(market.sources),
+            replayed=0,
+        )
+        self.audit = OfficialDataAudit(
+            asset_package_version=assets.package_version,
+            asset_package_hash=canonical_hash(assets.manifest),
+            style_content_hash=assets.manifest.styles_file.sha256,
+            style_count=len(assets.styles),
+            card_content_hash=assets.manifest.experience_cards_file.sha256,
+            card_count=len(assets.experience_cards),
+            market_package_version=market.package_version,
+            market_package_hash=canonical_hash(market.manifest),
+            market_content_hash=market.manifest.sources_file.sha256,
+            market_source_count=len(market.sources),
+            market_source_authority=tuple(
+                sorted(source.stable_key for source in market.sources)
+            ),
+        )
+
+    async def inventory_database(
+        self, config: object, database: str
+    ) -> DatabaseInventory:
+        self.events.append(("inventory", config, database))
+        return self.target if database == NEW_DATABASE else self.inventory
+
+    async def restore_drill(self, *args: object) -> RestoreDrillResult:
+        self.events.append(("restore", *args))
+        restore_name = (
+            "novel_creator_phase7b_restore_"
+            "0123456789abcdef0123456789abcdef"
+        )
+        return RestoreDrillResult(
+            replace(self.inventory, database=restore_name),
+            (restore_name,),
+            (restore_name,),
+        )
+
+    async def current_schema_proof(self, config: object) -> CurrentSchemaProof:
+        self.events.append(("proof", config))
+        return self.proof
+
+    def database_boundary(self, config: object, database: str) -> object:
+        self.events.append(("boundary", config, database))
+        events = self.events
+        initialized = InitializationResult(
+            database_name=NEW_DATABASE,
+            schema_version=EXPECTED_SCHEMA_VERSION,
+            manifest_hash=manifest_hash(),
+            table_count=len(created_table_names()),
+        )
+
+        class Boundary:
+            async def __aenter__(self) -> NewDatabaseBoundaryState:
+                events.append("boundary-enter")
+                return NewDatabaseBoundaryState("created", initialized, None)
+
+            async def __aexit__(self, *_args: object) -> bool:
+                events.append("boundary-exit")
+                return False
+
+        return Boundary()
+
+    async def seed_assets(self, config: object, database: str) -> AssetSeedReport:
+        self.events.append(("seed-assets", config, database))
+        return self.assets
+
+    async def seed_market(
+        self, config: object, database: str
+    ) -> MarketSourceSeedReport:
+        self.events.append(("seed-market", config, database))
+        return self.market
+
+    async def read_storage(
+        self, config: object, database: str
+    ) -> tuple[TableStorage, ...]:
+        self.events.append(("storage", config, database))
+        return self.target_storage
+
+    async def audit_official_data(
+        self, config: object, database: str
+    ) -> OfficialDataAudit:
+        self.events.append(("audit", config, database))
+        return self.audit
+
+    async def smoke(self, config: object, database: str) -> SmokeResult:
+        self.events.append(("smoke", config, database))
+        return SmokeResult(provider_calls=0, outbound_requests=0)
+
+
 @pytest.mark.asyncio
 async def test_execute_wires_preflight_inventory_task4_and_publication_in_order(
     tmp_path: Path,
 ) -> None:
-    receipt = _preparation_receipt()
-    world = ExecuteWorld(receipt)
+    world = RealTask4ExecuteWorld()
     ids = iter(("11111111111111111111111111111111",))
     dependencies = PreparationCommandDependencies(
         preflight_clients=world.preflight_clients,
@@ -1031,7 +1793,7 @@ async def test_execute_wires_preflight_inventory_task4_and_publication_in_order(
         read_storage=world.read_storage,
         audit_official_data=world.audit_official_data,
         smoke=world.smoke,
-        prepare_service=world.prepare,
+        prepare_service=prepare_product_database,
         publish_receipt=world.publish,
         id_factory=lambda: next(ids),
     )
@@ -1066,43 +1828,25 @@ async def test_execute_wires_preflight_inventory_task4_and_publication_in_order(
         world.pair,
         world.option,
     )
-    assert world.events[4][0] == "prepare"  # type: ignore[index]
-    prepare_kwargs = world.events[4][1]  # type: ignore[index]
-    assert set(prepare_kwargs) == {
-        "request",
-        "inventory",
-        "create_backup",
-        "restore_drill",
-        "current_schema_proof",
-        "new_database_boundary",
-        "seed_assets",
-        "seed_market",
-        "read_storage",
-        "audit_official_data",
-        "smoke",
-    }
-    assert prepare_kwargs["request"].legacy_database == LEGACY_DATABASE
-    assert prepare_kwargs["request"].new_database == NEW_DATABASE
-    assert prepare_kwargs["request"].backup_directory == backup_dir
-    assert world.events[5] == (
+    assert world.events[4] == (
         "inventory",
         world.events[2][1],  # type: ignore[index]
         LEGACY_DATABASE,
     )
-    assert world.events[6][:5] == (  # type: ignore[index]
+    assert world.events[5][:5] == (  # type: ignore[index]
         "backup",
         world.pair,
         world.option,
         world.inventory,
         backup_dir,
     )
-    assert world.events[6][5] == (  # type: ignore[index]
+    assert world.events[5][5] == (  # type: ignore[index]
         "novel_creator-phase7b-11111111111111111111111111111111.sql"
     )
-    assert world.events[6][6] == world.backup.previous_receipt_hash  # type: ignore[index]
+    assert world.events[5][6] == world.backup.previous_receipt_hash  # type: ignore[index]
     assert [
         event if isinstance(event, str) else event[0]
-        for event in world.events[7:20]
+        for event in world.events[6:19]
     ] == [
         "restore",
         "inventory",
@@ -1119,7 +1863,7 @@ async def test_execute_wires_preflight_inventory_task4_and_publication_in_order(
         "option-exit",
     ]
     config = world.events[2][1]  # type: ignore[index]
-    assert world.events[7][1:] == (  # type: ignore[index]
+    assert world.events[6][1:] == (  # type: ignore[index]
         config,
         world.pair,
         world.option,
@@ -1127,15 +1871,17 @@ async def test_execute_wires_preflight_inventory_task4_and_publication_in_order(
         world.inventory,
         backup_dir,
     )
-    assert world.events[8] == ("inventory", config, LEGACY_DATABASE)
-    assert world.events[9] == ("proof", config)
-    assert world.events[10] == ("boundary", config, NEW_DATABASE)
-    for index in (12, 13, 15, 16, 17):
+    assert world.events[7] == ("inventory", config, LEGACY_DATABASE)
+    assert world.events[8] == ("proof", config)
+    assert world.events[9] == ("boundary", config, NEW_DATABASE)
+    for index in (11, 12, 14, 15, 16):
         assert world.events[index][1:] == (config, NEW_DATABASE)  # type: ignore[index]
-    assert world.events[14] == ("inventory", config, NEW_DATABASE)
-    assert world.events[20] == (
+    assert world.events[13] == ("inventory", config, NEW_DATABASE)
+    published_receipt = world.events[19][1]  # type: ignore[index]
+    assert type(published_receipt) is PreparationReceipt
+    assert world.events[19] == (
         "publish",
-        receipt,
+        published_receipt,
         backup_dir / world.backup.backup_filename,
     )
     assert lines == [
@@ -1143,12 +1889,151 @@ async def test_execute_wires_preflight_inventory_task4_and_publication_in_order(
         "legacy_database=novel_creator",
         "new_database=novel_creator_v113",
         "stage=awaiting-cutover-approval",
-        f"receipt_hash={canonical_receipt_hash(receipt)}",
+        f"receipt_hash={canonical_receipt_hash(published_receipt)}",
     ]
+    assert published_receipt.legacy_inventory_hash == inventory_hash(world.inventory)
+    assert published_receipt.new_inventory_hash == inventory_hash(world.target)
+    assert tuple(item.state for item in published_receipt.receipts) == tuple(
+        state.value for state in tuple(ReadinessState)[:7]
+    )
     rendered = "\n".join(lines)
     assert "top-secret" not in rendered
     assert str(backup_dir) not in rendered
     assert "11111111111111111111111111111111" not in rendered
+
+
+def test_default_dependencies_wire_public_resources_with_exact_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import backend.config as config_module
+    import backend.scripts.configure_local_mysql as mysql_script
+    import backend.services.product_database_backup as backup_module
+
+    calls: list[object] = []
+    pair = object()
+    option_context = object()
+    backup_value = object()
+    config = {
+        "host": "127.0.0.1",
+        "port": 3307,
+        "user": "writer",
+        "password": "injected-only",
+        "db": LEGACY_DATABASE,
+    }
+
+    def runner(command: list[str], **kwargs: object) -> object:
+        calls.append(("run", command, kwargs))
+        return object()
+
+    def pair_factory(
+        dump: Path, mysql: Path, repository: Path, version_runner: object
+    ) -> object:
+        calls.append(("pair", dump, mysql, repository))
+        assert callable(version_runner)
+        version_runner(dump)  # type: ignore[operator]
+        version_runner(mysql)  # type: ignore[operator]
+        return pair
+
+    def option_factory(*args: object, **kwargs: object) -> object:
+        calls.append(("option", args, kwargs))
+        return option_context
+
+    def connection_factory(*args: object) -> None:
+        calls.append(("connection", args))
+
+    def backup_factory(*args: object, **kwargs: object) -> object:
+        calls.append(("backup", args, kwargs))
+        return backup_value
+
+    acl = lambda path: calls.append(("acl", path))
+    monkeypatch.setattr(command_module.subprocess, "run", runner)
+    monkeypatch.setattr(backup_module, "preflight_client_pair", pair_factory)
+    monkeypatch.setattr(backup_module, "private_mysql_option_file", option_factory)
+    monkeypatch.setattr(
+        backup_module, "preflight_client_connection", connection_factory
+    )
+    monkeypatch.setattr(backup_module, "create_logical_backup", backup_factory)
+    monkeypatch.setattr(config_module, "require_mysql_config", lambda: config)
+    monkeypatch.setattr(mysql_script, "restrict_windows_acl", acl)
+
+    dependencies = _default_dependencies()
+    dump = Path("D:/mysql/mysqldump.exe")
+    mysql = Path("D:/mysql/mysql.exe")
+    repository = Path("D:/repository")
+    backup_dir = Path("D:/backups")
+    option = Path("D:/backups/private.cnf")
+    inventory = _empty_inventory(LEGACY_DATABASE)
+
+    assert type(dependencies) is PreparationCommandDependencies
+    assert dependencies.read_config() is config
+    assert dependencies.preflight_clients(dump, mysql, repository) is pair
+    assert dependencies.option_file(config, backup_dir) is option_context
+    dependencies.preflight_connection(pair, option)
+    assert (
+        dependencies.create_backup(
+            pair, option, inventory, backup_dir, "approved.sql", "a" * 64
+        )
+        is backup_value
+    )
+    assert dependencies.inventory_database is command_module._default_inventory
+    assert dependencies.restore_drill is command_module._default_restore_drill
+    assert (
+        dependencies.current_schema_proof
+        is command_module._default_current_schema_proof
+    )
+    assert (
+        dependencies.database_boundary
+        is command_module._default_database_boundary
+    )
+    assert dependencies.seed_assets is command_module._default_seed_assets
+    assert dependencies.seed_market is command_module._default_seed_market
+    assert dependencies.read_storage is command_module._default_storage
+    assert dependencies.audit_official_data is command_module._default_official_audit
+    assert dependencies.smoke is command_module._default_smoke
+    assert dependencies.prepare_service is prepare_product_database
+    assert dependencies.publish_receipt is publish_readiness_receipt
+    assert calls == [
+        ("pair", dump, mysql, repository),
+        (
+            "run",
+            [str(dump), "--version"],
+            {"capture_output": True, "text": True, "check": False},
+        ),
+        (
+            "run",
+            [str(mysql), "--version"],
+            {"capture_output": True, "text": True, "check": False},
+        ),
+        (
+            "option",
+            (
+                {
+                    "host": "127.0.0.1",
+                    "port": 3307,
+                    "user": "writer",
+                    "password": "injected-only",
+                },
+                backup_dir,
+                acl,
+            ),
+            {"repository_root": command_module.REPOSITORY_ROOT},
+        ),
+        ("connection", (pair, option, runner)),
+        (
+            "backup",
+            (
+                pair,
+                option,
+                inventory,
+                backup_dir,
+                "approved.sql",
+                "a" * 64,
+                runner,
+                acl,
+            ),
+            {"repository_root": command_module.REPOSITORY_ROOT},
+        ),
+    ]
 
 
 @pytest.mark.asyncio
@@ -1198,6 +2083,55 @@ async def test_execute_failure_is_fixed_and_drops_ambient_secret_context(
     assert raised.value.__suppress_context__ is True
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flow_type", FLOW_CONTROLS)
+async def test_execute_body_flow_control_is_cloned_after_boundary_cleanup(
+    tmp_path: Path,
+    flow_type: type[BaseException],
+) -> None:
+    world = ExecuteWorld(_preparation_receipt())
+
+    async def fail_seed(*_args: object) -> object:
+        raise _secret_flow_control(flow_type)
+
+    dependencies = PreparationCommandDependencies(
+        preflight_clients=world.preflight_clients,
+        read_config=world.read_config,
+        option_file=world.option_file,
+        preflight_connection=world.preflight_connection,
+        inventory_database=world.inventory_database,
+        create_backup=world.create_backup,
+        restore_drill=world.restore_drill,
+        current_schema_proof=world.current_schema_proof,
+        database_boundary=world.database_boundary,
+        seed_assets=fail_seed,
+        seed_market=world.seed_market,
+        read_storage=world.read_storage,
+        audit_official_data=world.audit_official_data,
+        smoke=world.smoke,
+        prepare_service=world.prepare,
+        publish_receipt=world.publish,
+        id_factory=lambda: "1" * 32,
+    )
+    argv = [
+        *_arguments(tmp_path),
+        "--execute",
+        "--confirm-legacy",
+        LEGACY_DATABASE,
+        "--confirm-new",
+        NEW_DATABASE,
+        "--confirm-prepare",
+        "PREPARE-PHASE7B",
+    ]
+
+    with pytest.raises(BaseException) as raised:
+        await run_cli(argv, dependencies=dependencies)
+
+    _assert_clean_flow_control(raised.value, flow_type)
+    assert "boundary-exit" in world.events
+    assert world.events[-1] == "option-exit"
+
+
 def test_main_prints_only_fixed_failure(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     secret = "never-print-this-secret"
 
@@ -1214,6 +2148,60 @@ def test_main_prints_only_fixed_failure(monkeypatch: pytest.MonkeyPatch, capsys)
     assert captured.out == ""
     assert captured.err == "Product database preparation failed.\n"
     assert secret not in captured.err
+
+
+@pytest.mark.parametrize("code", (None, 0, "secret-system-exit"))
+def test_main_never_treats_execute_system_exit_as_help_success(
+    monkeypatch: pytest.MonkeyPatch, capsys, code: object
+) -> None:
+    async def fail(*_args: object, **_kwargs: object) -> int:
+        raise SystemExit(code)
+
+    monkeypatch.setattr(command_module, "run_cli", fail)
+
+    assert main([]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "Product database preparation failed.\n"
+    assert "secret" not in captured.err
+
+
+def test_main_help_uses_dedicated_success_path(capsys) -> None:
+    assert main(["--help"]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "Product database preparation failed." not in captured.out
+
+
+@pytest.mark.parametrize(
+    "argv",
+    (
+        [],
+        ["--unknown-option"],
+        ["--legacy-database"],
+        [
+            "--legacy-database",
+            "wrong-database",
+            "--new-database",
+            NEW_DATABASE,
+            "--backup-dir",
+            "D:/private/backups",
+            "--mysqldump",
+            "D:/private/mysql-8.4/mysqldump.exe",
+            "--mysql",
+            "D:/private/mysql-8.4/mysql.exe",
+        ],
+    ),
+)
+def test_main_normalizes_real_argument_errors_to_one_fixed_line(
+    argv: list[str], capsys
+) -> None:
+    assert main(argv) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "Product database preparation failed.\n"
+    assert "usage:" not in captured.err.lower()
+    assert "D:/" not in captured.err
 
 
 @pytest.mark.asyncio

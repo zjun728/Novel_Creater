@@ -5,8 +5,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 import inspect
+import json
 import os
 from pathlib import Path
 import re
@@ -25,6 +26,7 @@ from backend.domain.product_database_readiness import (
     NEW_DATABASE,
     PreparationReceipt,
     ReadinessState,
+    StateReceipt,
     advance_receipt,
     canonical_receipt_hash,
     inventory_hash,
@@ -51,15 +53,21 @@ _PROOF_ERROR = "current schema proof failed"
 _PROOF_CLEANUP_ERROR = "current schema proof cleanup failed"
 _RECEIPT_ERROR = "readiness receipt publication failed"
 _RECEIPT_CLEANUP_ERROR = "readiness receipt cleanup failed"
+_RECEIPT_DOCUMENT_ERROR = "readiness receipt document is invalid"
 _EXECUTION_ERROR = "product database preparation execution failed"
 _RESTORE_DRILL_ERROR = "restore drill lifecycle failed"
 _RESTORE_DRILL_CLEANUP_ERROR = "restore drill cleanup failed"
 _LOCK_NAME = "novel_creator:phase7b:prepare"
 _HEX_ID = re.compile(r"^[0-9a-f]{32}$", re.ASCII)
+_MAX_RECEIPT_BYTES = 1_000_000
 
 
 class ProductDatabasePreparationCommandError(RuntimeError):
     """A fixed, public-safe command failure."""
+
+
+class _HelpRequested(BaseException):
+    """Private marker for the parser's sole successful early exit."""
 
 
 @dataclass(frozen=True)
@@ -86,9 +94,16 @@ class PreparationCommandDependencies:
 
 
 class _SafeArgumentParser(argparse.ArgumentParser):
+    def exit(self, status: int = 0, message: str | None = None) -> None:
+        if status == 0:
+            if message:
+                self._print_message(message, sys.stdout)
+            raise _HelpRequested() from None
+        raise ProductDatabasePreparationCommandError(_ARGUMENT_ERROR) from None
+
     def error(self, message: str) -> None:
         del message
-        self.exit(2, "Product database preparation arguments are invalid.\n")
+        raise ProductDatabasePreparationCommandError(_ARGUMENT_ERROR) from None
 
 
 def _argument_parser() -> argparse.ArgumentParser:
@@ -105,6 +120,183 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--confirm-new")
     parser.add_argument("--confirm-prepare")
     return parser
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError
+        value[key] = item
+    return value
+
+
+def _parse_canonical_json_document(document: str | bytes) -> object:
+    if type(document) is bytes:
+        text = document.decode("utf-8")
+    elif type(document) is str:
+        text = document
+    else:
+        raise TypeError
+    value = json.loads(
+        text,
+        object_pairs_hook=_unique_json_object,
+        parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
+    )
+    if canonical_json(value) != text:
+        raise ValueError
+    return value
+
+
+def _exact_receipt_values(
+    value: object,
+    receipt_type: type[StateReceipt] | type[BackupReceipt] | type[PreparationReceipt],
+) -> dict[str, object]:
+    if type(value) is not dict:
+        raise TypeError
+    expected = {field.name for field in fields(receipt_type)}
+    if set(value) != expected:
+        raise ValueError
+    return value
+
+
+def parse_state_receipt_document(document: str | bytes) -> StateReceipt:
+    """Parse one exact canonical :class:`StateReceipt` document."""
+
+    try:
+        values = _exact_receipt_values(
+            _parse_canonical_json_document(document), StateReceipt
+        )
+        return StateReceipt(**values)  # type: ignore[arg-type]
+    except BaseException as error:
+        _raise_public(_sanitized(error, _RECEIPT_DOCUMENT_ERROR))
+
+
+def parse_backup_receipt_document(document: str | bytes) -> BackupReceipt:
+    """Parse one exact canonical :class:`BackupReceipt` document."""
+
+    try:
+        values = _exact_receipt_values(
+            _parse_canonical_json_document(document), BackupReceipt
+        )
+        return BackupReceipt(**values)  # type: ignore[arg-type]
+    except BaseException as error:
+        _raise_public(_sanitized(error, _RECEIPT_DOCUMENT_ERROR))
+
+
+def parse_preparation_receipt_document(document: str | bytes) -> PreparationReceipt:
+    """Parse and validate an exact canonical preparation receipt and hash chain."""
+
+    try:
+        values = _exact_receipt_values(
+            _parse_canonical_json_document(document), PreparationReceipt
+        )
+        nested = values.get("receipts")
+        if type(nested) is not list:
+            raise TypeError
+        receipts = tuple(
+            StateReceipt(
+                **_exact_receipt_values(value, StateReceipt)  # type: ignore[arg-type]
+            )
+            for value in nested
+        )
+        values = dict(values)
+        values["receipts"] = receipts
+        return PreparationReceipt(**values)  # type: ignore[arg-type]
+    except BaseException as error:
+        _raise_public(_sanitized(error, _RECEIPT_DOCUMENT_ERROR))
+
+
+def _open_receipt_for_read(path: Path) -> object:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        return os.fdopen(descriptor, "rb", closefd=True)
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _receipt_file_identity(value: object) -> tuple[int, int, int, int, int]:
+    attributes = getattr(value, "st_file_attributes", 0)
+    mode = getattr(value, "st_mode", None)
+    identity = (
+        getattr(value, "st_dev", None),
+        getattr(value, "st_ino", None),
+        getattr(value, "st_size", None),
+        getattr(value, "st_mtime_ns", None),
+        getattr(value, "st_ctime_ns", None),
+    )
+    if (
+        type(attributes) is not int
+        or attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        or type(mode) is not int
+        or not stat.S_ISREG(mode)
+        or any(type(item) is not int for item in identity)
+    ):
+        raise ValueError
+    return identity  # type: ignore[return-value]
+
+
+def load_preparation_receipt(
+    path: Path,
+    *,
+    opener: Callable[[Path], object] = _open_receipt_for_read,
+    resolver: Callable[[Path], Path] = lambda value: value.resolve(strict=True),
+    lstat_reader: Callable[[Path], object] = os.lstat,
+    fstat_reader: Callable[[int], object] = os.fstat,
+) -> PreparationReceipt:
+    """Read and strictly validate a published preparation receipt."""
+
+    try:
+        receipt_path = Path(path)
+        if (
+            not receipt_path.is_absolute()
+            or receipt_path.parent == receipt_path
+            or ".." in receipt_path.parts
+            or not receipt_path.name.endswith(".readiness.json")
+            or _is_inside(
+                os.path.normcase(os.path.normpath(str(receipt_path))),
+                os.path.normcase(os.path.normpath(str(REPOSITORY_ROOT))),
+            )
+        ):
+            raise ValueError
+        resolved_before = Path(resolver(receipt_path))
+        if (
+            not resolved_before.is_absolute()
+            or _is_inside(
+                os.path.normcase(os.path.normpath(str(resolved_before))),
+                os.path.normcase(os.path.normpath(str(REPOSITORY_ROOT))),
+            )
+            or os.path.normcase(os.path.normpath(str(resolved_before)))
+            != os.path.normcase(os.path.normpath(str(receipt_path)))
+        ):
+            raise ValueError
+        path_identity = _receipt_file_identity(lstat_reader(receipt_path))
+        with opener(receipt_path) as handle:  # type: ignore[attr-defined]
+            descriptor = handle.fileno()  # type: ignore[attr-defined]
+            if type(descriptor) is not int:
+                raise ValueError
+            before = _receipt_file_identity(fstat_reader(descriptor))
+            if path_identity != before:
+                raise ValueError
+            size = before[2]
+            if not 0 < size <= _MAX_RECEIPT_BYTES:
+                raise ValueError
+            document = handle.read(size + 1)  # type: ignore[attr-defined]
+            after = _receipt_file_identity(fstat_reader(descriptor))
+            if type(document) is not bytes or len(document) != size or after != before:
+                raise ValueError
+        if (
+            _receipt_file_identity(lstat_reader(receipt_path)) != path_identity
+            or os.path.normcase(os.path.normpath(str(Path(resolver(receipt_path)))))
+            != os.path.normcase(os.path.normpath(str(resolved_before)))
+        ):
+            raise ValueError
+        return parse_preparation_receipt_document(document)
+    except BaseException as error:
+        _raise_public(_sanitized(error, _RECEIPT_DOCUMENT_ERROR))
 
 
 def _raise_fixed(message: str) -> None:
@@ -594,12 +786,7 @@ def publish_readiness_receipt(
         ):
             raise ValueError
         target = backup.with_suffix(".readiness.json")
-        document = canonical_json(
-            {
-                "preparationReceipt": asdict(receipt),
-                "preparationReceiptHash": canonical_receipt_hash(receipt),
-            }
-        )
+        document = canonical_json(asdict(receipt))
     except BaseException as error:
         _raise_public(_sanitized(error, _RECEIPT_ERROR))
 
@@ -633,8 +820,8 @@ def publish_readiness_receipt(
             raise OSError
         fsync(descriptor)
         closing = handle
-        handle = None
         closing.close()  # type: ignore[attr-defined]
+        handle = None
         if not same_owner(temporary, identity):
             raise OSError
         linker(temporary, target)
@@ -1392,8 +1579,11 @@ async def run_cli(
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         return asyncio.run(run_cli(argv))
+    except _HelpRequested:
+        return 0
     except SystemExit:
-        raise
+        print("Product database preparation failed.", file=sys.stderr)
+        return 1
     except BaseException:
         print("Product database preparation failed.", file=sys.stderr)
         return 1
