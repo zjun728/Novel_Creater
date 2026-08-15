@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import {
-  existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync,
-  rmSync,
+  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
 } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -74,15 +73,19 @@ test('Phase 7B spec proves only the exact approved read-only product state', () 
   assert.doesNotMatch(spec, /\b(?:POST|PUT|PATCH|DELETE)\b|writeAllowlist|SQL|bootstrap|fixture|seed/iu)
 })
 
-test('Phase 7B runner owns resources, preserves product data, and emits the Task 5 summary contract', async () => {
+test('Phase 7B runner borrows its sandbox and emits only private internal evidence', async () => {
   const runnerSource = source('frontend/e2e/run-phase7b.mjs')
   for (const marker of [
     'reserveLocalPort', 'startOwnedServer', 'stopOwnedServer', 'waitForPortRelease',
     'PHASE7B_BROWSER_TASK_ROOT', 'PHASE7B_BROWSER_TASK_NONCE', 'artifactRoot',
-    'resultPath', 'deps_temp_', 'providerCalls', 'outboundRequests', 'writeRequests',
-    'PHASE7B_BROWSER_SMOKE_SUMMARY=', 'MYSQL_DB', 'novel_creator_v113',
+    'resultPath', 'vite-cache', 'providerCalls', 'outboundRequests', 'writeRequests',
+    'PHASE7B_BROWSER_INTERNAL_EVIDENCE=', 'MYSQL_DB', 'novel_creator_v113',
     'MARKET_SCHEDULER_ENABLED', 'false',
   ]) assert.equal(runnerSource.includes(marker), true, marker)
+  for (const forbidden of [
+    'createFilesystemRootOwner', 'createRunnerRoot', 'removeRunnerRoot',
+    'PHASE7B_BROWSER_SMOKE_SUMMARY=', 'rootCount', 'mkdtempSync',
+  ]) assert.equal(runnerSource.includes(forbidden), false, forbidden)
   assert.doesNotMatch(runnerSource, /createDatabaseName|prepare_product_shell_browser_db|initialize_database|\bmysqld\b|\bDROP\s+DATABASE\b|\bCREATE\s+DATABASE\b/iu)
   assert.doesNotMatch(runnerSource, /ProviderMustNotRun|DENY_PROXY_SOURCE|writeAllowlist/iu)
 
@@ -109,14 +112,14 @@ test('Phase 7B runner owns resources, preserves product data, and emits the Task
   assert.deepEqual(backendLaunch.args.slice(-2), ['d'.repeat(32), '43123'])
   assert.equal(backendLaunch.args.join('\n').includes('private-root'), false)
   assert.equal(backendLaunch.args.join('\n').includes('private-nonce'), false)
-  assert.deepEqual(runner.safeSummary(), {
+  assert.deepEqual(runner.internalEvidence(), {
     firstStage: null, firstCause: null, scenarioCount: 1,
     providerCalls: 0, outboundRequests: 0,
-    processCount: 0, portCount: 0, rootCount: 0, artifactCount: 0,
+    processCount: 0, portCount: 0, artifactCount: 0,
   })
   assert.equal(
-    runner.renderSummary(runner.safeSummary()),
-    'PHASE7B_BROWSER_SMOKE_SUMMARY={"firstStage":null,"firstCause":null,"scenarioCount":1,"providerCalls":0,"outboundRequests":0,"processCount":0,"portCount":0,"rootCount":0,"artifactCount":0}',
+    runner.renderInternalEvidence(runner.internalEvidence()),
+    'PHASE7B_BROWSER_INTERNAL_EVIDENCE={"firstStage":null,"firstCause":null,"scenarioCount":1,"providerCalls":0,"outboundRequests":0,"processCount":0,"portCount":0,"artifactCount":0}',
   )
 })
 
@@ -130,32 +133,38 @@ test('Phase 7B config is one-worker, loopback-only, and direct-child-owned', () 
   assert.doesNotMatch(config, /localhost|0\.0\.0\.0/iu)
 })
 
-test('Phase 7B root setup rolls back its new child on partial setup failure', async () => {
+test('Phase 7B borrowed sandbox uses only fixed direct children and never deletes its root', async () => {
   const runner = await import('../../frontend/e2e/run-phase7b.mjs')
   const taskRoot = mkdtempSync(path.join(os.tmpdir(), 'phase7b-contract-'))
   const nonce = 'b'.repeat(32)
   try {
-    assert.throws(() => runner.createRunnerRoot(taskRoot, nonce, {
-      writeFileSyncImpl() { throw new Error('private setup failure') },
-    }), { message: 'private setup failure' })
+    const roots = runner.createBorrowedRunnerPaths(taskRoot, nonce)
+    assert.deepEqual(Object.values(roots).sort(), [
+      path.join(taskRoot, 'artifacts'), path.join(taskRoot, 'result.json'),
+      taskRoot, path.join(taskRoot, 'vite-cache'), path.join(taskRoot, 'vite.config.mjs'),
+    ].sort())
+    assert.deepEqual(readFileNames(taskRoot), ['artifacts'])
+    runner.cleanupBorrowedArtifacts(roots)
+    assert.equal(existsSync(taskRoot), true)
     assert.deepEqual(readFileNames(taskRoot), [])
   } finally {
     rmSync(taskRoot, { recursive: true, force: true })
   }
 })
 
-test('Phase 7B root cleanup removes owned residue even when its audit fails', async () => {
+test('Phase 7B borrowed sandbox rejects aliases and invalid nonces', async () => {
   const runner = await import('../../frontend/e2e/run-phase7b.mjs')
   const taskRoot = mkdtempSync(path.join(os.tmpdir(), 'phase7b-contract-'))
-  const nonce = 'c'.repeat(32)
-  const roots = runner.createRunnerRoot(taskRoot, nonce)
-  mkdirSync(path.join(roots.runnerRoot, 'vite-cache', 'deps_temp_owned'), { recursive: true })
   try {
-    assert.throws(() => runner.auditRunnerRootArtifacts(roots, taskRoot), {
-      message: 'Phase7B Vite deps_temp_ residue was not zero',
-    })
-    runner.removeRunnerRoot(roots, taskRoot, nonce)
-    assert.equal(existsSync(roots.runnerRoot), false)
+    assert.throws(() => runner.validateBorrowedContract({
+      MYSQL_DB: 'novel_creator_v113', MARKET_SCHEDULER_ENABLED: 'false',
+      PHASE7B_BROWSER_TASK_ROOT: `${taskRoot}${path.sep}..${path.sep}${path.basename(taskRoot)}`,
+      PHASE7B_BROWSER_TASK_NONCE: 'c'.repeat(32),
+    }), { message: 'Phase7B browser contract is invalid' })
+    assert.throws(() => runner.validateBorrowedContract({
+      MYSQL_DB: 'novel_creator_v113', MARKET_SCHEDULER_ENABLED: 'false',
+      PHASE7B_BROWSER_TASK_ROOT: taskRoot, PHASE7B_BROWSER_TASK_NONCE: 'C'.repeat(32),
+    }), { message: 'Phase7B browser contract is invalid' })
   } finally {
     rmSync(taskRoot, { recursive: true, force: true })
   }
@@ -181,152 +190,6 @@ test('Phase 7B process audit defers unexpected output to its bounded finish', as
   })
 })
 
-test('Phase 7B root cleanup recovers the original direct child and preserves its replacement', async () => {
-  const runner = await import('../../frontend/e2e/run-phase7b.mjs')
-  const taskRoot = mkdtempSync(path.join(os.tmpdir(), 'phase7b-contract-'))
-  const nonce = 'e'.repeat(32)
-  const roots = runner.createRunnerRoot(taskRoot, nonce)
-  const escaped = `${roots.runnerRoot}-escaped`
-  renameSync(roots.runnerRoot, escaped)
-  mkdirSync(roots.runnerRoot)
-  try {
-    runner.removeRunnerRoot(roots, taskRoot, nonce)
-    assert.equal(existsSync(roots.runnerRoot), true)
-    assert.equal(existsSync(escaped), false)
-  } finally {
-    rmSync(taskRoot, { recursive: true, force: true })
-  }
-})
-
-test('Phase 7B root acquisition consumes a bound primitive, never an unbound path identity', async () => {
-  const runner = await import('../../frontend/e2e/run-phase7b.mjs')
-  const taskRoot = mkdtempSync(path.join(os.tmpdir(), 'phase7b-contract-'))
-  const canonical = path.join(taskRoot, 'primitive-root')
-  const original = path.join(taskRoot, 'primitive-root-original')
-  let lease
-  const rootOwner = {
-    acquire() {
-      mkdirSync(canonical)
-      const identity = directoryIdentity(canonical)
-      renameSync(canonical, original)
-      mkdirSync(canonical)
-      lease = fakeRootLease(taskRoot, canonical, identity)
-      return lease
-    },
-  }
-  try {
-    const roots = runner.createRunnerRoot(taskRoot, 'f'.repeat(32), { rootOwner })
-    assert.equal(roots.runnerRoot, original)
-    assert.deepEqual(readdirSync(canonical), [])
-    runner.removeRunnerRoot(roots, taskRoot, 'f'.repeat(32))
-    assert.equal(existsSync(original), false)
-    assert.equal(existsSync(canonical), true)
-    assert.equal(lease.closed, true)
-  } finally {
-    rmSync(taskRoot, { recursive: true, force: true })
-  }
-})
-
-test('Phase 7B filesystem ownership rejects replacement during create-to-bind acquisition', async () => {
-  const runner = await import('../../frontend/e2e/run-phase7b.mjs')
-  const taskRoot = mkdtempSync(path.join(os.tmpdir(), 'phase7b-contract-'))
-  const canonical = path.join(taskRoot, 'race-root')
-  const original = path.join(taskRoot, 'race-root-original')
-  const rootOwner = runner.createFilesystemRootOwner({
-    mkdtempSyncImpl() {
-      mkdirSync(canonical)
-      renameSync(canonical, original)
-      mkdirSync(canonical)
-      return canonical
-    },
-  })
-  try {
-    assert.throws(() => rootOwner.acquire(taskRoot, '2'.repeat(32)), error => {
-      assert.equal(error.message, 'Phase7B root acquisition observed ambiguous new identities')
-      assert.deepEqual(error.phase7bResourceCounts, { rootCount: 1, artifactCount: 0 })
-      return true
-    })
-    assert.equal(existsSync(canonical), true)
-    assert.equal(existsSync(original), true)
-  } finally {
-    rmSync(taskRoot, { recursive: true, force: true })
-  }
-})
-
-test('Phase 7B filesystem ownership preserves acquisition error before handle-close failure', async () => {
-  const runner = await import('../../frontend/e2e/run-phase7b.mjs')
-  const taskRoot = mkdtempSync(path.join(os.tmpdir(), 'phase7b-contract-'))
-  const rootOwner = runner.createFilesystemRootOwner({
-    fstatSyncImpl() { throw new Error('primary-acquisition') },
-    closeSyncImpl() { throw new Error('cleanup-close') },
-  })
-  try {
-    assert.throws(() => rootOwner.acquire(taskRoot, '3'.repeat(32)), error => {
-      assert.deepEqual(flattenMessages(error).filter(Boolean), [
-        'primary-acquisition', 'cleanup-close',
-      ])
-      assert.deepEqual(error.phase7bResourceCounts, { rootCount: 1, artifactCount: 0 })
-      return true
-    })
-  } finally {
-    rmSync(taskRoot, { recursive: true, force: true })
-  }
-})
-
-test('Phase 7B filesystem ownership denies deletion when its bound handle identity drifts', async () => {
-  const runner = await import('../../frontend/e2e/run-phase7b.mjs')
-  const taskRoot = mkdtempSync(path.join(os.tmpdir(), 'phase7b-contract-'))
-  let canonical
-  let identityReads = 0
-  let removals = 0
-  const rootOwner = runner.createFilesystemRootOwner({
-    mkdtempSyncImpl(prefix) { canonical = mkdtempSync(prefix); return canonical },
-    fstatSyncImpl() {
-      identityReads += 1
-      const stats = lstatSync(canonical)
-      return {
-        isDirectory: () => true,
-        dev: identityReads === 1 ? stats.dev : stats.dev + 1,
-        ino: stats.ino,
-      }
-    },
-    rmSyncImpl() { removals += 1 },
-  })
-  const lease = rootOwner.acquire(taskRoot, '4'.repeat(32))
-  try {
-    assert.throws(() => lease.deleteOwned(canonical), {
-      message: 'Phase7B root ownership handle identity drifted',
-    })
-    assert.equal(removals, 0)
-    assert.equal(existsSync(canonical), true)
-  } finally {
-    lease.close()
-    rmSync(taskRoot, { recursive: true, force: true })
-  }
-})
-
-test('Phase 7B root recovery fails safe when the owned identity escapes its task parent', async () => {
-  const runner = await import('../../frontend/e2e/run-phase7b.mjs')
-  const taskRoot = mkdtempSync(path.join(os.tmpdir(), 'phase7b-contract-'))
-  const outsideParent = mkdtempSync(path.join(os.tmpdir(), 'phase7b-outside-'))
-  const nonce = '1'.repeat(32)
-  const roots = runner.createRunnerRoot(taskRoot, nonce)
-  const outside = path.join(outsideParent, 'escaped')
-  renameSync(roots.runnerRoot, outside)
-  mkdirSync(roots.runnerRoot)
-  try {
-    assert.throws(() => runner.removeRunnerRoot(roots, taskRoot, nonce), {
-      message: 'Phase7B owned root is outside its validated task parent',
-    })
-    assert.equal(existsSync(outside), true)
-    assert.equal(existsSync(roots.runnerRoot), true)
-    assert.deepEqual(runner.resourceCounts(roots), { rootCount: 1, artifactCount: 1 })
-  } finally {
-    rmSync(taskRoot, { recursive: true, force: true })
-    rmSync(outsideParent, { recursive: true, force: true })
-  }
-})
-
 test('Phase 7B injected lifecycle runs every owned step in exact order and strips child controls', async () => {
   const runner = await import('../../frontend/e2e/run-phase7b.mjs')
   const harness = phase7bHarness(runner)
@@ -337,12 +200,23 @@ test('Phase 7B injected lifecycle runs every owned step in exact order and strip
     log: value => logs.push(value),
   }), 0)
   assert.deepEqual(harness.events, [
-    'contract', 'root:create', 'port:reserve:0', 'port:reserve:1', 'vite:config',
+    'contract', 'paths:create', 'port:reserve:0', 'port:reserve:1', 'vite:config',
     'backend:environment', 'sensitive-values', 'backend:nonce', 'backend:launch',
     'port:release:0', 'backend:start', 'runtime:observe', 'backend:wait', 'port:release:1',
     'vite:start', 'vite:wait', 'browser:run', 'browser:audit', 'vite:stop',
     'backend:stop', 'runtime:audit', 'port:audit:41001', 'port:audit:41002',
-    'artifact:audit', 'root:remove', 'resource:counts',
+    'artifact:cleanup', 'artifact:audit',
+  ])
+  const lifecycle = harness.events.flatMap(event => ({
+    'port:reserve:0': 'ports:reserve', 'backend:start': 'backend:start',
+    'runtime:observe': 'runtime:observe', 'vite:start': 'vite:start',
+    'browser:run': 'playwright:run', 'vite:stop': 'vite:stop',
+    'backend:stop': 'backend:stop', 'port:audit:41001': 'ports:audit',
+    'artifact:audit': 'artifacts:audit',
+  })[event] || [])
+  assert.deepEqual(lifecycle, [
+    'ports:reserve', 'backend:start', 'runtime:observe', 'vite:start',
+    'playwright:run', 'vite:stop', 'backend:stop', 'ports:audit', 'artifacts:audit',
   ])
   assert.deepEqual(harness.backendEnvironment, {
     ONLY_TEST: 'yes', MYSQL_DB: 'novel_creator_v113', MARKET_SCHEDULER_ENABLED: 'false',
@@ -356,13 +230,18 @@ test('Phase 7B injected lifecycle runs every owned step in exact order and strip
     Object.keys(harness.browserEnvironment).some(key => key.startsWith('PHASE7B_BROWSER_')),
     false,
   )
+  assert.equal(
+    Object.keys(harness.viteEnvironment).some(key => key.startsWith('PHASE7B_BROWSER_')),
+    false,
+  )
   assert.deepEqual(logs, [
-    'PHASE7B_BROWSER_SMOKE_SUMMARY={"firstStage":null,"firstCause":null,"scenarioCount":1,"providerCalls":0,"outboundRequests":0,"processCount":0,"portCount":0,"rootCount":0,"artifactCount":0}',
+    'PHASE7B_BROWSER_INTERNAL_EVIDENCE={"firstStage":null,"firstCause":null,"scenarioCount":1,"providerCalls":0,"outboundRequests":0,"processCount":0,"portCount":0,"artifactCount":0}',
   ])
+  assertAcquiredResourcesCleaned(harness)
 })
 
 for (const failure of [
-  'root:create', 'port:reserve:0', 'port:reserve:1', 'vite:config', 'backend:start',
+  'paths:create', 'port:reserve:0', 'port:reserve:1', 'vite:config', 'backend:start',
   'backend:environment', 'sensitive-values', 'backend:nonce', 'backend:launch',
   'runtime:observe', 'backend:wait', 'vite:start', 'vite:wait', 'browser:run',
   'browser:audit', 'port:release:0', 'port:release:1',
@@ -376,7 +255,6 @@ for (const failure of [
       log() {},
     }), error => {
       assert.equal(firstLeafMessage(error), `failure:${failure}`)
-      assert.deepEqual(error.phase7bResourceCounts, { rootCount: 0, artifactCount: 0 })
       return true
     })
     assertAcquiredResourcesCleaned(harness)
@@ -385,8 +263,7 @@ for (const failure of [
 
 for (const failure of [
   'vite:stop', 'backend:stop', 'runtime:audit', 'port:audit:41001',
-  'port:audit:41002', 'artifact:audit',
-  'root:remove',
+  'port:audit:41002', 'artifact:cleanup', 'artifact:audit',
 ]) {
   test(`Phase 7B injected cleanup reports ${failure} without skipping later cleanup`, async () => {
     const runner = await import('../../frontend/e2e/run-phase7b.mjs')
@@ -401,7 +278,7 @@ for (const failure of [
     })
     for (const required of [
       'vite:stop', 'backend:stop', 'runtime:audit', 'port:audit:41001',
-      'port:audit:41002', 'artifact:audit', 'root:remove', 'resource:counts',
+      'port:audit:41002', 'artifact:cleanup', 'artifact:audit',
     ]) assert.equal(harness.events.includes(required), true, `${failure} skipped ${required}`)
   })
 }
@@ -409,7 +286,7 @@ for (const failure of [
 test('Phase 7B preserves primary-first ordering across cleanup failures', async () => {
   const runner = await import('../../frontend/e2e/run-phase7b.mjs')
   const harness = phase7bHarness(runner, {
-    failAt: new Set(['browser:run', 'vite:stop', 'port:audit:41001', 'root:remove']),
+    failAt: new Set(['browser:run', 'vite:stop', 'port:audit:41001', 'artifact:cleanup']),
   })
   await assert.rejects(() => runner.runPhase7B({
     environment: harness.environment,
@@ -418,46 +295,22 @@ test('Phase 7B preserves primary-first ordering across cleanup failures', async 
   }), error => {
     assert.deepEqual(flattenMessages(error).filter(value => value.startsWith('failure:')), [
       'failure:browser:run', 'failure:vite:stop', 'failure:port:audit:41001',
-      'failure:root:remove',
+      'failure:artifact:cleanup', 'failure:artifact-residue',
     ])
     return true
   })
 })
 
-test('Phase 7B failure summary reports actual unresolved root and artifact counts', async () => {
+test('Phase 7B emits no evidence after any lifecycle failure', async () => {
   const runner = await import('../../frontend/e2e/run-phase7b.mjs')
-  const harness = phase7bHarness(runner, { failAt: 'root:remove' })
+  const harness = phase7bHarness(runner, { failAt: 'artifact:cleanup' })
+  const logs = []
   await assert.rejects(() => runner.runPhase7B({
     environment: harness.environment,
     dependencies: harness.dependencies,
-    log() {},
-  }), error => {
-    assert.deepEqual(error.phase7bResourceCounts, { rootCount: 1, artifactCount: 1 })
-    assert.equal(
-      runner.renderFailureSummary(error),
-      'PHASE7B_BROWSER_SMOKE_SUMMARY={"firstStage":"root-cleanup","firstCause":"stage-failed","scenarioCount":1,"providerCalls":0,"outboundRequests":0,"processCount":0,"portCount":0,"rootCount":1,"artifactCount":1}',
-    )
-    return true
-  })
-})
-
-test('Phase 7B failure summary retains pre-return acquisition residue evidence', async () => {
-  const runner = await import('../../frontend/e2e/run-phase7b.mjs')
-  const harness = phase7bHarness(runner)
-  harness.dependencies.createRunnerRoot = () => {
-    const error = new Error('acquisition-race')
-    error.phase7bResourceCounts = { rootCount: 1, artifactCount: 0 }
-    throw error
-  }
-  await assert.rejects(() => runner.runPhase7B({
-    environment: harness.environment,
-    dependencies: harness.dependencies,
-    log() {},
-  }), error => {
-    assert.deepEqual(error.phase7bResourceCounts, { rootCount: 1, artifactCount: 0 })
-    assert.match(runner.renderFailureSummary(error), /"rootCount":1,"artifactCount":0\}$/u)
-    return true
-  })
+    log: value => logs.push(value),
+  }))
+  assert.deepEqual(logs, [])
 })
 
 function readFileNames(directory) {
@@ -466,38 +319,9 @@ function readFileNames(directory) {
     : []
 }
 
-function directoryIdentity(directory) {
-  const stats = lstatSync(directory)
-  return { dev: stats.dev, ino: stats.ino }
-}
-
-function fakeRootLease(taskRoot, canonicalPath, identity) {
-  return {
-    canonicalPath,
-    identity,
-    closed: false,
-    resolveOwned() {
-      const matches = readdirSync(taskRoot, { withFileTypes: true })
-        .filter(entry => entry.isDirectory() && !entry.isSymbolicLink())
-        .map(entry => path.join(taskRoot, entry.name))
-        .filter(candidate => {
-          const current = directoryIdentity(candidate)
-          return current.dev === identity.dev && current.ino === identity.ino
-        })
-      return matches.length === 1 ? matches[0] : null
-    },
-    deleteOwned() {
-      const owned = this.resolveOwned()
-      if (!owned) throw new Error('outside')
-      rmSync(owned, { recursive: true })
-    },
-    close() { this.closed = true },
-  }
-}
-
 function phase7bHarness(runner, { failAt = null } = {}) {
   const events = []
-  const resources = { root: false, artifacts: false }
+  const resources = { artifacts: false, started: new Set(), stopped: new Set() }
   const shouldFail = name => failAt instanceof Set ? failAt.has(name) : failAt === name
   const hit = name => {
     events.push(name)
@@ -510,10 +334,10 @@ function phase7bHarness(runner, { failAt = null } = {}) {
     M2_BROWSER_RUN_NONCE: 'must-not-reach-backend',
   }
   const roots = {
-    runnerRoot: 'C:\\owned-task-root\\runner',
-    artifactRoot: 'C:\\owned-task-root\\runner\\artifacts',
-    resultPath: 'C:\\owned-task-root\\runner\\result.json',
-    viteConfigPath: 'C:\\owned-task-root\\runner\\vite.config.mjs',
+    runnerRoot: 'C:\\owned-task-root',
+    artifactRoot: 'C:\\owned-task-root\\artifacts',
+    resultPath: 'C:\\owned-task-root\\result.json',
+    viteConfigPath: 'C:\\owned-task-root\\vite.config.mjs',
   }
   const reservations = [0, 1].map(index => ({
     port: 41001 + index,
@@ -522,11 +346,10 @@ function phase7bHarness(runner, { failAt = null } = {}) {
   let reservationIndex = 0
   const servers = []
   const dependencies = {
-    validateContract() { hit('contract'); return { taskRoot: 'C:\\owned-task-root', nonce: 'a'.repeat(32) } },
-    createRunnerRoot() {
-      hit('root:create')
-      resources.root = true
+    validateBorrowedContract() { hit('contract'); return { taskRoot: 'C:\\owned-task-root', nonce: 'a'.repeat(32) } },
+    createBorrowedRunnerPaths() {
       resources.artifacts = true
+      try { hit('paths:create') } catch (error) { resources.artifacts = false; throw error }
       return roots
     },
     async reserveLocalPort() {
@@ -546,7 +369,9 @@ function phase7bHarness(runner, { failAt = null } = {}) {
       const kind = settings.label.includes('API') ? 'backend' : 'vite'
       hit(`${kind}:start`)
       if (kind === 'backend') harness.backendEnvironment = options.env
+      if (kind === 'vite') harness.viteEnvironment = options.env
       const server = { kind, child: { stdout: new EventEmitter() }, state: {}, auditors: [] }
+      resources.started.add(kind)
       servers.push(server)
       return server
     },
@@ -559,34 +384,29 @@ function phase7bHarness(runner, { failAt = null } = {}) {
       hit('browser:run')
     },
     auditBrowserReport() { hit('browser:audit') },
-    async stopOwnedServer(server) { hit(`${server.kind}:stop`) },
+    async stopOwnedServer(server) { hit(`${server.kind}:stop`); resources.stopped.add(server.kind) },
     assertRuntimeAuditZero() { hit('runtime:audit') },
     async waitForPortRelease(port) { hit(`port:audit:${port}`) },
-    auditRunnerRootArtifacts() { hit('artifact:audit') },
-    removeRunnerRoot() {
-      hit('root:remove')
-      resources.root = false
+    cleanupBorrowedArtifacts() {
+      hit('artifact:cleanup')
       resources.artifacts = false
     },
-    resourceCounts() {
-      hit('resource:counts')
-      return {
-        rootCount: resources.root ? 1 : 0,
-        artifactCount: resources.artifacts ? 1 : 0,
-      }
+    auditBorrowedArtifacts() {
+      hit('artifact:audit')
+      if (resources.artifacts) throw new Error('failure:artifact-residue')
+      return 0
     },
   }
   const harness = {
-    backendEnvironment: null, browserEnvironment: null, dependencies,
+    backendEnvironment: null, browserEnvironment: null, viteEnvironment: null, dependencies,
     environment, events, resources, roots,
   }
   return harness
 }
 
 function assertAcquiredResourcesCleaned(harness) {
-  assert.equal(harness.resources.root, false)
   assert.equal(harness.resources.artifacts, false)
-  assert.equal(harness.events.includes('resource:counts'), true)
+  assert.deepEqual([...harness.resources.stopped].sort(), [...harness.resources.started].sort())
 }
 
 function flattenMessages(error) {
