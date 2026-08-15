@@ -54,7 +54,7 @@ _LEGACY_INVENTORY_ERROR = "legacy database inventory failed"
 _BACKUP_ERROR = "product database backup failed"
 _RESTORE_ERROR = "product database restore drill failed"
 _LEGACY_DRIFT_ERROR = "legacy database changed during preparation"
-_AUTHORITY_ERROR = "current schema authority failed"
+_PROOF_ERROR = "current schema proof failed"
 _INITIALIZE_ERROR = "new database initialization failed"
 _ASSET_SEED_ERROR = "official asset seed failed"
 _MARKET_SEED_ERROR = "official market source seed failed"
@@ -73,7 +73,7 @@ _FIXED_PUBLIC_ERRORS = frozenset(
         _BACKUP_ERROR,
         _RESTORE_ERROR,
         _LEGACY_DRIFT_ERROR,
-        _AUTHORITY_ERROR,
+        _PROOF_ERROR,
         _INITIALIZE_ERROR,
         _ASSET_SEED_ERROR,
         _MARKET_SEED_ERROR,
@@ -133,41 +133,24 @@ class NewDatabaseBoundaryState:
 
 
 @dataclass(frozen=True)
-class CurrentSchemaAuthority:
-    """Inventory authority observed from a disposable current-schema database."""
+class CurrentSchemaProof:
+    """Closed lifecycle evidence from a disposable current-schema database."""
 
-    schema_version: str
-    manifest_hash: str
-    table_names: tuple[str, ...]
-    table_count: int
-    structural_fingerprint: str
+    inventory: DatabaseInventory
+    storage: tuple[TableStorage, ...]
+    created_databases: tuple[str, ...]
+    cleaned_databases: tuple[str, ...]
 
     def __post_init__(self) -> None:
         try:
-            expected_tables = tuple(sorted(created_table_names()))
-            if (
-                type(self.schema_version) is not str
-                or self.schema_version != EXPECTED_SCHEMA_VERSION
-                or type(self.manifest_hash) is not str
-                or self.manifest_hash != manifest_hash()
-                or type(self.table_names) is not tuple
-                or any(
-                    type(name) is not str or not name.strip()
-                    for name in self.table_names
-                )
-                or self.table_names != expected_tables
-                or type(self.table_count) is not int
-                or self.table_count != len(expected_tables)
-                or type(self.structural_fingerprint) is not str
-                or len(self.structural_fingerprint) != 64
-                or any(
-                    character not in "0123456789abcdef"
-                    for character in self.structural_fingerprint
-                )
-            ):
-                raise ValueError
+            _validate_current_schema_proof_fields(
+                self.inventory,
+                self.storage,
+                self.created_databases,
+                self.cleaned_databases,
+            )
         except BaseException as error:
-            _raise_normalized(error, _AUTHORITY_ERROR)
+            _raise_normalized(error, _PROOF_ERROR)
 
 
 class NewDatabaseBoundaryEnterFailure(BaseException):
@@ -625,22 +608,69 @@ def _expected_row_counts() -> tuple[tuple[str, int], ...]:
     return tuple(sorted(expected.items()))
 
 
-def _current_schema_authority_payload(value: object) -> dict[str, object]:
-    if type(value) is not CurrentSchemaAuthority:
-        raise ValueError
-    validated = CurrentSchemaAuthority(
-        schema_version=value.schema_version,
-        manifest_hash=value.manifest_hash,
-        table_names=value.table_names,
-        table_count=value.table_count,
-        structural_fingerprint=value.structural_fingerprint,
+def _expected_proof_row_counts() -> tuple[tuple[str, int], ...]:
+    return tuple(
+        sorted(
+            (name, 1 if name == "schema_metadata" else 0)
+            for name in created_table_names()
+        )
     )
+
+
+def _validate_current_schema_proof_fields(
+    inventory: object,
+    storage: object,
+    created_databases: object,
+    cleaned_databases: object,
+) -> tuple[DatabaseInventory, tuple[TableStorage, ...], str]:
+    if type(inventory) is not DatabaseInventory:
+        raise ValueError
+    proof_database = validate_restore_database(inventory.database)
+    expected_tables = tuple(sorted(created_table_names()))
+    expected_counts = _expected_proof_row_counts()
+    validated_storage = _validate_storage(storage)
+    expected_ledger = (proof_database,)
+    if (
+        inventory.schema_version != EXPECTED_SCHEMA_VERSION
+        or inventory.manifest_hash != manifest_hash()
+        or inventory.table_names != expected_tables
+        or inventory.row_counts != expected_counts
+        or inventory.nonempty_table_count != 1
+        or inventory.total_row_count != 1
+        or tuple(row.name for row in validated_storage) != expected_tables
+        or type(created_databases) is not tuple
+        or type(cleaned_databases) is not tuple
+        or any(
+            type(name) is not str or not name.strip()
+            for name in created_databases + cleaned_databases
+        )
+        or created_databases != expected_ledger
+        or cleaned_databases != expected_ledger
+    ):
+        raise ValueError
+    assert_storage_policy(validated_storage)
+    return inventory, validated_storage, proof_database
+
+
+def _validated_current_schema_proof(value: object) -> CurrentSchemaProof:
+    if type(value) is not CurrentSchemaProof:
+        raise ValueError
+    _validate_current_schema_proof_fields(
+        value.inventory,
+        value.storage,
+        value.created_databases,
+        value.cleaned_databases,
+    )
+    return value
+
+
+def _current_schema_proof_payload(value: object) -> dict[str, object]:
+    validated = _validated_current_schema_proof(value)
     return {
-        "schemaVersion": validated.schema_version,
-        "manifestHash": validated.manifest_hash,
-        "tableNames": validated.table_names,
-        "tableCount": validated.table_count,
-        "structuralFingerprint": validated.structural_fingerprint,
+        "proofDatabase": validated.inventory.database,
+        "proofInventoryHash": inventory_hash(validated.inventory),
+        "createdDatabases": validated.created_databases,
+        "cleanedDatabases": validated.cleaned_databases,
     }
 
 
@@ -648,7 +678,7 @@ def _validate_target_state(
     target: object,
     initialized: object,
     storage: object,
-    current_schema_authority: object,
+    current_schema_proof: object,
     *,
     expected_counts: tuple[tuple[str, int], ...] | None = None,
 ) -> DatabaseInventory:
@@ -659,13 +689,13 @@ def _validate_target_state(
     counts = expected_counts or _expected_row_counts()
     initialization = _initialization_payload(initialized)
     validated_storage = _validate_storage(storage)
-    authority = _current_schema_authority_payload(current_schema_authority)
+    proof = _validated_current_schema_proof(current_schema_proof)
+    proof_inventory = proof.inventory
     if (
-        target.structural_fingerprint != authority["structuralFingerprint"]
-        or target.schema_version != authority["schemaVersion"]
-        or target.manifest_hash != authority["manifestHash"]
-        or target.table_names != authority["tableNames"]
-        or len(target.table_names) != authority["tableCount"]
+        target.structural_fingerprint != proof_inventory.structural_fingerprint
+        or target.schema_version != proof_inventory.schema_version
+        or target.manifest_hash != proof_inventory.manifest_hash
+        or target.table_names != proof_inventory.table_names
         or target.table_names != expected_tables
         or target.row_counts != counts
         or target.nonempty_table_count != sum(
@@ -719,7 +749,7 @@ def assert_new_database_ready(
     initialized: object,
     official_data: object,
     storage: tuple[TableStorage, ...],
-    current_schema_authority: CurrentSchemaAuthority,
+    current_schema_proof: CurrentSchemaProof,
 ) -> None:
     """Fail closed unless the target is exactly the approved product state."""
 
@@ -728,7 +758,7 @@ def assert_new_database_ready(
             target,
             initialized,
             storage,
-            current_schema_authority,
+            current_schema_proof,
         )
         _validated_official_data(official_data)
     except BaseException as error:
@@ -768,7 +798,7 @@ async def prepare_product_database(
     inventory: Callable[[str], object],
     create_backup: Callable[[DatabaseInventory, Path], object],
     restore_drill: Callable[[BackupReceipt, DatabaseInventory], object],
-    current_schema_authority: Callable[[], object],
+    current_schema_proof: Callable[[], object],
     new_database_boundary: Callable[[str], object],
     seed_assets: Callable[[str], object],
     seed_market: Callable[[str], object],
@@ -778,11 +808,12 @@ async def prepare_product_database(
 ) -> PreparationReceipt:
     """Prepare Stage A inside one trusted atomic new-database lifecycle.
 
-    Task 5 must provide ``current_schema_authority`` as an isolated proof that
-    creates a uniquely named, current-run-owned disposable database, initializes
-    it to the current manifest, inventories it, and always drops it before
-    returning ``CurrentSchemaAuthority``. Proof cleanup failure must fail the
-    dependency, and the proof must never read from or write to the target.
+    Task 5 must provide ``current_schema_proof`` as an isolated lifecycle that
+    creates a unique, current-run-owned disposable proof database, initializes
+    it to the current manifest, records its full inventory and storage, and
+    always drops it before returning ``CurrentSchemaProof`` with an exact closed
+    create/clean ledger. Cleanup failure must return no proof and fail the
+    dependency. The proof lifecycle must never read from or write to the target.
 
     Task 5 must provide ``new_database_boundary`` as an async context manager
     backed by the MySQL exclusive lock. Its ``__aenter__`` atomically returns
@@ -862,16 +893,14 @@ async def prepare_product_database(
         except BaseException as error:
             _raise_normalized(error, _LEGACY_DRIFT_ERROR)
 
-        authority_value = await _stage(
-            _AUTHORITY_ERROR, current_schema_authority
+        proof_value = await _stage(
+            _PROOF_ERROR, current_schema_proof
         )
         try:
-            authority_payload = _current_schema_authority_payload(
-                authority_value
-            )
-            authority = authority_value
+            proof_payload = _current_schema_proof_payload(proof_value)
+            proof = proof_value
         except BaseException as error:
-            _raise_normalized(error, _AUTHORITY_ERROR)
+            _raise_normalized(error, _PROOF_ERROR)
 
         try:
             boundary = new_database_boundary(request.new_database)
@@ -922,7 +951,7 @@ async def prepare_product_database(
                         target,
                         initialized,
                         storage,
-                        authority,
+                        proof,
                     )
                     initialization_payload = _initialization_payload(initialized)
                 except BaseException as error:
@@ -935,7 +964,7 @@ async def prepare_product_database(
                     canonical_hash(
                         {
                             "initialization": initialization_payload,
-                            "schemaAuthority": authority_payload,
+                            "currentSchemaProof": proof_payload,
                         }
                     ),
                 )
@@ -949,7 +978,7 @@ async def prepare_product_database(
                     target,
                     initialized,
                     storage,
-                    authority,
+                    proof,
                 )
                 official_payload = _validated_official_data(official_value)
             except BaseException as error:
