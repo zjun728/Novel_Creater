@@ -65,7 +65,8 @@ _LOCK_NAME = "novel_creator:phase7b:prepare"
 _HEX_ID = re.compile(r"^[0-9a-f]{32}$", re.ASCII)
 _MAX_RECEIPT_BYTES = 1_000_000
 _BROWSER_SMOKE_PREFIX = "PHASE7B_BROWSER_SMOKE_SUMMARY="
-_BROWSER_SMOKE_EXPECTED = {
+_BROWSER_INTERNAL_EVIDENCE_PREFIX = "PHASE7B_BROWSER_INTERNAL_EVIDENCE="
+_BROWSER_INTERNAL_EVIDENCE_EXPECTED = {
     "firstStage": None,
     "firstCause": None,
     "scenarioCount": 1,
@@ -73,10 +74,14 @@ _BROWSER_SMOKE_EXPECTED = {
     "outboundRequests": 0,
     "processCount": 0,
     "portCount": 0,
-    "rootCount": 0,
     "artifactCount": 0,
 }
+_BROWSER_SMOKE_EXPECTED = {
+    **_BROWSER_INTERNAL_EVIDENCE_EXPECTED,
+    "rootCount": 0,
+}
 _BROWSER_SMOKE_COMMAND = ("node", "scripts/run-tests.mjs", "browser-phase7b")
+_BROWSER_NODE_COMMAND = ("node", "frontend/e2e/run-phase7b.mjs")
 _BROWSER_SMOKE_TIMEOUT_SECONDS = 300
 _BROWSER_RUNNER_TIMEOUT_SECONDS = 240
 _BROWSER_ROOT_CLEANUP_SECONDS = 2.0
@@ -1638,7 +1643,7 @@ def _default_browser_smoke_runner(
     )
     try:
         if (
-            command != _BROWSER_SMOKE_COMMAND
+            command not in (_BROWSER_SMOKE_COMMAND, _BROWSER_NODE_COMMAND)
             or Path(cwd).resolve(strict=True) != REPOSITORY_ROOT.resolve(strict=True)
             or type(timeout_seconds) is not int
             or timeout_seconds <= _BROWSER_RUNNER_TIMEOUT_SECONDS
@@ -1791,6 +1796,73 @@ def _default_browser_smoke_runner(
     return result
 
 
+def run_owned_phase7b_browser(
+    *,
+    node_command: tuple[str, ...],
+    cwd: Path,
+    environment: Mapping[str, str],
+    timeout_seconds: int,
+    runner: Callable[..., object],
+    root_factory: Callable[..., object],
+) -> dict[str, object]:
+    """Own the browser lifecycle and return only post-cleanup safe evidence."""
+
+    try:
+        if (
+            node_command != _BROWSER_NODE_COMMAND
+            or Path(cwd).resolve(strict=True) != REPOSITORY_ROOT.resolve(strict=True)
+            or type(environment) is not dict
+            or any(
+                type(key) is not str or type(value) is not str
+                for key, value in environment.items()
+            )
+            or type(timeout_seconds) is not int
+            or timeout_seconds <= _BROWSER_RUNNER_TIMEOUT_SECONDS
+            or not callable(runner)
+            or not callable(root_factory)
+        ):
+            raise ValueError
+        completed = runner(
+            command=node_command,
+            cwd=REPOSITORY_ROOT,
+            environment=dict(environment),
+            timeout_seconds=timeout_seconds,
+            root_lease_factory=root_factory,
+        )
+        returncode = getattr(completed, "returncode", None)
+        stdout = getattr(completed, "stdout", None)
+        stderr = getattr(completed, "stderr", None)
+        if (
+            type(returncode) is not int
+            or returncode != 0
+            or type(stdout) is not str
+            or type(stderr) is not str
+        ):
+            raise ValueError
+        evidence_documents = [
+            line[len(_BROWSER_INTERNAL_EVIDENCE_PREFIX) :]
+            for line in stdout.splitlines()
+            if line.startswith(_BROWSER_INTERNAL_EVIDENCE_PREFIX)
+        ]
+        if len(evidence_documents) != 1:
+            raise ValueError
+        evidence = json.loads(
+            evidence_documents[0],
+            object_pairs_hook=_unique_json_object,
+            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
+        )
+        if (
+            type(evidence) is not dict
+            or set(evidence) != set(_BROWSER_INTERNAL_EVIDENCE_EXPECTED)
+            or evidence != _BROWSER_INTERNAL_EVIDENCE_EXPECTED
+            or evidence_documents[0] != canonical_json(evidence)
+        ):
+            raise ValueError
+        return {**evidence, "rootCount": 0}
+    except BaseException as error:
+        _raise_public(_sanitized(error, _SMOKE_ERROR))
+
+
 async def _default_smoke(
     config: Mapping[str, object],
     database: str,
@@ -1810,40 +1882,19 @@ async def _default_smoke(
                 "MARKET_SCHEDULER_ENABLED": "false",
             }
         )
-        completed = await _invoke(
-            runner,
-            command=_BROWSER_SMOKE_COMMAND,
+        summary = await _invoke(
+            run_owned_phase7b_browser,
+            node_command=_BROWSER_NODE_COMMAND,
             cwd=REPOSITORY_ROOT,
             environment=environment,
             timeout_seconds=_BROWSER_SMOKE_TIMEOUT_SECONDS,
-        )
-        returncode = getattr(completed, "returncode", None)
-        stdout = getattr(completed, "stdout", None)
-        stderr = getattr(completed, "stderr", None)
-        if (
-            type(returncode) is not int
-            or returncode != 0
-            or type(stdout) is not str
-            or type(stderr) is not str
-        ):
-            raise ValueError
-        summaries = [
-            line[len(_BROWSER_SMOKE_PREFIX) :]
-            for line in stdout.splitlines()
-            if line.startswith(_BROWSER_SMOKE_PREFIX)
-        ]
-        if len(summaries) != 1:
-            raise ValueError
-        summary = json.loads(
-            summaries[0],
-            object_pairs_hook=_unique_json_object,
-            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
+            runner=runner,
+            root_factory=_open_browser_root_lease,
         )
         if (
             type(summary) is not dict
             or set(summary) != set(_BROWSER_SMOKE_EXPECTED)
             or summary != _BROWSER_SMOKE_EXPECTED
-            or summaries[0] != canonical_json(summary)
         ):
             raise ValueError
         return SmokeResult(provider_calls=0, outbound_requests=0)

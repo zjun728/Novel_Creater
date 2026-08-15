@@ -2483,20 +2483,28 @@ def _browser_summary(**changes: object) -> str:
     return "PHASE7B_BROWSER_SMOKE_SUMMARY=" + canonical_json(value)
 
 
+def _browser_internal_evidence(**changes: object) -> str:
+    value = json.loads(_browser_summary(**changes).split("=", 1)[1])
+    value.pop("rootCount")
+    return "PHASE7B_BROWSER_INTERNAL_EVIDENCE=" + canonical_json(value)
+
+
 @pytest.mark.asyncio
 async def test_default_smoke_invokes_explicit_browser_runner_and_validates_summary() -> None:
     calls: list[object] = []
 
     def runner(**kwargs: object) -> object:
         calls.append(kwargs)
-        return SimpleNamespace(returncode=0, stdout=_browser_summary(), stderr="")
+        return SimpleNamespace(
+            returncode=0, stdout=_browser_internal_evidence(), stderr=""
+        )
 
     result = await command_module._default_smoke({}, NEW_DATABASE, runner)
 
     assert result == SmokeResult(provider_calls=0, outbound_requests=0)
     assert calls == [
         {
-            "command": ("node", "scripts/run-tests.mjs", "browser-phase7b"),
+            "command": ("node", "frontend/e2e/run-phase7b.mjs"),
             "cwd": command_module.REPOSITORY_ROOT,
             "environment": {
                 **dict(command_module.os.environ),
@@ -2504,6 +2512,7 @@ async def test_default_smoke_invokes_explicit_browser_runner_and_validates_summa
                 "MARKET_SCHEDULER_ENABLED": "false",
             },
             "timeout_seconds": 300,
+            "root_lease_factory": command_module._open_browser_root_lease,
         }
     ]
 
