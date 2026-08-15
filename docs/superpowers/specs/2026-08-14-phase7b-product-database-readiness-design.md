@@ -183,6 +183,31 @@ The runtime observer fails on console/page errors, unexpected origin, non-2xx re
 failures, listener residue, Provider/outbound traffic, or owned process/port/temp residue. It does
 not write projects or alter application settings.
 
+#### Browser sandbox ownership amendment
+
+The browser process runner does not create, own, rename, or recursively delete its own root. Node.js
+cannot atomically create and bind a Windows directory identity before an untrusted path replacement,
+so a `mkdtemp` followed by `stat` or `open` is not an ownership proof.
+
+A narrow Python outer owner creates the private browser sandbox, binds its creation identity to a
+Windows no-share-delete directory lease, starts the Node lifecycle runner, and retains that lease
+until every child process has stopped. The Node runner receives the root and a one-run nonce, treats
+the root as borrowed, and may create only direct task artifacts inside it. It never recursively
+deletes the root and never emits the final zero-resource acceptance marker.
+
+The Node runner returns a private, fixed-schema scenario/runtime evidence record to the Python owner.
+Only after the owner has stopped the process tree, audited reserved ports, removed task artifacts,
+deleted the exact leased root, and closed the lease may it emit the canonical
+`PHASE7B_BROWSER_SMOKE_SUMMARY=` record. The canonical record contains only fixed stage/cause,
+scenario, Provider/outbound, process, port, root, and artifact counts. Cleanup failure produces the
+true nonzero count or a fixed cleanup category; it never pre-reports zero.
+
+Stage A reuses the lease already held by `prepare_product_database.py`. The standalone formal
+`browser-phase7b` target invokes the same Python owner/finalizer through a narrow wrapper, so both
+entry points share one ownership and summary protocol. Runner-only root/nonce variables are removed
+before the backend is spawned. A backend or Vite process is registered for cleanup immediately after
+successful start and before any later observer or setup step can fail.
+
 ### 8. Permanent cutover
 
 Permanent cutover is a separate CLI action and a separate user approval. It requires:
@@ -235,6 +260,8 @@ a receipt for a different database, or silently continue after a failed step.
   eligible for cleanup.
 - A successful backup is retained even if all later steps fail.
 - Cleanup attempts all independently owned resources in reverse acquisition order.
+- Browser sandbox deletion authority belongs only to the Python lease owner. The Node runner is a
+  borrower and cannot delete the root or claim a final zero-resource ledger.
 - The first operation failure remains primary; cleanup failures are retained without replacing it.
   Flow-control exceptions are never swallowed.
 - Logs and receipts contain only fixed stages, error categories, versions, hashes, filenames, byte
@@ -257,6 +284,8 @@ Unit tests cover:
 - option-file and backup ACL/atomic-publication cleanup precedence;
 - canonical receipt chaining and cross-database replay rejection;
 - configuration atomic switch, rollback, crash recovery, and exact-field preservation;
+- browser owner/borrower handoff, root identity acquisition, process registration order, truthful
+  post-cleanup summary, and primary-before-cleanup failure ordering;
 - fixed secret-free error categories.
 
 ### Disposable MySQL integration
