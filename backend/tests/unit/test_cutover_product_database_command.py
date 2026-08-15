@@ -21,6 +21,7 @@ from backend.domain.product_database_readiness import (
 )
 from backend.domain.json_contracts import canonical_json
 from backend.scripts import cutover_product_database as command
+from backend.scripts import prepare_product_database as preparation_command
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -400,11 +401,16 @@ async def test_default_post_cutover_smoke_uses_normal_config_without_database_ov
         "scenarioCount": 1,
     }
 
-    async def runner(**kwargs):
+    def runner(**kwargs):
         calls.append(kwargs)
+        internal_evidence = {**summary}
+        internal_evidence.pop("rootCount")
         return SimpleNamespace(
             returncode=0,
-            stdout="PHASE7B_BROWSER_SMOKE_SUMMARY=" + canonical_json(summary),
+            stdout=(
+                "PHASE7B_BROWSER_INTERNAL_EVIDENCE="
+                + canonical_json(internal_evidence)
+            ),
             stderr="",
         )
 
@@ -414,12 +420,38 @@ async def test_default_post_cutover_smoke_uses_normal_config_without_database_ov
 
     assert result.provider_calls == 0
     assert result.outbound_requests == 0
-    assert calls[0]["command"] == ("node", "scripts/run-tests.mjs", "browser-phase7b")
+    assert len(calls) == 1
+    assert calls[0]["command"] == ("node", "frontend/e2e/run-phase7b.mjs")
     assert calls[0]["cwd"] == REPOSITORY_ROOT
     assert calls[0]["timeout_seconds"] == 300
+    assert (
+        calls[0]["root_lease_factory"]
+        is preparation_command._open_browser_root_lease
+    )
     assert all(key not in calls[0]["environment"] for key in mysql_environment_keys)
+    assert "PHASE7B_BROWSER_TASK_ROOT" not in calls[0]["environment"]
+    assert "PHASE7B_BROWSER_TASK_NONCE" not in calls[0]["environment"]
     assert calls[0]["environment"]["PHASE7B_UNRELATED_ENV"] == "preserved"
     assert calls[0]["environment"]["MARKET_SCHEDULER_ENABLED"] == "false"
+
+
+@pytest.mark.asyncio
+async def test_default_post_cutover_smoke_rejects_nonexact_post_cleanup_summary(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        preparation_command,
+        "run_owned_phase7b_browser",
+        lambda **_kwargs: {
+            **command._BROWSER_SMOKE_EXPECTED,
+            "nestedRootCount": 1,
+        },
+    )
+
+    with pytest.raises(command.ProductDatabaseCutoverError, match="smoke"):
+        await command._default_post_cutover_smoke(
+            mysql_document(NEW_DATABASE), runner=lambda **_kwargs: None
+        )
 
 
 @pytest.mark.asyncio

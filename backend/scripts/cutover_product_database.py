@@ -52,7 +52,6 @@ _SMOKE_ERROR = "product database cutover smoke failed"
 _ROLLBACK_ERROR = "product database cutover rollback failed"
 _RECOVERY_ERROR = "product database recovery failed"
 _PROCESS_ERROR = "product database cutover process guard failed"
-_BROWSER_SMOKE_PREFIX = "PHASE7B_BROWSER_SMOKE_SUMMARY="
 _BROWSER_SMOKE_EXPECTED = {
     "firstStage": None,
     "firstCause": None,
@@ -64,7 +63,6 @@ _BROWSER_SMOKE_EXPECTED = {
     "rootCount": 0,
     "artifactCount": 0,
 }
-_BROWSER_SMOKE_COMMAND = ("node", "scripts/run-tests.mjs", "browser-phase7b")
 _BROWSER_SMOKE_TIMEOUT_SECONDS = 300
 _MYSQL_ENVIRONMENT_KEYS = (
     "MYSQL_HOST",
@@ -445,7 +443,12 @@ async def _default_post_cutover_smoke(
     runner: Callable[..., object] | None = None,
 ) -> object:
     """Exercise normal config startup without a process-local database override."""
-    from backend.scripts.prepare_product_database import _default_browser_smoke_runner
+    from backend.scripts.prepare_product_database import (
+        _BROWSER_NODE_COMMAND,
+        _default_browser_smoke_runner,
+        _open_browser_root_lease,
+        run_owned_phase7b_browser,
+    )
     from backend.services.product_database_readiness import SmokeResult
 
     try:
@@ -455,36 +458,19 @@ async def _default_post_cutover_smoke(
         for key in _MYSQL_ENVIRONMENT_KEYS:
             environment.pop(key, None)
         environment["MARKET_SCHEDULER_ENABLED"] = "false"
-        completed = await _invoke(
-            runner or _default_browser_smoke_runner,
-            command=_BROWSER_SMOKE_COMMAND,
+        summary = await _invoke(
+            run_owned_phase7b_browser,
+            node_command=_BROWSER_NODE_COMMAND,
             cwd=Path(__file__).resolve().parents[2],
             environment=environment,
             timeout_seconds=_BROWSER_SMOKE_TIMEOUT_SECONDS,
-        )
-        if (
-            getattr(completed, "returncode", None) != 0
-            or type(getattr(completed, "stdout", None)) is not str
-            or type(getattr(completed, "stderr", None)) is not str
-        ):
-            raise ValueError
-        summaries = [
-            line[len(_BROWSER_SMOKE_PREFIX) :]
-            for line in completed.stdout.splitlines()
-            if line.startswith(_BROWSER_SMOKE_PREFIX)
-        ]
-        if len(summaries) != 1:
-            raise ValueError
-        summary = json.loads(
-            summaries[0],
-            object_pairs_hook=_unique_object,
-            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
+            runner=runner or _default_browser_smoke_runner,
+            root_factory=_open_browser_root_lease,
         )
         if (
             type(summary) is not dict
             or summary != _BROWSER_SMOKE_EXPECTED
             or set(summary) != set(_BROWSER_SMOKE_EXPECTED)
-            or summaries[0] != canonical_json(summary)
         ):
             raise ValueError
         return SmokeResult(provider_calls=0, outbound_requests=0)

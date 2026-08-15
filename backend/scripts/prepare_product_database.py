@@ -80,7 +80,6 @@ _BROWSER_SMOKE_EXPECTED = {
     **_BROWSER_INTERNAL_EVIDENCE_EXPECTED,
     "rootCount": 0,
 }
-_BROWSER_SMOKE_COMMAND = ("node", "scripts/run-tests.mjs", "browser-phase7b")
 _BROWSER_NODE_COMMAND = ("node", "frontend/e2e/run-phase7b.mjs")
 _BROWSER_SMOKE_TIMEOUT_SECONDS = 300
 _BROWSER_RUNNER_TIMEOUT_SECONDS = 240
@@ -1657,7 +1656,7 @@ def _default_browser_smoke_runner(
     )
     try:
         if (
-            command not in (_BROWSER_SMOKE_COMMAND, _BROWSER_NODE_COMMAND)
+            command != _BROWSER_NODE_COMMAND
             or Path(cwd).resolve(strict=True) != REPOSITORY_ROOT.resolve(strict=True)
             or type(timeout_seconds) is not int
             or timeout_seconds <= _BROWSER_RUNNER_TIMEOUT_SECONDS

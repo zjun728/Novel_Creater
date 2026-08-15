@@ -2530,7 +2530,7 @@ def test_default_browser_smoke_runner_uses_owned_windows_job_and_exact_task_cont
 
         def communicate(self, *, timeout: float) -> tuple[str, str]:
             calls.append(("communicate", timeout))
-            return _browser_summary(), "password=secret"
+            return _browser_internal_evidence(), "password=secret"
 
     class Guard:
         active_processes = 3
@@ -2565,7 +2565,7 @@ def test_default_browser_smoke_runner_uses_owned_windows_job_and_exact_task_cont
         return []
 
     result = command_module._default_browser_smoke_runner(
-        command=("node", "scripts/run-tests.mjs", "browser-phase7b"),
+        command=("node", "frontend/e2e/run-phase7b.mjs"),
         cwd=command_module.REPOSITORY_ROOT,
         environment=environment,
         timeout_seconds=300,
@@ -2578,12 +2578,12 @@ def test_default_browser_smoke_runner_uses_owned_windows_job_and_exact_task_cont
     )
 
     assert result.returncode == 0
-    assert result.stdout == _browser_summary()
+    assert result.stdout == _browser_internal_evidence()
     assert result.stderr == "password=secret"
     assert calls[0][0] == "lease-open"
     spawn = calls[1]
     assert spawn[0] == "spawn"
-    assert spawn[1] == (str(node.resolve()), "scripts/run-tests.mjs", "browser-phase7b")
+    assert spawn[1] == (str(node.resolve()), "frontend/e2e/run-phase7b.mjs")
     assert spawn[2]["cwd"] == command_module.REPOSITORY_ROOT
     assert spawn[2]["shell"] is False
     assert spawn[2]["stdout"] is subprocess.PIPE
@@ -2646,7 +2646,7 @@ def test_browser_smoke_runner_keeps_primary_first_and_cleans_tree_and_root(
 
     with pytest.raises(BaseExceptionGroup) as raised:
         command_module._default_browser_smoke_runner(
-            command=("node", "scripts/run-tests.mjs", "browser-phase7b"),
+            command=("node", "frontend/e2e/run-phase7b.mjs"),
             cwd=command_module.REPOSITORY_ROOT,
             environment={"MYSQL_DB": NEW_DATABASE},
             timeout_seconds=300,
@@ -2694,6 +2694,30 @@ def test_browser_smoke_runner_rejects_unapproved_command_before_spawn(
     assert called is False
 
 
+def test_browser_smoke_runner_rejects_stale_dispatcher_before_spawn(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def resolver(_name: str) -> str:
+        nonlocal called
+        called = True
+        return str(tmp_path / "node.exe")
+
+    with pytest.raises(ProductDatabasePreparationCommandError) as raised:
+        command_module._default_browser_smoke_runner(
+            command=("node", "scripts/run-tests.mjs", "browser-phase7b"),
+            cwd=command_module.REPOSITORY_ROOT,
+            environment={"MYSQL_DB": NEW_DATABASE},
+            timeout_seconds=300,
+            executable_resolver=resolver,
+            temp_parent=tmp_path / "owned",
+        )
+
+    assert str(raised.value) == "readiness smoke failed"
+    assert called is False
+
+
 @pytest.mark.parametrize("failure", ("spawn", "stop", "root-replacement"))
 def test_browser_smoke_runner_failure_stages_are_safe_and_cleanup_owned_resources(
     tmp_path: Path, failure: str
@@ -2708,7 +2732,7 @@ def test_browser_smoke_runner_failure_stages_are_safe_and_cleanup_owned_resource
 
         def communicate(self, *, timeout: float) -> tuple[str, str]:
             calls.append(("communicate", timeout))
-            return _browser_summary(), "secret-stderr"
+            return _browser_internal_evidence(), "secret-stderr"
 
     child = Child()
     guard = SimpleNamespace(
@@ -2739,7 +2763,7 @@ def test_browser_smoke_runner_failure_stages_are_safe_and_cleanup_owned_resource
 
     with pytest.raises(ProductDatabasePreparationCommandError) as raised:
         command_module._default_browser_smoke_runner(
-            command=("node", "scripts/run-tests.mjs", "browser-phase7b"),
+            command=("node", "frontend/e2e/run-phase7b.mjs"),
             cwd=command_module.REPOSITORY_ROOT,
             environment={"MYSQL_DB": NEW_DATABASE},
             timeout_seconds=300,
@@ -2782,7 +2806,7 @@ def test_browser_smoke_runner_retries_transient_owned_root_removal(
         returncode = 0
 
         def communicate(self, *, timeout: float) -> tuple[str, str]:
-            return _browser_summary(), ""
+            return _browser_internal_evidence(), ""
 
     def spawn_guarded(_command: object, _kwargs: dict, **_options: object):
         return Child(), SimpleNamespace(cleanup=lambda *_args, **_kwargs: [])
@@ -2795,7 +2819,7 @@ def test_browser_smoke_runner_retries_transient_owned_root_removal(
 
     with pytest.raises(ProductDatabasePreparationCommandError):
         command_module._default_browser_smoke_runner(
-            command=("node", "scripts/run-tests.mjs", "browser-phase7b"),
+            command=("node", "frontend/e2e/run-phase7b.mjs"),
             cwd=command_module.REPOSITORY_ROOT,
             environment={"MYSQL_DB": NEW_DATABASE},
             timeout_seconds=300,
@@ -2834,7 +2858,7 @@ def test_browser_smoke_runner_rejects_malformed_guard_and_stops_returned_child(
 
     with pytest.raises(ProductDatabasePreparationCommandError) as raised:
         command_module._default_browser_smoke_runner(
-            command=("node", "scripts/run-tests.mjs", "browser-phase7b"),
+            command=("node", "frontend/e2e/run-phase7b.mjs"),
             cwd=command_module.REPOSITORY_ROOT,
             environment={"MYSQL_DB": NEW_DATABASE},
             timeout_seconds=300,
@@ -2870,7 +2894,7 @@ def test_browser_smoke_runner_cleans_acquired_identity_not_precleanup_replacemen
             task_root.rename(moved_root)
             task_root.mkdir()
             (task_root / marker.name).write_bytes(marker_bytes)
-            return _browser_summary(), ""
+            return _browser_internal_evidence(), ""
 
     def spawn_guarded(_command: object, kwargs: dict, **_options: object):
         nonlocal task_root
@@ -2890,7 +2914,7 @@ def test_browser_smoke_runner_cleans_acquired_identity_not_precleanup_replacemen
 
     with pytest.raises(BaseException) as raised:
         command_module._default_browser_smoke_runner(
-            command=("node", "scripts/run-tests.mjs", "browser-phase7b"),
+            command=("node", "frontend/e2e/run-phase7b.mjs"),
             cwd=command_module.REPOSITORY_ROOT,
             environment={"MYSQL_DB": NEW_DATABASE},
             timeout_seconds=300,
@@ -2918,7 +2942,7 @@ def test_browser_smoke_runner_retries_transient_directory_lease_close(
         returncode = 0
 
         def communicate(self, *, timeout: float) -> tuple[str, str]:
-            return _browser_summary(), ""
+            return _browser_internal_evidence(), ""
 
     class Lease:
         def delete_owned(
@@ -2933,7 +2957,7 @@ def test_browser_smoke_runner_retries_transient_directory_lease_close(
                 raise PermissionError("secret lease close sharing violation")
 
     result = command_module._default_browser_smoke_runner(
-        command=("node", "scripts/run-tests.mjs", "browser-phase7b"),
+        command=("node", "frontend/e2e/run-phase7b.mjs"),
         cwd=command_module.REPOSITORY_ROOT,
         environment={"MYSQL_DB": NEW_DATABASE},
         timeout_seconds=300,
@@ -2966,7 +2990,7 @@ def test_browser_smoke_runner_establishes_handle_delete_before_lease_close(
         returncode = 0
 
         def communicate(self, *, timeout: float) -> tuple[str, str]:
-            return _browser_summary(), ""
+            return _browser_internal_evidence(), ""
 
     class Lease:
         def delete_owned(
@@ -2988,7 +3012,7 @@ def test_browser_smoke_runner_establishes_handle_delete_before_lease_close(
         return Child(), SimpleNamespace(cleanup=lambda *_args, **_kwargs: [])
 
     result = command_module._default_browser_smoke_runner(
-        command=("node", "scripts/run-tests.mjs", "browser-phase7b"),
+        command=("node", "frontend/e2e/run-phase7b.mjs"),
         cwd=command_module.REPOSITORY_ROOT,
         environment={"MYSQL_DB": NEW_DATABASE},
         timeout_seconds=300,
@@ -3044,7 +3068,7 @@ def test_browser_root_lease_identity_failure_closes_handle_and_removes_root(
 
     with pytest.raises(ProductDatabasePreparationCommandError) as raised:
         command_module._default_browser_smoke_runner(
-            command=("node", "scripts/run-tests.mjs", "browser-phase7b"),
+            command=("node", "frontend/e2e/run-phase7b.mjs"),
             cwd=command_module.REPOSITORY_ROOT,
             environment={"MYSQL_DB": NEW_DATABASE},
             timeout_seconds=300,
@@ -3088,7 +3112,7 @@ def test_browser_root_lease_acquisition_race_preserves_replacement_and_recovers_
 
     with pytest.raises(BaseException) as raised:
         command_module._default_browser_smoke_runner(
-            command=("node", "scripts/run-tests.mjs", "browser-phase7b"),
+            command=("node", "frontend/e2e/run-phase7b.mjs"),
             cwd=command_module.REPOSITORY_ROOT,
             environment={"MYSQL_DB": NEW_DATABASE},
             timeout_seconds=300,
