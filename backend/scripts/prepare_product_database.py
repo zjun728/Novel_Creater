@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import asdict, dataclass, fields
 import inspect
 import json
@@ -347,6 +347,47 @@ async def _invoke(
     if inspect.isawaitable(value):
         return await value
     return value
+
+
+@contextmanager
+def _primary_first_context(manager: object):  # type: ignore[no-untyped-def]
+    """Retain a body primary when a synchronous resource cleanup also fails."""
+
+    manager_type = type(manager)
+    enter = manager_type.__enter__  # type: ignore[attr-defined]
+    exit_context = manager_type.__exit__  # type: ignore[attr-defined]
+    value = enter(manager)
+    primary: BaseException | None = None
+    traceback: object | None = None
+    try:
+        yield value
+    except BaseException as error:
+        primary = error
+        traceback = error.__traceback__
+
+    cleanup: BaseException | None = None
+    suppressed = False
+    try:
+        suppressed = bool(
+            exit_context(
+                manager,
+                None if primary is None else type(primary),
+                primary,
+                traceback,
+            )
+        )
+    except BaseException as error:
+        cleanup = error
+
+    if primary is not None and cleanup is not None:
+        raise BaseExceptionGroup(
+            _EXECUTION_ERROR,
+            [primary, cleanup],
+        ) from None
+    if primary is not None and not suppressed:
+        raise primary.with_traceback(traceback) from None  # type: ignore[arg-type]
+    if cleanup is not None:
+        raise cleanup from None
 
 
 def _database_exists(error: BaseException) -> bool:
@@ -1535,7 +1576,7 @@ async def run_cli(
             )
 
         option_context = selected.option_file(config, backup_dir)  # type: ignore[attr-defined]
-        with option_context as option:
+        with _primary_first_context(option_context) as option:
             await _invoke(
                 selected.preflight_connection, pair, option  # type: ignore[attr-defined]
             )

@@ -35,6 +35,7 @@ from backend.scripts.prepare_product_database import (
     ProductDatabasePreparationCommandError,
     PreparationCommandDependencies,
     _default_dependencies,
+    _primary_first_context,
     _default_transaction_scope,
     _default_connection_scope,
     create_current_schema_proof,
@@ -64,6 +65,12 @@ from backend.services.product_database_readiness import (
 
 
 FLOW_CONTROLS = (asyncio.CancelledError, KeyboardInterrupt, SystemExit)
+FLOW_MATRIX_CASES = (
+    "cancelled",
+    "keyboard-interrupt",
+    "system-exit-int",
+    "system-exit-text",
+)
 
 
 def _secret_flow_control(flow_type: type[BaseException]) -> BaseException:
@@ -79,6 +86,38 @@ def _assert_clean_flow_control(
     assert error.__context__ is None
     assert getattr(error, "__notes__", None) in (None, [])
     if isinstance(error, SystemExit):
+        assert error.code is None
+    else:
+        assert error.args == ()
+
+
+def _matrix_flow(case: str) -> BaseException:
+    if case == "cancelled":
+        return asyncio.CancelledError("secret-flow-control")
+    if case == "keyboard-interrupt":
+        return KeyboardInterrupt("secret-flow-control")
+    if case == "system-exit-int":
+        return SystemExit(17)
+    if case == "system-exit-text":
+        return SystemExit("secret-flow-control")
+    raise AssertionError(case)
+
+
+def _assert_matrix_flow(error: BaseException, case: str) -> None:
+    expected = {
+        "cancelled": asyncio.CancelledError,
+        "keyboard-interrupt": KeyboardInterrupt,
+        "system-exit-int": SystemExit,
+        "system-exit-text": SystemExit,
+    }[case]
+    assert type(error) is expected
+    assert "secret" not in repr(error)
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert getattr(error, "__notes__", None) in (None, [])
+    if case == "system-exit-int":
+        assert error.code == 17  # type: ignore[attr-defined]
+    elif isinstance(error, SystemExit):
         assert error.code is None
     else:
         assert error.args == ()
@@ -731,6 +770,116 @@ async def test_boundary_cleanup_flow_control_is_cleanup_only_and_body_safe(
     assert sum(call == "close" for call in calls) == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flow_case", FLOW_MATRIX_CASES)
+@pytest.mark.parametrize(
+    "stage",
+    ("session", "get-lock", "create", "preexisting-inventory", "commit", "close"),
+)
+async def test_boundary_all_stage_flow_matrix_closes_owned_resources(
+    flow_case: str, stage: str
+) -> None:
+    calls: list[object] = []
+
+    class Session(BoundarySession):
+        def __init__(self) -> None:
+            super().__init__(calls)
+            self.locked = False
+            self.closed = False
+            self.created = False
+
+        async def fetchone(
+            self, sql: str, params: tuple[object, ...] = ()
+        ) -> dict[str, int]:
+            calls.append(("fetchone", sql, params))
+            if sql.startswith("SELECT GET_LOCK"):
+                if stage == "get-lock":
+                    raise _matrix_flow(flow_case)
+                self.locked = True
+                return {"acquired": 1}
+            if sql.startswith("SELECT RELEASE_LOCK"):
+                self.locked = False
+                return {"released": 1}
+            raise AssertionError(sql)
+
+        async def execute(
+            self, sql: str, params: tuple[object, ...] = ()
+        ) -> None:
+            calls.append(("execute", sql, params))
+            if sql.startswith("CREATE DATABASE"):
+                if stage == "create":
+                    raise _matrix_flow(flow_case)
+                if stage == "preexisting-inventory":
+                    raise DatabaseExistsError("external")
+                self.created = True
+            elif sql.startswith("DROP DATABASE"):
+                self.created = False
+            elif sql == "COMMIT" and stage == "commit":
+                raise _matrix_flow(flow_case)
+
+        async def close(self) -> None:
+            calls.append("close")
+            self.closed = True
+            if stage == "close":
+                raise _matrix_flow(flow_case)
+            if stage in ("get-lock", "create", "preexisting-inventory", "commit"):
+                raise RuntimeError("secret-secondary-cleanup")
+
+    session = Session()
+
+    async def session_factory() -> Session:
+        calls.append("connect")
+        if stage == "session":
+            raise _matrix_flow(flow_case)
+        return session
+
+    async def inventory(*_args: object) -> DatabaseInventory:
+        if stage == "preexisting-inventory":
+            raise _matrix_flow(flow_case)
+        return _empty_inventory(NEW_DATABASE)
+
+    with pytest.raises(BaseException) as raised:
+        async with new_database_boundary(
+            NEW_DATABASE,
+            session_factory=session_factory,
+            initialize=lambda *_args: {"initialized": NEW_DATABASE},
+            inventory=inventory,
+            now_ms=lambda: 123,
+        ):
+            pass
+
+    outgoing = (
+        raised.value.cleanup
+        if isinstance(raised.value, NewDatabaseBoundaryExitFailure)
+        else raised.value.primary
+        if isinstance(raised.value, NewDatabaseBoundaryEnterFailure)
+        else raised.value
+    )
+    if isinstance(outgoing, BaseExceptionGroup):
+        outgoing = outgoing.exceptions[0]
+    _assert_matrix_flow(outgoing, flow_case)
+    assert "secret" not in repr(raised.value)
+    assert session.locked is False
+    assert session.closed is (stage != "session")
+    assert session.created is (stage == "close")
+    drop_calls = [
+        call
+        for call in calls
+        if (
+            isinstance(call, tuple)
+            and len(call) > 1
+            and str(call[1]).startswith("DROP DATABASE")
+        )
+    ]
+    assert not drop_calls if stage in (
+        "session",
+        "get-lock",
+        "create",
+        "preexisting-inventory",
+        "close",
+    ) else len(drop_calls) == 1
+
+
 def _proof_inventory(database: str) -> DatabaseInventory:
     tables = tuple(sorted(created_table_names()))
     counts = tuple(
@@ -872,6 +1021,90 @@ async def test_current_schema_proof_primary_precedes_cleanup_flow_control(
     _assert_clean_flow_control(raised.value.exceptions[0], flow_type)
     _assert_clean_flow_control(raised.value.exceptions[1], flow_type)
     assert sum(call == "close" for call in calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flow_case", FLOW_MATRIX_CASES)
+@pytest.mark.parametrize(
+    "stage", ("id", "session", "create", "inventory", "storage", "drop", "close")
+)
+async def test_current_schema_proof_all_stage_flow_matrix_closes_resources(
+    flow_case: str, stage: str
+) -> None:
+    calls: list[object] = []
+    proof_name = "novel_creator_phase7b_restore_0123456789abcdef0123456789abcdef"
+    inventory_value = _proof_inventory(proof_name)
+    storage_value = tuple(
+        TableStorage(name, "InnoDB", "utf8mb4_0900_ai_ci")
+        for name in inventory_value.table_names
+    )
+
+    class Session(BoundarySession):
+        def __init__(self) -> None:
+            super().__init__(calls)
+            self.created = False
+            self.closed = False
+
+        async def execute(
+            self, sql: str, params: tuple[object, ...] = ()
+        ) -> None:
+            calls.append(("execute", sql, params))
+            if sql.startswith("CREATE DATABASE"):
+                if stage == "create":
+                    raise _matrix_flow(flow_case)
+                self.created = True
+            elif sql.startswith("DROP DATABASE"):
+                self.created = False
+                if stage == "drop":
+                    raise _matrix_flow(flow_case)
+
+        async def close(self) -> None:
+            calls.append("close")
+            self.closed = True
+            if stage == "close":
+                raise _matrix_flow(flow_case)
+            if stage in ("create", "inventory", "storage"):
+                raise RuntimeError("secret-secondary-cleanup")
+
+    session = Session()
+
+    async def session_factory() -> Session:
+        if stage == "session":
+            raise _matrix_flow(flow_case)
+        return session
+
+    async def inventory(*_args: object) -> DatabaseInventory:
+        if stage == "inventory":
+            raise _matrix_flow(flow_case)
+        return inventory_value
+
+    async def storage(*_args: object) -> tuple[TableStorage, ...]:
+        if stage == "storage":
+            raise _matrix_flow(flow_case)
+        return storage_value
+
+    def id_factory() -> str:
+        if stage == "id":
+            raise _matrix_flow(flow_case)
+        return "0123456789abcdef0123456789abcdef"
+
+    with pytest.raises(BaseException) as raised:
+        await create_current_schema_proof(
+            session_factory=session_factory,
+            initialize=lambda *_args: object(),
+            inventory=inventory,
+            read_storage=storage,
+            id_factory=id_factory,
+            now_ms=lambda: 123,
+        )
+
+    outgoing = raised.value
+    if isinstance(outgoing, BaseExceptionGroup):
+        outgoing = outgoing.exceptions[0]
+    _assert_matrix_flow(outgoing, flow_case)
+    assert "secret" not in repr(raised.value)
+    assert session.closed is (stage not in ("id", "session"))
+    assert session.created is False
 
 
 @pytest.mark.asyncio
@@ -1455,6 +1688,125 @@ def test_receipt_primary_precedes_cleanup_flow_and_resources_reach_zero(
     _assert_clean_flow_control(raised.value.exceptions[1], flow_type)
     assert world.handle.closed
     assert sum(event == "close" for event in world.events) == 2
+
+
+@pytest.mark.parametrize("flow_case", FLOW_MATRIX_CASES)
+@pytest.mark.parametrize(
+    "stage",
+    (
+        "open",
+        "acl",
+        "owner-before-write",
+        "write",
+        "flush",
+        "fsync",
+        "close",
+        "owner-before-link",
+        "link",
+        "owner-after-link",
+        "unlink",
+    ),
+)
+def test_receipt_all_stage_flow_matrix_closes_handle_and_owned_temp(
+    tmp_path: Path, flow_case: str, stage: str
+) -> None:
+    external = Path(tmp_path.anchor) / "phase7b-receipt-matrix" / tmp_path.name
+
+    class Handle(ReceiptHandle):
+        def __init__(self, events: list[object]) -> None:
+            super().__init__(events)
+            self.failed: set[str] = set()
+
+        def _stage(self, name: str) -> None:
+            if stage == name and name not in self.failed:
+                self.failed.add(name)
+                raise _matrix_flow(flow_case)
+
+        def write(self, value: str) -> int:
+            self.events.append(("write", value))
+            self._stage("write")
+            return len(value)
+
+        def flush(self) -> None:
+            self.events.append("flush")
+            self._stage("flush")
+
+        def close(self) -> None:
+            self.events.append("close")
+            self.closed = True
+            self._stage("close")
+
+    class World(ReceiptWorld):
+        def __init__(self) -> None:
+            super().__init__(external)
+            self.handle = Handle(self.events)
+            self.temp_owned = False
+            self.owner_checks = 0
+            self.failed: set[str] = set()
+
+        def _stage(self, name: str) -> None:
+            if stage == name and name not in self.failed:
+                self.failed.add(name)
+                raise _matrix_flow(flow_case)
+
+        def opener(self, directory: Path) -> tuple[Path, Handle, object]:
+            self.events.append(("open", directory))
+            self._stage("open")
+            self.temp_owned = True
+            return self.temporary, self.handle, self.identity
+
+        def acl(self, path: Path) -> None:
+            self.events.append(("acl", path))
+            self._stage("acl")
+
+        def fsync(self, descriptor: int) -> None:
+            self.events.append(("fsync", descriptor))
+            self._stage("fsync")
+
+        def same_owner(self, path: Path, identity: object) -> bool:
+            self.owner_checks += 1
+            names = {
+                1: "owner-before-write",
+                2: "owner-before-link",
+                3: "owner-after-link",
+            }
+            self._stage(names[self.owner_checks])
+            return identity is self.identity
+
+        def link(self, source: Path, target: Path) -> None:
+            self.events.append(("link", source, target))
+            self._stage("link")
+            self.linked = True
+
+        def unlink_owned(self, path: Path, identity: object) -> bool:
+            self.events.append(("unlink", path, identity))
+            self.temp_owned = False
+            self._stage("unlink")
+            if stage not in ("open", "unlink"):
+                raise RuntimeError("secret-secondary-cleanup")
+            return identity is self.identity
+
+    world = World()
+    with pytest.raises(BaseException) as raised:
+        publish_readiness_receipt(
+            _preparation_receipt(),
+            external / "approved-backup.sql",
+            temporary_opener=world.opener,
+            acl_runner=world.acl,
+            fsync=world.fsync,
+            linker=world.link,
+            same_owner=world.same_owner,
+            unlink_owned=world.unlink_owned,
+        )
+
+    outgoing = raised.value
+    if isinstance(outgoing, BaseExceptionGroup):
+        outgoing = outgoing.exceptions[0]
+    _assert_matrix_flow(outgoing, flow_case)
+    assert "secret" not in repr(raised.value)
+    assert world.handle.closed is (stage != "open")
+    assert world.temp_owned is False
+    assert world.linked is (stage in ("owner-after-link", "unlink"))
 
 
 class ExecuteWorld:
@@ -2132,6 +2484,155 @@ async def test_execute_body_flow_control_is_cloned_after_boundary_cleanup(
     assert world.events[-1] == "option-exit"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flow_case", FLOW_MATRIX_CASES)
+@pytest.mark.parametrize(
+    "stage",
+    (
+        "client-preflight",
+        "connection",
+        "inventory",
+        "backup",
+        "restore",
+        "proof",
+        "seed-assets",
+        "seed-market",
+        "audit",
+        "smoke",
+        "publication",
+    ),
+)
+async def test_execute_all_stage_flow_matrix_uses_real_task4_and_closes_resources(
+    tmp_path: Path, flow_case: str, stage: str
+) -> None:
+    class World(RealTask4ExecuteWorld):
+        def __init__(self) -> None:
+            super().__init__()
+            self.option_open = False
+            self.backup_retained = False
+            self.target_active = False
+            self.target_retained = False
+            self.receipt_published = False
+
+        @contextmanager
+        def option_file(self, config: object, root: Path):  # type: ignore[no-untyped-def]
+            self.events.append(("option-enter", config, root))
+            self.option_open = True
+            try:
+                yield self.option
+            finally:
+                self.option_open = False
+                self.events.append("option-exit")
+                if stage not in ("client-preflight", "publication"):
+                    raise RuntimeError("secret-option-cleanup")
+
+        def create_backup(self, *args: object) -> BackupReceipt:
+            value = super().create_backup(*args)  # type: ignore[arg-type]
+            self.backup_retained = True
+            return value
+
+        def database_boundary(self, config: object, database: str) -> object:
+            inner = super().database_boundary(config, database)
+            world = self
+
+            class Boundary:
+                async def __aenter__(self) -> NewDatabaseBoundaryState:
+                    value = await inner.__aenter__()  # type: ignore[attr-defined]
+                    world.target_active = True
+                    return value
+
+                async def __aexit__(
+                    self,
+                    exc_type: object,
+                    exc: BaseException | None,
+                    traceback: object,
+                ) -> bool:
+                    result = await inner.__aexit__(  # type: ignore[attr-defined]
+                        exc_type, exc, traceback
+                    )
+                    if exc is None:
+                        world.target_retained = True
+                    else:
+                        world.target_active = False
+                    return result
+
+            return Boundary()
+
+        def publish(self, receipt: PreparationReceipt, backup: Path) -> Path:
+            value = super().publish(receipt, backup)
+            self.receipt_published = True
+            return value
+
+    world = World()
+
+    def injected(name: str, operation: object):
+        def wrapper(*args: object, **kwargs: object) -> object:
+            if stage == name:
+                raise _matrix_flow(flow_case)
+            return operation(*args, **kwargs)  # type: ignore[operator]
+
+        return wrapper
+
+    dependencies = PreparationCommandDependencies(
+        preflight_clients=injected("client-preflight", world.preflight_clients),
+        read_config=world.read_config,
+        option_file=world.option_file,
+        preflight_connection=injected("connection", world.preflight_connection),
+        inventory_database=injected("inventory", world.inventory_database),
+        create_backup=injected("backup", world.create_backup),
+        restore_drill=injected("restore", world.restore_drill),
+        current_schema_proof=injected("proof", world.current_schema_proof),
+        database_boundary=world.database_boundary,
+        seed_assets=injected("seed-assets", world.seed_assets),
+        seed_market=injected("seed-market", world.seed_market),
+        read_storage=world.read_storage,
+        audit_official_data=injected("audit", world.audit_official_data),
+        smoke=injected("smoke", world.smoke),
+        prepare_service=prepare_product_database,
+        publish_receipt=injected("publication", world.publish),
+        id_factory=lambda: "1" * 32,
+    )
+    argv = [
+        *_arguments(tmp_path),
+        "--execute",
+        "--confirm-legacy",
+        LEGACY_DATABASE,
+        "--confirm-new",
+        NEW_DATABASE,
+        "--confirm-prepare",
+        "PREPARE-PHASE7B",
+    ]
+    output: list[str] = []
+
+    with pytest.raises(BaseException) as raised:
+        await run_cli(argv, dependencies=dependencies, output=output.append)
+
+    outgoing = raised.value
+    if isinstance(outgoing, BaseExceptionGroup):
+        outgoing = outgoing.exceptions[0]
+    _assert_matrix_flow(outgoing, flow_case)
+    assert "secret" not in repr(raised.value)
+    assert world.option_open is False
+    backup_expected = stage not in (
+        "client-preflight",
+        "connection",
+        "inventory",
+        "backup",
+    )
+    assert world.backup_retained is backup_expected
+    if stage in ("seed-assets", "seed-market", "audit", "smoke"):
+        assert world.target_active is False
+        assert world.target_retained is False
+    elif stage == "publication":
+        assert world.target_active is True
+        assert world.target_retained is True
+    else:
+        assert world.target_active is False
+        assert world.target_retained is False
+    assert world.receipt_published is False
+    assert output == []
+
+
 def test_main_prints_only_fixed_failure(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     secret = "never-print-this-secret"
 
@@ -2171,6 +2672,41 @@ def test_main_help_uses_dedicated_success_path(capsys) -> None:
     captured = capsys.readouterr()
     assert captured.err == ""
     assert "Product database preparation failed." not in captured.out
+
+
+def test_primary_first_context_resolves_exit_before_acquiring_resource() -> None:
+    acquired = False
+
+    class MissingExit:
+        def __enter__(self) -> object:
+            nonlocal acquired
+            acquired = True
+            return object()
+
+    with pytest.raises(AttributeError):
+        with _primary_first_context(MissingExit()):
+            pytest.fail("body entered")
+
+    assert acquired is False
+
+
+def test_primary_first_context_uses_type_exit_cached_before_enter() -> None:
+    events: list[str] = []
+
+    class MutatingManager:
+        def __enter__(self) -> object:
+            events.append("enter")
+            self.__exit__ = lambda *_args: events.append("instance-exit")
+            return object()
+
+        def __exit__(self, *_args: object) -> bool:
+            events.append("type-exit")
+            return False
+
+    with _primary_first_context(MutatingManager()):
+        events.append("body")
+
+    assert events == ["enter", "body", "type-exit"]
 
 
 @pytest.mark.parametrize(
