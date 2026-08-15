@@ -96,11 +96,25 @@ def _snapshot_is_current(target: Path, expected: LocalDocumentSnapshot) -> bool:
     return current == expected
 
 
-@contextmanager
-def _windows_local_config_mutex(target: Path):  # type: ignore[no-untyped-def]
-    """Serialize every supported publisher through one target-derived mutex."""
-    if os.name != "nt":
-        raise LocalMySQLSetupError("Windows configuration publication is required")
+@dataclass(frozen=True)
+class WindowsMutexAPI:
+    """Injectable Win32 named-mutex calls used by the publication boundary."""
+
+    create_mutex: Callable[[str], object]
+    wait: Callable[[object], int]
+    release: Callable[[object], bool]
+    close: Callable[[object], bool]
+
+
+def _local_config_mutex_name(target: Path) -> str:
+    normalized = os.path.normcase(os.path.normpath(str(Path(target).absolute())))
+    return (
+        "Local\\NovelCreator.Phase7B.Config."
+        + hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    )
+
+
+def _default_windows_mutex_api() -> WindowsMutexAPI:
     import ctypes
     from ctypes import wintypes
 
@@ -117,43 +131,115 @@ def _windows_local_config_mutex(target: Path):  # type: ignore[no-untyped-def]
     close = kernel32.CloseHandle
     close.argtypes = [wintypes.HANDLE]
     close.restype = wintypes.BOOL
-
-    normalized = os.path.normcase(os.path.normpath(str(Path(target).absolute())))
-    mutex_name = (
-        "Local\\NovelCreator.Phase7B.Config."
-        + hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return WindowsMutexAPI(
+        create_mutex=lambda name: create(None, False, name),
+        wait=lambda handle: int(wait(handle, 0)),
+        release=lambda handle: bool(release(handle)),
+        close=lambda handle: bool(close(handle)),
     )
-    handle = create(None, False, mutex_name)
-    if not handle:
+
+
+def _fixed_mutex_call(
+    operation: Callable[..., object], message: str, *args: object
+) -> object:
+    try:
+        return operation(*args)
+    except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException:
+        raise LocalMySQLSetupError(message) from None
+
+
+@contextmanager
+def _windows_local_config_mutex(
+    target: Path,
+    *,
+    platform_name: str = os.name,
+    api: WindowsMutexAPI | object | None = None,
+):  # type: ignore[no-untyped-def]
+    """Serialize repository-supported administrative writers.
+
+    An uncooperative direct filesystem editor does not participate in this mutex;
+    compare-and-swap writers detect it at their pre/post-publication boundaries.
+    """
+    if platform_name != "nt":
+        raise LocalMySQLSetupError("Windows configuration publication is required")
+    selected = api or _default_windows_mutex_api()
+    create = getattr(selected, "create_mutex", None)
+    wait = getattr(selected, "wait", None)
+    release = getattr(selected, "release", None)
+    close = getattr(selected, "close", None)
+    if not all(callable(item) for item in (create, wait, release, close)):
         raise LocalMySQLSetupError("Could not lock local MySQL configuration")
+
+    handle: object | None = None
     acquired = False
     primary: BaseException | None = None
+    primary_traceback: object | None = None
     try:
-        result = wait(handle, 0)
-        if result not in (0x00000000, 0x00000080):
+        handle = _fixed_mutex_call(
+            create,  # type: ignore[arg-type]
+            "Could not lock local MySQL configuration",
+            _local_config_mutex_name(target),
+        )
+        if not handle:
+            raise LocalMySQLSetupError("Could not lock local MySQL configuration")
+        result = _fixed_mutex_call(
+            wait,  # type: ignore[arg-type]
+            "Could not lock local MySQL configuration",
+            handle,
+        )
+        if type(result) is not int:
+            raise LocalMySQLSetupError("Could not lock local MySQL configuration")
+        if result == 0x00000080:
+            acquired = True
+            raise LocalMySQLSetupError("Local MySQL configuration lock was abandoned")
+        if result != 0x00000000:
             raise LocalMySQLSetupError("Local MySQL configuration is locked")
         acquired = True
-        try:
-            yield
-        except BaseException as error:
-            primary = error
+        yield
+    except BaseException as error:
+        primary = error
+        primary_traceback = error.__traceback__
     finally:
         cleanup: list[BaseException] = []
-        if acquired and not release(handle):
-            cleanup.append(LocalMySQLSetupError("Could not unlock local MySQL configuration"))
-        if not close(handle):
-            cleanup.append(LocalMySQLSetupError("Could not close local MySQL configuration lock"))
+        if acquired and handle is not None:
+            try:
+                released = _fixed_mutex_call(
+                    release,  # type: ignore[arg-type]
+                    "Could not unlock local MySQL configuration",
+                    handle,
+                )
+                if released is not True:
+                    raise LocalMySQLSetupError(
+                        "Could not unlock local MySQL configuration"
+                    )
+            except BaseException as error:
+                cleanup.append(error)
+        if handle is not None:
+            try:
+                closed = _fixed_mutex_call(
+                    close,  # type: ignore[arg-type]
+                    "Could not close local MySQL configuration lock",
+                    handle,
+                )
+                if closed is not True:
+                    raise LocalMySQLSetupError(
+                        "Could not close local MySQL configuration lock"
+                    )
+            except BaseException as error:
+                cleanup.append(error)
         if primary is not None and cleanup:
             raise BaseExceptionGroup(
                 "Local MySQL configuration publication failed",
                 [primary, *cleanup],
             ) from None
         if primary is not None:
-            raise primary.with_traceback(primary.__traceback__) from None
+            raise primary.with_traceback(primary_traceback) from None  # type: ignore[arg-type]
         if cleanup:
             if len(cleanup) == 1:
                 raise cleanup[0] from None
-            raise ExceptionGroup(
+            raise BaseExceptionGroup(
                 "Local MySQL configuration lock cleanup failed", cleanup
             ) from None
 
@@ -304,9 +390,14 @@ def atomic_write_local_document(
     target: Path,
     document: Mapping[str, object],
     acl_runner: Callable[[Path], None],
+    *,
+    mutex_api: WindowsMutexAPI | object | None = None,
+    platform_name: str = os.name,
 ) -> None:
     """Publish under the shared Windows owner-bound configuration mutex."""
-    with _windows_local_config_mutex(Path(target)):
+    with _windows_local_config_mutex(
+        Path(target), platform_name=platform_name, api=mutex_api
+    ):
         _atomic_write_local_document_locked(target, document, acl_runner)
 
 
@@ -384,9 +475,13 @@ def atomic_compare_and_swap_local_document(
     expected_snapshot: LocalDocumentSnapshot,
     *,
     before_publish: Callable[[Path], None] | None = None,
+    mutex_api: WindowsMutexAPI | object | None = None,
+    platform_name: str = os.name,
 ) -> LocalDocumentSnapshot:
-    """Compare and replace while all supported publishers share one mutex."""
-    with _windows_local_config_mutex(Path(target)):
+    """CAS cooperating writers without claiming external-editor linearizability."""
+    with _windows_local_config_mutex(
+        Path(target), platform_name=platform_name, api=mutex_api
+    ):
         return _atomic_compare_and_swap_local_document_locked(
             target,
             document,

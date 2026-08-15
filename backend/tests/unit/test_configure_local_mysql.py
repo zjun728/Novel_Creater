@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 import subprocess
@@ -43,6 +44,45 @@ class CapabilitySession:
 
     async def close(self):
         self.closed = True
+
+
+class FakeMutexAPI:
+    def __init__(
+        self,
+        *,
+        handle=91,
+        wait_result=0,
+        release_result=True,
+        close_result=True,
+        fail_at=None,
+    ):
+        self.handle = handle
+        self.wait_result = wait_result
+        self.release_result = release_result
+        self.close_result = close_result
+        self.fail_at = fail_at
+        self.events = []
+
+    def _event(self, name, value=None):
+        self.events.append(name if value is None else (name, value))
+        if self.fail_at == name:
+            raise RuntimeError(f"private-mutex-{name}-{SECRET}")
+
+    def create_mutex(self, name):
+        self._event("create", name)
+        return self.handle
+
+    def wait(self, handle):
+        self._event("wait", handle)
+        return self.wait_result
+
+    def release(self, handle):
+        self._event("release", handle)
+        return self.release_result
+
+    def close(self, handle):
+        self._event("close", handle)
+        return self.close_result
 
 
 @pytest.mark.asyncio
@@ -341,6 +381,191 @@ def test_compare_and_swap_final_publish_boundary_preserves_concurrent_replacemen
         )
 
     assert json.loads(target.read_text(encoding="utf-8")) == concurrent
+    assert list(workspace_tmp_path.iterdir()) == [target]
+
+
+def test_mutex_non_windows_fails_before_api_create(workspace_tmp_path):
+    api = FakeMutexAPI()
+    with pytest.raises(setup.LocalMySQLSetupError, match="Windows"):
+        with setup._windows_local_config_mutex(
+            workspace_tmp_path / ".env.local.json",
+            platform_name="posix",
+            api=api,
+        ):
+            pytest.fail("unsupported mutex body entered")
+    assert api.events == []
+
+
+def test_mutex_create_null_fails_without_wait_release_or_close(workspace_tmp_path):
+    api = FakeMutexAPI(handle=None)
+    with pytest.raises(setup.LocalMySQLSetupError, match="lock"):
+        with setup._windows_local_config_mutex(
+            workspace_tmp_path / ".env.local.json", platform_name="nt", api=api
+        ):
+            pytest.fail("null mutex body entered")
+    assert [event[0] if isinstance(event, tuple) else event for event in api.events] == [
+        "create"
+    ]
+
+
+@pytest.mark.parametrize("wait_result", (0x00000102, 0xFFFFFFFF))
+def test_mutex_timeout_and_wait_failed_close_without_release(
+    workspace_tmp_path, wait_result
+):
+    api = FakeMutexAPI(wait_result=wait_result)
+    with pytest.raises(setup.LocalMySQLSetupError, match="lock"):
+        with setup._windows_local_config_mutex(
+            workspace_tmp_path / ".env.local.json", platform_name="nt", api=api
+        ):
+            pytest.fail("unacquired mutex body entered")
+    assert [event[0] if isinstance(event, tuple) else event for event in api.events] == [
+        "create", "wait", "close"
+    ]
+
+
+def test_mutex_abandoned_fails_closed_but_releases_and_closes(workspace_tmp_path):
+    api = FakeMutexAPI(wait_result=0x00000080)
+    with pytest.raises(setup.LocalMySQLSetupError, match="abandoned"):
+        with setup._windows_local_config_mutex(
+            workspace_tmp_path / ".env.local.json", platform_name="nt", api=api
+        ):
+            pytest.fail("abandoned mutex body entered")
+    assert [event[0] if isinstance(event, tuple) else event for event in api.events] == [
+        "create", "wait", "release", "close"
+    ]
+
+
+def test_mutex_success_enters_body_then_releases_and_closes(workspace_tmp_path):
+    api = FakeMutexAPI()
+    with setup._windows_local_config_mutex(
+        workspace_tmp_path / ".env.local.json", platform_name="nt", api=api
+    ):
+        api.events.append("body")
+    assert [event[0] if isinstance(event, tuple) else event for event in api.events] == [
+        "create", "wait", "body", "release", "close"
+    ]
+
+
+@pytest.mark.parametrize(
+    "primary_factory",
+    (lambda: RuntimeError("primary"), asyncio.CancelledError, KeyboardInterrupt, SystemExit),
+)
+def test_mutex_body_primary_stays_first_when_release_and_close_fail(
+    workspace_tmp_path, primary_factory
+):
+    api = FakeMutexAPI(release_result=False, close_result=False)
+    primary = primary_factory()
+    with pytest.raises(BaseExceptionGroup) as raised:
+        with setup._windows_local_config_mutex(
+            workspace_tmp_path / ".env.local.json", platform_name="nt", api=api
+        ):
+            raise primary
+    assert raised.value.exceptions[0] is primary
+    assert isinstance(raised.value.exceptions[1], setup.LocalMySQLSetupError)
+    assert isinstance(raised.value.exceptions[2], setup.LocalMySQLSetupError)
+    assert [event[0] if isinstance(event, tuple) else event for event in api.events] == [
+        "create", "wait", "release", "close"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("release_result", "close_result", "expected_messages"),
+    (
+        (False, True, ("unlock",)),
+        (True, False, ("close",)),
+        (False, False, ("unlock", "close")),
+    ),
+)
+def test_mutex_cleanup_only_failures_keep_release_then_close_order(
+    workspace_tmp_path, release_result, close_result, expected_messages
+):
+    api = FakeMutexAPI(
+        release_result=release_result,
+        close_result=close_result,
+    )
+    with pytest.raises(BaseException) as raised:
+        with setup._windows_local_config_mutex(
+            workspace_tmp_path / ".env.local.json", platform_name="nt", api=api
+        ):
+            pass
+    failures = (
+        raised.value.exceptions
+        if isinstance(raised.value, BaseExceptionGroup)
+        else (raised.value,)
+    )
+    assert tuple(str(error).split()[2] for error in failures) == expected_messages
+
+
+def test_mutex_wait_primary_precedes_close_cleanup_failure(workspace_tmp_path):
+    api = FakeMutexAPI(wait_result=0xFFFFFFFF, close_result=False)
+    with pytest.raises(BaseExceptionGroup) as raised:
+        with setup._windows_local_config_mutex(
+            workspace_tmp_path / ".env.local.json", platform_name="nt", api=api
+        ):
+            pytest.fail("wait failure body entered")
+    assert "lock" in str(raised.value.exceptions[0])
+    assert "close" in str(raised.value.exceptions[1])
+    assert all(SECRET not in repr(error) for error in raised.value.exceptions)
+
+
+@pytest.mark.parametrize("fail_at", ("create", "wait", "release", "close"))
+def test_mutex_api_exceptions_are_fixed_and_secret_free(workspace_tmp_path, fail_at):
+    api = FakeMutexAPI(fail_at=fail_at)
+    with pytest.raises(BaseException) as raised:
+        with setup._windows_local_config_mutex(
+            workspace_tmp_path / ".env.local.json", platform_name="nt", api=api
+        ):
+            pass
+    assert SECRET not in repr(raised.value)
+    assert "private-mutex" not in repr(raised.value)
+    names = [event[0] if isinstance(event, tuple) else event for event in api.events]
+    assert names == {
+        "create": ["create"],
+        "wait": ["create", "wait", "close"],
+        "release": ["create", "wait", "release", "close"],
+        "close": ["create", "wait", "release", "close"],
+    }[fail_at]
+
+
+def test_mutex_name_is_normalized_stable_distinct_and_opaque(workspace_tmp_path):
+    target = workspace_tmp_path / "secret-folder" / ".env.local.json"
+    same = workspace_tmp_path / "secret-folder" / "." / ".env.local.json"
+    same_case_folded = workspace_tmp_path / "SECRET-FOLDER" / ".ENV.LOCAL.JSON"
+    other = workspace_tmp_path / "secret-folder" / "other.json"
+    first = setup._local_config_mutex_name(target)
+    assert first == setup._local_config_mutex_name(same)
+    assert first == setup._local_config_mutex_name(same_case_folded)
+    assert first != setup._local_config_mutex_name(other)
+    assert str(target) not in first
+    assert "secret-folder" not in first
+
+
+def test_mutex_contention_leaves_target_and_temp_unchanged(workspace_tmp_path):
+    target = workspace_tmp_path / ".env.local.json"
+    document = {
+        "MYSQL_HOST": "127.0.0.1",
+        "MYSQL_PORT": 3307,
+        "MYSQL_USER": "root",
+        "MYSQL_PASSWORD": SECRET,
+        "MYSQL_DB": "novel_creator",
+    }
+    target.write_text(json.dumps(document), encoding="utf-8")
+    snapshot = setup.capture_local_document_snapshot(target)
+    api = FakeMutexAPI(wait_result=0x00000102)
+    acl_calls = []
+
+    with pytest.raises(setup.LocalMySQLSetupError, match="locked"):
+        setup.atomic_compare_and_swap_local_document(
+            target,
+            {**document, "MYSQL_DB": "novel_creator_v113"},
+            lambda path: acl_calls.append(path),
+            snapshot,
+            mutex_api=api,
+            platform_name="nt",
+        )
+
+    assert json.loads(target.read_text(encoding="utf-8")) == document
+    assert acl_calls == []
     assert list(workspace_tmp_path.iterdir()) == [target]
 
 
