@@ -165,7 +165,8 @@ def _sanitized_publication_error(error: BaseException, message: str) -> BaseExce
     if isinstance(error, SystemExit):
         return SystemExit(error.code) if type(error.code) is int else SystemExit()
     if (
-        type(error) is LocalMySQLSetupError
+        message == _PUBLICATION_ERROR
+        and type(error) is LocalMySQLSetupError
         and str(error) == "Local MySQL configuration changed"
     ):
         return LocalMySQLSetupError("Local MySQL configuration changed")
@@ -183,7 +184,8 @@ def _raise_publication_failures(
         else _sanitized_publication_error(primary, _PUBLICATION_ERROR)
     )
     clean_cleanup = [
-        LocalMySQLSetupError(_PUBLICATION_CLEANUP_ERROR) for _error in cleanup
+        _sanitized_publication_error(error, _PUBLICATION_CLEANUP_ERROR)
+        for error in cleanup
     ]
     if clean_primary is not None and clean_cleanup:
         cleanup_error: BaseException = (

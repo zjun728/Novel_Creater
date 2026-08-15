@@ -726,13 +726,12 @@ def test_writer_flow_primary_is_sanitized_and_first_when_unlink_fails(
     "cleanup_factory",
     (
         lambda: RuntimeError(f"private-cleanup-{SECRET}"),
-        lambda: asyncio.CancelledError(f"private-cleanup-{SECRET}"),
-        lambda: KeyboardInterrupt(f"private-cleanup-{SECRET}"),
-        lambda: SystemExit(f"private-cleanup-{SECRET}"),
         lambda: setup.LocalMySQLSetupError("Local MySQL configuration changed"),
     ),
 )
-def test_cleanup_only_failure_is_one_fixed_secret_free_error(cleanup_factory):
+def test_ordinary_cleanup_only_failure_is_one_fixed_secret_free_error(
+    cleanup_factory,
+):
     with pytest.raises(setup.LocalMySQLSetupError, match="remove") as raised:
         setup._raise_publication_failures(
             None,
@@ -741,6 +740,119 @@ def test_cleanup_only_failure_is_one_fixed_secret_free_error(cleanup_factory):
     assert raised.value.args == ("Could not remove an unpublished local configuration",)
     assert raised.value.__cause__ is None
     assert raised.value.__context__ is None
+    assert SECRET not in repr(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("cleanup_factory", "expected_type", "expected_args", "expected_code"),
+    (
+        (
+            lambda: asyncio.CancelledError(f"private-cleanup-{SECRET}"),
+            asyncio.CancelledError,
+            (),
+            None,
+        ),
+        (
+            lambda: KeyboardInterrupt(f"private-cleanup-{SECRET}"),
+            KeyboardInterrupt,
+            (),
+            None,
+        ),
+        (lambda: SystemExit(23), SystemExit, (23,), 23),
+        (
+            lambda: SystemExit(f"private-cleanup-{SECRET}"),
+            SystemExit,
+            (),
+            None,
+        ),
+    ),
+)
+def test_cleanup_only_flow_is_sanitized_and_raised_directly(
+    cleanup_factory, expected_type, expected_args, expected_code
+):
+    with pytest.raises(expected_type) as raised:
+        setup._raise_publication_failures(None, [cleanup_factory()])
+
+    assert raised.value.args == expected_args
+    assert getattr(raised.value, "code", None) == expected_code
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert SECRET not in repr(raised.value)
+
+
+@pytest.mark.parametrize("writer_kind", ("compatibility", "cas"))
+@pytest.mark.parametrize(
+    ("cleanup_factory", "expected_type", "expected_args", "expected_code"),
+    (
+        (
+            lambda: asyncio.CancelledError(f"private-cleanup-{SECRET}"),
+            asyncio.CancelledError,
+            (),
+            None,
+        ),
+        (
+            lambda: KeyboardInterrupt(f"private-cleanup-{SECRET}"),
+            KeyboardInterrupt,
+            (),
+            None,
+        ),
+        (lambda: SystemExit(31), SystemExit, (31,), 31),
+        (
+            lambda: SystemExit(f"private-cleanup-{SECRET}"),
+            SystemExit,
+            (),
+            None,
+        ),
+    ),
+)
+def test_writer_keeps_ordinary_primary_first_and_sanitized_cleanup_flow_second(
+    workspace_tmp_path,
+    writer_kind,
+    cleanup_factory,
+    expected_type,
+    expected_args,
+    expected_code,
+):
+    target = workspace_tmp_path / ".env.local.json"
+    target.write_text(json.dumps(_required_document()), encoding="utf-8")
+    snapshot = setup.capture_local_document_snapshot(target)
+
+    def fail_operation(*_args):
+        raise RuntimeError(f"private-operation-{SECRET}")
+
+    def fail_cleanup(_path):
+        raise cleanup_factory()
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        if writer_kind == "compatibility":
+            setup.atomic_write_local_config(
+                target,
+                _required_document("novel_creator_v113"),
+                fail_operation,
+                mutex_api=FakeMutexAPI(),
+                platform_name="nt",
+                remove_temp=fail_cleanup,
+            )
+        else:
+            setup.atomic_compare_and_swap_local_document(
+                target,
+                _required_document("novel_creator_v113"),
+                lambda _path: None,
+                snapshot,
+                before_publish=fail_operation,
+                mutex_api=FakeMutexAPI(),
+                platform_name="nt",
+                remove_temp=fail_cleanup,
+            )
+
+    primary, cleanup = raised.value.exceptions
+    assert isinstance(primary, setup.LocalMySQLSetupError)
+    assert primary.args == ("Could not atomically save the local MySQL configuration",)
+    assert type(cleanup) is expected_type
+    assert cleanup.args == expected_args
+    assert getattr(cleanup, "code", None) == expected_code
+    assert primary.__cause__ is primary.__context__ is None
+    assert cleanup.__cause__ is cleanup.__context__ is None
     assert SECRET not in repr(raised.value)
 
 
