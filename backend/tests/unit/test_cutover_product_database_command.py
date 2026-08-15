@@ -469,6 +469,38 @@ async def test_smoke_time_config_edit_is_not_overwritten_by_rollback(workspace_t
 
 
 @pytest.mark.asyncio
+async def test_successful_smoke_config_edit_prevents_legacy_retained_result(
+    workspace_tmp_path,
+):
+    config = workspace_tmp_path / ".env.local.json"
+    original = mysql_document()
+    config.write_text(json.dumps(original), encoding="utf-8")
+    concurrent = {
+        **original,
+        "MYSQL_DB": NEW_DATABASE,
+        "CORPUS_ROOT": "D:/successful-smoke-editor",
+    }
+
+    async def smoke(_document):
+        config.write_text(json.dumps(concurrent), encoding="utf-8")
+
+    with pytest.raises(command.ProductDatabaseCutoverError, match="configuration"):
+        await command.cutover(
+            receipt=PREPARATION_RECEIPT,
+            config_path=config,
+            confirm_database=NEW_DATABASE,
+            confirm_cutover="CUTOVER-PHASE7B",
+            smoke=smoke,
+            inventory_reader=observe_inventories,
+            observed_backup_sha256="c" * 64,
+            acl_runner=lambda _path: None,
+            idle_guard=no_product_process,
+        )
+
+    assert json.loads(config.read_text(encoding="utf-8")) == concurrent
+
+
+@pytest.mark.asyncio
 async def test_inventory_time_config_edit_is_not_overwritten_by_recovery(workspace_tmp_path):
     config = workspace_tmp_path / ".env.local.json"
     original = mysql_document(NEW_DATABASE)

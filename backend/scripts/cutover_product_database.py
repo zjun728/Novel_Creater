@@ -362,6 +362,12 @@ async def cutover(
             )
         _raise(_sanitized(smoke_error, _SMOKE_ERROR))
 
+    try:
+        if capture_local_document_snapshot(Path(config_path)) != switched_snapshot:
+            raise ValueError
+    except BaseException as error:
+        _raise(_sanitized(error, _CONFIG_ERROR))
+
     receipts = _cutover_receipts(receipt)
     return CutoverResult(ReadinessState.LEGACY_RETAINED.value, receipts)
 

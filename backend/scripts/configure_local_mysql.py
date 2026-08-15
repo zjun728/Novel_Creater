@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from contextlib import contextmanager
 from dataclasses import dataclass
 import getpass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -92,6 +94,68 @@ def _snapshot_is_current(target: Path, expected: LocalDocumentSnapshot) -> bool:
     except LocalMySQLSetupError:
         return False
     return current == expected
+
+
+@contextmanager
+def _windows_local_config_mutex(target: Path):  # type: ignore[no-untyped-def]
+    """Serialize every supported publisher through one target-derived mutex."""
+    if os.name != "nt":
+        raise LocalMySQLSetupError("Windows configuration publication is required")
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel32.CreateMutexW
+    create.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+    create.restype = wintypes.HANDLE
+    wait = kernel32.WaitForSingleObject
+    wait.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    wait.restype = wintypes.DWORD
+    release = kernel32.ReleaseMutex
+    release.argtypes = [wintypes.HANDLE]
+    release.restype = wintypes.BOOL
+    close = kernel32.CloseHandle
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+
+    normalized = os.path.normcase(os.path.normpath(str(Path(target).absolute())))
+    mutex_name = (
+        "Local\\NovelCreator.Phase7B.Config."
+        + hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    )
+    handle = create(None, False, mutex_name)
+    if not handle:
+        raise LocalMySQLSetupError("Could not lock local MySQL configuration")
+    acquired = False
+    primary: BaseException | None = None
+    try:
+        result = wait(handle, 0)
+        if result not in (0x00000000, 0x00000080):
+            raise LocalMySQLSetupError("Local MySQL configuration is locked")
+        acquired = True
+        try:
+            yield
+        except BaseException as error:
+            primary = error
+    finally:
+        cleanup: list[BaseException] = []
+        if acquired and not release(handle):
+            cleanup.append(LocalMySQLSetupError("Could not unlock local MySQL configuration"))
+        if not close(handle):
+            cleanup.append(LocalMySQLSetupError("Could not close local MySQL configuration lock"))
+        if primary is not None and cleanup:
+            raise BaseExceptionGroup(
+                "Local MySQL configuration publication failed",
+                [primary, *cleanup],
+            ) from None
+        if primary is not None:
+            raise primary.with_traceback(primary.__traceback__) from None
+        if cleanup:
+            if len(cleanup) == 1:
+                raise cleanup[0] from None
+            raise ExceptionGroup(
+                "Local MySQL configuration lock cleanup failed", cleanup
+            ) from None
 
 
 async def _verify_server_capabilities(session) -> str:
@@ -182,7 +246,7 @@ def restrict_windows_acl(
         raise LocalMySQLSetupError("Could not restrict local configuration permissions")
 
 
-def atomic_write_local_document(
+def _atomic_write_local_document_locked(
     target: Path,
     document: Mapping[str, object],
     acl_runner: Callable[[Path], None],
@@ -236,11 +300,22 @@ def atomic_write_local_document(
                 ) from exc
 
 
-def atomic_compare_and_swap_local_document(
+def atomic_write_local_document(
+    target: Path,
+    document: Mapping[str, object],
+    acl_runner: Callable[[Path], None],
+) -> None:
+    """Publish under the shared Windows owner-bound configuration mutex."""
+    with _windows_local_config_mutex(Path(target)):
+        _atomic_write_local_document_locked(target, document, acl_runner)
+
+
+def _atomic_compare_and_swap_local_document_locked(
     target: Path,
     document: Mapping[str, object],
     acl_runner: Callable[[Path], None],
     expected_snapshot: LocalDocumentSnapshot,
+    before_publish: Callable[[Path], None] | None,
 ) -> LocalDocumentSnapshot:
     """Publish only while the exact captured target owner and bytes remain current."""
     target = Path(target).absolute()
@@ -272,15 +347,20 @@ def atomic_compare_and_swap_local_document(
             handle.flush()
             os.fsync(handle.fileno())
         published_owner = capture_local_document_snapshot(temporary_path)
+        if before_publish is not None:
+            before_publish(temporary_path)
         if not _snapshot_is_current(target, expected_snapshot):
             raise LocalMySQLSetupError("Local MySQL configuration changed")
         os.replace(temporary_path, target)
         temporary_path = None
-        return LocalDocumentSnapshot(
+        published_snapshot = LocalDocumentSnapshot(
             target,
             published_owner.identity,
             published_owner.content,
         )
+        if capture_local_document_snapshot(target) != published_snapshot:
+            raise LocalMySQLSetupError("Local MySQL configuration changed")
+        return published_snapshot
     except LocalMySQLSetupError:
         raise
     except OSError as exc:
@@ -295,6 +375,25 @@ def atomic_compare_and_swap_local_document(
                 raise LocalMySQLSetupError(
                     "Could not remove an unpublished local configuration"
                 ) from exc
+
+
+def atomic_compare_and_swap_local_document(
+    target: Path,
+    document: Mapping[str, object],
+    acl_runner: Callable[[Path], None],
+    expected_snapshot: LocalDocumentSnapshot,
+    *,
+    before_publish: Callable[[Path], None] | None = None,
+) -> LocalDocumentSnapshot:
+    """Compare and replace while all supported publishers share one mutex."""
+    with _windows_local_config_mutex(Path(target)):
+        return _atomic_compare_and_swap_local_document_locked(
+            target,
+            document,
+            acl_runner,
+            expected_snapshot,
+            before_publish,
+        )
 
 
 def atomic_write_local_config(

@@ -311,6 +311,39 @@ def test_compare_and_swap_writer_rejects_changed_snapshot_without_overwrite(
     assert json.loads(target.read_text(encoding="utf-8")) == concurrent
 
 
+def test_compare_and_swap_final_publish_boundary_preserves_concurrent_replacement(
+    workspace_tmp_path,
+):
+    target = workspace_tmp_path / ".env.local.json"
+    original = {
+        "MYSQL_HOST": "127.0.0.1",
+        "MYSQL_PORT": 3307,
+        "MYSQL_USER": "root",
+        "MYSQL_PASSWORD": SECRET,
+        "MYSQL_DB": "novel_creator",
+    }
+    target.write_text(json.dumps(original), encoding="utf-8")
+    snapshot = setup.capture_local_document_snapshot(target)
+    concurrent = {**original, "CORPUS_ROOT": "D:/final-boundary-editor"}
+
+    def replace_at_final_boundary(_temporary_path):
+        replacement = workspace_tmp_path / "editor-replacement.json"
+        replacement.write_text(json.dumps(concurrent), encoding="utf-8")
+        replacement.replace(target)
+
+    with pytest.raises(setup.LocalMySQLSetupError, match="changed"):
+        setup.atomic_compare_and_swap_local_document(
+            target,
+            {**original, "MYSQL_DB": "novel_creator_v113"},
+            lambda _path: None,
+            snapshot,
+            before_publish=replace_at_final_boundary,
+        )
+
+    assert json.loads(target.read_text(encoding="utf-8")) == concurrent
+    assert list(workspace_tmp_path.iterdir()) == [target]
+
+
 def test_atomic_writer_acl_failure_keeps_old_target_and_removes_temp(workspace_tmp_path):
     target = workspace_tmp_path / ".env.local.json"
     target.write_text("old-config", encoding="utf-8")
