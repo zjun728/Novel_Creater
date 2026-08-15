@@ -27,8 +27,16 @@ test('Phase 7B registers one exact formal read-only browser target', async () =>
     'frontend/e2e/run-phase7b.mjs',
   ]) assert.equal(existsSync(path.join(root, relative)), true, relative)
 
+  const runner = await import('../../frontend/e2e/run-phase7b.mjs')
+  assert.deepEqual(runner.FORMAL_SPECS, ['phase7b-product-database-readiness.spec.mjs'])
+  assert.equal(runner.FORMAL_CONFIG, 'playwright.phase7b.config.mjs')
+})
+
+test('Phase 7B formal target routes through the configured Python owner only', () => {
   const calls = []
+  const configuredPython = path.join(root, '.venv', 'Scripts', 'python.exe')
   const environment = {
+    PYTHON: configuredPython,
     MYSQL_DB: 'novel_creator_v113',
     MARKET_SCHEDULER_ENABLED: 'false',
     PHASE7B_BROWSER_TASK_ROOT: path.join(root, '.contract-owned-root'),
@@ -43,12 +51,15 @@ test('Phase 7B registers one exact formal read-only browser target', async () =>
     },
     pytestTempLifecycle: { prepare() {}, cleanupStage() {}, cleanupAll() {} },
   }), 0)
-  assert.deepEqual(calls.map(call => call.args), [['frontend/e2e/run-phase7b.mjs']])
+  assert.deepEqual(calls.map(call => [call.command, call.args]), [[
+    configuredPython,
+    ['-m', 'backend.scripts.run_phase7b_browser'],
+  ]])
+  assert.equal(calls.some(call => (
+    call.command === process.execPath
+    || call.args.includes('frontend/e2e/run-phase7b.mjs')
+  )), false)
   assert.equal(calls[0].options.shell, false)
-
-  const runner = await import('../../frontend/e2e/run-phase7b.mjs')
-  assert.deepEqual(runner.FORMAL_SPECS, ['phase7b-product-database-readiness.spec.mjs'])
-  assert.equal(runner.FORMAL_CONFIG, 'playwright.phase7b.config.mjs')
 })
 
 test('Phase 7B spec proves only the exact approved read-only product state', () => {

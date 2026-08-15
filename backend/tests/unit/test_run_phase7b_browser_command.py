@@ -212,6 +212,25 @@ def test_wrapper_emits_one_canonical_public_marker_only_after_success(
     assert captured.err == ""
 
 
+def test_wrapper_owner_launches_node_runner_directly_without_routing_recursion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def run_owned(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return dict(preparation._BROWSER_SMOKE_EXPECTED)
+
+    monkeypatch.setattr(command, "run_owned_phase7b_browser", run_owned)
+
+    assert command._run() == preparation._BROWSER_SMOKE_EXPECTED
+    assert captured["node_command"] == (
+        "node",
+        "frontend/e2e/run-phase7b.mjs",
+    )
+    assert "scripts/run-tests.mjs" not in captured["node_command"]
+
+
 def test_wrapper_rejects_every_argument_without_starting_owner(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -232,7 +232,7 @@ function createSuites(rootDirectory, environment) {
   const browserPhase6A = [[node, ['frontend/e2e/run-phase6a.mjs']]]
   const browserPhase6B = [[node, ['frontend/e2e/run-phase6b.mjs']]]
   const browserPhase6C = [[node, ['frontend/e2e/run-phase6c.mjs']]]
-  const browserPhase7B = [[node, ['frontend/e2e/run-phase7b.mjs']]]
+  const browserPhase7B = [[python, ['-m', 'backend.scripts.run_phase7b_browser']]]
   const browserPhase3 = [[node, ['frontend/e2e/run-phase3.mjs']]]
   const browserPhase2 = [[node, ['frontend/e2e/run-phase2.mjs']]]
 
