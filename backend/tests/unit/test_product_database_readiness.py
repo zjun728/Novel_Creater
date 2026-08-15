@@ -113,7 +113,7 @@ class AtomicBoundary:
                 await self._cleanup()
             except BaseException as cleanup:
                 self.world.target_lock.release()
-                raise BaseExceptionGroup("new database boundary failed", [primary, cleanup])
+                raise readiness_module.NewDatabaseBoundaryEnterFailure(primary, cleanup)
             self.world.target_lock.release()
             raise primary
         return NewDatabaseBoundaryState("created", INITIALIZED, None)
@@ -138,7 +138,7 @@ class AtomicBoundary:
                 try:
                     await self._cleanup()
                 except BaseException as cleanup:
-                    outgoing = BaseExceptionGroup("new database boundary failed", [exc, cleanup])
+                    outgoing = cleanup
             if outgoing is None and self.world.exit_failure is not None:
                 outgoing = self.world.exit_failure
         finally:
@@ -152,7 +152,9 @@ class AtomicBoundary:
                 else:
                     outgoing = release
         if outgoing is not None:
-            raise outgoing
+            raise readiness_module.NewDatabaseBoundaryExitFailure(outgoing)
+        if self.world.malicious_exit_failure is not None:
+            raise self.world.malicious_exit_failure
         return self.world.suppress_body
 
     async def _cleanup(self) -> None:
@@ -179,13 +181,15 @@ class World:
         self.restore_primary: BaseException | None = None; self.restore_cleanup_failure: BaseException | None = None
         self.enter_failure: BaseException | None = None; self.boundary_cleanup_failure: BaseException | None = None; self.misreport_created = False
         self.commit_failure: BaseException | None = None; self.exit_failure: BaseException | None = None; self.release_failure: BaseException | None = None
+        self.malicious_exit_failure: BaseException | None = None
         self.smoke_failure: BaseException | None = None
         self.suppress_body = False
+        self.target_structural_fingerprint = "2" * 64
         self.smoke_result: object = SmokeResult(0, 0)
 
     def snapshot(self, database: str) -> DatabaseInventory:
         rows = tuple(sorted(self.tables[database].items())); product = database == NEW_DATABASE
-        return DatabaseInventory(database, "8.4.3", EXPECTED_SCHEMA_VERSION if product else "writer-core-v1.12.0", SCHEMA_HASH if product else "3" * 64, "2" * 64 if product else "1" * 64, tuple(name for name, _ in rows), rows, sum(count > 0 for _, count in rows), sum(count for _, count in rows))
+        return DatabaseInventory(database, "8.4.3", EXPECTED_SCHEMA_VERSION, SCHEMA_HASH, self.target_structural_fingerprint if product else "2" * 64, tuple(name for name, _ in rows), rows, sum(count > 0 for _, count in rows), sum(count for _, count in rows))
 
     def storage(self, database: str) -> tuple[TableStorage, ...]:
         return tuple(TableStorage(name, "InnoDB", "utf8mb4_0900_ai_ci") for name in sorted(self.tables[database]))
@@ -302,6 +306,18 @@ async def test_preexisting_ready_boundary_is_zero_write_resume(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("target", ("absent", "ready"))
+async def test_target_structural_drift_rejects_with_unchanged_counts_and_storage(tmp_path: Path, target: str) -> None:
+    world = World(target=target); world.target_structural_fingerprint = "9" * 64
+    with pytest.raises(ProductDatabaseReadinessError, match="^new database readiness audit failed$"): await world.run(tmp_path)
+    assert "smoke" not in world.calls
+    if target == "absent":
+        assert NEW_DATABASE not in world.tables and world.deleted.count(NEW_DATABASE) == 1
+    else:
+        assert NEW_DATABASE in world.tables and "boundary-cleanup" not in world.calls
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("target", ("empty", "partial"))
 async def test_preexisting_partial_rejects_without_boundary_cleanup(tmp_path: Path, target: str) -> None:
     world = World(target=target); original = dict(world.tables[NEW_DATABASE])
@@ -346,6 +362,17 @@ async def test_enter_ordinary_error_is_fixed_and_safe(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_generic_enter_group_does_not_infer_cleanup_from_leaf_order(tmp_path: Path) -> None:
+    world = World(); world.enter_failure = BaseExceptionGroup(
+        "malicious order",
+        [RuntimeError("password=secret-first"), RuntimeError("password=secret-second")],
+    )
+    with pytest.raises(BaseExceptionGroup) as raised: await world.run(tmp_path)
+    assert [str(leaf) for leaf in _flatten(raised.value)] == ["new database initialization failed", "new database initialization failed"]
+    _assert_safe(raised.value)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("stage", "message"), (("seed-assets", "official asset seed failed"), ("seed-market", "official market source seed failed"), ("new", "new database inventory failed"), ("storage", "new database readiness audit failed"), ("official-audit", "new database readiness audit failed"), ("smoke", "readiness smoke failed")))
 async def test_created_body_failure_is_cleaned_only_by_boundary(tmp_path: Path, stage: str, message: str) -> None:
     world = World(); world.fail_stage = stage
@@ -359,6 +386,34 @@ async def test_body_primary_precedes_boundary_cleanup_failure(tmp_path: Path) ->
     world = World(); world.fail_stage = "smoke"; world.boundary_cleanup_failure = ProductDatabaseReadinessError("product database cleanup failed")
     with pytest.raises(BaseExceptionGroup) as raised: await world.run(tmp_path)
     assert [str(leaf) for leaf in _flatten(raised.value)] == ["readiness smoke failed", "product database cleanup failed"]
+
+
+@pytest.mark.asyncio
+async def test_exit_envelope_nested_cleanup_keeps_body_once_and_cleanup_order(tmp_path: Path) -> None:
+    world = World(); world.fail_stage = "smoke"
+    world.boundary_cleanup_failure = BaseExceptionGroup(
+        "nested cleanup",
+        [RuntimeError("secret-one"), BaseExceptionGroup("nested", [SystemExit(37), RuntimeError("secret-two")])],
+    )
+    with pytest.raises(BaseExceptionGroup) as raised: await world.run(tmp_path)
+    leaves = _flatten(raised.value)
+    assert [str(leaf) for leaf in leaves] == ["readiness smoke failed", "product database cleanup failed", "37", "product database cleanup failed"]
+    assert sum(str(leaf) == "readiness smoke failed" for leaf in leaves) == 1
+    _assert_safe(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_generic_malicious_exit_group_cannot_reclassify_cloned_body(tmp_path: Path) -> None:
+    world = World(); world.fail_stage = "smoke"
+    world.malicious_exit_failure = BaseExceptionGroup(
+        "malicious",
+        [ProductDatabaseReadinessError("readiness smoke failed"), RuntimeError("password=secret")],
+    )
+    with pytest.raises(BaseExceptionGroup) as raised: await world.run(tmp_path)
+    leaves = _flatten(raised.value)
+    assert [str(leaf) for leaf in leaves] == ["readiness smoke failed", "product database cleanup failed", "product database cleanup failed"]
+    assert sum(str(leaf) == "readiness smoke failed" for leaf in leaves) == 1
+    _assert_safe(raised.value)
 
 
 @pytest.mark.asyncio
@@ -489,6 +544,14 @@ def test_boundary_state_has_no_cleanup_authority_and_validates_mode_shape() -> N
     assert not hasattr(readiness_module, "NewDatabaseInitialization") and not hasattr(readiness_module, "PreexistingNewDatabase")
 
 
+def test_boundary_failure_envelopes_separate_enter_primary_from_lifecycle_cleanup() -> None:
+    primary = RuntimeError("primary"); cleanup = RuntimeError("cleanup")
+    enter = readiness_module.NewDatabaseBoundaryEnterFailure(primary, cleanup)
+    exit_failure = readiness_module.NewDatabaseBoundaryExitFailure(cleanup)
+    assert enter.primary is primary and enter.cleanup is cleanup
+    assert exit_failure.cleanup is cleanup and not hasattr(exit_failure, "primary")
+
+
 def test_restore_storage_and_official_types_are_strict() -> None:
     world = World(target="ready"); target = world.snapshot(NEW_DATABASE); restored = replace(world.snapshot(LEGACY_DATABASE), database=RESTORE_DATABASE); audit = OfficialDataAudit(**_official_row())  # type: ignore[arg-type]
     class Text(str): pass
@@ -496,8 +559,18 @@ def test_restore_storage_and_official_types_are_strict() -> None:
     original = world.storage(NEW_DATABASE)[0]
     for field in ("name", "engine", "collation"):
         rows = list(world.storage(NEW_DATABASE)); rows[0] = replace(original, **{field: Text(getattr(original, field))})
-        with pytest.raises(ProductDatabaseReadinessError): assert_new_database_ready(target, INITIALIZED, audit, tuple(rows))
+        with pytest.raises(ProductDatabaseReadinessError): assert_new_database_ready(target, INITIALIZED, audit, tuple(rows), "2" * 64)
     with pytest.raises(ProductDatabaseReadinessError): replace(audit, style_count=True)
+
+
+def test_ready_audit_requires_exact_authoritative_structural_fingerprint() -> None:
+    world = World(target="ready"); target = world.snapshot(NEW_DATABASE); audit = OfficialDataAudit(**_official_row())  # type: ignore[arg-type]
+    class Hash(str): pass
+    with pytest.raises(ProductDatabaseReadinessError, match="^new database readiness audit failed$"):
+        assert_new_database_ready(replace(target, structural_fingerprint="9" * 64), INITIALIZED, audit, world.storage(NEW_DATABASE), "2" * 64)
+    for invalid in (True, Hash("2" * 64), "A" * 64, "f" * 63, " " * 64):
+        with pytest.raises(ProductDatabaseReadinessError, match="^new database readiness audit failed$"):
+            assert_new_database_ready(target, INITIALIZED, audit, world.storage(NEW_DATABASE), invalid)  # type: ignore[arg-type]
 
 
 def test_request_frozen_and_module_has_no_real_resource_imports(tmp_path: Path) -> None:

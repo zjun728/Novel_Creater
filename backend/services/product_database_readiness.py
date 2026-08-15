@@ -130,6 +130,33 @@ class NewDatabaseBoundaryState:
             raise ProductDatabaseReadinessError(_INITIALIZE_ERROR)
 
 
+class NewDatabaseBoundaryEnterFailure(BaseException):
+    """Boundary-owned enter failure with an explicit cleanup failure."""
+
+    def __init__(self, primary: BaseException, cleanup: BaseException) -> None:
+        if not isinstance(primary, BaseException) or not isinstance(
+            cleanup, BaseException
+        ):
+            raise TypeError
+        super().__init__()
+        self.primary = primary
+        self.cleanup = cleanup
+
+
+class NewDatabaseBoundaryExitFailure(BaseException):
+    """Boundary-owned cleanup, commit, or lock-release failure."""
+
+    def __init__(self, cleanup: BaseException) -> None:
+        if not isinstance(cleanup, BaseException):
+            raise TypeError
+        super().__init__()
+        self.cleanup = cleanup
+
+
+class _BoundaryBodyFailure(BaseException):
+    """Private marker separating body propagation from boundary failures."""
+
+
 @dataclass(frozen=True)
 class OfficialDataAudit:
     """Read-only database observations for all approved official data."""
@@ -274,16 +301,6 @@ def _raise_normalized(error: BaseException, message: str) -> None:
     _raise_public(_normalized(error, message))
 
 
-def _error_leaves(error: BaseException) -> list[BaseException]:
-    if isinstance(error, BaseExceptionGroup):
-        return [
-            leaf
-            for child in error.exceptions
-            for leaf in _error_leaves(child)
-        ]
-    return [error]
-
-
 def _safe_body_primary(error: BaseException) -> BaseException:
     if isinstance(error, BaseExceptionGroup):
         return BaseExceptionGroup(
@@ -300,40 +317,24 @@ def _safe_body_primary(error: BaseException) -> BaseException:
     return _fixed(_GROUP_ERROR)
 
 
-def _without_primary(
-    error: BaseException, primary: BaseException
-) -> BaseException | None:
-    if error is primary:
-        return None
-    if isinstance(error, BaseExceptionGroup):
-        remaining = [
-            child_without
-            for child in error.exceptions
-            if (child_without := _without_primary(child, primary)) is not None
-        ]
-        if not remaining:
-            return None
-        return BaseExceptionGroup(_GROUP_ERROR, remaining)
-    return error
-
-
 def _raise_enter_failure(error: BaseException) -> None:
-    leaves = _error_leaves(error)
-    primary = _normalized(leaves[0], _INITIALIZE_ERROR)
-    if len(leaves) == 1:
-        _raise_public(primary)
-    cleanup = [_normalized(leaf, _CLEANUP_ERROR) for leaf in leaves[1:]]
-    _raise_public(BaseExceptionGroup(_GROUP_ERROR, [primary, *cleanup]))
+    if type(error) is not NewDatabaseBoundaryEnterFailure:
+        _raise_normalized(error, _INITIALIZE_ERROR)
+    primary = _normalized(error.primary, _INITIALIZE_ERROR)
+    cleanup = _normalized(error.cleanup, _CLEANUP_ERROR)
+    _raise_public(BaseExceptionGroup(_GROUP_ERROR, [primary, cleanup]))
 
 
 def _raise_exit_failure(
     primary: BaseException, lifecycle: BaseException
 ) -> None:
     safe_primary = _safe_body_primary(primary)
-    remainder = _without_primary(lifecycle, primary)
-    if remainder is None:
-        _raise_public(safe_primary)
-    safe_cleanup = _normalized(remainder, _CLEANUP_ERROR)
+    cleanup = (
+        lifecycle.cleanup
+        if type(lifecycle) is NewDatabaseBoundaryExitFailure
+        else lifecycle
+    )
+    safe_cleanup = _normalized(cleanup, _CLEANUP_ERROR)
     _raise_public(
         BaseExceptionGroup(_GROUP_ERROR, [safe_primary, safe_cleanup])
     )
@@ -350,12 +351,19 @@ async def _normalized_database_boundary(boundary: object):
                 yield value
             except BaseException as error:
                 body_primary = error
-                raise
+                raise _BoundaryBodyFailure() from None
     except BaseException as error:
         if not entered:
             _raise_enter_failure(error)
         if body_primary is None:
-            _raise_normalized(error, _CLEANUP_ERROR)
+            cleanup = (
+                error.cleanup
+                if type(error) is NewDatabaseBoundaryExitFailure
+                else error
+            )
+            _raise_normalized(cleanup, _CLEANUP_ERROR)
+        if type(error) is _BoundaryBodyFailure:
+            _raise_public(_safe_body_primary(body_primary))
         _raise_exit_failure(body_primary, error)
     else:
         if body_primary is not None:
@@ -581,6 +589,7 @@ def _validate_target_state(
     target: object,
     initialized: object,
     storage: object,
+    expected_structural_fingerprint: object,
     *,
     expected_counts: tuple[tuple[str, int], ...] | None = None,
 ) -> DatabaseInventory:
@@ -592,7 +601,14 @@ def _validate_target_state(
     initialization = _initialization_payload(initialized)
     validated_storage = _validate_storage(storage)
     if (
-        target.schema_version != EXPECTED_SCHEMA_VERSION
+        type(expected_structural_fingerprint) is not str
+        or len(expected_structural_fingerprint) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in expected_structural_fingerprint
+        )
+        or target.structural_fingerprint != expected_structural_fingerprint
+        or target.schema_version != EXPECTED_SCHEMA_VERSION
         or target.manifest_hash != manifest_hash()
         or target.table_names != expected_tables
         or target.row_counts != counts
@@ -647,11 +663,17 @@ def assert_new_database_ready(
     initialized: object,
     official_data: object,
     storage: tuple[TableStorage, ...],
+    expected_structural_fingerprint: str,
 ) -> None:
     """Fail closed unless the target is exactly the approved product state."""
 
     try:
-        _validate_target_state(target, initialized, storage)
+        _validate_target_state(
+            target,
+            initialized,
+            storage,
+            expected_structural_fingerprint,
+        )
         _validated_official_data(official_data)
     except BaseException as error:
         _raise_normalized(error, _AUDIT_ERROR)
@@ -703,9 +725,14 @@ async def prepare_product_database(
     backed by the MySQL exclusive lock. Its ``__aenter__`` atomically returns
     ``created`` or a preexisting inventory, cleans any create/enter failure,
     and its ``__aexit__`` retains a created target only after a successful
-    body. It must never clean a preexisting target and must emit only fixed,
-    secret-safe initialization/cleanup errors. No deletion authority crosses
-    this service boundary.
+    body. Enter cleanup failures must use ``NewDatabaseBoundaryEnterFailure``;
+    exit cleanup, commit, and lock-release failures must use
+    ``NewDatabaseBoundaryExitFailure``. The boundary must never return or wrap
+    the body primary in its exit envelope: it reports only its own lifecycle
+    failures. The service presents body failures as a private marker, so the
+    boundary must treat every non-``None`` body exception as a rollback signal
+    without inspecting or returning it. It must never clean a preexisting
+    target. No deletion authority crosses this service boundary.
     """
 
     try:
@@ -817,7 +844,12 @@ async def prepare_product_database(
                 )
                 try:
                     initialized = _resume_initialization(target)  # type: ignore[arg-type]
-                    _validate_target_state(target, initialized, storage)
+                    _validate_target_state(
+                        target,
+                        initialized,
+                        storage,
+                        before.structural_fingerprint,
+                    )
                     initialization_payload = _initialization_payload(initialized)
                 except BaseException as error:
                     _raise_normalized(error, _AUDIT_ERROR)
@@ -834,7 +866,12 @@ async def prepare_product_database(
                 _AUDIT_ERROR, audit_official_data, request.new_database
             )
             try:
-                _validate_target_state(target, initialized, storage)
+                _validate_target_state(
+                    target,
+                    initialized,
+                    storage,
+                    before.structural_fingerprint,
+                )
                 official_payload = _validated_official_data(official_value)
             except BaseException as error:
                 _raise_normalized(error, _AUDIT_ERROR)
