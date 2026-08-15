@@ -89,29 +89,22 @@ class PreparationRequest:
 
 @dataclass(frozen=True)
 class NewDatabaseInitialization:
-    """Initialization evidence plus explicit current-run cleanup ownership."""
+    """Current-run initialization evidence and its cleanup capability."""
 
     result: object
-    created_by_current_run: bool
-    existing_inventory: DatabaseInventory | None = None
-    existing_storage: tuple[TableStorage, ...] | None = None
+    cleanup: Callable[[], object]
 
     def __post_init__(self) -> None:
-        created = self.created_by_current_run
-        existing = self.existing_inventory
-        storage = self.existing_storage
-        if (
-            type(created) is not bool
-            or created
-            and (existing is not None or storage is not None)
-            or not created
-            and (
-                type(existing) is not DatabaseInventory
-                or type(storage) is not tuple
-                or any(type(row) is not TableStorage for row in storage)
-            )
-        ):
+        if not callable(self.cleanup):
             raise ProductDatabaseReadinessError(_INITIALIZE_ERROR)
+
+
+@dataclass(frozen=True)
+class PreexistingNewDatabase:
+    """Read-only evidence returned by the trusted initialization boundary."""
+
+    inventory: DatabaseInventory
+    storage: tuple[TableStorage, ...]
 
 
 @dataclass(frozen=True)
@@ -128,14 +121,21 @@ class RestoreDrillResult:
                 type(self.inventory) is not DatabaseInventory
                 or type(self.created_databases) is not tuple
                 or type(self.cleaned_databases) is not tuple
+                or any(
+                    type(name) is not str or not name.strip()
+                    for name in self.created_databases + self.cleaned_databases
+                )
                 or len(self.created_databases) != 1
-                or self.created_databases != self.cleaned_databases
+                or len(set(self.created_databases)) != len(self.created_databases)
+                or len(set(self.cleaned_databases)) != len(self.cleaned_databases)
             ):
                 raise ValueError
-            restore_database = validate_restore_database(
-                self.created_databases[0]
-            )
-            if self.inventory.database != restore_database:
+            restore_database = validate_restore_database(self.inventory.database)
+            expected_ledger = (restore_database,)
+            if (
+                self.created_databases != expected_ledger
+                or self.cleaned_databases != expected_ledger
+            ):
                 raise ValueError
         except BaseException as error:
             _raise_normalized(error, _RESTORE_ERROR)
@@ -329,6 +329,31 @@ def _validated_seed_payload(assets: object, market: object) -> dict[str, object]
     return seed
 
 
+def _expected_seed_payload(*, inserted: bool) -> dict[str, object]:
+    asset_package = load_asset_package(ASSET_MANIFEST_PATH, mode="release")
+    market_package = load_market_source_package(MARKET_MANIFEST_PATH)
+    asset_total = len(asset_package.styles) + len(asset_package.experience_cards)
+    market_total = len(market_package.sources)
+    return {
+        "assets": {
+            "packageVersion": asset_package.package_version,
+            "packageHash": canonical_hash(asset_package.manifest),
+            "styleCount": len(asset_package.styles),
+            "cardCount": len(asset_package.experience_cards),
+            "inserted": asset_total if inserted else 0,
+            "replayed": 0 if inserted else asset_total,
+            "advanced": 0,
+        },
+        "market": {
+            "packageVersion": market_package.package_version,
+            "packageHash": canonical_hash(market_package.manifest),
+            "sourceCount": market_total,
+            "inserted": market_total if inserted else 0,
+            "replayed": 0 if inserted else market_total,
+        },
+    }
+
+
 def _validate_seed_mode(
     seed: dict[str, object], insertion_expected: bool
 ) -> None:
@@ -384,6 +409,7 @@ def _validate_target_state(
     expected_tables = tuple(sorted(created_table_names()))
     counts = expected_counts or _expected_row_counts()
     initialization = _initialization_payload(initialized)
+    validated_storage = _validate_storage(storage)
     if (
         target.schema_version != EXPECTED_SCHEMA_VERSION
         or target.manifest_hash != manifest_hash()
@@ -394,18 +420,44 @@ def _validate_target_state(
         )
         or target.total_row_count != sum(count for _, count in counts)
         or initialization["databaseName"] != target.database
-        or type(storage) is not tuple
-        or tuple(row.name for row in storage) != expected_tables
+        or tuple(row.name for row in validated_storage) != expected_tables
     ):
         raise ValueError
-    assert_storage_policy(storage)
+    assert_storage_policy(validated_storage)
     return target
 
 
-def _initialized_empty_counts() -> tuple[tuple[str, int], ...]:
-    return tuple(
-        (name, 1 if name == "schema_metadata" else 0)
-        for name in sorted(created_table_names())
+def _validate_storage(storage: object) -> tuple[TableStorage, ...]:
+    if type(storage) is not tuple:
+        raise ValueError
+    for row in storage:
+        if (
+            type(row) is not TableStorage
+            or type(row.name) is not str
+            or not row.name.strip()
+            or type(row.engine) is not str
+            or not row.engine.strip()
+            or type(row.collation) is not str
+            or not row.collation.strip()
+        ):
+            raise ValueError
+    return storage
+
+
+@dataclass(frozen=True)
+class _ResumeInitialization:
+    database_name: str
+    schema_version: str | None
+    manifest_hash: str | None
+    table_count: int
+
+
+def _resume_initialization(inventory: DatabaseInventory) -> _ResumeInitialization:
+    return _ResumeInitialization(
+        database_name=inventory.database,
+        schema_version=inventory.schema_version,
+        manifest_hash=inventory.manifest_hash,
+        table_count=len(inventory.table_names),
     )
 
 
@@ -472,7 +524,6 @@ async def prepare_product_database(
     seed_market: Callable[[str], object],
     read_storage: Callable[[str], object],
     smoke: Callable[[str], object],
-    cleanup_new: Callable[[str], object] | None = None,
 ) -> PreparationReceipt:
     """Prepare the new product database and stop at the cutover approval gate."""
 
@@ -484,7 +535,7 @@ async def prepare_product_database(
     except BaseException as error:
         _raise_normalized(error, _REQUEST_ERROR)
 
-    owned_new = False
+    initialization_lease: NewDatabaseInitialization | None = None
     resume_ready = False
     primary: BaseException | None = None
     result: PreparationReceipt | None = None
@@ -519,19 +570,20 @@ async def prepare_product_database(
                 raise ValueError
             restore = restore_value.inventory
             assert_inventory_equal(before, restore)
+            restore_evidence = canonical_hash(
+                {
+                    "restoreInventoryHash": inventory_hash(restore),
+                    "createdDatabases": restore_value.created_databases,
+                    "cleanedDatabases": restore_value.cleaned_databases,
+                }
+            )
         except BaseException as error:
             _raise_normalized(error, _RESTORE_ERROR)
         receipts.append(
             advance_receipt(
                 receipts[-1],
                 ReadinessState.RESTORE_DRILL_VERIFIED,
-                canonical_hash(
-                    {
-                        "restoreInventoryHash": inventory_hash(restore),
-                        "createdDatabases": restore_value.created_databases,
-                        "cleanedDatabases": restore_value.cleaned_databases,
-                    }
-                ),
+                restore_evidence,
             )
         )
 
@@ -546,39 +598,25 @@ async def prepare_product_database(
         initialization_value = await _stage(
             _INITIALIZE_ERROR, initialize_new, request.new_database
         )
-        if type(initialization_value) is not NewDatabaseInitialization:
-            raise _fixed(_INITIALIZE_ERROR)
-        initialized = initialization_value.result
-        owned_new = initialization_value.created_by_current_run
-        try:
-            initialization_payload = _initialization_payload(initialized)
-        except BaseException as error:
-            _raise_normalized(error, _INITIALIZE_ERROR)
-        if not owned_new:
+        if type(initialization_value) is NewDatabaseInitialization:
+            initialization_lease = initialization_value
+            initialized = initialization_lease.result
             try:
-                _validate_target_state(
-                    initialization_value.existing_inventory,
-                    initialized,
-                    initialization_value.existing_storage,
-                )
-                resume_ready = True
-            except (
-                BaseExceptionGroup,
-                asyncio.CancelledError,
-                KeyboardInterrupt,
-                SystemExit,
-            ) as error:
+                initialization_payload = _initialization_payload(initialized)
+            except BaseException as error:
+                _raise_normalized(error, _INITIALIZE_ERROR)
+        elif type(initialization_value) is PreexistingNewDatabase:
+            resume_ready = True
+            target = initialization_value.inventory
+            storage = initialization_value.storage
+            try:
+                initialized = _resume_initialization(target)
+                _validate_target_state(target, initialized, storage)
+                initialization_payload = _initialization_payload(initialized)
+            except BaseException as error:
                 _raise_normalized(error, _AUDIT_ERROR)
-            except Exception:
-                try:
-                    _validate_target_state(
-                        initialization_value.existing_inventory,
-                        initialized,
-                        initialization_value.existing_storage,
-                        expected_counts=_initialized_empty_counts(),
-                    )
-                except BaseException as error:
-                    _raise_normalized(error, _AUDIT_ERROR)
+        else:
+            raise _fixed(_INITIALIZE_ERROR)
         receipts.append(
             advance_receipt(
                 receipts[-1],
@@ -587,15 +625,21 @@ async def prepare_product_database(
             )
         )
 
-        assets = await _stage(_ASSET_SEED_ERROR, seed_assets, request.new_database)
-        market = await _stage(
-            _MARKET_SEED_ERROR, seed_market, request.new_database
-        )
-        try:
-            seed_payload = _validated_seed_payload(assets, market)
-            _validate_seed_mode(seed_payload, owned_new or not resume_ready)
-        except BaseException as error:
-            _raise_normalized(error, _AUDIT_ERROR)
+        if resume_ready:
+            try:
+                seed_payload = _expected_seed_payload(inserted=False)
+            except BaseException as error:
+                _raise_normalized(error, _AUDIT_ERROR)
+        else:
+            assets = await _stage(_ASSET_SEED_ERROR, seed_assets, request.new_database)
+            market = await _stage(
+                _MARKET_SEED_ERROR, seed_market, request.new_database
+            )
+            try:
+                seed_payload = _validated_seed_payload(assets, market)
+                _validate_seed_mode(seed_payload, True)
+            except BaseException as error:
+                _raise_normalized(error, _AUDIT_ERROR)
         receipts.append(
             advance_receipt(
                 receipts[-1],
@@ -604,16 +648,10 @@ async def prepare_product_database(
             )
         )
 
-        target = await _stage(_TARGET_INVENTORY_ERROR, inventory, "new")
-        storage = await _stage(_AUDIT_ERROR, read_storage, request.new_database)
-        assert_new_database_ready(target, initialized, assets, market, storage)  # type: ignore[arg-type]
-        if resume_ready:
-            try:
-                assert_inventory_equal(
-                    initialization_value.existing_inventory, target  # type: ignore[arg-type]
-                )
-            except BaseException as error:
-                _raise_normalized(error, _AUDIT_ERROR)
+        if not resume_ready:
+            target = await _stage(_TARGET_INVENTORY_ERROR, inventory, "new")
+            storage = await _stage(_AUDIT_ERROR, read_storage, request.new_database)
+            assert_new_database_ready(target, initialized, assets, market, storage)  # type: ignore[arg-type]
 
         smoke_value = await _stage(_SMOKE_ERROR, smoke, request.new_database)
         smoke_result = _validate_smoke(smoke_value)
@@ -650,15 +688,11 @@ async def prepare_product_database(
 
     if primary is not None:
         cleanup_error: BaseException | None = None
-        if owned_new:
-            if cleanup_new is None:
-                cleanup_error = _fixed(_CLEANUP_ERROR)
-            else:
-                try:
-                    cleanup_target = validate_database_role("new", request.new_database)
-                    await _invoke(cleanup_new, cleanup_target)
-                except BaseException as error:
-                    cleanup_error = error
+        if initialization_lease is not None:
+            try:
+                await _invoke(initialization_lease.cleanup)
+            except BaseException as error:
+                cleanup_error = error
         _finish_failure(primary, cleanup_error)
     assert result is not None
     return result
