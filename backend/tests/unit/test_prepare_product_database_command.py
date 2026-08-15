@@ -884,7 +884,11 @@ async def test_boundary_all_stage_flow_matrix_closes_owned_resources(
 def _proof_inventory(database: str) -> DatabaseInventory:
     tables = tuple(sorted(created_table_names()))
     counts = tuple(
-        (name, 1 if name == "schema_metadata" else 0) for name in tables
+        (
+            name,
+            1 if name in {"schema_metadata", "application_settings"} else 0,
+        )
+        for name in tables
     )
     return DatabaseInventory(
         database=database,
@@ -894,8 +898,8 @@ def _proof_inventory(database: str) -> DatabaseInventory:
         structural_fingerprint="2" * 64,
         table_names=tables,
         row_counts=counts,
-        nonempty_table_count=1,
-        total_row_count=1,
+        nonempty_table_count=sum(count > 0 for _, count in counts),
+        total_row_count=sum(count for _, count in counts),
     )
 
 
@@ -935,6 +939,9 @@ async def test_current_schema_proof_uses_unique_disposable_database_and_closes_l
 
     assert proof.inventory is inventory
     assert proof.storage is storage
+    assert dict(proof.inventory.row_counts)["application_settings"] == 1
+    assert proof.inventory.nonempty_table_count == 2
+    assert proof.inventory.total_row_count == 2
     assert proof.created_databases == (proof_name,)
     assert proof.cleaned_databases == (proof_name,)
     assert all(NEW_DATABASE not in repr(call) for call in calls)
@@ -1970,6 +1977,7 @@ def _ready_inventory(database: str) -> DatabaseInventory:
     counts.update(
         {
             "schema_metadata": 1,
+            "application_settings": 1,
             "style_templates": 10,
             "style_template_heads": 10,
             "experience_cards": 64,

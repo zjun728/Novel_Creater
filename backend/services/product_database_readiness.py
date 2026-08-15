@@ -595,6 +595,7 @@ def _expected_row_counts() -> tuple[tuple[str, int], ...]:
     expected.update(
         {
             "schema_metadata": 1,
+            "application_settings": 1,
             "style_templates": 10,
             "style_template_heads": 10,
             "experience_cards": 64,
@@ -611,7 +612,10 @@ def _expected_row_counts() -> tuple[tuple[str, int], ...]:
 def _expected_proof_row_counts() -> tuple[tuple[str, int], ...]:
     return tuple(
         sorted(
-            (name, 1 if name == "schema_metadata" else 0)
+            (
+                name,
+                1 if name in {"schema_metadata", "application_settings"} else 0,
+            )
             for name in created_table_names()
         )
     )
@@ -635,8 +639,9 @@ def _validate_current_schema_proof_fields(
         or inventory.manifest_hash != manifest_hash()
         or inventory.table_names != expected_tables
         or inventory.row_counts != expected_counts
-        or inventory.nonempty_table_count != 1
-        or inventory.total_row_count != 1
+        or inventory.nonempty_table_count
+        != sum(count > 0 for _, count in expected_counts)
+        or inventory.total_row_count != sum(count for _, count in expected_counts)
         or tuple(row.name for row in validated_storage) != expected_tables
         or type(created_databases) is not tuple
         or type(cleaned_databases) is not tuple

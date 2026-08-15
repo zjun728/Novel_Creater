@@ -65,7 +65,10 @@ INITIALIZED = InitializationResult(NEW_DATABASE, EXPECTED_SCHEMA_VERSION, SCHEMA
 
 
 def _empty_counts() -> dict[str, int]:
-    return {name: 1 if name == "schema_metadata" else 0 for name in created_table_names()}
+    return {
+        name: 1 if name in {"schema_metadata", "application_settings"} else 0
+        for name in created_table_names()
+    }
 
 
 def _ready_counts() -> dict[str, int]:
@@ -76,7 +79,17 @@ def _ready_counts() -> dict[str, int]:
 
 def _proof_inventory() -> DatabaseInventory:
     counts = tuple(sorted(_empty_counts().items()))
-    return DatabaseInventory(PROOF_DATABASE, "8.4.3", EXPECTED_SCHEMA_VERSION, SCHEMA_HASH, CURRENT_STRUCTURE_HASH, tuple(name for name, _ in counts), counts, 1, 1)
+    return DatabaseInventory(
+        PROOF_DATABASE,
+        "8.4.3",
+        EXPECTED_SCHEMA_VERSION,
+        SCHEMA_HASH,
+        CURRENT_STRUCTURE_HASH,
+        tuple(name for name, _ in counts),
+        counts,
+        sum(count > 0 for _, count in counts),
+        sum(count for _, count in counts),
+    )
 
 
 def _schema_proof() -> object:
@@ -656,6 +669,46 @@ def test_current_schema_proof_rejects_target_identity_unclean_ledger_and_storage
         with pytest.raises(ProductDatabaseReadinessError, match="^current schema proof failed$"):
             proof_type(*values)
     assert not hasattr(readiness_module, "CurrentSchemaAuthority")
+
+
+def test_current_schema_proof_and_target_audit_match_bootstrap_singletons_only() -> None:
+    proof = _schema_proof()
+    world = World(target="ready")
+    target = world.snapshot(NEW_DATABASE)
+    audit = OfficialDataAudit(**_official_row())  # type: ignore[arg-type]
+
+    proof_counts = dict(proof.inventory.row_counts)
+    assert proof_counts["schema_metadata"] == 1
+    assert proof_counts["application_settings"] == 1
+    assert proof.inventory.nonempty_table_count == 2
+    assert proof.inventory.total_row_count == 2
+    assert_new_database_ready(
+        target,
+        INITIALIZED,
+        audit,
+        world.storage(NEW_DATABASE),
+        proof,
+    )
+
+    business_counts = dict(target.row_counts)
+    business_counts["projects"] = 1
+    business_rows = tuple(sorted(business_counts.items()))
+    with pytest.raises(
+        ProductDatabaseReadinessError,
+        match="^new database readiness audit failed$",
+    ):
+        assert_new_database_ready(
+            replace(
+                target,
+                row_counts=business_rows,
+                nonempty_table_count=sum(count > 0 for _, count in business_rows),
+                total_row_count=sum(count for _, count in business_rows),
+            ),
+            INITIALIZED,
+            audit,
+            world.storage(NEW_DATABASE),
+            proof,
+        )
 
 
 def test_restore_storage_and_official_types_are_strict() -> None:
