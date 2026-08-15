@@ -31,6 +31,8 @@ _CONFIG_KEYS = frozenset({
     "MYSQL_DB",
 })
 _OPTIONAL_CONFIG_KEYS = frozenset({"CORPUS_ROOT", "MANAGED_CORPUS_ROOT"})
+_PUBLICATION_ERROR = "Could not atomically save the local MySQL configuration"
+_PUBLICATION_CLEANUP_ERROR = "Could not remove an unpublished local configuration"
 
 
 class LocalMySQLSetupError(RuntimeError):
@@ -148,6 +150,61 @@ def _fixed_mutex_call(
         raise
     except BaseException:
         raise LocalMySQLSetupError(message) from None
+
+
+def _sanitized_publication_error(error: BaseException, message: str) -> BaseException:
+    if isinstance(error, BaseExceptionGroup):
+        return BaseExceptionGroup(
+            message,
+            [_sanitized_publication_error(child, message) for child in error.exceptions],
+        )
+    if isinstance(error, asyncio.CancelledError):
+        return asyncio.CancelledError()
+    if isinstance(error, KeyboardInterrupt):
+        return KeyboardInterrupt()
+    if isinstance(error, SystemExit):
+        return SystemExit(error.code) if type(error.code) is int else SystemExit()
+    if (
+        type(error) is LocalMySQLSetupError
+        and str(error) == "Local MySQL configuration changed"
+    ):
+        return LocalMySQLSetupError("Local MySQL configuration changed")
+    return LocalMySQLSetupError(message)
+
+
+def _raise_publication_failures(
+    primary: BaseException | None,
+    cleanup: list[BaseException],
+) -> None:
+    """Raise fixed publication failures without allowing cleanup to hide primary."""
+    clean_primary = (
+        None
+        if primary is None
+        else _sanitized_publication_error(primary, _PUBLICATION_ERROR)
+    )
+    clean_cleanup = [
+        LocalMySQLSetupError(_PUBLICATION_CLEANUP_ERROR) for _error in cleanup
+    ]
+    if clean_primary is not None and clean_cleanup:
+        cleanup_error: BaseException = (
+            clean_cleanup[0]
+            if len(clean_cleanup) == 1
+            else BaseExceptionGroup(_PUBLICATION_CLEANUP_ERROR, clean_cleanup)
+        )
+        raise BaseExceptionGroup(
+            _PUBLICATION_ERROR,
+            [clean_primary, cleanup_error],
+        ) from None
+    if clean_primary is not None:
+        raise clean_primary from None
+    if clean_cleanup:
+        if len(clean_cleanup) == 1:
+            raise clean_cleanup[0] from None
+        raise BaseExceptionGroup(_PUBLICATION_CLEANUP_ERROR, clean_cleanup) from None
+
+
+def _remove_local_temporary(path: Path) -> None:
+    path.unlink(missing_ok=True)
 
 
 @contextmanager
@@ -336,6 +393,8 @@ def _atomic_write_local_document_locked(
     target: Path,
     document: Mapping[str, object],
     acl_runner: Callable[[Path], None],
+    remove_temp: Callable[[Path], None],
+    replacer: Callable[[Path, Path], None],
 ) -> None:
     """Atomically publish the exact MySQL document and existing corpus fields."""
     target = Path(target)
@@ -346,6 +405,8 @@ def _atomic_write_local_document_locked(
         )
 
     temporary_path: Path | None = None
+    primary: BaseException | None = None
+    cleanup: list[BaseException] = []
     try:
         with tempfile.NamedTemporaryFile(
             prefix=".env.local.",
@@ -370,20 +431,17 @@ def _atomic_write_local_document_locked(
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_path, target)
+        replacer(temporary_path, target)
         temporary_path = None
-    except OSError as exc:
-        raise LocalMySQLSetupError(
-            "Could not atomically save the local MySQL configuration"
-        ) from exc
+    except BaseException as error:
+        primary = error
     finally:
         if temporary_path is not None:
             try:
-                temporary_path.unlink(missing_ok=True)
-            except OSError as exc:
-                raise LocalMySQLSetupError(
-                    "Could not remove an unpublished local configuration"
-                ) from exc
+                remove_temp(temporary_path)
+            except BaseException as error:
+                cleanup.append(error)
+    _raise_publication_failures(primary, cleanup)
 
 
 def atomic_write_local_document(
@@ -393,12 +451,16 @@ def atomic_write_local_document(
     *,
     mutex_api: WindowsMutexAPI | object | None = None,
     platform_name: str = os.name,
+    remove_temp: Callable[[Path], None] = _remove_local_temporary,
+    replacer: Callable[[Path, Path], None] = os.replace,
 ) -> None:
     """Publish under the shared Windows owner-bound configuration mutex."""
     with _windows_local_config_mutex(
         Path(target), platform_name=platform_name, api=mutex_api
     ):
-        _atomic_write_local_document_locked(target, document, acl_runner)
+        _atomic_write_local_document_locked(
+            target, document, acl_runner, remove_temp, replacer
+        )
 
 
 def _atomic_compare_and_swap_local_document_locked(
@@ -407,6 +469,8 @@ def _atomic_compare_and_swap_local_document_locked(
     acl_runner: Callable[[Path], None],
     expected_snapshot: LocalDocumentSnapshot,
     before_publish: Callable[[Path], None] | None,
+    remove_temp: Callable[[Path], None],
+    replacer: Callable[[Path, Path], None],
 ) -> LocalDocumentSnapshot:
     """Publish only while the exact captured target owner and bytes remain current."""
     target = Path(target).absolute()
@@ -423,6 +487,9 @@ def _atomic_compare_and_swap_local_document_locked(
         )
 
     temporary_path: Path | None = None
+    published_snapshot: LocalDocumentSnapshot | None = None
+    primary: BaseException | None = None
+    cleanup: list[BaseException] = []
     try:
         with tempfile.NamedTemporaryFile(
             prefix=".env.local.",
@@ -442,7 +509,7 @@ def _atomic_compare_and_swap_local_document_locked(
             before_publish(temporary_path)
         if not _snapshot_is_current(target, expected_snapshot):
             raise LocalMySQLSetupError("Local MySQL configuration changed")
-        os.replace(temporary_path, target)
+        replacer(temporary_path, target)
         temporary_path = None
         published_snapshot = LocalDocumentSnapshot(
             target,
@@ -451,21 +518,18 @@ def _atomic_compare_and_swap_local_document_locked(
         )
         if capture_local_document_snapshot(target) != published_snapshot:
             raise LocalMySQLSetupError("Local MySQL configuration changed")
-        return published_snapshot
-    except LocalMySQLSetupError:
-        raise
-    except OSError as exc:
-        raise LocalMySQLSetupError(
-            "Could not atomically save the local MySQL configuration"
-        ) from exc
+    except BaseException as error:
+        primary = error
     finally:
         if temporary_path is not None:
             try:
-                temporary_path.unlink(missing_ok=True)
-            except OSError as exc:
-                raise LocalMySQLSetupError(
-                    "Could not remove an unpublished local configuration"
-                ) from exc
+                remove_temp(temporary_path)
+            except BaseException as error:
+                cleanup.append(error)
+    _raise_publication_failures(primary, cleanup)
+    if published_snapshot is None:  # pragma: no cover - defensive invariant
+        raise LocalMySQLSetupError(_PUBLICATION_ERROR)
+    return published_snapshot
 
 
 def atomic_compare_and_swap_local_document(
@@ -477,6 +541,8 @@ def atomic_compare_and_swap_local_document(
     before_publish: Callable[[Path], None] | None = None,
     mutex_api: WindowsMutexAPI | object | None = None,
     platform_name: str = os.name,
+    remove_temp: Callable[[Path], None] = _remove_local_temporary,
+    replacer: Callable[[Path, Path], None] = os.replace,
 ) -> LocalDocumentSnapshot:
     """CAS cooperating writers without claiming external-editor linearizability."""
     with _windows_local_config_mutex(
@@ -488,6 +554,8 @@ def atomic_compare_and_swap_local_document(
             acl_runner,
             expected_snapshot,
             before_publish,
+            remove_temp,
+            replacer,
         )
 
 
@@ -495,11 +563,24 @@ def atomic_write_local_config(
     target: Path,
     document: Mapping[str, object],
     acl_runner: Callable[[Path], None],
+    *,
+    mutex_api: WindowsMutexAPI | object | None = None,
+    platform_name: str = os.name,
+    remove_temp: Callable[[Path], None] = _remove_local_temporary,
+    replacer: Callable[[Path, Path], None] = os.replace,
 ) -> None:
     """Compatibility writer requiring exactly the original five MySQL keys."""
     if set(document) != _CONFIG_KEYS:
         raise LocalMySQLSetupError("Local MySQL document must contain exactly five keys")
-    atomic_write_local_document(target, document, acl_runner)
+    atomic_write_local_document(
+        target,
+        document,
+        acl_runner,
+        mutex_api=mutex_api,
+        platform_name=platform_name,
+        remove_temp=remove_temp,
+        replacer=replacer,
+    )
 
 
 async def run_cli(

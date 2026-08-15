@@ -66,6 +66,13 @@ _BROWSER_SMOKE_EXPECTED = {
 }
 _BROWSER_SMOKE_COMMAND = ("node", "scripts/run-tests.mjs", "browser-phase7b")
 _BROWSER_SMOKE_TIMEOUT_SECONDS = 300
+_MYSQL_ENVIRONMENT_KEYS = (
+    "MYSQL_HOST",
+    "MYSQL_PORT",
+    "MYSQL_USER",
+    "MYSQL_PASSWORD",
+    "MYSQL_DB",
+)
 
 
 class ProductDatabaseCutoverError(RuntimeError):
@@ -445,7 +452,8 @@ async def _default_post_cutover_smoke(
         if document.get("MYSQL_DB") != NEW_DATABASE:
             raise ValueError
         environment = dict(os.environ)
-        environment.pop("MYSQL_DB", None)
+        for key in _MYSQL_ENVIRONMENT_KEYS:
+            environment.pop(key, None)
         environment["MARKET_SCHEDULER_ENABLED"] = "false"
         completed = await _invoke(
             runner or _default_browser_smoke_runner,

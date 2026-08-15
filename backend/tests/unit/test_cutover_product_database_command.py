@@ -377,7 +377,16 @@ def test_backup_digest_uses_the_backup_sibling_of_readiness_receipt(workspace_tm
 async def test_default_post_cutover_smoke_uses_normal_config_without_database_override(
     monkeypatch,
 ):
-    monkeypatch.setenv("MYSQL_DB", "ambient-must-not-be-forwarded")
+    mysql_environment_keys = (
+        "MYSQL_HOST",
+        "MYSQL_PORT",
+        "MYSQL_USER",
+        "MYSQL_PASSWORD",
+        "MYSQL_DB",
+    )
+    for key in mysql_environment_keys:
+        monkeypatch.setenv(key, f"ambient-{key}-must-not-be-forwarded")
+    monkeypatch.setenv("PHASE7B_UNRELATED_ENV", "preserved")
     calls = []
     summary = {
         "artifactCount": 0,
@@ -408,7 +417,8 @@ async def test_default_post_cutover_smoke_uses_normal_config_without_database_ov
     assert calls[0]["command"] == ("node", "scripts/run-tests.mjs", "browser-phase7b")
     assert calls[0]["cwd"] == REPOSITORY_ROOT
     assert calls[0]["timeout_seconds"] == 300
-    assert "MYSQL_DB" not in calls[0]["environment"]
+    assert all(key not in calls[0]["environment"] for key in mysql_environment_keys)
+    assert calls[0]["environment"]["PHASE7B_UNRELATED_ENV"] == "preserved"
     assert calls[0]["environment"]["MARKET_SCHEDULER_ENABLED"] == "false"
 
 

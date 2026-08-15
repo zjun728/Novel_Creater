@@ -569,6 +569,181 @@ def test_mutex_contention_leaves_target_and_temp_unchanged(workspace_tmp_path):
     assert list(workspace_tmp_path.iterdir()) == [target]
 
 
+def _required_document(database="novel_creator"):
+    return {
+        "MYSQL_HOST": "127.0.0.1",
+        "MYSQL_PORT": 3307,
+        "MYSQL_USER": "root",
+        "MYSQL_PASSWORD": SECRET,
+        "MYSQL_DB": database,
+    }
+
+
+def _failing_temp_removal(_path):
+    raise RuntimeError(f"private-cleanup-{SECRET}")
+
+
+@pytest.mark.parametrize("failure_point", ("acl", "write", "replace"))
+def test_compatibility_writer_keeps_operation_primary_before_unlink_failure(
+    workspace_tmp_path, monkeypatch, failure_point
+):
+    target = workspace_tmp_path / ".env.local.json"
+    target.write_text(json.dumps(_required_document()), encoding="utf-8")
+
+    def fail_operation(*_args, **_kwargs):
+        raise RuntimeError(f"private-{failure_point}-{SECRET}")
+
+    acl = fail_operation if failure_point == "acl" else lambda _path: None
+    replacer = fail_operation if failure_point == "replace" else setup.os.replace
+    if failure_point == "write":
+        monkeypatch.setattr(setup.json, "dump", fail_operation)
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        setup.atomic_write_local_config(
+            target,
+            _required_document("novel_creator_v113"),
+            acl,
+            remove_temp=_failing_temp_removal,
+            replacer=replacer,
+        )
+
+    assert len(raised.value.exceptions) == 2
+    assert "save" in str(raised.value.exceptions[0])
+    assert "remove" in str(raised.value.exceptions[1])
+    assert SECRET not in repr(raised.value)
+
+
+@pytest.mark.parametrize(
+    "failure_point", ("acl", "write", "before_publish", "replace")
+)
+def test_cas_writer_keeps_operation_primary_before_unlink_failure(
+    workspace_tmp_path, monkeypatch, failure_point
+):
+    target = workspace_tmp_path / ".env.local.json"
+    target.write_text(json.dumps(_required_document()), encoding="utf-8")
+    snapshot = setup.capture_local_document_snapshot(target)
+
+    def fail_operation(*_args, **_kwargs):
+        raise RuntimeError(f"private-{failure_point}-{SECRET}")
+
+    acl = fail_operation if failure_point == "acl" else lambda _path: None
+    before_publish = fail_operation if failure_point == "before_publish" else None
+    replacer = fail_operation if failure_point == "replace" else setup.os.replace
+    if failure_point == "write":
+        monkeypatch.setattr(setup.json, "dump", fail_operation)
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        setup.atomic_compare_and_swap_local_document(
+            target,
+            _required_document("novel_creator_v113"),
+            acl,
+            snapshot,
+            before_publish=before_publish,
+            mutex_api=FakeMutexAPI(),
+            platform_name="nt",
+            remove_temp=_failing_temp_removal,
+            replacer=replacer,
+        )
+
+    assert len(raised.value.exceptions) == 2
+    assert "save" in str(raised.value.exceptions[0])
+    assert "remove" in str(raised.value.exceptions[1])
+    assert SECRET not in repr(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("writer_kind", "failure_point"),
+    (
+        ("compatibility", "acl"),
+        ("compatibility", "write"),
+        ("compatibility", "replace"),
+        ("cas", "acl"),
+        ("cas", "write"),
+        ("cas", "before_publish"),
+        ("cas", "replace"),
+    ),
+)
+@pytest.mark.parametrize(
+    "flow_factory",
+    (
+        lambda: asyncio.CancelledError(f"private-cancel-{SECRET}"),
+        lambda: KeyboardInterrupt(f"private-keyboard-{SECRET}"),
+        lambda: SystemExit(f"private-exit-{SECRET}"),
+    ),
+)
+def test_writer_flow_primary_is_sanitized_and_first_when_unlink_fails(
+    workspace_tmp_path, monkeypatch, writer_kind, failure_point, flow_factory
+):
+    target = workspace_tmp_path / ".env.local.json"
+    target.write_text(json.dumps(_required_document()), encoding="utf-8")
+    snapshot = setup.capture_local_document_snapshot(target)
+    flow = flow_factory()
+
+    def raise_flow(*_args, **_kwargs):
+        raise flow
+
+    acl = raise_flow if failure_point == "acl" else lambda _path: None
+    replacer = raise_flow if failure_point == "replace" else setup.os.replace
+    if failure_point == "write":
+        monkeypatch.setattr(setup.json, "dump", raise_flow)
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        if writer_kind == "compatibility":
+            setup.atomic_write_local_config(
+                target,
+                _required_document("novel_creator_v113"),
+                acl,
+                mutex_api=FakeMutexAPI(),
+                platform_name="nt",
+                remove_temp=_failing_temp_removal,
+                replacer=replacer,
+            )
+        else:
+            setup.atomic_compare_and_swap_local_document(
+                target,
+                _required_document("novel_creator_v113"),
+                acl,
+                snapshot,
+                before_publish=(
+                    raise_flow if failure_point == "before_publish" else None
+                ),
+                mutex_api=FakeMutexAPI(),
+                platform_name="nt",
+                remove_temp=_failing_temp_removal,
+                replacer=replacer,
+            )
+
+    primary, cleanup = raised.value.exceptions
+    assert type(primary) is type(flow)
+    assert primary.args == ()
+    assert primary.__cause__ is None
+    assert primary.__context__ is None
+    assert isinstance(cleanup, setup.LocalMySQLSetupError)
+    assert SECRET not in repr(raised.value)
+
+
+@pytest.mark.parametrize(
+    "cleanup_factory",
+    (
+        lambda: RuntimeError(f"private-cleanup-{SECRET}"),
+        lambda: asyncio.CancelledError(f"private-cleanup-{SECRET}"),
+        lambda: KeyboardInterrupt(f"private-cleanup-{SECRET}"),
+        lambda: SystemExit(f"private-cleanup-{SECRET}"),
+        lambda: setup.LocalMySQLSetupError("Local MySQL configuration changed"),
+    ),
+)
+def test_cleanup_only_failure_is_one_fixed_secret_free_error(cleanup_factory):
+    with pytest.raises(setup.LocalMySQLSetupError, match="remove") as raised:
+        setup._raise_publication_failures(
+            None,
+            [cleanup_factory()],
+        )
+    assert raised.value.args == ("Could not remove an unpublished local configuration",)
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert SECRET not in repr(raised.value)
+
+
 def test_atomic_writer_acl_failure_keeps_old_target_and_removes_temp(workspace_tmp_path):
     target = workspace_tmp_path / ".env.local.json"
     target.write_text("old-config", encoding="utf-8")
@@ -579,7 +754,7 @@ def test_atomic_writer_acl_failure_keeps_old_target_and_removes_temp(workspace_t
         observed_before_acl_failure.append(temp_path.read_bytes())
         raise setup.LocalMySQLSetupError("ACL failed")
 
-    with pytest.raises(setup.LocalMySQLSetupError, match="ACL"):
+    with pytest.raises(setup.LocalMySQLSetupError, match="atomically save"):
         setup.atomic_write_local_config(
             target,
             {
@@ -605,7 +780,7 @@ def test_interruption_during_acl_never_places_secret_in_temp(workspace_tmp_path)
         observed_before_interrupt.append(temp_path.read_bytes())
         raise KeyboardInterrupt("simulated interruption")
 
-    with pytest.raises(KeyboardInterrupt, match="simulated"):
+    with pytest.raises(KeyboardInterrupt) as raised:
         setup.atomic_write_local_config(
             target,
             {
@@ -618,6 +793,7 @@ def test_interruption_during_acl_never_places_secret_in_temp(workspace_tmp_path)
             interrupt_acl,
         )
 
+    assert raised.value.args == ()
     assert observed_before_interrupt == [b""]
     assert list(workspace_tmp_path.iterdir()) == []
 
