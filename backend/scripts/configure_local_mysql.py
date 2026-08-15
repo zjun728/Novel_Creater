@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from dataclasses import dataclass
 import getpass
 import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -31,6 +33,65 @@ _OPTIONAL_CONFIG_KEYS = frozenset({"CORPUS_ROOT", "MANAGED_CORPUS_ROOT"})
 
 class LocalMySQLSetupError(RuntimeError):
     """Local MySQL settings could not be verified and published safely."""
+
+
+@dataclass(frozen=True)
+class LocalDocumentSnapshot:
+    """Exact path owner and byte content used by compare-and-swap writes."""
+
+    path: Path
+    identity: tuple[int, int]
+    content: bytes
+
+
+def _snapshot_identity(value: object) -> tuple[int, int]:
+    mode = getattr(value, "st_mode", None)
+    attributes = getattr(value, "st_file_attributes", 0)
+    identity = (
+        getattr(value, "st_dev", None),
+        getattr(value, "st_ino", None),
+    )
+    if (
+        type(mode) is not int
+        or not stat.S_ISREG(mode)
+        or type(attributes) is not int
+        or attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        or any(type(item) is not int for item in identity)
+    ):
+        raise OSError
+    return identity  # type: ignore[return-value]
+
+
+def capture_local_document_snapshot(target: Path) -> LocalDocumentSnapshot:
+    """Open once and bind an exact regular non-link configuration snapshot."""
+    try:
+        path = Path(target).absolute()
+        before = path.lstat()
+        if path.is_symlink():
+            raise OSError
+        path_identity = _snapshot_identity(before)
+        with path.open("rb") as handle:
+            opened = _snapshot_identity(os.fstat(handle.fileno()))
+            if opened != path_identity:
+                raise OSError
+            content = handle.read()
+            if _snapshot_identity(os.fstat(handle.fileno())) != opened:
+                raise OSError
+        if _snapshot_identity(path.lstat()) != path_identity:
+            raise OSError
+        return LocalDocumentSnapshot(path, path_identity, content)
+    except BaseException as exc:
+        if isinstance(exc, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)):
+            raise
+        raise LocalMySQLSetupError("Local MySQL configuration changed") from None
+
+
+def _snapshot_is_current(target: Path, expected: LocalDocumentSnapshot) -> bool:
+    try:
+        current = capture_local_document_snapshot(target)
+    except LocalMySQLSetupError:
+        return False
+    return current == expected
 
 
 async def _verify_server_capabilities(session) -> str:
@@ -161,6 +222,67 @@ def atomic_write_local_document(
             os.fsync(handle.fileno())
         os.replace(temporary_path, target)
         temporary_path = None
+    except OSError as exc:
+        raise LocalMySQLSetupError(
+            "Could not atomically save the local MySQL configuration"
+        ) from exc
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError as exc:
+                raise LocalMySQLSetupError(
+                    "Could not remove an unpublished local configuration"
+                ) from exc
+
+
+def atomic_compare_and_swap_local_document(
+    target: Path,
+    document: Mapping[str, object],
+    acl_runner: Callable[[Path], None],
+    expected_snapshot: LocalDocumentSnapshot,
+) -> LocalDocumentSnapshot:
+    """Publish only while the exact captured target owner and bytes remain current."""
+    target = Path(target).absolute()
+    if (
+        type(expected_snapshot) is not LocalDocumentSnapshot
+        or expected_snapshot.path != target
+        or not _snapshot_is_current(target, expected_snapshot)
+    ):
+        raise LocalMySQLSetupError("Local MySQL configuration changed")
+    keys = set(document)
+    if not _CONFIG_KEYS <= keys or not keys <= _CONFIG_KEYS | _OPTIONAL_CONFIG_KEYS:
+        raise LocalMySQLSetupError(
+            "Local MySQL document must contain required and allowed keys only"
+        )
+
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix=".env.local.",
+            suffix=".tmp",
+            dir=target.parent,
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+        acl_runner(temporary_path)
+        with temporary_path.open("w", encoding="utf-8", newline="\n") as handle:
+            json.dump(dict(document), handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        published_owner = capture_local_document_snapshot(temporary_path)
+        if not _snapshot_is_current(target, expected_snapshot):
+            raise LocalMySQLSetupError("Local MySQL configuration changed")
+        os.replace(temporary_path, target)
+        temporary_path = None
+        return LocalDocumentSnapshot(
+            target,
+            published_owner.identity,
+            published_owner.content,
+        )
+    except LocalMySQLSetupError:
+        raise
     except OSError as exc:
         raise LocalMySQLSetupError(
             "Could not atomically save the local MySQL configuration"

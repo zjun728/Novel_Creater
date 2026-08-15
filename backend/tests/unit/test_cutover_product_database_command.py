@@ -19,6 +19,7 @@ from backend.domain.product_database_readiness import (
     canonical_receipt_hash,
     inventory_hash,
 )
+from backend.domain.json_contracts import canonical_json
 from backend.scripts import cutover_product_database as command
 
 
@@ -93,8 +94,13 @@ def no_product_process():
     return None
 
 
-def write_json(path, document, _acl):
-    path.write_text(json.dumps(document), encoding="utf-8")
+def write_json(path, document, _acl, expected_snapshot):
+    return command.atomic_compare_and_swap_local_document(
+        path,
+        document,
+        lambda _path: None,
+        expected_snapshot,
+    )
 
 
 @pytest.mark.asyncio
@@ -252,9 +258,9 @@ async def test_smoke_failure_restores_exact_original_document(workspace_tmp_path
     config.write_text(json.dumps(original), encoding="utf-8")
     writes = []
 
-    def writer(path, document, acl):
+    def writer(path, document, acl, expected_snapshot):
         writes.append(dict(document))
-        write_json(path, document, acl)
+        return write_json(path, document, acl, expected_snapshot)
 
     async def fail_smoke(_document):
         raise RuntimeError(f"private {SECRET}")
@@ -287,11 +293,12 @@ async def test_smoke_and_rollback_failure_keeps_primary_first_and_sanitized(
     config.write_text(json.dumps(mysql_document()), encoding="utf-8")
     writes = 0
 
-    def writer(*_args):
+    def writer(path, document, acl, expected_snapshot):
         nonlocal writes
         writes += 1
         if writes == 2:
             raise RuntimeError(f"rollback {SECRET}")
+        return write_json(path, document, acl, expected_snapshot)
 
     async def smoke(_document):
         raise failure
@@ -332,9 +339,9 @@ async def test_flow_control_propagates_after_one_successful_rollback(
     config.write_text(json.dumps(original), encoding="utf-8")
     writes = []
 
-    def writer(path, document, acl):
+    def writer(path, document, acl, expected_snapshot):
         writes.append(dict(document))
-        write_json(path, document, acl)
+        return write_json(path, document, acl, expected_snapshot)
 
     async def smoke(_document):
         raise failure_type()
@@ -364,6 +371,125 @@ def test_backup_digest_uses_the_backup_sibling_of_readiness_receipt(workspace_tm
     assert command._backup_sha256_for_receipt(receipt) == hashlib.sha256(
         b"approved-backup"
     ).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_default_post_cutover_smoke_uses_normal_config_without_database_override(
+    monkeypatch,
+):
+    monkeypatch.setenv("MYSQL_DB", "ambient-must-not-be-forwarded")
+    calls = []
+    summary = {
+        "artifactCount": 0,
+        "firstCause": None,
+        "firstStage": None,
+        "outboundRequests": 0,
+        "portCount": 0,
+        "processCount": 0,
+        "providerCalls": 0,
+        "rootCount": 0,
+        "scenarioCount": 1,
+    }
+
+    async def runner(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            returncode=0,
+            stdout="PHASE7B_BROWSER_SMOKE_SUMMARY=" + canonical_json(summary),
+            stderr="",
+        )
+
+    result = await command._default_post_cutover_smoke(
+        mysql_document(NEW_DATABASE), runner=runner
+    )
+
+    assert result.provider_calls == 0
+    assert result.outbound_requests == 0
+    assert calls[0]["command"] == ("node", "scripts/run-tests.mjs", "browser-phase7b")
+    assert calls[0]["cwd"] == REPOSITORY_ROOT
+    assert calls[0]["timeout_seconds"] == 300
+    assert "MYSQL_DB" not in calls[0]["environment"]
+    assert calls[0]["environment"]["MARKET_SCHEDULER_ENABLED"] == "false"
+
+
+@pytest.mark.asyncio
+async def test_inventory_time_config_edit_is_not_overwritten_by_cutover(workspace_tmp_path):
+    config = workspace_tmp_path / ".env.local.json"
+    original = mysql_document()
+    config.write_text(json.dumps(original), encoding="utf-8")
+    concurrent = {**original, "CORPUS_ROOT": "D:/concurrent-inventory"}
+
+    async def inventories(_document):
+        config.write_text(json.dumps(concurrent), encoding="utf-8")
+        return LEGACY_INVENTORY, NEW_INVENTORY
+
+    with pytest.raises(command.ProductDatabaseCutoverError, match="configuration"):
+        await command.cutover(
+            receipt=PREPARATION_RECEIPT,
+            config_path=config,
+            confirm_database=NEW_DATABASE,
+            confirm_cutover="CUTOVER-PHASE7B",
+            smoke=successful_smoke,
+            inventory_reader=inventories,
+            observed_backup_sha256="c" * 64,
+            acl_runner=lambda _path: None,
+            idle_guard=no_product_process,
+        )
+
+    assert json.loads(config.read_text(encoding="utf-8")) == concurrent
+
+
+@pytest.mark.asyncio
+async def test_smoke_time_config_edit_is_not_overwritten_by_rollback(workspace_tmp_path):
+    config = workspace_tmp_path / ".env.local.json"
+    original = mysql_document()
+    config.write_text(json.dumps(original), encoding="utf-8")
+    concurrent = {**original, "MYSQL_DB": NEW_DATABASE, "CORPUS_ROOT": "D:/concurrent-smoke"}
+
+    async def smoke(_document):
+        config.write_text(json.dumps(concurrent), encoding="utf-8")
+        raise RuntimeError("smoke")
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await command.cutover(
+            receipt=PREPARATION_RECEIPT,
+            config_path=config,
+            confirm_database=NEW_DATABASE,
+            confirm_cutover="CUTOVER-PHASE7B",
+            smoke=smoke,
+            inventory_reader=observe_inventories,
+            observed_backup_sha256="c" * 64,
+            acl_runner=lambda _path: None,
+            idle_guard=no_product_process,
+        )
+
+    assert isinstance(raised.value.exceptions[0], command.ProductDatabaseCutoverError)
+    assert isinstance(raised.value.exceptions[1], command.ProductDatabaseCutoverError)
+    assert json.loads(config.read_text(encoding="utf-8")) == concurrent
+
+
+@pytest.mark.asyncio
+async def test_inventory_time_config_edit_is_not_overwritten_by_recovery(workspace_tmp_path):
+    config = workspace_tmp_path / ".env.local.json"
+    original = mysql_document(NEW_DATABASE)
+    config.write_text(json.dumps(original), encoding="utf-8")
+    concurrent = {**original, "MANAGED_CORPUS_ROOT": "D:/concurrent-recovery"}
+
+    async def inventories(_document):
+        config.write_text(json.dumps(concurrent), encoding="utf-8")
+        return LEGACY_INVENTORY, NEW_INVENTORY
+
+    with pytest.raises(command.ProductDatabaseCutoverError, match="recovery"):
+        await command.recover_legacy(
+            config_path=config,
+            database=LEGACY_DATABASE,
+            confirm_cutover="RECOVER-PHASE7B",
+            inventory_reader=inventories,
+            acl_runner=lambda _path: None,
+            idle_guard=no_product_process,
+        )
+
+    assert json.loads(config.read_text(encoding="utf-8")) == concurrent
 
 
 @pytest.mark.asyncio
@@ -428,9 +554,9 @@ async def test_execute_cli_loads_exact_receipt_and_runs_guarded_cutover(workspac
     def idle():
         events.append("idle")
 
-    def writer(path, document, acl):
+    def writer(path, document, acl, expected_snapshot):
         events.append(("write", document["MYSQL_DB"], acl))
-        write_json(path, document, acl)
+        return write_json(path, document, acl, expected_snapshot)
 
     async def smoke(document):
         events.append(("smoke", document["MYSQL_DB"]))

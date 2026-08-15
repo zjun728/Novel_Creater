@@ -14,7 +14,7 @@ import subprocess
 import sys
 from typing import Callable, Mapping, NoReturn, Sequence
 
-from backend.domain.json_contracts import canonical_hash
+from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.product_database_readiness import (
     DatabaseInventory,
     LEGACY_DATABASE,
@@ -27,7 +27,9 @@ from backend.domain.product_database_readiness import (
 )
 from backend.scripts.configure_local_mysql import (
     LOCAL_CONFIG_PATH,
-    atomic_write_local_document,
+    LocalDocumentSnapshot,
+    atomic_compare_and_swap_local_document,
+    capture_local_document_snapshot,
     restrict_windows_acl,
 )
 from backend.scripts.prepare_product_database import load_preparation_receipt
@@ -50,6 +52,20 @@ _SMOKE_ERROR = "product database cutover smoke failed"
 _ROLLBACK_ERROR = "product database cutover rollback failed"
 _RECOVERY_ERROR = "product database recovery failed"
 _PROCESS_ERROR = "product database cutover process guard failed"
+_BROWSER_SMOKE_PREFIX = "PHASE7B_BROWSER_SMOKE_SUMMARY="
+_BROWSER_SMOKE_EXPECTED = {
+    "firstStage": None,
+    "firstCause": None,
+    "scenarioCount": 1,
+    "providerCalls": 0,
+    "outboundRequests": 0,
+    "processCount": 0,
+    "portCount": 0,
+    "rootCount": 0,
+    "artifactCount": 0,
+}
+_BROWSER_SMOKE_COMMAND = ("node", "scripts/run-tests.mjs", "browser-phase7b")
+_BROWSER_SMOKE_TIMEOUT_SECONDS = 300
 
 
 class ProductDatabaseCutoverError(RuntimeError):
@@ -113,8 +129,10 @@ def _sanitized(error: BaseException, message: str) -> BaseException:
     return ProductDatabaseCutoverError(message)
 
 
-async def _invoke(operation: Callable[..., object], *args: object) -> object:
-    value = operation(*args)
+async def _invoke(
+    operation: Callable[..., object], *args: object, **kwargs: object
+) -> object:
+    value = operation(*args, **kwargs)
     if inspect.isawaitable(value):
         return await value
     return value
@@ -129,11 +147,10 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
-def read_local_document(path: Path) -> dict[str, object]:
-    """Read one strict complete local configuration document."""
+def _parse_local_document(document: bytes) -> dict[str, object]:
     try:
         value = json.loads(
-            Path(path).read_text(encoding="utf-8"),
+            document.decode("utf-8"),
             object_pairs_hook=_unique_object,
             parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
         )
@@ -160,6 +177,14 @@ def read_local_document(path: Path) -> dict[str, object]:
             if type(value[optional]) is not str or not value[optional].strip():
                 raise ValueError
         return value
+    except BaseException as error:
+        _raise(_sanitized(error, _CONFIG_ERROR))
+
+
+def read_local_document(path: Path) -> dict[str, object]:
+    """Read one strict complete local configuration document."""
+    try:
+        return _parse_local_document(capture_local_document_snapshot(path).content)
     except BaseException as error:
         _raise(_sanitized(error, _CONFIG_ERROR))
 
@@ -264,7 +289,7 @@ async def cutover(
     confirm_database: str,
     confirm_cutover: str,
     smoke: Callable[..., object],
-    writer: Callable[..., object] = atomic_write_local_document,
+    writer: Callable[..., object] = atomic_compare_and_swap_local_document,
     inventory_reader: Callable[..., object],
     observed_backup_sha256: str,
     acl_runner: object = restrict_windows_acl,
@@ -281,7 +306,8 @@ async def cutover(
             or observed_backup_sha256 != receipt.backup_sha256
         ):
             raise ValueError
-        original = read_local_document(Path(config_path))
+        original_snapshot = capture_local_document_snapshot(Path(config_path))
+        original = _parse_local_document(original_snapshot.content)
         if original["MYSQL_DB"] != LEGACY_DATABASE:
             _raise(ProductDatabaseCutoverError(_CONFIG_ERROR))
         observed = await _invoke(inventory_reader, original)
@@ -298,7 +324,15 @@ async def cutover(
 
     switched = {**original, "MYSQL_DB": NEW_DATABASE}
     try:
-        await _invoke(writer, Path(config_path), switched, acl_runner)
+        switched_snapshot = await _invoke(
+            writer,
+            Path(config_path),
+            switched,
+            acl_runner,
+            original_snapshot,
+        )
+        if type(switched_snapshot) is not LocalDocumentSnapshot:
+            raise TypeError
     except BaseException as error:
         _raise(_sanitized(error, _CONFIG_ERROR))
 
@@ -307,7 +341,15 @@ async def cutover(
     except BaseException as smoke_error:
         try:
             # One atomic attempt is deliberately bounded: never retry a secret write.
-            await _invoke(writer, Path(config_path), original, acl_runner)
+            rollback_snapshot = await _invoke(
+                writer,
+                Path(config_path),
+                original,
+                acl_runner,
+                switched_snapshot,
+            )
+            if type(rollback_snapshot) is not LocalDocumentSnapshot:
+                raise TypeError
         except BaseException as rollback_error:
             _raise(
                 BaseExceptionGroup(
@@ -329,7 +371,7 @@ async def recover_legacy(
     config_path: Path,
     database: str,
     confirm_cutover: str,
-    writer: Callable[..., object] = atomic_write_local_document,
+    writer: Callable[..., object] = atomic_compare_and_swap_local_document,
     inventory_reader: Callable[..., object],
     acl_runner: object = restrict_windows_acl,
     idle_guard: Callable[..., object] = assert_no_product_application_process,
@@ -338,19 +380,23 @@ async def recover_legacy(
     if database != LEGACY_DATABASE or confirm_cutover != _RECOVERY_CONFIRMATION:
         _raise(ProductDatabaseCutoverError(_APPROVAL_ERROR))
     try:
-        original = read_local_document(Path(config_path))
+        original_snapshot = capture_local_document_snapshot(Path(config_path))
+        original = _parse_local_document(original_snapshot.content)
         if original["MYSQL_DB"] != NEW_DATABASE:
             raise ValueError
         _validate_observed_inventories(
             await _invoke(inventory_reader, original)
         )
         await _invoke(idle_guard)
-        await _invoke(
+        recovered_snapshot = await _invoke(
             writer,
             Path(config_path),
             {**original, "MYSQL_DB": LEGACY_DATABASE},
             acl_runner,
+            original_snapshot,
         )
+        if type(recovered_snapshot) is not LocalDocumentSnapshot:
+            raise TypeError
         return CutoverResult(ReadinessState.LEGACY_RETAINED.value)
     except ProductDatabaseCutoverError:
         raise
@@ -380,15 +426,56 @@ async def _default_inventory_reader(document: Mapping[str, object]) -> object:
     )
 
 
-async def _default_smoke(document: Mapping[str, object]) -> object:
-    from backend.scripts.prepare_product_database import (
-        _default_browser_smoke_runner,
-        _default_smoke as preparation_smoke,
-    )
+async def _default_post_cutover_smoke(
+    document: Mapping[str, object],
+    *,
+    runner: Callable[..., object] | None = None,
+) -> object:
+    """Exercise normal config startup without a process-local database override."""
+    from backend.scripts.prepare_product_database import _default_browser_smoke_runner
+    from backend.services.product_database_readiness import SmokeResult
 
-    return await preparation_smoke(
-        _connection_config(document), NEW_DATABASE, _default_browser_smoke_runner
-    )
+    try:
+        if document.get("MYSQL_DB") != NEW_DATABASE:
+            raise ValueError
+        environment = dict(os.environ)
+        environment.pop("MYSQL_DB", None)
+        environment["MARKET_SCHEDULER_ENABLED"] = "false"
+        completed = await _invoke(
+            runner or _default_browser_smoke_runner,
+            command=_BROWSER_SMOKE_COMMAND,
+            cwd=Path(__file__).resolve().parents[2],
+            environment=environment,
+            timeout_seconds=_BROWSER_SMOKE_TIMEOUT_SECONDS,
+        )
+        if (
+            getattr(completed, "returncode", None) != 0
+            or type(getattr(completed, "stdout", None)) is not str
+            or type(getattr(completed, "stderr", None)) is not str
+        ):
+            raise ValueError
+        summaries = [
+            line[len(_BROWSER_SMOKE_PREFIX) :]
+            for line in completed.stdout.splitlines()
+            if line.startswith(_BROWSER_SMOKE_PREFIX)
+        ]
+        if len(summaries) != 1:
+            raise ValueError
+        summary = json.loads(
+            summaries[0],
+            object_pairs_hook=_unique_object,
+            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
+        )
+        if (
+            type(summary) is not dict
+            or summary != _BROWSER_SMOKE_EXPECTED
+            or set(summary) != set(_BROWSER_SMOKE_EXPECTED)
+            or summaries[0] != canonical_json(summary)
+        ):
+            raise ValueError
+        return SmokeResult(provider_calls=0, outbound_requests=0)
+    except BaseException as error:
+        _raise(_sanitized(error, _SMOKE_ERROR))
 
 
 async def run_cli(
@@ -398,8 +485,8 @@ async def run_cli(
     receipt_loader: Callable[[Path], object] = load_preparation_receipt,
     backup_digest: Callable[[Path], object] = _backup_sha256_for_receipt,
     inventory_reader: Callable[..., object] = _default_inventory_reader,
-    smoke: Callable[..., object] = _default_smoke,
-    writer: Callable[..., object] = atomic_write_local_document,
+    smoke: Callable[..., object] = _default_post_cutover_smoke,
+    writer: Callable[..., object] = atomic_compare_and_swap_local_document,
     acl_runner: object = restrict_windows_acl,
     idle_guard: Callable[..., object] = assert_no_product_application_process,
     output: Callable[[str], None] = print,
