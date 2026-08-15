@@ -26,6 +26,7 @@ _CONFIG_KEYS = frozenset({
     "MYSQL_PASSWORD",
     "MYSQL_DB",
 })
+_OPTIONAL_CONFIG_KEYS = frozenset({"CORPUS_ROOT", "MANAGED_CORPUS_ROOT"})
 
 
 class LocalMySQLSetupError(RuntimeError):
@@ -120,15 +121,18 @@ def restrict_windows_acl(
         raise LocalMySQLSetupError("Could not restrict local configuration permissions")
 
 
-def atomic_write_local_config(
+def atomic_write_local_document(
     target: Path,
     document: Mapping[str, object],
     acl_runner: Callable[[Path], None],
 ) -> None:
-    """Restrict a same-directory temporary file before atomically replacing target."""
+    """Atomically publish the exact MySQL document and existing corpus fields."""
     target = Path(target)
-    if set(document) != _CONFIG_KEYS:
-        raise LocalMySQLSetupError("Local MySQL document must contain exactly five keys")
+    keys = set(document)
+    if not _CONFIG_KEYS <= keys or not keys <= _CONFIG_KEYS | _OPTIONAL_CONFIG_KEYS:
+        raise LocalMySQLSetupError(
+            "Local MySQL document must contain required and allowed keys only"
+        )
 
     temporary_path: Path | None = None
     try:
@@ -169,6 +173,17 @@ def atomic_write_local_config(
                 raise LocalMySQLSetupError(
                     "Could not remove an unpublished local configuration"
                 ) from exc
+
+
+def atomic_write_local_config(
+    target: Path,
+    document: Mapping[str, object],
+    acl_runner: Callable[[Path], None],
+) -> None:
+    """Compatibility writer requiring exactly the original five MySQL keys."""
+    if set(document) != _CONFIG_KEYS:
+        raise LocalMySQLSetupError("Local MySQL document must contain exactly five keys")
+    atomic_write_local_document(target, document, acl_runner)
 
 
 async def run_cli(

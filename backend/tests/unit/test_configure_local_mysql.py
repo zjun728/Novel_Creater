@@ -210,6 +210,80 @@ def test_atomic_writer_restricts_temp_before_same_directory_replace(workspace_tm
     assert list(workspace_tmp_path.iterdir()) == [target]
 
 
+def test_atomic_document_writer_preserves_allowed_optional_corpus_roots(workspace_tmp_path):
+    target = workspace_tmp_path / ".env.local.json"
+    document = {
+        "MYSQL_HOST": "127.0.0.1",
+        "MYSQL_PORT": 3307,
+        "MYSQL_USER": "root",
+        "MYSQL_PASSWORD": SECRET,
+        "MYSQL_DB": "novel_creator_v113",
+        "CORPUS_ROOT": "D:/corpus",
+        "MANAGED_CORPUS_ROOT": "D:/managed-corpus",
+    }
+
+    setup.atomic_write_local_document(target, document, lambda _path: None)
+
+    assert json.loads(target.read_text(encoding="utf-8")) == document
+
+
+@pytest.mark.parametrize(
+    "document",
+    (
+        {
+            "MYSQL_HOST": "127.0.0.1",
+            "MYSQL_PORT": 3307,
+            "MYSQL_USER": "root",
+            "MYSQL_PASSWORD": SECRET,
+            "MYSQL_DB": "novel_creator",
+            "UNKNOWN": "rejected",
+        },
+        {
+            "MYSQL_HOST": "127.0.0.1",
+            "MYSQL_PORT": 3307,
+            "MYSQL_USER": "root",
+            "MYSQL_PASSWORD": SECRET,
+            "MYSQL_DB": "novel_creator",
+            "CORPUS_ROOT": "D:/corpus",
+            "UNKNOWN": "rejected",
+        },
+        {
+            "MYSQL_HOST": "127.0.0.1",
+            "MYSQL_PORT": 3307,
+            "MYSQL_USER": "root",
+            "MYSQL_PASSWORD": SECRET,
+            "MYSQL_DB": "novel_creator",
+            "CORPUS_ROOT": "D:/corpus",
+            "MANAGED_CORPUS_ROOT": "D:/managed-corpus",
+            "EXTRA_CORPUS_ROOT": "D:/extra",
+        },
+    ),
+)
+def test_atomic_document_writer_rejects_unknown_keys(workspace_tmp_path, document):
+    with pytest.raises(setup.LocalMySQLSetupError, match="allowed keys"):
+        setup.atomic_write_local_document(
+            workspace_tmp_path / ".env.local.json",
+            document,
+            lambda _path: None,
+        )
+
+
+def test_compatibility_writer_still_rejects_optional_corpus_keys(workspace_tmp_path):
+    with pytest.raises(setup.LocalMySQLSetupError, match="exactly five"):
+        setup.atomic_write_local_config(
+            workspace_tmp_path / ".env.local.json",
+            {
+                "MYSQL_HOST": "127.0.0.1",
+                "MYSQL_PORT": 3307,
+                "MYSQL_USER": "root",
+                "MYSQL_PASSWORD": SECRET,
+                "MYSQL_DB": "novel_creator",
+                "CORPUS_ROOT": "D:/corpus",
+            },
+            lambda _path: None,
+        )
+
+
 def test_atomic_writer_acl_failure_keeps_old_target_and_removes_temp(workspace_tmp_path):
     target = workspace_tmp_path / ".env.local.json"
     target.write_text("old-config", encoding="utf-8")
