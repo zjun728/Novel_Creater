@@ -209,22 +209,25 @@ async def _owned_restore_database(
     if _RESTORE_NAME.fullmatch(name) is None:
         raise RuntimeError("invalid owned restore name")
     primary: BaseException | None = None
+    owned = False
     try:
         await admin_session.execute(
             f"CREATE DATABASE `{name}` CHARACTER SET utf8mb4 "
             "COLLATE utf8mb4_0900_ai_ci"
         )
+        owned = True
         yield name
     except BaseException as error:
         primary = error
     cleanup: BaseException | None = None
-    try:
-        await _cleanup_exact_owned_database(
-            name,
-            session_factory=cleanup_session_factory,
-        )
-    except BaseException as error:
-        cleanup = error
+    if owned:
+        try:
+            await _cleanup_exact_owned_database(
+                name,
+                session_factory=cleanup_session_factory,
+            )
+        except BaseException as error:
+            cleanup = error
     _raise_test_primary_and_cleanup(primary, cleanup)
 
 
@@ -651,6 +654,7 @@ async def test_restore_drop_failure_is_reported_before_manual_owned_cleanup(
     phase7b_mysql_clients, monkeypatch
 ):
     await _assert_owned_restore_cleanup_preserves_primary_then_recovers_drop_failure()
+    await _assert_restore_collision_preserves_preexisting_database()
     captured: list[str] = []
 
     class DropOnceSession:
@@ -782,3 +786,69 @@ async def _assert_owned_restore_cleanup_preserves_primary_then_recovers_drop_fai
     assert state["drop_attempts"] == 2
     assert state["exists"] is False
     assert state["cleanup_closed"] is True
+
+
+async def _assert_restore_collision_preserves_preexisting_database():
+    class CollisionFailure(RuntimeError):
+        pass
+
+    state = {
+        "exists": True,
+        "dropped": False,
+        "cleanup_factory_calls": 0,
+        "creator_closed": False,
+        "cleanup_closed": False,
+    }
+    created: list[str] = []
+    cleaned: list[str] = []
+
+    class CreatorSession:
+        async def execute(self, sql, params=None):
+            del params
+            assert re.fullmatch(
+                r"CREATE DATABASE `novel_creator_phase7b_restore_[0-9a-f]{32}` "
+                r"CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci",
+                sql,
+            )
+            raise CollisionFailure(1007, "injected collision")
+
+        async def close(self):
+            state["creator_closed"] = True
+
+    class CleanupSession:
+        async def fetchone(self, sql, params=None):
+            del sql, params
+            return {"SCHEMA_NAME": "preexisting"} if state["exists"] else None
+
+        async def execute(self, sql, params=None):
+            del sql, params
+            state["dropped"] = True
+            state["exists"] = False
+
+        async def close(self):
+            state["cleanup_closed"] = True
+
+    creator = CreatorSession()
+
+    async def cleanup_session_factory():
+        state["cleanup_factory_calls"] += 1
+        return CleanupSession()
+
+    try:
+        with pytest.raises(CollisionFailure) as raised:
+            async with _owned_restore_database(
+                creator,
+                cleanup_session_factory=cleanup_session_factory,
+            ) as database:
+                created.append(database)
+    finally:
+        await creator.close()
+
+    assert raised.value.args == (1007, "injected collision")
+    assert state["exists"] is True
+    assert state["dropped"] is False
+    assert state["cleanup_factory_calls"] == 0
+    assert state["creator_closed"] is True
+    assert state["cleanup_closed"] is False
+    assert created == []
+    assert cleaned == []
