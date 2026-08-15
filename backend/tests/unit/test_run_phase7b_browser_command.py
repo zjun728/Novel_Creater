@@ -115,6 +115,38 @@ def test_owned_browser_rejects_missing_duplicate_or_noncanonical_private_evidenc
 
 
 @pytest.mark.parametrize(
+    ("field", "bad_value"),
+    tuple(
+        (field, bad_value)
+        for field, expected in (
+            ("scenarioCount", 1),
+            ("providerCalls", 0),
+            ("outboundRequests", 0),
+            ("processCount", 0),
+            ("portCount", 0),
+            ("artifactCount", 0),
+        )
+        for bad_value in (bool(expected), float(expected))
+    ),
+)
+def test_owned_browser_rejects_non_exact_private_counter_types(
+    field: str, bad_value: object
+) -> None:
+    with pytest.raises(preparation.ProductDatabasePreparationCommandError) as raised:
+        preparation.run_owned_phase7b_browser(
+            node_command=("node", "frontend/e2e/run-phase7b.mjs"),
+            cwd=preparation.REPOSITORY_ROOT,
+            environment={},
+            timeout_seconds=300,
+            runner=_successful_runner(_internal_evidence(**{field: bad_value})),
+            root_factory=lambda *_args: SimpleNamespace(),
+        )
+
+    assert str(raised.value) == "readiness smoke failed"
+    assert "secret" not in repr(raised.value)
+
+
+@pytest.mark.parametrize(
     ("failure", "expected_type"),
     (
         (RuntimeError("secret cleanup"), preparation.ProductDatabasePreparationCommandError),
@@ -196,6 +228,27 @@ def test_wrapper_rejects_every_argument_without_starting_owner(
     assert command.main() == 1
     captured = capsys.readouterr()
     assert started is False
+    assert captured.out == ""
+    assert captured.err == "phase7b browser smoke failed\n"
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    (("scenarioCount", True), ("providerCalls", 0.0), ("rootCount", False)),
+)
+def test_wrapper_rejects_non_exact_public_counter_types_without_success_marker(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    field: str,
+    bad_value: object,
+) -> None:
+    summary = dict(preparation._BROWSER_SMOKE_EXPECTED)
+    summary[field] = bad_value
+    monkeypatch.setattr(command.sys, "argv", ["run_phase7b_browser.py"])
+    monkeypatch.setattr(command, "_run", lambda: summary)
+
+    assert command.main() == 1
+    captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == "phase7b browser smoke failed\n"
 

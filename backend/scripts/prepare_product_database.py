@@ -251,6 +251,20 @@ def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return value
 
 
+def _is_exact_browser_record(
+    value: object, expected: Mapping[str, object]
+) -> bool:
+    return (
+        type(value) is dict
+        and set(value) == set(expected)
+        and all(
+            type(value[key]) is type(expected_value)
+            and value[key] == expected_value
+            for key, expected_value in expected.items()
+        )
+    )
+
+
 def _parse_canonical_json_document(document: str | bytes) -> object:
     if type(document) is bytes:
         text = document.decode("utf-8")
@@ -1852,9 +1866,9 @@ def run_owned_phase7b_browser(
             parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
         )
         if (
-            type(evidence) is not dict
-            or set(evidence) != set(_BROWSER_INTERNAL_EVIDENCE_EXPECTED)
-            or evidence != _BROWSER_INTERNAL_EVIDENCE_EXPECTED
+            not _is_exact_browser_record(
+                evidence, _BROWSER_INTERNAL_EVIDENCE_EXPECTED
+            )
             or evidence_documents[0] != canonical_json(evidence)
         ):
             raise ValueError
@@ -1892,9 +1906,7 @@ async def _default_smoke(
             root_factory=_open_browser_root_lease,
         )
         if (
-            type(summary) is not dict
-            or set(summary) != set(_BROWSER_SMOKE_EXPECTED)
-            or summary != _BROWSER_SMOKE_EXPECTED
+            not _is_exact_browser_record(summary, _BROWSER_SMOKE_EXPECTED)
         ):
             raise ValueError
         return SmokeResult(provider_calls=0, outbound_requests=0)

@@ -8,10 +8,12 @@ import sys
 from backend.domain.json_contracts import canonical_json
 from backend.scripts.prepare_product_database import (
     _BROWSER_NODE_COMMAND,
+    _BROWSER_SMOKE_EXPECTED,
     _BROWSER_SMOKE_PREFIX,
     _BROWSER_SMOKE_TIMEOUT_SECONDS,
     REPOSITORY_ROOT,
     _default_browser_smoke_runner,
+    _is_exact_browser_record,
     _open_browser_root_lease,
     run_owned_phase7b_browser,
 )
@@ -37,6 +39,8 @@ def main() -> int:
         return 1
     try:
         summary = _run()
+        if not _is_exact_browser_record(summary, _BROWSER_SMOKE_EXPECTED):
+            raise ValueError
     except BaseException:
         print(_FAILURE_LINE, file=sys.stderr)
         return 1
