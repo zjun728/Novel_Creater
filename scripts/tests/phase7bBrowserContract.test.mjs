@@ -130,10 +130,23 @@ test('Phase 7B runner borrows its sandbox and emits only private internal eviden
     runner.canonicalJson({ z: [{ b: 1, a: 2 }], a: null }),
     '{"a":null,"z":[{"a":2,"b":1}]}',
   )
-  for (const invalid of [NaN, Infinity, -Infinity, undefined, 1n]) {
+  assert.equal(
+    runner.canonicalJson({ '\u{10000}': 2, '\u{e000}': 1 }),
+    '{"":1,"𐀀":2}',
+  )
+  for (const invalid of [
+    NaN, Infinity, -Infinity, -0, 1.5, Number.MAX_SAFE_INTEGER + 1, undefined, 1n,
+  ]) {
     assert.throws(() => runner.canonicalJson({ invalid }), TypeError)
   }
   assert.throws(() => runner.canonicalJson(Array(1)), TypeError)
+  for (const array of [
+    Object.assign([0], { extra: true }),
+    Object.defineProperty([0], 'hidden', { value: true }),
+    Object.assign([0], { [Symbol('extra')]: true }),
+  ]) assert.throws(() => runner.canonicalJson(array), TypeError)
+  assert.throws(() => runner.canonicalJson(Object.create(null)), TypeError)
+  assert.throws(() => runner.canonicalJson(new (class Evidence {})()), TypeError)
 })
 
 test('Phase 7B config is one-worker, loopback-only, and direct-child-owned', () => {

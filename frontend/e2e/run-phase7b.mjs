@@ -115,7 +115,11 @@ export function canonicalJson(value) {
       return JSON.stringify(item)
     }
     if (typeof item === 'number') {
-      if (!Number.isFinite(item)) throw new TypeError('Phase7B evidence is not strict JSON')
+      if (
+        !Number.isFinite(item)
+        || !Number.isSafeInteger(item)
+        || Object.is(item, -0)
+      ) throw new TypeError('Phase7B evidence is not strict JSON')
       return JSON.stringify(item)
     }
     if (typeof item !== 'object') throw new TypeError('Phase7B evidence is not strict JSON')
@@ -123,13 +127,27 @@ export function canonicalJson(value) {
     active.add(item)
     try {
       if (Array.isArray(item)) {
+        const expectedKeys = new Set([
+          ...Array.from({ length: item.length }, (_value, index) => String(index)),
+          'length',
+        ])
+        const ownKeys = Reflect.ownKeys(item)
+        const lengthDescriptor = Object.getOwnPropertyDescriptor(item, 'length')
+        if (
+          ownKeys.length !== expectedKeys.size
+          || ownKeys.some(key => typeof key !== 'string' || !expectedKeys.has(key))
+          || lengthDescriptor?.value !== item.length
+          || lengthDescriptor?.writable !== true
+          || lengthDescriptor?.enumerable !== false
+          || lengthDescriptor?.configurable !== false
+        ) throw new TypeError('Phase7B evidence is not strict JSON')
         for (let index = 0; index < item.length; index += 1) {
           if (!Object.hasOwn(item, index)) throw new TypeError('Phase7B evidence is not strict JSON')
         }
         return `[${item.map(serialize).join(',')}]`
       }
       const prototype = Object.getPrototypeOf(item)
-      if (prototype !== Object.prototype && prototype !== null) {
+      if (prototype !== Object.prototype) {
         throw new TypeError('Phase7B evidence is not strict JSON')
       }
       return `{${Object.keys(item).sort(compareUnicodeCodePoints).map(key => (
