@@ -60,8 +60,6 @@ _TARGET_INVENTORY_ERROR = "new database inventory failed"
 _AUDIT_ERROR = "new database readiness audit failed"
 _SMOKE_ERROR = "readiness smoke failed"
 _NETWORK_ERROR = "readiness smoke crossed network boundary"
-_CLEANUP_ERROR = "product database cleanup failed"
-_GROUP_ERROR = "product database preparation failed"
 _FLOW_CONTROL = (asyncio.CancelledError, KeyboardInterrupt, SystemExit)
 
 
@@ -85,6 +83,29 @@ class PreparationRequest:
                 raise ValueError
         except BaseException as error:
             _raise_normalized(error, _REQUEST_ERROR)
+
+
+@dataclass(frozen=True)
+class NewDatabaseBoundaryState:
+    """Non-authorizing evidence returned by the atomic lifecycle boundary."""
+
+    mode: str
+    initialized: object | None
+    inventory: DatabaseInventory | None
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.mode) is not str
+            or self.mode not in ("created", "preexisting")
+            or self.mode == "created"
+            and (self.initialized is None or self.inventory is not None)
+            or self.mode == "preexisting"
+            and (
+                self.initialized is not None
+                or type(self.inventory) is not DatabaseInventory
+            )
+        ):
+            raise ProductDatabaseReadinessError(_INITIALIZE_ERROR)
 
 
 @dataclass(frozen=True)
@@ -553,35 +574,28 @@ def _validate_smoke(value: object) -> SmokeResult:
         _raise_normalized(error, _SMOKE_ERROR)
 
 
-def _finish_failure(primary: BaseException, cleanup: BaseException | None) -> None:
-    normalized_cleanup = (
-        None if cleanup is None else _normalized(cleanup, _CLEANUP_ERROR)
-    )
-    if normalized_cleanup is None:
-        _raise_public(primary)
-    _raise_public(BaseExceptionGroup(_GROUP_ERROR, [primary, normalized_cleanup]))
-
-
 async def prepare_product_database(
     *,
     request: PreparationRequest,
     inventory: Callable[[str], object],
     create_backup: Callable[[DatabaseInventory, Path], object],
     restore_drill: Callable[[BackupReceipt, DatabaseInventory], object],
-    probe_new: Callable[[str], object],
-    initialize_new: Callable[[str], object],
+    new_database_boundary: Callable[[str], object],
     seed_assets: Callable[[str], object],
     seed_market: Callable[[str], object],
     read_storage: Callable[[str], object],
     audit_official_data: Callable[[str], object],
     smoke: Callable[[str], object],
-    cleanup_new: Callable[[str], object],
 ) -> PreparationReceipt:
-    """Prepare Stage A under exclusive ownership of the fixed new DB target.
+    """Prepare Stage A inside one trusted atomic new-database lifecycle.
 
-    ``probe_new`` is an independent read-only boundary. Stage A runs as a
-    single exclusive process: after an exact absent preflight, any appearance
-    of the fixed target during a failed initializer is owned by this run.
+    Task 5 must provide ``new_database_boundary`` as an async context manager
+    backed by the MySQL exclusive lock. Its ``__aenter__`` atomically returns
+    ``created`` or a preexisting inventory, cleans any create/enter failure,
+    and its ``__aexit__`` retains a created target only after a successful
+    body. It must never clean a preexisting target and must emit only fixed,
+    secret-safe initialization/cleanup errors. No deletion authority crosses
+    this service boundary.
     """
 
     try:
@@ -592,9 +606,6 @@ async def prepare_product_database(
     except BaseException as error:
         _raise_normalized(error, _REQUEST_ERROR)
 
-    owned_new = False
-    primary: BaseException | None = None
-    result: PreparationReceipt | None = None
     try:
         before = await _stage(_LEGACY_INVENTORY_ERROR, inventory, "legacy-before")
         if type(before) is not DatabaseInventory or before.database != request.legacy_database:
@@ -651,127 +662,118 @@ async def prepare_product_database(
         except BaseException as error:
             _raise_normalized(error, _LEGACY_DRIFT_ERROR)
 
-        preflight = await _stage(
-            _TARGET_INVENTORY_ERROR, probe_new, request.new_database
-        )
-        if preflight is None:
-            try:
-                initialized = await _invoke(initialize_new, request.new_database)
-            except BaseException as error:
-                initialization_failure = _normalized(error, _INITIALIZE_ERROR)
-                try:
-                    post_failure = await _invoke(probe_new, request.new_database)
-                except BaseException as probe_error:
-                    _finish_failure(initialization_failure, probe_error)
-                if post_failure is None:
-                    _raise_public(initialization_failure)
-                if type(post_failure) is not DatabaseInventory:
-                    _finish_failure(
-                        initialization_failure, _fixed(_CLEANUP_ERROR)
-                    )
-                owned_new = True
-                _raise_public(initialization_failure)
-            owned_new = True
-            try:
-                initialization_payload = _initialization_payload(initialized)
-            except BaseException as error:
-                _raise_normalized(error, _INITIALIZE_ERROR)
-
-            assets = await _stage(
-                _ASSET_SEED_ERROR, seed_assets, request.new_database
-            )
-            market = await _stage(
-                _MARKET_SEED_ERROR, seed_market, request.new_database
-            )
-            try:
-                seed_report_payload = _validated_seed_payload(assets, market)
-                _validate_seed_mode(seed_report_payload, True)
-            except BaseException as error:
-                _raise_normalized(error, _AUDIT_ERROR)
-
-            target = await _stage(_TARGET_INVENTORY_ERROR, inventory, "new")
-            storage = await _stage(
-                _AUDIT_ERROR, read_storage, request.new_database
-            )
-        elif type(preflight) is DatabaseInventory:
-            target = preflight
-            storage = await _stage(
-                _AUDIT_ERROR, read_storage, request.new_database
-            )
-            try:
-                initialized = _resume_initialization(target)
-                _validate_target_state(target, initialized, storage)
-                initialization_payload = _initialization_payload(initialized)
-            except BaseException as error:
-                _raise_normalized(error, _AUDIT_ERROR)
-        else:
-            raise _fixed(_TARGET_INVENTORY_ERROR)
-
-        receipts.append(
-            advance_receipt(
-                receipts[-1],
-                ReadinessState.NEW_DATABASE_INITIALIZED,
-                canonical_hash(initialization_payload),
-            )
-        )
-
-        official_value = await _stage(
-            _AUDIT_ERROR, audit_official_data, request.new_database
-        )
         try:
-            _validate_target_state(target, initialized, storage)
-            official_payload = _validated_official_data(official_value)
+            boundary = new_database_boundary(request.new_database)
+            if (
+                not callable(getattr(type(boundary), "__aenter__", None))
+                or not callable(getattr(type(boundary), "__aexit__", None))
+            ):
+                raise ValueError
         except BaseException as error:
-            _raise_normalized(error, _AUDIT_ERROR)
-        receipts.append(
-            advance_receipt(
-                receipts[-1],
-                ReadinessState.OFFICIAL_DATA_SEEDED,
-                canonical_hash(official_payload),
-            )
-        )
+            _raise_normalized(error, _INITIALIZE_ERROR)
 
-        smoke_value = await _stage(_SMOKE_ERROR, smoke, request.new_database)
-        smoke_result = _validate_smoke(smoke_value)
-        if smoke_result.provider_calls != 0 or smoke_result.outbound_requests != 0:
-            raise _fixed(_NETWORK_ERROR)
+        async with boundary as boundary_value:  # type: ignore[attr-defined]
+            if type(boundary_value) is not NewDatabaseBoundaryState:
+                raise _fixed(_INITIALIZE_ERROR)
+            mode = boundary_value.mode
+            seed_report_payload: dict[str, object] | None = None
+            if mode == "created":
+                initialized = boundary_value.initialized
+                try:
+                    initialization_payload = _initialization_payload(initialized)
+                except BaseException as error:
+                    _raise_normalized(error, _INITIALIZE_ERROR)
 
-        receipts.append(
-            advance_receipt(
-                receipts[-1], ReadinessState.READINESS_VERIFIED, inventory_hash(target)
-            )
-        )
-        receipts.append(
-            advance_receipt(
-                receipts[-1],
-                ReadinessState.AWAITING_CUTOVER_APPROVAL,
-                canonical_hash({"providerCalls": 0, "outboundRequests": 0}),
-            )
-        )
-        result = PreparationReceipt(
-            state=ReadinessState.AWAITING_CUTOVER_APPROVAL.value,
-            previous_receipt_hash=canonical_receipt_hash(receipts[-1]),
-            legacy_database=request.legacy_database,
-            new_database=request.new_database,
-            legacy_inventory_hash=inventory_hash(before),
-            new_inventory_hash=inventory_hash(target),
-            backup_sha256=backup.backup_sha256,
-            style_count=official_payload["styleCount"],  # type: ignore[arg-type]
-            experience_card_count=official_payload["cardCount"],  # type: ignore[arg-type]
-            market_source_count=official_payload["marketSourceCount"],  # type: ignore[arg-type]
-            receipts=tuple(receipts),
-        )
-    except BaseException as error:
-        primary = error
+                assets = await _stage(
+                    _ASSET_SEED_ERROR, seed_assets, request.new_database
+                )
+                market = await _stage(
+                    _MARKET_SEED_ERROR, seed_market, request.new_database
+                )
+                try:
+                    seed_report_payload = _validated_seed_payload(assets, market)
+                    _validate_seed_mode(seed_report_payload, True)
+                except BaseException as error:
+                    _raise_normalized(error, _AUDIT_ERROR)
 
-    if primary is not None:
-        cleanup_error: BaseException | None = None
-        if owned_new:
+                target = await _stage(_TARGET_INVENTORY_ERROR, inventory, "new")
+                storage = await _stage(
+                    _AUDIT_ERROR, read_storage, request.new_database
+                )
+            else:
+                target = boundary_value.inventory
+                storage = await _stage(
+                    _AUDIT_ERROR, read_storage, request.new_database
+                )
+                try:
+                    initialized = _resume_initialization(target)  # type: ignore[arg-type]
+                    _validate_target_state(target, initialized, storage)
+                    initialization_payload = _initialization_payload(initialized)
+                except BaseException as error:
+                    _raise_normalized(error, _AUDIT_ERROR)
+
+            receipts.append(
+                advance_receipt(
+                    receipts[-1],
+                    ReadinessState.NEW_DATABASE_INITIALIZED,
+                    canonical_hash(initialization_payload),
+                )
+            )
+
+            official_value = await _stage(
+                _AUDIT_ERROR, audit_official_data, request.new_database
+            )
             try:
-                cleanup_target = validate_database_role("new", request.new_database)
-                await _invoke(cleanup_new, cleanup_target)
+                _validate_target_state(target, initialized, storage)
+                official_payload = _validated_official_data(official_value)
             except BaseException as error:
-                cleanup_error = error
-        _finish_failure(primary, cleanup_error)
-    assert result is not None
-    return result
+                _raise_normalized(error, _AUDIT_ERROR)
+            seed_evidence: dict[str, object] = {
+                "mode": "created" if mode == "created" else "resume",
+                "observed": official_payload,
+            }
+            if seed_report_payload is not None:
+                seed_evidence["seedReports"] = seed_report_payload
+            receipts.append(
+                advance_receipt(
+                    receipts[-1],
+                    ReadinessState.OFFICIAL_DATA_SEEDED,
+                    canonical_hash(seed_evidence),
+                )
+            )
+
+            smoke_value = await _stage(_SMOKE_ERROR, smoke, request.new_database)
+            smoke_result = _validate_smoke(smoke_value)
+            if smoke_result.provider_calls != 0 or smoke_result.outbound_requests != 0:
+                raise _fixed(_NETWORK_ERROR)
+
+            receipts.append(
+                advance_receipt(
+                    receipts[-1],
+                    ReadinessState.READINESS_VERIFIED,
+                    inventory_hash(target),  # type: ignore[arg-type]
+                )
+            )
+            receipts.append(
+                advance_receipt(
+                    receipts[-1],
+                    ReadinessState.AWAITING_CUTOVER_APPROVAL,
+                    canonical_hash({"providerCalls": 0, "outboundRequests": 0}),
+                )
+            )
+            result = PreparationReceipt(
+                state=ReadinessState.AWAITING_CUTOVER_APPROVAL.value,
+                previous_receipt_hash=canonical_receipt_hash(receipts[-1]),
+                legacy_database=request.legacy_database,
+                new_database=request.new_database,
+                legacy_inventory_hash=inventory_hash(before),
+                new_inventory_hash=inventory_hash(target),  # type: ignore[arg-type]
+                backup_sha256=backup.backup_sha256,
+                style_count=official_payload["styleCount"],  # type: ignore[arg-type]
+                experience_card_count=official_payload["cardCount"],  # type: ignore[arg-type]
+                market_source_count=official_payload["marketSourceCount"],  # type: ignore[arg-type]
+                receipts=tuple(receipts),
+            )
+        return result
+    except BaseException as error:
+        _raise_public(error)
