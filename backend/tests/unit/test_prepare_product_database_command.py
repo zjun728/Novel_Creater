@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from dataclasses import asdict, replace
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 import asyncio
 import json
 import stat
@@ -1951,7 +1951,9 @@ class ExecuteWorld:
         self.events.append(("audit", config, database))
         return object()
 
-    async def smoke(self, config: object, database: str) -> object:
+    async def smoke(
+        self, config: object, database: str, _runner: object = None
+    ) -> object:
         self.events.append(("smoke", config, database))
         return object()
 
@@ -2119,7 +2121,9 @@ class RealTask4ExecuteWorld(ExecuteWorld):
         self.events.append(("audit", config, database))
         return self.audit
 
-    async def smoke(self, config: object, database: str) -> SmokeResult:
+    async def smoke(
+        self, config: object, database: str, _runner: object = None
+    ) -> SmokeResult:
         self.events.append(("smoke", config, database))
         return SmokeResult(provider_calls=0, outbound_requests=0)
 
@@ -2145,6 +2149,7 @@ async def test_execute_wires_preflight_inventory_task4_and_publication_in_order(
         read_storage=world.read_storage,
         audit_official_data=world.audit_official_data,
         smoke=world.smoke,
+        browser_smoke_runner=lambda **_kwargs: pytest.fail("unused fake runner"),
         prepare_service=prepare_product_database,
         publish_receipt=world.publish,
         id_factory=lambda: next(ids),
@@ -2254,6 +2259,67 @@ async def test_execute_wires_preflight_inventory_task4_and_publication_in_order(
     assert "11111111111111111111111111111111" not in rendered
 
 
+@pytest.mark.asyncio
+async def test_malformed_browser_smoke_rolls_back_task4_and_never_publishes_receipt(
+    tmp_path: Path,
+) -> None:
+    world = RealTask4ExecuteWorld()
+    browser_calls: list[object] = []
+
+    def malformed_browser(**kwargs: object) -> object:
+        browser_calls.append(kwargs)
+        return SimpleNamespace(
+            returncode=0,
+            stdout="PHASE7B_BROWSER_SMOKE_SUMMARY={\"scenario\":1}",
+            stderr="secret-browser-stderr",
+        )
+
+    dependencies = PreparationCommandDependencies(
+        preflight_clients=world.preflight_clients,
+        read_config=world.read_config,
+        option_file=world.option_file,
+        preflight_connection=world.preflight_connection,
+        inventory_database=world.inventory_database,
+        create_backup=world.create_backup,
+        restore_drill=world.restore_drill,
+        current_schema_proof=world.current_schema_proof,
+        database_boundary=world.database_boundary,
+        seed_assets=world.seed_assets,
+        seed_market=world.seed_market,
+        read_storage=world.read_storage,
+        audit_official_data=world.audit_official_data,
+        smoke=command_module._default_smoke,
+        browser_smoke_runner=malformed_browser,
+        prepare_service=prepare_product_database,
+        publish_receipt=world.publish,
+        id_factory=lambda: "1" * 32,
+    )
+    output: list[str] = []
+    argv = [
+        *_arguments(tmp_path),
+        "--execute",
+        "--confirm-legacy",
+        LEGACY_DATABASE,
+        "--confirm-new",
+        NEW_DATABASE,
+        "--confirm-prepare",
+        "PREPARE-PHASE7B",
+    ]
+
+    with pytest.raises(ProductDatabasePreparationCommandError) as raised:
+        await run_cli(argv, dependencies=dependencies, output=output.append)
+
+    assert str(raised.value) == "product database preparation execution failed"
+    assert "secret" not in repr(raised.value)
+    assert browser_calls and browser_calls[0]["environment"]["MYSQL_DB"] == NEW_DATABASE  # type: ignore[index]
+    assert "boundary-exit" in world.events
+    assert not any(
+        isinstance(event, tuple) and event[0] == "publish"
+        for event in world.events
+    )
+    assert output == []
+
+
 def test_default_dependencies_wire_public_resources_with_exact_arguments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2342,6 +2408,10 @@ def test_default_dependencies_wire_public_resources_with_exact_arguments(
     assert dependencies.read_storage is command_module._default_storage
     assert dependencies.audit_official_data is command_module._default_official_audit
     assert dependencies.smoke is command_module._default_smoke
+    assert (
+        dependencies.browser_smoke_runner
+        is command_module._default_browser_smoke_runner
+    )
     assert dependencies.prepare_service is prepare_product_database
     assert dependencies.publish_receipt is publish_readiness_receipt
     assert calls == [
@@ -2388,6 +2458,336 @@ def test_default_dependencies_wire_public_resources_with_exact_arguments(
     ]
 
 
+def _browser_summary(**changes: object) -> str:
+    value: dict[str, object] = {
+        "scenario": 1,
+        "providerCalls": 0,
+        "outboundRequests": 0,
+        "writeAttempts": 0,
+        "non2xxResponses": 0,
+        "originViolations": 0,
+        "consoleErrors": 0,
+        "requestFailures": 0,
+        "resourceLeaks": 0,
+    }
+    value.update(changes)
+    return "PHASE7B_BROWSER_SMOKE_SUMMARY=" + canonical_json(value)
+
+
+@pytest.mark.asyncio
+async def test_default_smoke_invokes_explicit_browser_runner_and_validates_summary() -> None:
+    calls: list[object] = []
+
+    def runner(**kwargs: object) -> object:
+        calls.append(kwargs)
+        return SimpleNamespace(returncode=0, stdout=_browser_summary(), stderr="")
+
+    result = await command_module._default_smoke({}, NEW_DATABASE, runner)
+
+    assert result == SmokeResult(provider_calls=0, outbound_requests=0)
+    assert calls == [
+        {
+            "command": ("npm", "run", "test:browser:phase7b"),
+            "cwd": command_module.REPOSITORY_ROOT,
+            "environment": {
+                **dict(command_module.os.environ),
+                "MYSQL_DB": NEW_DATABASE,
+                "MARKET_SCHEDULER_ENABLED": "false",
+                "PHASE7B_PRE_CUTOVER_MODE": "true",
+            },
+            "timeout_seconds": 300,
+        }
+    ]
+
+
+def test_default_browser_smoke_runner_uses_exact_subprocess_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[object] = []
+    completed = object()
+
+    def run(*args: object, **kwargs: object) -> object:
+        calls.append((args, kwargs))
+        return completed
+
+    monkeypatch.setattr(command_module.subprocess, "run", run)
+    environment = {"MYSQL_DB": NEW_DATABASE, "ONLY_TEST": "yes"}
+
+    result = command_module._default_browser_smoke_runner(
+        command=("npm", "run", "test:browser:phase7b"),
+        cwd=command_module.REPOSITORY_ROOT,
+        environment=environment,
+        timeout_seconds=300,
+    )
+
+    assert result is completed
+    assert calls == [
+        (
+            (("npm", "run", "test:browser:phase7b"),),
+            {
+                "cwd": command_module.REPOSITORY_ROOT,
+                "env": environment,
+                "capture_output": True,
+                "text": True,
+                "check": False,
+                "timeout": 300,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("returncode", "stdout"),
+    (
+        (1, _browser_summary()),
+        (0, ""),
+        (0, "not-json"),
+        (0, _browser_summary() + "\n" + _browser_summary()),
+        (0, _browser_summary(scenario=0)),
+        (0, _browser_summary(providerCalls=1)),
+        (0, _browser_summary(writeAttempts=True)),
+        (0, _browser_summary(extra=0)),
+    ),
+)
+async def test_default_smoke_rejects_runner_failure_or_unsafe_summary(
+    returncode: int, stdout: str
+) -> None:
+    def runner(**_kwargs: object) -> object:
+        return SimpleNamespace(
+            returncode=returncode,
+            stdout=stdout,
+            stderr="password=secret D:/private/browser.log",
+        )
+
+    with pytest.raises(ProductDatabasePreparationCommandError) as raised:
+        await command_module._default_smoke({}, NEW_DATABASE, runner)
+
+    assert str(raised.value) == "readiness smoke failed"
+    assert "secret" not in repr(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_default_smoke_normalizes_missing_browser_runner_without_leak() -> None:
+    def missing_runner(**_kwargs: object) -> object:
+        raise FileNotFoundError("secret npm path D:/private/npm.cmd")
+
+    with pytest.raises(ProductDatabasePreparationCommandError) as raised:
+        await command_module._default_smoke({}, NEW_DATABASE, missing_runner)
+
+    assert str(raised.value) == "readiness smoke failed"
+    assert "secret" not in repr(raised.value)
+
+
+def _official_market_rows_and_refresh_states() -> tuple[list[dict], list[dict]]:
+    backend_root = Path(__file__).resolve().parents[2]
+    market = load_market_source_package(
+        backend_root / "assets" / MARKET_VERSION / "manifest.json"
+    )
+    inventory: list[dict] = []
+    refresh: list[dict] = []
+    for index, source in enumerate(market.sources):
+        source_id = f"official-source-{index}"
+        revision_id = f"official-revision-{index}"
+        inventory.append(
+            {
+                "id": source_id,
+                "stable_key": source.stable_key,
+                "adapter_key": source.adapter_key,
+                "display_name": source.display_name,
+                "public_config_json": canonical_json(dict(source.public_config)),
+                "status": "active",
+                "policy": {
+                    "id": revision_id,
+                    "source_id": source_id,
+                    "revision": 1,
+                    "policy_status": source.policy.status,
+                    "policy_version": source.policy.policy_version,
+                    "checked_at": source.policy.checked_at,
+                    "evidence_url": source.policy.evidence_url,
+                    "evidence_hash": source.policy.evidence_hash,
+                    "allowed_origins_json": canonical_json(
+                        list(source.policy.allowed_origins)
+                    ),
+                    "path_prefixes_json": canonical_json(
+                        list(source.policy.path_prefixes)
+                    ),
+                    "enabled": int(source.policy.enabled),
+                    "interval_minutes": source.policy.request_interval_seconds // 60,
+                    "next_run_at": None,
+                    "content_hash": source.policy_hash,
+                },
+                "head": {
+                    "source_id": source_id,
+                    "revision_id": revision_id,
+                    "revision": 1,
+                    "content_hash": source.policy_hash,
+                },
+            }
+        )
+        refresh.append(
+            {
+                "source_id": source_id,
+                "last_snapshot_id": None,
+                "refresh_status": "idle",
+                "lease_owner": None,
+                "lease_expires_at": None,
+                "last_attempted_at": None,
+                "last_succeeded_at": None,
+                "next_run_at": None,
+                "public_error_code": None,
+            }
+        )
+    return inventory, refresh
+
+
+async def _run_default_official_audit_with_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+    refresh_rows: list[dict],
+    *,
+    inventory_rows: list[dict] | None = None,
+) -> tuple[OfficialDataAudit, list[object]]:
+    import backend.repositories.market as market_repository_module
+    import backend.services.assets as asset_service_module
+
+    default_inventory, _valid_refresh = _official_market_rows_and_refresh_states()
+    inventory = default_inventory if inventory_rows is None else inventory_rows
+    calls: list[object] = []
+
+    class Session:
+        async def fetchall(
+            self, sql: str, params: tuple[object, ...] = ()
+        ) -> tuple[dict, ...]:
+            calls.append(("fetchall", sql, params))
+            return tuple(refresh_rows)
+
+    @asynccontextmanager
+    async def connection_scope(_config: object, database: str):  # type: ignore[no-untyped-def]
+        calls.append(("connection-enter", database))
+        try:
+            yield Session()
+        finally:
+            calls.append("connection-exit")
+
+    async def dry_run(_self: object, package: object) -> object:
+        return SimpleNamespace(
+            inserted=0,
+            replayed=len(package.styles) + len(package.experience_cards),
+            advanced=0,
+        )
+
+    async def list_inventory(_self: object, _session: object) -> tuple[dict, ...]:
+        calls.append("market-inventory")
+        return tuple(inventory)
+
+    monkeypatch.setattr(command_module, "_default_connection_scope", connection_scope)
+    monkeypatch.setattr(asset_service_module.AssetSeedService, "dry_run", dry_run)
+    monkeypatch.setattr(
+        market_repository_module.MarketRepository,
+        "list_seed_inventory",
+        list_inventory,
+    )
+    result = await command_module._default_official_audit({}, NEW_DATABASE)
+    return result, calls
+
+
+@pytest.mark.asyncio
+async def test_default_official_audit_reads_exact_idle_refresh_state_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _inventory, refresh = _official_market_rows_and_refresh_states()
+
+    result, calls = await _run_default_official_audit_with_refresh(
+        monkeypatch, refresh
+    )
+
+    assert type(result) is OfficialDataAudit
+    assert "official-source-" not in canonical_json(asdict(result))
+    fetch = next(call for call in calls if isinstance(call, tuple) and call[0] == "fetchall")
+    assert fetch[2] == ()
+    assert "SELECT source_id,last_snapshot_id,refresh_status,lease_owner," in fetch[1]
+    assert "lease_expires_at,last_attempted_at,last_succeeded_at," in fetch[1]
+    assert "next_run_at,public_error_code" in fetch[1]
+    assert "FROM market_source_refresh_states" in fetch[1]
+    assert "ORDER BY source_id" in fetch[1]
+    assert "updated_at" not in fetch[1]
+    assert "SELECT *" not in fetch[1]
+    assert calls[-1] == "connection-exit"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("corruption", ("source", "policy", "head"))
+async def test_default_official_audit_rejects_corrupted_market_authority_with_valid_refresh(
+    monkeypatch: pytest.MonkeyPatch, corruption: str
+) -> None:
+    inventory, refresh = _official_market_rows_and_refresh_states()
+    if corruption == "source":
+        inventory[0]["adapter_key"] = "secret-corrupt-adapter"
+    elif corruption == "policy":
+        inventory[0]["policy"]["content_hash"] = "secret-corrupt-policy"
+    elif corruption == "head":
+        inventory[0]["head"]["content_hash"] = "secret-corrupt-head"
+
+    with pytest.raises(ProductDatabasePreparationCommandError) as raised:
+        await _run_default_official_audit_with_refresh(
+            monkeypatch, refresh, inventory_rows=inventory
+        )
+
+    assert str(raised.value) == "new database readiness audit failed"
+    assert "secret" not in repr(raised.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    (
+        "leased",
+        "attempted",
+        "next",
+        "error",
+        "snapshot",
+        "duplicate",
+        "missing",
+        "unknown",
+        "extra-column",
+        "spoofed-type",
+    ),
+)
+async def test_default_official_audit_rejects_nonidle_or_unclosed_refresh_state(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    _inventory, refresh = _official_market_rows_and_refresh_states()
+    if failure == "leased":
+        refresh[0]["refresh_status"] = "leased"
+        refresh[0]["lease_owner"] = "secret-worker"
+    elif failure == "attempted":
+        refresh[0]["last_attempted_at"] = 123
+    elif failure == "next":
+        refresh[0]["next_run_at"] = 123
+    elif failure == "error":
+        refresh[0]["public_error_code"] = "secret-error"
+    elif failure == "snapshot":
+        refresh[0]["last_snapshot_id"] = "secret-snapshot"
+    elif failure == "duplicate":
+        refresh.append(dict(refresh[0]))
+    elif failure == "missing":
+        refresh.pop()
+    elif failure == "unknown":
+        refresh[0]["source_id"] = "secret-unknown"
+    elif failure == "extra-column":
+        refresh[0]["updated_at"] = 123
+    elif failure == "spoofed-type":
+        refresh[0]["source_id"] = type("SpoofedString", (str,), {})(
+            refresh[0]["source_id"]
+        )
+
+    with pytest.raises(ProductDatabasePreparationCommandError) as raised:
+        await _run_default_official_audit_with_refresh(monkeypatch, refresh)
+
+    assert str(raised.value) == "new database readiness audit failed"
+    assert "secret" not in repr(raised.value)
+
+
 @pytest.mark.asyncio
 async def test_execute_failure_is_fixed_and_drops_ambient_secret_context(
     tmp_path: Path,
@@ -2411,6 +2811,7 @@ async def test_execute_failure_is_fixed_and_drops_ambient_secret_context(
         read_storage=lambda *_args: None,
         audit_official_data=lambda *_args: None,
         smoke=lambda *_args: None,
+        browser_smoke_runner=lambda **_kwargs: pytest.fail("unused fake runner"),
         prepare_service=world.prepare,
         publish_receipt=world.publish,
         id_factory=lambda: "1" * 32,
@@ -2461,6 +2862,7 @@ async def test_execute_body_flow_control_is_cloned_after_boundary_cleanup(
         read_storage=world.read_storage,
         audit_official_data=world.audit_official_data,
         smoke=world.smoke,
+        browser_smoke_runner=lambda **_kwargs: pytest.fail("unused fake runner"),
         prepare_service=world.prepare,
         publish_receipt=world.publish,
         id_factory=lambda: "1" * 32,
@@ -2588,6 +2990,7 @@ async def test_execute_all_stage_flow_matrix_uses_real_task4_and_closes_resource
         read_storage=world.read_storage,
         audit_official_data=injected("audit", world.audit_official_data),
         smoke=injected("smoke", world.smoke),
+        browser_smoke_runner=lambda **_kwargs: pytest.fail("unused fake runner"),
         prepare_service=prepare_product_database,
         publish_receipt=injected("publication", world.publish),
         id_factory=lambda: "1" * 32,

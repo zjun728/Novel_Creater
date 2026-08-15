@@ -55,11 +55,36 @@ _RECEIPT_ERROR = "readiness receipt publication failed"
 _RECEIPT_CLEANUP_ERROR = "readiness receipt cleanup failed"
 _RECEIPT_DOCUMENT_ERROR = "readiness receipt document is invalid"
 _EXECUTION_ERROR = "product database preparation execution failed"
+_AUDIT_ERROR = "new database readiness audit failed"
+_SMOKE_ERROR = "readiness smoke failed"
 _RESTORE_DRILL_ERROR = "restore drill lifecycle failed"
 _RESTORE_DRILL_CLEANUP_ERROR = "restore drill cleanup failed"
 _LOCK_NAME = "novel_creator:phase7b:prepare"
 _HEX_ID = re.compile(r"^[0-9a-f]{32}$", re.ASCII)
 _MAX_RECEIPT_BYTES = 1_000_000
+_BROWSER_SMOKE_PREFIX = "PHASE7B_BROWSER_SMOKE_SUMMARY="
+_BROWSER_SMOKE_EXPECTED = {
+    "scenario": 1,
+    "providerCalls": 0,
+    "outboundRequests": 0,
+    "writeAttempts": 0,
+    "non2xxResponses": 0,
+    "originViolations": 0,
+    "consoleErrors": 0,
+    "requestFailures": 0,
+    "resourceLeaks": 0,
+}
+_REFRESH_AUDIT_COLUMNS = (
+    "source_id",
+    "last_snapshot_id",
+    "refresh_status",
+    "lease_owner",
+    "lease_expires_at",
+    "last_attempted_at",
+    "last_succeeded_at",
+    "next_run_at",
+    "public_error_code",
+)
 
 
 class ProductDatabasePreparationCommandError(RuntimeError):
@@ -88,6 +113,7 @@ class PreparationCommandDependencies:
     read_storage: Callable[..., object]
     audit_official_data: Callable[..., object]
     smoke: Callable[..., object]
+    browser_smoke_runner: Callable[..., object]
     prepare_service: Callable[..., object]
     publish_receipt: Callable[..., object]
     id_factory: Callable[[], str]
@@ -1239,52 +1265,97 @@ async def _default_official_audit(
     market_repository = MarketRepository()
     async with _default_connection_scope(config, database) as session:
         market_rows = await market_repository.list_seed_inventory(session)
+        refresh_rows = await session.fetchall(  # type: ignore[attr-defined]
+            """SELECT source_id,last_snapshot_id,refresh_status,lease_owner,
+                      lease_expires_at,last_attempted_at,last_succeeded_at,
+                      next_run_at,public_error_code
+               FROM market_source_refresh_states
+               ORDER BY source_id""",
+            (),
+        )
     by_key = {row.get("stable_key"): row for row in market_rows}
     expected_keys = {source.stable_key for source in market.sources}
-    if set(by_key) != expected_keys or len(by_key) != len(market_rows):
-        raise ValueError
-    for source in market.sources:
-        row = by_key[source.stable_key]
-        policy = row.get("policy")
-        head = row.get("head")
-        if not isinstance(policy, dict) or not isinstance(head, dict):
+    try:
+        if set(by_key) != expected_keys or len(by_key) != len(market_rows):
             raise ValueError
-        expected_policy = source.policy
+        for source in market.sources:
+            row = by_key[source.stable_key]
+            policy = row.get("policy")
+            head = row.get("head")
+            if type(policy) is not dict or type(head) is not dict:
+                raise ValueError
+            expected_policy = source.policy
+            if (
+                row.get("adapter_key") != source.adapter_key
+                or row.get("display_name") != source.display_name
+                or row.get("public_config_json")
+                != canonical_json(dict(source.public_config))
+                or row.get("status") != "active"
+                or policy.get("source_id") != row.get("id")
+                or policy.get("revision") != 1
+                or policy.get("policy_status") != expected_policy.status
+                or policy.get("policy_version") != expected_policy.policy_version
+                or policy.get("checked_at") != expected_policy.checked_at
+                or policy.get("evidence_url") != expected_policy.evidence_url
+                or policy.get("evidence_hash") != expected_policy.evidence_hash
+                or policy.get("allowed_origins_json")
+                != canonical_json(list(expected_policy.allowed_origins))
+                or policy.get("path_prefixes_json")
+                != canonical_json(list(expected_policy.path_prefixes))
+                or int(policy.get("enabled", -1)) != int(expected_policy.enabled)
+                or policy.get("interval_minutes")
+                != expected_policy.request_interval_seconds // 60
+                or policy.get("next_run_at") is not None
+                or policy.get("content_hash") != source.policy_hash
+                or head.get("source_id") != row.get("id")
+                or head.get("revision_id") != policy.get("id")
+                or head.get("revision") != 1
+                or head.get("content_hash") != source.policy_hash
+            ):
+                raise ValueError
+        expected_source_ids = tuple(
+            by_key[source.stable_key].get("id") for source in market.sources
+        )
         if (
-            row.get("adapter_key") != source.adapter_key
-            or row.get("display_name") != source.display_name
-            or row.get("public_config_json")
-            != canonical_json(dict(source.public_config))
-            or row.get("status") != "active"
-            or policy.get("source_id") != row.get("id")
-            or policy.get("revision") != 1
-            or policy.get("policy_status") != expected_policy.status
-            or policy.get("policy_version") != expected_policy.policy_version
-            or policy.get("checked_at") != expected_policy.checked_at
-            or policy.get("evidence_url") != expected_policy.evidence_url
-            or policy.get("evidence_hash") != expected_policy.evidence_hash
-            or policy.get("allowed_origins_json")
-            != canonical_json(list(expected_policy.allowed_origins))
-            or policy.get("path_prefixes_json")
-            != canonical_json(list(expected_policy.path_prefixes))
-            or int(policy.get("enabled", -1)) != int(expected_policy.enabled)
-            or policy.get("interval_minutes")
-            != expected_policy.request_interval_seconds // 60
-            or policy.get("next_run_at") is not None
-            or policy.get("content_hash") != source.policy_hash
-            or head.get("source_id") != row.get("id")
-            or head.get("revision_id") != policy.get("id")
-            or head.get("revision") != 1
-            or head.get("content_hash") != source.policy_hash
+            type(refresh_rows) is not tuple
+            or len(expected_source_ids) != 2
+            or any(type(source_id) is not str or not source_id for source_id in expected_source_ids)
+            or len(set(expected_source_ids)) != len(expected_source_ids)
+            or len(refresh_rows) != len(expected_source_ids)
         ):
             raise ValueError
-    if (
-        asset_report.inserted != 0
-        or asset_report.replayed
-        != len(assets.styles) + len(assets.experience_cards)
-        or asset_report.advanced != 0
-    ):
-        raise ValueError
+        observed_source_ids: list[str] = []
+        for row in refresh_rows:
+            if type(row) is not dict or set(row) != set(_REFRESH_AUDIT_COLUMNS):
+                raise ValueError
+            source_id = row["source_id"]
+            if (
+                type(source_id) is not str
+                or not source_id
+                or type(row["refresh_status"]) is not str
+                or row["refresh_status"] != "idle"
+                or any(
+                    row[column] is not None
+                    for column in _REFRESH_AUDIT_COLUMNS
+                    if column not in ("source_id", "refresh_status")
+                )
+            ):
+                raise ValueError
+            observed_source_ids.append(source_id)
+        if (
+            len(set(observed_source_ids)) != len(observed_source_ids)
+            or set(observed_source_ids) != set(expected_source_ids)
+        ):
+            raise ValueError
+        if (
+            asset_report.inserted != 0
+            or asset_report.replayed
+            != len(assets.styles) + len(assets.experience_cards)
+            or asset_report.advanced != 0
+        ):
+            raise ValueError
+    except BaseException as error:
+        _raise_public(_sanitized(error, _AUDIT_ERROR))
     return OfficialDataAudit(
         asset_package_version=assets.package_version,
         asset_package_hash=canonical_hash(assets.manifest),
@@ -1302,23 +1373,83 @@ async def _default_official_audit(
     )
 
 
-async def _default_smoke(
-    config: Mapping[str, object], database: str
+def _default_browser_smoke_runner(
+    *,
+    command: tuple[str, ...],
+    cwd: Path,
+    environment: Mapping[str, str],
+    timeout_seconds: int,
 ) -> object:
-    from backend.services.product_database_inventory import (
-        assert_storage_policy,
-        inventory_database,
-        read_table_storage,
+    return subprocess.run(
+        command,
+        cwd=cwd,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=timeout_seconds,
     )
+
+
+async def _default_smoke(
+    config: Mapping[str, object],
+    database: str,
+    runner: Callable[..., object],
+) -> object:
     from backend.services.product_database_readiness import SmokeResult
 
-    async def inspect_local(session: object) -> None:
-        await inventory_database(session, database)
-        storage = await read_table_storage(session, database)
-        assert_storage_policy(storage)
-
-    await _run_default_session(config, inspect_local)
-    return SmokeResult(provider_calls=0, outbound_requests=0)
+    del config
+    try:
+        validate_database_role("new", database)
+        if not callable(runner):
+            raise TypeError
+        environment = dict(os.environ)
+        environment.update(
+            {
+                "MYSQL_DB": database,
+                "MARKET_SCHEDULER_ENABLED": "false",
+                "PHASE7B_PRE_CUTOVER_MODE": "true",
+            }
+        )
+        completed = await _invoke(
+            runner,
+            command=("npm", "run", "test:browser:phase7b"),
+            cwd=REPOSITORY_ROOT,
+            environment=environment,
+            timeout_seconds=300,
+        )
+        returncode = getattr(completed, "returncode", None)
+        stdout = getattr(completed, "stdout", None)
+        stderr = getattr(completed, "stderr", None)
+        if (
+            type(returncode) is not int
+            or returncode != 0
+            or type(stdout) is not str
+            or type(stderr) is not str
+        ):
+            raise ValueError
+        summaries = [
+            line[len(_BROWSER_SMOKE_PREFIX) :]
+            for line in stdout.splitlines()
+            if line.startswith(_BROWSER_SMOKE_PREFIX)
+        ]
+        if len(summaries) != 1:
+            raise ValueError
+        summary = json.loads(
+            summaries[0],
+            object_pairs_hook=_unique_json_object,
+            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
+        )
+        if (
+            type(summary) is not dict
+            or set(summary) != set(_BROWSER_SMOKE_EXPECTED)
+            or any(type(value) is not int for value in summary.values())
+            or summary != _BROWSER_SMOKE_EXPECTED
+        ):
+            raise ValueError
+        return SmokeResult(provider_calls=0, outbound_requests=0)
+    except BaseException as error:
+        _raise_public(_sanitized(error, _SMOKE_ERROR))
 
 
 def _default_dependencies() -> PreparationCommandDependencies:
@@ -1398,6 +1529,7 @@ def _default_dependencies() -> PreparationCommandDependencies:
         read_storage=_default_storage,
         audit_official_data=_default_official_audit,
         smoke=_default_smoke,
+        browser_smoke_runner=_default_browser_smoke_runner,
         prepare_service=prepare_product_database,
         publish_receipt=publish_readiness_receipt,
         id_factory=lambda: secrets.token_hex(16),
@@ -1572,7 +1704,10 @@ async def run_cli(
 
         async def smoke(database: str) -> object:
             return await _invoke(
-                selected.smoke, config, database  # type: ignore[attr-defined]
+                selected.smoke,  # type: ignore[attr-defined]
+                config,
+                database,
+                selected.browser_smoke_runner,  # type: ignore[attr-defined]
             )
 
         option_context = selected.option_file(config, backup_dir)  # type: ignore[attr-defined]
