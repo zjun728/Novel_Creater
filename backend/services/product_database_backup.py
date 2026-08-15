@@ -58,8 +58,16 @@ _SERVER_VERSION = re.compile(
 _CLIENT_VERSION = re.compile(
     r"^(?:(mysqldump|mysql)(?:\.exe)?[ \t]+(?:Ver[ \t]+)?)?"
     r"(8\.4\.\d+(?:[-+][0-9A-Za-z][0-9A-Za-z._-]*)?)"
-    r"(?:[ \t]+for[ \t]+[^\r\n]+)?$",
+    r"(?:[ \t]+for[ \t]+Win64[ \t]+on[ \t]+x86_64"
+    r"(?:[ \t]+\(MySQL Community Server - GPL\))?)?$",
     re.ASCII | re.IGNORECASE,
+)
+_PATH_CLIENT_VERSION = re.compile(
+    r"^[ \t]+Ver[ \t]+"
+    r"(8\.4\.\d+(?:[-+][0-9A-Za-z][0-9A-Za-z._-]*)?)"
+    r"(?:[ \t]+for[ \t]+Win64[ \t]+on[ \t]+x86_64"
+    r"(?:[ \t]+\(MySQL Community Server - GPL\))?)?$",
+    re.ASCII,
 )
 
 
@@ -287,14 +295,21 @@ def _one_line(output: str) -> str:
     return value
 
 
-def _client_semver(output: str, expected_name: str) -> str:
-    match = _CLIENT_VERSION.fullmatch(_one_line(output))
-    if match is None:
+def _client_semver(output: str, expected_name: str, expected_path: Path) -> str:
+    line = _one_line(output)
+    match = _CLIENT_VERSION.fullmatch(line)
+    if match is not None:
+        reported_name, version = match.groups()
+        if reported_name is not None and reported_name.lower() != expected_name:
+            raise ValueError
+        return version
+    path_text = str(expected_path)
+    if not line.startswith(path_text):
         raise ValueError
-    reported_name, version = match.groups()
-    if reported_name is not None and reported_name.lower() != expected_name:
+    path_match = _PATH_CLIENT_VERSION.fullmatch(line[len(path_text) :])
+    if path_match is None:
         raise ValueError
-    return version
+    return path_match.group(1)
 
 
 def preflight_client_pair(
@@ -313,11 +328,13 @@ def preflight_client_pair(
         dump_result = version_runner(dump)
         _recheck_path_snapshot(dump_snapshot, repository_root)
         _recheck_path_snapshot(mysql_snapshot, repository_root)
-        dump_version = _client_semver(_result_output(dump_result), "mysqldump")
+        dump_version = _client_semver(
+            _result_output(dump_result), "mysqldump", dump
+        )
         mysql_result = version_runner(mysql)
         _recheck_path_snapshot(dump_snapshot, repository_root)
         _recheck_path_snapshot(mysql_snapshot, repository_root)
-        mysql_version = _client_semver(_result_output(mysql_result), "mysql")
+        mysql_version = _client_semver(_result_output(mysql_result), "mysql", mysql)
         if dump_version != mysql_version:
             raise ValueError
         return MySQLClientPair(dump, mysql, dump_version)

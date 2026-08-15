@@ -208,9 +208,13 @@ async def _owned_restore_database(admin_session):
         f"CREATE DATABASE `{name}` CHARACTER SET utf8mb4 "
         "COLLATE utf8mb4_0900_ai_ci"
     )
+    primary: BaseException | None = None
     try:
         yield name
-    finally:
+    except BaseException as error:
+        primary = error
+    cleanup: BaseException | None = None
+    try:
         if _RESTORE_NAME.fullmatch(name) is None:
             raise RuntimeError("refusing non-owned restore cleanup")
         exists = await admin_session.fetchone(
@@ -219,6 +223,15 @@ async def _owned_restore_database(admin_session):
         )
         if exists is not None:
             await admin_session.execute(f"DROP DATABASE `{name}`")
+        remaining = await admin_session.fetchone(
+            "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME=%s",
+            (name,),
+        )
+        if remaining is not None:
+            raise RuntimeError("owned restore database cleanup did not finish")
+    except BaseException as error:
+        cleanup = error
+    _raise_test_primary_and_cleanup(primary, cleanup)
 
 
 async def _database_exists_by_name(name: str) -> bool:
@@ -231,6 +244,46 @@ async def _database_exists_by_name(name: str) -> bool:
         return row is not None
     finally:
         await admin.close()
+
+
+async def _cleanup_exact_owned_database(name: str) -> bool:
+    if _RESTORE_NAME.fullmatch(name) is None:
+        assert_disposable_name(name)
+    admin = await _open_admin_session(_test_server_config())
+    try:
+        row = await admin.fetchone(
+            "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME=%s",
+            (name,),
+        )
+        existed = row is not None
+        if existed:
+            if _RESTORE_NAME.fullmatch(name) is None:
+                assert_disposable_name(name)
+            await admin.execute(f"DROP DATABASE `{name}`")
+        remaining = await admin.fetchone(
+            "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME=%s",
+            (name,),
+        )
+        if remaining is not None:
+            raise RuntimeError("owned database cleanup did not finish")
+        return existed
+    finally:
+        await admin.close()
+
+
+def _raise_test_primary_and_cleanup(
+    primary: BaseException | None,
+    cleanup: BaseException | None,
+) -> None:
+    if primary is not None and cleanup is not None:
+        raise BaseExceptionGroup(
+            "integration assertion and owned cleanup both failed",
+            [primary, cleanup],
+        ) from None
+    if primary is not None:
+        raise primary from None
+    if cleanup is not None:
+        raise cleanup from None
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -247,20 +300,11 @@ def phase7b_mysql_clients():
         pytest.fail("Phase 7B MySQL client paths must be regular files")
 
     def version_runner(path: Path):
-        result = subprocess.run(
+        return subprocess.run(
             [str(path), "--version"],
             capture_output=True,
             text=True,
             check=False,
-        )
-        match = re.search(r"\bVer\s+(8\.4\.\d+(?:[-+][^\s]+)?)\b", result.stdout)
-        return SimpleNamespace(
-            returncode=result.returncode,
-            stdout=(
-                f"{path.stem} {match.group(1)}"
-                if result.returncode == 0 and match is not None
-                else result.stdout
-            ),
         )
 
     return preflight_client_pair(dump, mysql, _REPOSITORY_ROOT, version_runner)
@@ -481,6 +525,8 @@ async def test_restore_row_count_mismatch_is_detected(phase7b_mysql_clients):
 async def test_partial_target_and_current_run_database_are_cleaned():
     physical = f"novel_creator_test_{secrets.token_hex(16)}"
     assert_disposable_name(physical)
+    created: list[str] = []
+    cleaned: list[str] = []
 
     async def session_factory():
         raw = await _open_admin_session(_test_server_config())
@@ -488,6 +534,7 @@ async def test_partial_target_and_current_run_database_are_cleaned():
 
     async def partial_initialize(session, database, confirm, now_ms):
         assert (database, confirm, now_ms) == (NEW_DATABASE, NEW_DATABASE, 17)
+        created.append(physical)
         await session.execute(f"USE `{database}`")
         await session.execute(
             "CREATE TABLE partial_target (id INT PRIMARY KEY) ENGINE=InnoDB"
@@ -501,9 +548,26 @@ async def test_partial_target_and_current_run_database_are_cleaned():
         inventory=inventory_database,
         now_ms=lambda: 17,
     )
-    with pytest.raises(RuntimeError, match="new database boundary failed"):
-        async with boundary:
-            raise AssertionError("unreachable")
+    primary: BaseException | None = None
+    try:
+        with pytest.raises(RuntimeError, match="new database boundary failed"):
+            async with boundary:
+                raise AssertionError("unreachable")
+        assert not await _database_exists_by_name(physical)
+    except BaseException as error:
+        primary = error
+    cleanup: BaseException | None = None
+    try:
+        assert_disposable_name(physical)
+        await _cleanup_exact_owned_database(physical)
+        if created:
+            cleaned.append(physical)
+    except BaseException as error:
+        cleanup = error
+    _raise_test_primary_and_cleanup(primary, cleanup)
+    assert created == [physical]
+    assert cleaned == [physical]
+    assert set(created) - set(cleaned) == set()
     assert not await _database_exists_by_name(physical)
 
 
@@ -607,6 +671,7 @@ async def test_restore_drop_failure_is_reported_before_manual_owned_cleanup(
         monkeypatch.setattr(
             preparation_command, "_open_default_session", open_drop_once
         )
+        primary: BaseException | None = None
         try:
             with pytest.raises(RuntimeError, match="restore drill cleanup failed"):
                 await preparation_command._default_restore_drill(
@@ -623,19 +688,20 @@ async def test_restore_drop_failure_is_reported_before_manual_owned_cleanup(
             assert proof.backup_path.is_file()
             after = await inventory_database(proof.logical_source, LEGACY_DATABASE)
             assert_inventory_equal(proof.before, after)
-        finally:
+        except BaseException as error:
+            primary = error
+        cleanup: BaseException | None = None
+        cleaned: list[str] = []
+        try:
             if captured:
                 target = captured[0]
                 if _RESTORE_NAME.fullmatch(target) is None:
                     raise RuntimeError("refusing non-owned restore cleanup")
-                admin = await _open_admin_session(_test_server_config())
-                try:
-                    if await admin.fetchone(
-                        "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA "
-                        "WHERE SCHEMA_NAME=%s",
-                        (target,),
-                    ) is not None:
-                        await admin.execute(f"DROP DATABASE `{target}`")
-                finally:
-                    await admin.close()
-                assert not await _database_exists_by_name(target)
+                await _cleanup_exact_owned_database(target)
+                cleaned.append(target)
+        except BaseException as error:
+            cleanup = error
+        _raise_test_primary_and_cleanup(primary, cleanup)
+        assert captured == cleaned
+        assert set(captured) - set(cleaned) == set()
+        assert not await _database_exists_by_name(captured[0])

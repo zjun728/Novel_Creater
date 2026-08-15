@@ -120,6 +120,62 @@ def test_client_pair_is_frozen_and_preflight_requires_matching_84_clients(tmp_pa
         observed.version = "8.4.7"  # type: ignore[misc]
 
 
+def test_client_preflight_accepts_exact_raw_windows_84_version_outputs(
+    tmp_path: Path,
+):
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    pair, _ = make_clients(tmp_path)
+
+    def raw_version(path: Path) -> str:
+        if path == pair.mysqldump:
+            return (
+                "mysqldump  Ver 8.4.10 for Win64 on x86_64 "
+                "(MySQL Community Server - GPL)\n"
+            )
+        return (
+            f"{pair.mysql}  Ver 8.4.10 for Win64 on x86_64 "
+            "(MySQL Community Server - GPL)\n"
+        )
+
+    observed = backup.preflight_client_pair(
+        pair.mysqldump, pair.mysql, repository, raw_version
+    )
+    assert observed.version == "8.4.10"
+
+
+@pytest.mark.parametrize(
+    "mysql_output",
+    (
+        "mysql  Ver 5.7.25 for Win64 on x86_64",
+        "mysql  Ver 8.0.14 for Win64 on x86_64",
+        "mysql  Ver 8.4.10 for Win64 on x86_64\nextra",
+        "mysql  Ver 8.4.10 for Win64 on x86_64 trailing-garbage",
+        r"D:\spoof\mysql.exe  Ver 8.4.10 for Win64 on x86_64",
+        "mysql.exe version eight-four-ten",
+    ),
+)
+def test_client_preflight_rejects_non_84_multiline_malformed_and_path_spoof(
+    tmp_path: Path,
+    mysql_output: str,
+):
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    pair, _ = make_clients(tmp_path)
+
+    def versions(path: Path) -> str:
+        if path == pair.mysqldump:
+            return "mysqldump  Ver 8.4.10 for Win64 on x86_64"
+        return mysql_output
+
+    with pytest.raises(backup.ProductDatabaseBackupError) as raised:
+        backup.preflight_client_pair(
+            pair.mysqldump, pair.mysql, repository, versions
+        )
+    assert str(raised.value) == "mysql client preflight failed"
+    assert "spoof" not in repr(raised.value)
+
+
 @pytest.mark.parametrize("failure", (KeyboardInterrupt(), SystemExit(7), asyncio.CancelledError()))
 def test_client_preflight_preserves_flow_control(tmp_path: Path, failure: BaseException):
     repository = tmp_path / "repo"
