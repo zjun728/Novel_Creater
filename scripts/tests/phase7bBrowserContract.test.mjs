@@ -117,10 +117,23 @@ test('Phase 7B runner borrows its sandbox and emits only private internal eviden
     providerCalls: 0, outboundRequests: 0,
     processCount: 0, portCount: 0, artifactCount: 0,
   })
+  const pythonCanonical = 'PHASE7B_BROWSER_INTERNAL_EVIDENCE={"artifactCount":0,"firstCause":null,"firstStage":null,"outboundRequests":0,"portCount":0,"processCount":0,"providerCalls":0,"scenarioCount":1}'
   assert.equal(
     runner.renderInternalEvidence(runner.internalEvidence()),
-    'PHASE7B_BROWSER_INTERNAL_EVIDENCE={"firstStage":null,"firstCause":null,"scenarioCount":1,"providerCalls":0,"outboundRequests":0,"processCount":0,"portCount":0,"artifactCount":0}',
+    pythonCanonical,
   )
+  assert.notEqual(
+    runner.renderInternalEvidence(runner.internalEvidence()),
+    `PHASE7B_BROWSER_INTERNAL_EVIDENCE=${JSON.stringify(runner.internalEvidence())}`,
+  )
+  assert.equal(
+    runner.canonicalJson({ z: [{ b: 1, a: 2 }], a: null }),
+    '{"a":null,"z":[{"a":2,"b":1}]}',
+  )
+  for (const invalid of [NaN, Infinity, -Infinity, undefined, 1n]) {
+    assert.throws(() => runner.canonicalJson({ invalid }), TypeError)
+  }
+  assert.throws(() => runner.canonicalJson(Array(1)), TypeError)
 })
 
 test('Phase 7B config is one-worker, loopback-only, and direct-child-owned', () => {
@@ -193,11 +206,10 @@ test('Phase 7B process audit defers unexpected output to its bounded finish', as
 test('Phase 7B injected lifecycle runs every owned step in exact order and strips child controls', async () => {
   const runner = await import('../../frontend/e2e/run-phase7b.mjs')
   const harness = phase7bHarness(runner)
-  const logs = []
   assert.equal(await runner.runPhase7B({
     environment: harness.environment,
     dependencies: harness.dependencies,
-    log: value => logs.push(value),
+    log: harness.log,
   }), 0)
   assert.deepEqual(harness.events, [
     'contract', 'paths:create', 'port:reserve:0', 'port:reserve:1', 'vite:config',
@@ -234,14 +246,14 @@ test('Phase 7B injected lifecycle runs every owned step in exact order and strip
     Object.keys(harness.viteEnvironment).some(key => key.startsWith('PHASE7B_BROWSER_')),
     false,
   )
-  assert.deepEqual(logs, [
-    'PHASE7B_BROWSER_INTERNAL_EVIDENCE={"firstStage":null,"firstCause":null,"scenarioCount":1,"providerCalls":0,"outboundRequests":0,"processCount":0,"portCount":0,"artifactCount":0}',
+  assert.deepEqual(harness.logs, [
+    'PHASE7B_BROWSER_INTERNAL_EVIDENCE={"artifactCount":0,"firstCause":null,"firstStage":null,"outboundRequests":0,"portCount":0,"processCount":0,"providerCalls":0,"scenarioCount":1}',
   ])
-  assertAcquiredResourcesCleaned(harness)
+  assertFinalResources(harness, { ports: 0, servers: 0, artifacts: 0 })
 })
 
 for (const failure of [
-  'paths:create', 'port:reserve:0', 'port:reserve:1', 'vite:config', 'backend:start',
+  'contract', 'paths:create', 'port:reserve:0', 'port:reserve:1', 'vite:config', 'backend:start',
   'backend:environment', 'sensitive-values', 'backend:nonce', 'backend:launch',
   'runtime:observe', 'backend:wait', 'vite:start', 'vite:wait', 'browser:run',
   'browser:audit', 'port:release:0', 'port:release:1',
@@ -252,12 +264,17 @@ for (const failure of [
     await assert.rejects(() => runner.runPhase7B({
       environment: harness.environment,
       dependencies: harness.dependencies,
-      log() {},
+      log: harness.log,
     }), error => {
       assert.equal(firstLeafMessage(error), `failure:${failure}`)
       return true
     })
-    assertAcquiredResourcesCleaned(harness)
+    assertFinalResources(harness, {
+      ports: failure.startsWith('port:release:') ? 1 : 0,
+      servers: 0,
+      artifacts: 0,
+    })
+    assert.deepEqual(harness.logs, [])
   })
 }
 
@@ -271,7 +288,7 @@ for (const failure of [
     await assert.rejects(() => runner.runPhase7B({
       environment: harness.environment,
       dependencies: harness.dependencies,
-      log() {},
+      log: harness.log,
     }), error => {
       assert.equal(flattenMessages(error).includes(`failure:${failure}`), true)
       return true
@@ -280,6 +297,12 @@ for (const failure of [
       'vite:stop', 'backend:stop', 'runtime:audit', 'port:audit:41001',
       'port:audit:41002', 'artifact:cleanup', 'artifact:audit',
     ]) assert.equal(harness.events.includes(required), true, `${failure} skipped ${required}`)
+    assertFinalResources(harness, {
+      ports: 0,
+      servers: failure === 'vite:stop' || failure === 'backend:stop' ? 1 : 0,
+      artifacts: failure === 'artifact:cleanup' ? harness.resources.artifacts.created.size : 0,
+    })
+    assert.deepEqual(harness.logs, [])
   })
 }
 
@@ -291,7 +314,7 @@ test('Phase 7B preserves primary-first ordering across cleanup failures', async 
   await assert.rejects(() => runner.runPhase7B({
     environment: harness.environment,
     dependencies: harness.dependencies,
-    log() {},
+    log: harness.log,
   }), error => {
     assert.deepEqual(flattenMessages(error).filter(value => value.startsWith('failure:')), [
       'failure:browser:run', 'failure:vite:stop', 'failure:port:audit:41001',
@@ -299,18 +322,57 @@ test('Phase 7B preserves primary-first ordering across cleanup failures', async 
     ])
     return true
   })
+  assertFinalResources(harness, {
+    ports: 0, servers: 1, artifacts: harness.resources.artifacts.created.size,
+  })
+  assert.deepEqual(harness.logs, [])
+})
+
+test('Phase 7B AbortError stays primary, cleans all possible resources, and exposes only a fixed line', async () => {
+  const runner = await import('../../frontend/e2e/run-phase7b.mjs')
+  const secret = 'abort-secret-must-not-leak'
+  const harness = phase7bHarness(runner, {
+    failAt: new Set(['browser:run', 'vite:stop']),
+    failureFactory(name) {
+      if (name === 'browser:run') {
+        const error = new Error(secret)
+        error.name = 'AbortError'
+        return error
+      }
+      return new Error(`failure:${name}`)
+    },
+  })
+  await assert.rejects(() => runner.runPhase7B({
+    environment: harness.environment,
+    dependencies: harness.dependencies,
+    log: harness.log,
+  }), error => {
+    assert.equal(error instanceof AggregateError, true)
+    assert.equal(error.errors[0].cause.name, 'AbortError')
+    assert.equal(error.errors[0].cause.message, secret)
+    const safe = runner.renderSafeFailure(error)
+    assert.equal(safe, 'phase7b browser lifecycle failed')
+    assert.equal(safe.includes(secret), false)
+    assert.equal(safe.includes('AbortError'), false)
+    return true
+  })
+  for (const required of [
+    'vite:stop', 'backend:stop', 'runtime:audit', 'port:audit:41001',
+    'port:audit:41002', 'artifact:cleanup', 'artifact:audit',
+  ]) assert.equal(harness.events.includes(required), true, required)
+  assertFinalResources(harness, { ports: 0, servers: 1, artifacts: 0 })
+  assert.deepEqual(harness.logs, [])
 })
 
 test('Phase 7B emits no evidence after any lifecycle failure', async () => {
   const runner = await import('../../frontend/e2e/run-phase7b.mjs')
   const harness = phase7bHarness(runner, { failAt: 'artifact:cleanup' })
-  const logs = []
   await assert.rejects(() => runner.runPhase7B({
     environment: harness.environment,
     dependencies: harness.dependencies,
-    log: value => logs.push(value),
+    log: harness.log,
   }))
-  assert.deepEqual(logs, [])
+  assert.deepEqual(harness.logs, [])
 })
 
 function readFileNames(directory) {
@@ -319,13 +381,17 @@ function readFileNames(directory) {
     : []
 }
 
-function phase7bHarness(runner, { failAt = null } = {}) {
+function phase7bHarness(runner, { failAt = null, failureFactory = null } = {}) {
   const events = []
-  const resources = { artifacts: false, started: new Set(), stopped: new Set() }
+  const resources = {
+    ports: { acquired: new Set(), released: new Set() },
+    servers: { started: new Set(), stopped: new Set() },
+    artifacts: { created: new Set(), removed: new Set() },
+  }
   const shouldFail = name => failAt instanceof Set ? failAt.has(name) : failAt === name
   const hit = name => {
     events.push(name)
-    if (shouldFail(name)) throw new Error(`failure:${name}`)
+    if (shouldFail(name)) throw failureFactory?.(name) || new Error(`failure:${name}`)
   }
   const environment = {
     ONLY_TEST: 'yes', MYSQL_DB: 'novel_creator_v113', MARKET_SCHEDULER_ENABLED: 'false',
@@ -341,23 +407,24 @@ function phase7bHarness(runner, { failAt = null } = {}) {
   }
   const reservations = [0, 1].map(index => ({
     port: 41001 + index,
-    async release() { hit(`port:release:${index}`) },
+    async release() { hit(`port:release:${index}`); resources.ports.released.add(index) },
   }))
   let reservationIndex = 0
   const servers = []
   const dependencies = {
     validateBorrowedContract() { hit('contract'); return { taskRoot: 'C:\\owned-task-root', nonce: 'a'.repeat(32) } },
     createBorrowedRunnerPaths() {
-      resources.artifacts = true
-      try { hit('paths:create') } catch (error) { resources.artifacts = false; throw error }
+      hit('paths:create')
+      resources.artifacts.created.add('artifacts')
       return roots
     },
     async reserveLocalPort() {
       const index = reservationIndex++
       hit(`port:reserve:${index}`)
+      resources.ports.acquired.add(index)
       return reservations[index]
     },
-    writeViteConfig() { hit('vite:config') },
+    writeViteConfig() { hit('vite:config'); resources.artifacts.created.add('vite.config.mjs') },
     createBackendEnvironment(value) {
       hit('backend:environment')
       return runner.createBackendEnvironment(value)
@@ -371,7 +438,8 @@ function phase7bHarness(runner, { failAt = null } = {}) {
       if (kind === 'backend') harness.backendEnvironment = options.env
       if (kind === 'vite') harness.viteEnvironment = options.env
       const server = { kind, child: { stdout: new EventEmitter() }, state: {}, auditors: [] }
-      resources.started.add(kind)
+      resources.servers.started.add(kind)
+      if (kind === 'vite') resources.artifacts.created.add('vite-cache')
       servers.push(server)
       return server
     },
@@ -382,31 +450,42 @@ function phase7bHarness(runner, { failAt = null } = {}) {
     async runBoundedOwnedCommand(_command, _args, options) {
       harness.browserEnvironment = options.env
       hit('browser:run')
+      resources.artifacts.created.add('result.json')
     },
     auditBrowserReport() { hit('browser:audit') },
-    async stopOwnedServer(server) { hit(`${server.kind}:stop`); resources.stopped.add(server.kind) },
+    async stopOwnedServer(server) { hit(`${server.kind}:stop`); resources.servers.stopped.add(server.kind) },
     assertRuntimeAuditZero() { hit('runtime:audit') },
     async waitForPortRelease(port) { hit(`port:audit:${port}`) },
     cleanupBorrowedArtifacts() {
       hit('artifact:cleanup')
-      resources.artifacts = false
+      for (const artifact of resources.artifacts.created) resources.artifacts.removed.add(artifact)
     },
     auditBorrowedArtifacts() {
       hit('artifact:audit')
-      if (resources.artifacts) throw new Error('failure:artifact-residue')
+      if (remaining(resources.artifacts).size) throw new Error('failure:artifact-residue')
       return 0
     },
   }
   const harness = {
     backendEnvironment: null, browserEnvironment: null, viteEnvironment: null, dependencies,
-    environment, events, resources, roots,
+    environment, events, logs: [], resources, roots,
   }
+  harness.log = value => harness.logs.push(value)
   return harness
 }
 
-function assertAcquiredResourcesCleaned(harness) {
-  assert.equal(harness.resources.artifacts, false)
-  assert.deepEqual([...harness.resources.stopped].sort(), [...harness.resources.started].sort())
+function remaining(ledger) {
+  return new Set([...ledger.created || ledger.acquired || ledger.started].filter(value => (
+    !(ledger.removed || ledger.released || ledger.stopped).has(value)
+  )))
+}
+
+function assertFinalResources(harness, expected) {
+  assert.deepEqual({
+    ports: remaining(harness.resources.ports).size,
+    servers: remaining(harness.resources.servers).size,
+    artifacts: remaining(harness.resources.artifacts).size,
+  }, expected)
 }
 
 function flattenMessages(error) {

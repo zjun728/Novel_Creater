@@ -18,6 +18,7 @@ const DATABASE = 'novel_creator_v113'
 const TASK_ROOT_KEY = 'PHASE7B_BROWSER_TASK_ROOT'
 const TASK_NONCE_KEY = 'PHASE7B_BROWSER_TASK_NONCE'
 const INTERNAL_EVIDENCE_MARKER = 'PHASE7B_BROWSER_INTERNAL_EVIDENCE='
+const SAFE_FAILURE_LINE = 'phase7b browser lifecycle failed'
 const PROVIDER_MARKER = 'PHASE7B_PROVIDER_CALL'
 const OUTBOUND_MARKER = 'PHASE7B_OUTBOUND_REQUEST'
 const WRITE_MARKER = 'PHASE7B_WRITE_REQUEST'
@@ -98,8 +99,56 @@ export function internalEvidence() {
   }
 }
 
+function compareUnicodeCodePoints(left, right) {
+  const leftPoints = Array.from(left, value => value.codePointAt(0))
+  const rightPoints = Array.from(right, value => value.codePointAt(0))
+  for (let index = 0; index < Math.min(leftPoints.length, rightPoints.length); index += 1) {
+    if (leftPoints[index] !== rightPoints[index]) return leftPoints[index] - rightPoints[index]
+  }
+  return leftPoints.length - rightPoints.length
+}
+
+export function canonicalJson(value) {
+  const active = new Set()
+  const serialize = item => {
+    if (item === null || typeof item === 'boolean' || typeof item === 'string') {
+      return JSON.stringify(item)
+    }
+    if (typeof item === 'number') {
+      if (!Number.isFinite(item)) throw new TypeError('Phase7B evidence is not strict JSON')
+      return JSON.stringify(item)
+    }
+    if (typeof item !== 'object') throw new TypeError('Phase7B evidence is not strict JSON')
+    if (active.has(item)) throw new TypeError('Phase7B evidence is not strict JSON')
+    active.add(item)
+    try {
+      if (Array.isArray(item)) {
+        for (let index = 0; index < item.length; index += 1) {
+          if (!Object.hasOwn(item, index)) throw new TypeError('Phase7B evidence is not strict JSON')
+        }
+        return `[${item.map(serialize).join(',')}]`
+      }
+      const prototype = Object.getPrototypeOf(item)
+      if (prototype !== Object.prototype && prototype !== null) {
+        throw new TypeError('Phase7B evidence is not strict JSON')
+      }
+      return `{${Object.keys(item).sort(compareUnicodeCodePoints).map(key => (
+        `${JSON.stringify(key)}:${serialize(item[key])}`
+      )).join(',')}}`
+    } finally {
+      active.delete(item)
+    }
+  }
+  return serialize(value)
+}
+
 export function renderInternalEvidence(evidence) {
-  return `${INTERNAL_EVIDENCE_MARKER}${JSON.stringify(evidence)}`
+  return `${INTERNAL_EVIDENCE_MARKER}${canonicalJson(evidence)}`
+}
+
+export function renderSafeFailure(error) {
+  void error
+  return SAFE_FAILURE_LINE
 }
 
 export function createBackendLaunch({ ownerNonce, port }) {
@@ -465,7 +514,7 @@ const isEntrypoint = (() => {
 if (isEntrypoint) {
   runPhase7B().then(value => { process.exitCode = value }).catch(error => {
     void error
-    console.error('phase7b browser lifecycle failed')
+    console.error(renderSafeFailure(error))
     process.exitCode = 1
   })
 }
