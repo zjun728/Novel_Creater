@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import inspect
 from pathlib import Path
@@ -60,7 +61,28 @@ _TARGET_INVENTORY_ERROR = "new database inventory failed"
 _AUDIT_ERROR = "new database readiness audit failed"
 _SMOKE_ERROR = "readiness smoke failed"
 _NETWORK_ERROR = "readiness smoke crossed network boundary"
+_CLEANUP_ERROR = "product database cleanup failed"
+_GROUP_ERROR = "product database preparation failed"
 _FLOW_CONTROL = (asyncio.CancelledError, KeyboardInterrupt, SystemExit)
+
+_FIXED_PUBLIC_ERRORS = frozenset(
+    {
+        _REQUEST_ERROR,
+        _LEGACY_INVENTORY_ERROR,
+        _BACKUP_ERROR,
+        _RESTORE_ERROR,
+        _LEGACY_DRIFT_ERROR,
+        _INITIALIZE_ERROR,
+        _ASSET_SEED_ERROR,
+        _MARKET_SEED_ERROR,
+        _TARGET_INVENTORY_ERROR,
+        _AUDIT_ERROR,
+        _SMOKE_ERROR,
+        _NETWORK_ERROR,
+        _CLEANUP_ERROR,
+        _GROUP_ERROR,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -250,6 +272,94 @@ def _raise_public(error: BaseException) -> None:
 
 def _raise_normalized(error: BaseException, message: str) -> None:
     _raise_public(_normalized(error, message))
+
+
+def _error_leaves(error: BaseException) -> list[BaseException]:
+    if isinstance(error, BaseExceptionGroup):
+        return [
+            leaf
+            for child in error.exceptions
+            for leaf in _error_leaves(child)
+        ]
+    return [error]
+
+
+def _safe_body_primary(error: BaseException) -> BaseException:
+    if isinstance(error, BaseExceptionGroup):
+        return BaseExceptionGroup(
+            _GROUP_ERROR,
+            [_safe_body_primary(child) for child in error.exceptions],
+        )
+    if isinstance(error, _FLOW_CONTROL):
+        return _clean_flow_control(error)
+    if (
+        type(error) is ProductDatabaseReadinessError
+        and str(error) in _FIXED_PUBLIC_ERRORS
+    ):
+        return _fixed(str(error))
+    return _fixed(_GROUP_ERROR)
+
+
+def _without_primary(
+    error: BaseException, primary: BaseException
+) -> BaseException | None:
+    if error is primary:
+        return None
+    if isinstance(error, BaseExceptionGroup):
+        remaining = [
+            child_without
+            for child in error.exceptions
+            if (child_without := _without_primary(child, primary)) is not None
+        ]
+        if not remaining:
+            return None
+        return BaseExceptionGroup(_GROUP_ERROR, remaining)
+    return error
+
+
+def _raise_enter_failure(error: BaseException) -> None:
+    leaves = _error_leaves(error)
+    primary = _normalized(leaves[0], _INITIALIZE_ERROR)
+    if len(leaves) == 1:
+        _raise_public(primary)
+    cleanup = [_normalized(leaf, _CLEANUP_ERROR) for leaf in leaves[1:]]
+    _raise_public(BaseExceptionGroup(_GROUP_ERROR, [primary, *cleanup]))
+
+
+def _raise_exit_failure(
+    primary: BaseException, lifecycle: BaseException
+) -> None:
+    safe_primary = _safe_body_primary(primary)
+    remainder = _without_primary(lifecycle, primary)
+    if remainder is None:
+        _raise_public(safe_primary)
+    safe_cleanup = _normalized(remainder, _CLEANUP_ERROR)
+    _raise_public(
+        BaseExceptionGroup(_GROUP_ERROR, [safe_primary, safe_cleanup])
+    )
+
+
+@asynccontextmanager
+async def _normalized_database_boundary(boundary: object):
+    entered = False
+    body_primary: BaseException | None = None
+    try:
+        async with boundary as value:  # type: ignore[attr-defined]
+            entered = True
+            try:
+                yield value
+            except BaseException as error:
+                body_primary = error
+                raise
+    except BaseException as error:
+        if not entered:
+            _raise_enter_failure(error)
+        if body_primary is None:
+            _raise_normalized(error, _CLEANUP_ERROR)
+        _raise_exit_failure(body_primary, error)
+    else:
+        if body_primary is not None:
+            _raise_public(_safe_body_primary(body_primary))
 
 
 async def _invoke(operation: Callable[..., object], *args: object) -> object:
@@ -672,7 +782,7 @@ async def prepare_product_database(
         except BaseException as error:
             _raise_normalized(error, _INITIALIZE_ERROR)
 
-        async with boundary as boundary_value:  # type: ignore[attr-defined]
+        async with _normalized_database_boundary(boundary) as boundary_value:
             if type(boundary_value) is not NewDatabaseBoundaryState:
                 raise _fixed(_INITIALIZE_ERROR)
             mode = boundary_value.mode

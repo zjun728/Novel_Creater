@@ -119,17 +119,41 @@ class AtomicBoundary:
         return NewDatabaseBoundaryState("created", INITIALIZED, None)
 
     async def __aexit__(self, exc_type: object, exc: BaseException | None, _tb: object) -> bool:
+        outgoing: BaseException | None = None
         try:
             if exc is None:
                 self.world.calls.append("boundary-commit")
+                if self.world.commit_failure is not None:
+                    try:
+                        raise self.world.commit_failure
+                    except BaseException as commit:
+                        if self.owned:
+                            try:
+                                await self._cleanup()
+                            except BaseException as cleanup:
+                                outgoing = BaseExceptionGroup("commit failed", [commit, cleanup])
+                            else:
+                                outgoing = commit
             elif self.owned:
                 try:
                     await self._cleanup()
                 except BaseException as cleanup:
-                    raise BaseExceptionGroup("new database boundary failed", [exc, cleanup])
-            return False
+                    outgoing = BaseExceptionGroup("new database boundary failed", [exc, cleanup])
+            if outgoing is None and self.world.exit_failure is not None:
+                outgoing = self.world.exit_failure
         finally:
             self.world.target_lock.release()
+            if self.world.release_failure is not None:
+                release = self.world.release_failure
+                if outgoing is not None:
+                    outgoing = BaseExceptionGroup("release failed", [outgoing, release])
+                elif exc is not None:
+                    outgoing = BaseExceptionGroup("release failed", [exc, release])
+                else:
+                    outgoing = release
+        if outgoing is not None:
+            raise outgoing
+        return self.world.suppress_body
 
     async def _cleanup(self) -> None:
         self.world.calls.append("boundary-cleanup")
@@ -154,6 +178,9 @@ class World:
         self.fail_stage: str | None = None; self.legacy_drift = False; self.tamper_backup = False; self.restore_mismatch = False
         self.restore_primary: BaseException | None = None; self.restore_cleanup_failure: BaseException | None = None
         self.enter_failure: BaseException | None = None; self.boundary_cleanup_failure: BaseException | None = None; self.misreport_created = False
+        self.commit_failure: BaseException | None = None; self.exit_failure: BaseException | None = None; self.release_failure: BaseException | None = None
+        self.smoke_failure: BaseException | None = None
+        self.suppress_body = False
         self.smoke_result: object = SmokeResult(0, 0)
 
     def snapshot(self, database: str) -> DatabaseInventory:
@@ -213,7 +240,10 @@ class World:
 
     async def read_storage(self, database: str) -> tuple[TableStorage, ...]: self.calls.append("storage"); self._fail("storage"); return self.storage(database)
     async def audit_official_data(self, database: str) -> OfficialDataAudit: self.calls.append("official-audit"); self._fail("official-audit"); return OfficialDataAudit(**self.official_rows[database])  # type: ignore[arg-type]
-    async def smoke(self, _database: str) -> object: self.calls.append("smoke"); self._fail("smoke"); return self.smoke_result
+    async def smoke(self, _database: str) -> object:
+        self.calls.append("smoke"); self._fail("smoke")
+        if self.smoke_failure is not None: raise self.smoke_failure
+        return self.smoke_result
 
     async def run(self, tmp_path: Path):
         return await prepare_product_database(request=PreparationRequest(LEGACY_DATABASE, NEW_DATABASE, tmp_path.resolve()), inventory=self.inventory, create_backup=self.create_backup, restore_drill=self.restore_drill, new_database_boundary=self.new_database_boundary, seed_assets=self.seed_assets, seed_market=self.seed_market, read_storage=self.read_storage, audit_official_data=self.audit_official_data, smoke=self.smoke)
@@ -221,6 +251,24 @@ class World:
 
 def _flatten(error: BaseException) -> list[BaseException]:
     return [leaf for child in error.exceptions for leaf in _flatten(child)] if isinstance(error, BaseExceptionGroup) else [error]
+
+
+def _tainted(error: BaseException) -> BaseException:
+    error.__cause__ = RuntimeError("password=secret-cause")
+    error.__context__ = RuntimeError("password=secret-context")
+    error.add_note("password=secret-note")
+    return error
+
+
+def _assert_safe(error: BaseException) -> None:
+    assert "secret" not in "".join(traceback.format_exception(error))
+    pending = [error]
+    while pending:
+        current = pending.pop()
+        assert current.__cause__ is None and current.__context__ is None
+        assert not getattr(current, "__notes__", ())
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
 
 
 def _assert_receipts(result: object, world: World, mode: str) -> None:
@@ -278,6 +326,26 @@ async def test_enter_primary_and_cleanup_failure_preserve_order(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ("cancelled", "keyboard", "system-exit"))
+async def test_enter_flow_primary_and_cleanup_are_safely_cloned(tmp_path: Path, kind: str) -> None:
+    world = World()
+    world.enter_failure = _tainted({"cancelled": asyncio.CancelledError("secret"), "keyboard": KeyboardInterrupt("secret"), "system-exit": SystemExit("secret-code")}[kind])
+    world.boundary_cleanup_failure = _tainted(RuntimeError("password=secret-cleanup"))
+    with pytest.raises(BaseExceptionGroup) as raised: await world.run(tmp_path)
+    leaves = _flatten(raised.value); expected = {"cancelled": asyncio.CancelledError, "keyboard": KeyboardInterrupt, "system-exit": SystemExit}[kind]
+    assert type(leaves[0]) is expected and str(leaves[1]) == "product database cleanup failed"
+    assert leaves[0].code is None if kind == "system-exit" else leaves[0].args == ()
+    _assert_safe(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_enter_ordinary_error_is_fixed_and_safe(tmp_path: Path) -> None:
+    world = World(); world.enter_failure = _tainted(RuntimeError("password=secret-enter"))
+    with pytest.raises(ProductDatabaseReadinessError, match="^new database initialization failed$") as raised: await world.run(tmp_path)
+    _assert_safe(raised.value)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("stage", "message"), (("seed-assets", "official asset seed failed"), ("seed-market", "official market source seed failed"), ("new", "new database inventory failed"), ("storage", "new database readiness audit failed"), ("official-audit", "new database readiness audit failed"), ("smoke", "readiness smoke failed")))
 async def test_created_body_failure_is_cleaned_only_by_boundary(tmp_path: Path, stage: str, message: str) -> None:
     world = World(); world.fail_stage = stage
@@ -294,12 +362,48 @@ async def test_body_primary_precedes_boundary_cleanup_failure(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_boundary_cannot_suppress_body_primary_after_cleanup(tmp_path: Path) -> None:
+    world = World(); world.fail_stage = "smoke"; world.suppress_body = True
+    with pytest.raises(ProductDatabaseReadinessError, match="^readiness smoke failed$") as raised: await world.run(tmp_path)
+    assert NEW_DATABASE not in world.tables and world.deleted.count(NEW_DATABASE) == 1
+    _assert_safe(raised.value)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ("cancelled", "keyboard", "system-exit"))
 async def test_boundary_cleanup_flow_is_second_after_body_primary(tmp_path: Path, kind: str) -> None:
     world = World(); world.smoke_result = SmokeResult(1, 0); world.boundary_cleanup_failure = {"cancelled": asyncio.CancelledError(), "keyboard": KeyboardInterrupt(), "system-exit": SystemExit(29)}[kind]
     with pytest.raises(BaseExceptionGroup) as raised: await world.run(tmp_path)
     leaves = _flatten(raised.value); assert str(leaves[0]) == "readiness smoke crossed network boundary"
     assert type(leaves[1]) is {"cancelled": asyncio.CancelledError, "keyboard": KeyboardInterrupt, "system-exit": SystemExit}[kind]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ("cancelled", "keyboard", "system-exit"))
+async def test_body_flow_primary_precedes_safe_cleanup_error(tmp_path: Path, kind: str) -> None:
+    world = World(); world.smoke_failure = _tainted({"cancelled": asyncio.CancelledError("secret"), "keyboard": KeyboardInterrupt("secret"), "system-exit": SystemExit(41)}[kind]); world.boundary_cleanup_failure = _tainted(RuntimeError("password=secret-cleanup"))
+    with pytest.raises(BaseExceptionGroup) as raised: await world.run(tmp_path)
+    leaves = _flatten(raised.value); expected = {"cancelled": asyncio.CancelledError, "keyboard": KeyboardInterrupt, "system-exit": SystemExit}[kind]
+    assert type(leaves[0]) is expected and str(leaves[1]) == "product database cleanup failed"
+    assert leaves[0].code == 41 if kind == "system-exit" else leaves[0].args == ()
+    _assert_safe(raised.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ("commit", "exit", "release"))
+async def test_success_lifecycle_ordinary_error_is_fixed_and_safe(tmp_path: Path, stage: str) -> None:
+    world = World(); setattr(world, f"{stage}_failure", _tainted(RuntimeError(f"password=secret-{stage}")))
+    with pytest.raises(ProductDatabaseReadinessError, match="^product database cleanup failed$") as raised: await world.run(tmp_path)
+    _assert_safe(raised.value)
+    if stage == "commit": assert NEW_DATABASE not in world.tables
+
+
+@pytest.mark.asyncio
+async def test_commit_and_release_failures_are_both_safe_cleanup_leaves(tmp_path: Path) -> None:
+    world = World(); world.commit_failure = _tainted(RuntimeError("password=secret-commit")); world.release_failure = _tainted(RuntimeError("password=secret-release"))
+    with pytest.raises(BaseExceptionGroup) as raised: await world.run(tmp_path)
+    assert [str(leaf) for leaf in _flatten(raised.value)] == ["product database cleanup failed", "product database cleanup failed"]
+    _assert_safe(raised.value)
 
 
 @pytest.mark.asyncio
