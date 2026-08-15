@@ -113,22 +113,39 @@ class _BrowserRootLease:
         closer: Callable[[int], None],
         identity_reader: Callable[[int], object],
         delete_disposition: Callable[[int], None],
+        path: Path,
+        expected_owner_identity: tuple[int, int],
     ) -> None:
         self._handle: int | None = handle
         self._closer = closer
         self._identity_reader = identity_reader
         self._delete_disposition = delete_disposition
         self._identity = identity_reader(handle)
+        current = path.stat(follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != expected_owner_identity:
+            raise OSError
+        self._expected_owner_identity = expected_owner_identity
 
-    def delete_owned(self, path: Path) -> None:
+    def delete_owned(
+        self, path: Path, expected_owner_identity: tuple[int, int]
+    ) -> None:
         handle = self._handle
-        if handle is None or self._identity_reader(handle) != self._identity:
+        if (
+            handle is None
+            or expected_owner_identity != self._expected_owner_identity
+            or self._identity_reader(handle) != self._identity
+        ):
             raise OSError
         deadline = time.monotonic() + _BROWSER_ROOT_CLEANUP_SECONDS
         first_flow: BaseException | None = None
         last_error: BaseException | None = None
         for attempt in range(_BROWSER_ROOT_CLEANUP_ATTEMPTS):
             try:
+                current = path.stat(follow_symlinks=False)
+                if (current.st_dev, current.st_ino) != expected_owner_identity:
+                    raise OSError
+                if self._identity_reader(handle) != self._identity:
+                    raise OSError
                 for child in tuple(path.iterdir()):
                     if child.is_symlink() or child.is_file():
                         child.unlink()
@@ -1498,7 +1515,9 @@ def _remove_owned_browser_root(
     raise first_flow or last_error or RuntimeError
 
 
-def _open_browser_root_lease(path: Path) -> _BrowserRootLease:
+def _open_browser_root_lease(
+    path: Path, expected_owner_identity: tuple[int, int]
+) -> _BrowserRootLease:
     if os.name != "nt":
         raise OSError
     import ctypes
@@ -1536,6 +1555,8 @@ def _open_browser_root_lease(path: Path) -> _BrowserRootLease:
             backup_safety._close_windows_handle,
             backup_safety._identity_from_handle,
             backup_safety._set_delete_disposition,
+            path,
+            expected_owner_identity,
         )
     except BaseException as primary:
         try:
@@ -1590,7 +1611,9 @@ def _default_browser_smoke_runner(
     temp_parent: Path | None = None,
     temp_dir_factory: Callable[[Path], str] | None = None,
     remove_temp: Callable[[Path], object] = shutil.rmtree,
-    root_lease_factory: Callable[[Path], object] = _open_browser_root_lease,
+    root_lease_factory: Callable[[Path, tuple[int, int]], object] = (
+        _open_browser_root_lease
+    ),
 ) -> object:
     from backend.scripts import run_milestone2_l4_session as process_safety
 
@@ -1601,6 +1624,7 @@ def _default_browser_smoke_runner(
     sentinel: object | None = None
     owner_identity: tuple[int, int] | None = None
     root_lease: object | None = None
+    root_lease_has_delete_authority = False
     result: object | None = None
     selected_parent = (
         Path(tempfile.gettempdir()) / "novel-creator-phase7b-private"
@@ -1646,8 +1670,11 @@ def _default_browser_smoke_runner(
             acquired_before_lease.st_dev,
             acquired_before_lease.st_ino,
         )
-        root_lease = root_lease_factory(task_root)
-        if not callable(getattr(root_lease, "close", None)):
+        root_lease = root_lease_factory(task_root, owner_identity)
+        if (
+            not callable(getattr(root_lease, "close", None))
+            or not callable(getattr(root_lease, "delete_owned", None))
+        ):
             raise TypeError
         acquired_after_lease = task_root.stat(follow_symlinks=False)
         if not os.path.samestat(acquired_before_lease, acquired_after_lease):
@@ -1655,6 +1682,7 @@ def _default_browser_smoke_runner(
         process_safety._validate_owned_temp(
             task_root, selected_parent, nonce, "browser", sentinel
         )
+        root_lease_has_delete_authority = True
         child_environment = dict(environment)
         child_environment.update(
             {
@@ -1728,11 +1756,11 @@ def _default_browser_smoke_runner(
             except BaseException as error:
                 errors.append(error)
         handle_delete_established = False
-        if root_lease is not None and callable(
-            getattr(root_lease, "delete_owned", None)
-        ):
+        if root_lease is not None and root_lease_has_delete_authority:
             try:
-                root_lease.delete_owned(task_root)  # type: ignore[attr-defined]
+                root_lease.delete_owned(  # type: ignore[attr-defined]
+                    task_root, owner_identity
+                )
                 handle_delete_established = True
             except BaseException as error:
                 errors.append(error)

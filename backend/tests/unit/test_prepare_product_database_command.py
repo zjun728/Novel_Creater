@@ -2525,11 +2525,17 @@ def test_default_browser_smoke_runner_uses_owned_windows_job_and_exact_task_cont
     guard = Guard()
 
     class Lease:
+        def delete_owned(
+            self, path: Path, _expected_identity: tuple[int, int]
+        ) -> None:
+            calls.append("delete-pending")
+            command_module.shutil.rmtree(path)
+
         def close(self) -> None:
             calls.append("lease-close")
 
-    def root_lease_factory(path: Path) -> object:
-        calls.append(("lease-open", path))
+    def root_lease_factory(path: Path, expected_identity: tuple[int, int]) -> object:
+        calls.append(("lease-open", path, expected_identity))
         return Lease()
 
     def spawn_guarded(command: tuple[str, ...], kwargs: dict, **options: object):
@@ -2574,7 +2580,8 @@ def test_default_browser_smoke_runner_uses_owned_windows_job_and_exact_task_cont
     assert spawn[3]["platform_name"] == "nt"
     assert calls[2] == ("communicate", 240)
     assert calls[3] == ("stop-tree", child, guard)
-    assert calls[4] == "lease-close"
+    assert calls[4] == "delete-pending"
+    assert calls[5] == "lease-close"
     assert Guard.active_processes == 0
     assert not task_root.exists()
 
@@ -2725,7 +2732,10 @@ def test_browser_smoke_runner_failure_stages_are_safe_and_cleanup_owned_resource
             nonce_factory=lambda: "c" * 32,
             temp_parent=tmp_path / "owned",
             remove_temp=remove_temp,
-            root_lease_factory=lambda _path: SimpleNamespace(close=lambda: None),
+            root_lease_factory=lambda _path, _identity: SimpleNamespace(
+                delete_owned=lambda path, _expected: remove_temp(path),
+                close=lambda: None,
+            ),
         )
 
     assert str(raised.value) == "readiness smoke failed"
@@ -2766,21 +2776,22 @@ def test_browser_smoke_runner_retries_transient_owned_root_removal(
             raise PermissionError("secret transient sharing violation")
         command_module.shutil.rmtree(path)
 
-    result = command_module._default_browser_smoke_runner(
-        command=("node", "scripts/run-tests.mjs", "browser-phase7b"),
-        cwd=command_module.REPOSITORY_ROOT,
-        environment={"MYSQL_DB": NEW_DATABASE},
-        timeout_seconds=300,
-        executable_resolver=lambda _name: str(node),
-        guarded_spawn=spawn_guarded,
-        stop_process=lambda *_args, **_kwargs: [],
-        nonce_factory=lambda: "d" * 32,
-        temp_parent=tmp_path / "owned",
-        remove_temp=remove_temp,
-        root_lease_factory=lambda _path: SimpleNamespace(close=lambda: None),
-    )
+    with pytest.raises(ProductDatabasePreparationCommandError):
+        command_module._default_browser_smoke_runner(
+            command=("node", "scripts/run-tests.mjs", "browser-phase7b"),
+            cwd=command_module.REPOSITORY_ROOT,
+            environment={"MYSQL_DB": NEW_DATABASE},
+            timeout_seconds=300,
+            executable_resolver=lambda _name: str(node),
+            guarded_spawn=lambda *_args, **_kwargs: pytest.fail("must not spawn"),
+            nonce_factory=lambda: "d" * 32,
+            temp_parent=tmp_path / "owned",
+            remove_temp=remove_temp,
+            root_lease_factory=lambda _path, _identity: (_ for _ in ()).throw(
+                RuntimeError("secret acquisition failure")
+            ),
+        )
 
-    assert result.returncode == 0
     assert len(removals) == 2
     assert not removals[0].exists()
 
@@ -2850,10 +2861,17 @@ def test_browser_smoke_runner_cleans_acquired_identity_not_precleanup_replacemen
         return Child(), SimpleNamespace(cleanup=lambda *_args, **_kwargs: [])
 
     class Lease:
+        def delete_owned(
+            self, path: Path, expected_identity: tuple[int, int]
+        ) -> None:
+            current = path.stat(follow_symlinks=False)
+            if (current.st_dev, current.st_ino) != expected_identity:
+                raise OSError
+
         def close(self) -> None:
             return None
 
-    with pytest.raises(ProductDatabasePreparationCommandError) as raised:
+    with pytest.raises(BaseException) as raised:
         command_module._default_browser_smoke_runner(
             command=("node", "scripts/run-tests.mjs", "browser-phase7b"),
             cwd=command_module.REPOSITORY_ROOT,
@@ -2864,10 +2882,10 @@ def test_browser_smoke_runner_cleans_acquired_identity_not_precleanup_replacemen
             stop_process=lambda *_args, **_kwargs: [],
             nonce_factory=lambda: "f" * 32,
             temp_parent=tmp_path / "owned",
-            root_lease_factory=lambda _path: Lease(),
+            root_lease_factory=lambda _path, _identity: Lease(),
         )
 
-    assert str(raised.value) == "readiness smoke failed"
+    assert "secret" not in repr(raised.value)
     assert task_root is not None and task_root.is_dir()
     assert moved_root is not None and not moved_root.exists()
 
@@ -2886,6 +2904,11 @@ def test_browser_smoke_runner_retries_transient_directory_lease_close(
             return _browser_summary(), ""
 
     class Lease:
+        def delete_owned(
+            self, path: Path, _expected_identity: tuple[int, int]
+        ) -> None:
+            command_module.shutil.rmtree(path)
+
         def close(self) -> None:
             nonlocal closes
             closes += 1
@@ -2905,7 +2928,7 @@ def test_browser_smoke_runner_retries_transient_directory_lease_close(
         stop_process=lambda *_args, **_kwargs: [],
         nonce_factory=lambda: "1" * 32,
         temp_parent=tmp_path / "owned",
-        root_lease_factory=lambda _path: Lease(),
+        root_lease_factory=lambda _path, _identity: Lease(),
     )
 
     assert result.returncode == 0
@@ -2929,7 +2952,9 @@ def test_browser_smoke_runner_establishes_handle_delete_before_lease_close(
             return _browser_summary(), ""
 
     class Lease:
-        def delete_owned(self, path: Path) -> None:
+        def delete_owned(
+            self, path: Path, _expected_identity: tuple[int, int]
+        ) -> None:
             calls.append("delete-pending")
             command_module.shutil.rmtree(path)
 
@@ -2955,7 +2980,7 @@ def test_browser_smoke_runner_establishes_handle_delete_before_lease_close(
         stop_process=lambda *_args, **_kwargs: [],
         nonce_factory=lambda: "2" * 32,
         temp_parent=tmp_path / "owned",
-        root_lease_factory=lambda _path: Lease(),
+        root_lease_factory=lambda _path, _identity: Lease(),
     )
 
     assert result.returncode == 0
@@ -3017,6 +3042,51 @@ def test_browser_root_lease_identity_failure_closes_handle_and_removes_root(
     assert closed == [123]
     assert spawn_called is False
     assert list((tmp_path / "owned").iterdir()) == []
+
+
+@pytest.mark.parametrize("outside_parent", (False, True))
+def test_browser_root_lease_acquisition_race_preserves_replacement_and_recovers_exact_owner(
+    tmp_path: Path, outside_parent: bool
+) -> None:
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"")
+    task_root: Path | None = None
+    alias: Path | None = None
+
+    def lease_factory(path: Path, _expected_identity: tuple[int, int]) -> object:
+        nonlocal task_root, alias
+        task_root = path
+        marker = path / ".m2-session-owner.json"
+        marker_bytes = marker.read_bytes()
+        alias = (
+            tmp_path / "escaped-original"
+            if outside_parent
+            else path.with_name(path.name + "-alias")
+        )
+        path.rename(alias)
+        path.mkdir()
+        (path / marker.name).write_bytes(marker_bytes)
+        (path / "replacement-proof.txt").write_text("replacement", encoding="utf-8")
+        raise RuntimeError("secret acquisition identity mismatch")
+
+    with pytest.raises(BaseException) as raised:
+        command_module._default_browser_smoke_runner(
+            command=("node", "scripts/run-tests.mjs", "browser-phase7b"),
+            cwd=command_module.REPOSITORY_ROOT,
+            environment={"MYSQL_DB": NEW_DATABASE},
+            timeout_seconds=300,
+            executable_resolver=lambda _name: str(node),
+            guarded_spawn=lambda *_args, **_kwargs: pytest.fail("must not spawn"),
+            nonce_factory=lambda: "4" * 32,
+            temp_parent=tmp_path / "owned",
+            root_lease_factory=lease_factory,
+        )
+
+    assert "secret" not in repr(raised.value)
+    assert task_root is not None
+    assert (task_root / "replacement-proof.txt").read_text(encoding="utf-8") == "replacement"
+    assert alias is not None
+    assert alias.exists() is outside_parent
 
 
 @pytest.mark.asyncio
