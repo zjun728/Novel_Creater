@@ -454,6 +454,44 @@ async def test_default_post_cutover_smoke_rejects_nonexact_post_cleanup_summary(
         )
 
 
+def test_stage_b_environment_passes_actual_node_configured_mode_contract(
+    workspace_tmp_path,
+):
+    task_root = workspace_tmp_path / "node-contract-owner"
+    task_root.mkdir()
+    script = """
+import {
+  createBackendEnvironment, validateBorrowedContract,
+} from './frontend/e2e/run-phase7b.mjs'
+const environment = {
+  ONLY_TEST: 'stage-b',
+  MARKET_SCHEDULER_ENABLED: 'false',
+  PHASE7B_BROWSER_TASK_ROOT: process.argv[1],
+  PHASE7B_BROWSER_TASK_NONCE: 'f'.repeat(32),
+}
+validateBorrowedContract(environment)
+const backend = createBackendEnvironment(environment)
+const mysqlKeys = ['MYSQL_HOST', 'MYSQL_PORT', 'MYSQL_USER', 'MYSQL_PASSWORD', 'MYSQL_DB']
+if (mysqlKeys.some(key => Object.hasOwn(backend, key))) process.exitCode = 7
+else console.log(JSON.stringify(backend))
+"""
+
+    completed = subprocess.run(
+        ["node", "--input-type=module", "--eval", script, str(task_root)],
+        cwd=REPOSITORY_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stderr == ""
+    assert json.loads(completed.stdout) == {
+        "ONLY_TEST": "stage-b",
+        "MARKET_SCHEDULER_ENABLED": "false",
+    }
+
+
 @pytest.mark.asyncio
 async def test_inventory_time_config_edit_is_not_overwritten_by_cutover(workspace_tmp_path):
     config = workspace_tmp_path / ".env.local.json"

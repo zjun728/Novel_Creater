@@ -75,13 +75,22 @@ function stripCaseInsensitive(environment, names) {
   )))
 }
 
+function hasExactDatabaseOverride(environment) {
+  const hasOverride = Object.hasOwn(environment, 'MYSQL_DB')
+  if (hasOverride && environment.MYSQL_DB !== DATABASE) {
+    throw new Error('Phase7B browser contract is invalid')
+  }
+  return hasOverride
+}
+
 export function createBackendEnvironment(environment) {
+  const hasDatabaseOverride = hasExactDatabaseOverride(environment)
   return {
     ...stripCaseInsensitive(environment, [
       'MYSQL_DB', 'MARKET_SCHEDULER_ENABLED', TASK_ROOT_KEY, TASK_NONCE_KEY,
       'M2_BROWSER_RUN_NONCE',
     ]),
-    MYSQL_DB: DATABASE,
+    ...(hasDatabaseOverride ? { MYSQL_DB: DATABASE } : {}),
     MARKET_SCHEDULER_ENABLED: 'false',
   }
 }
@@ -180,14 +189,14 @@ export function validateBorrowedContract(environment) {
   const taskRoot = environment[TASK_ROOT_KEY]
   const nonce = environment[TASK_NONCE_KEY]
   if (
-    environment.MYSQL_DB !== DATABASE
-    || environment.MARKET_SCHEDULER_ENABLED !== 'false'
+    environment.MARKET_SCHEDULER_ENABLED !== 'false'
     || typeof nonce !== 'string'
     || !/^[a-f0-9]{32}$/u.test(nonce)
     || typeof taskRoot !== 'string'
     || !path.isAbsolute(taskRoot)
     || taskRoot !== path.resolve(taskRoot)
   ) throw new Error('Phase7B browser contract is invalid')
+  hasExactDatabaseOverride(environment)
   const stats = lstatSync(taskRoot)
   if (!stats.isDirectory() || stats.isSymbolicLink()) {
     throw new Error('Phase7B task root is not an owned directory')

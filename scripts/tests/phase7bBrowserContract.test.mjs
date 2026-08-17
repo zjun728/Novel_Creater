@@ -102,7 +102,8 @@ test('Phase 7B runner borrows its sandbox and emits only private internal eviden
 
   const runner = await import('../../frontend/e2e/run-phase7b.mjs')
   const inherited = {
-    Path: 'inherited-path', ONLY_TEST: 'yes', MYSQL_DB: 'wrong', mysql_db: 'also-wrong',
+    Path: 'inherited-path', ONLY_TEST: 'yes', MYSQL_DB: 'novel_creator_v113',
+    mysql_db: 'also-wrong',
     MARKET_SCHEDULER_ENABLED: 'true', phase7b_browser_task_root: 'private-root',
     PHASE7B_BROWSER_TASK_NONCE: 'private-nonce',
   }
@@ -112,7 +113,8 @@ test('Phase 7B runner borrows its sandbox and emits only private internal eviden
     MARKET_SCHEDULER_ENABLED: 'false',
   })
   assert.deepEqual(inherited, {
-    Path: 'inherited-path', ONLY_TEST: 'yes', MYSQL_DB: 'wrong', mysql_db: 'also-wrong',
+    Path: 'inherited-path', ONLY_TEST: 'yes', MYSQL_DB: 'novel_creator_v113',
+    mysql_db: 'also-wrong',
     MARKET_SCHEDULER_ENABLED: 'true', phase7b_browser_task_root: 'private-root',
     PHASE7B_BROWSER_TASK_NONCE: 'private-nonce',
   })
@@ -158,6 +160,62 @@ test('Phase 7B runner borrows its sandbox and emits only private internal eviden
   ]) assert.throws(() => runner.canonicalJson(array), TypeError)
   assert.throws(() => runner.canonicalJson(Object.create(null)), TypeError)
   assert.throws(() => runner.canonicalJson(new (class Evidence {})()), TypeError)
+})
+
+test('Phase 7B derives exact override and configured modes from MYSQL_DB ownership', async () => {
+  const runner = await import('../../frontend/e2e/run-phase7b.mjs')
+  const taskRoot = mkdtempSync(path.join(os.tmpdir(), 'phase7b-contract-'))
+  const mysqlKeys = ['MYSQL_HOST', 'MYSQL_PORT', 'MYSQL_USER', 'MYSQL_PASSWORD', 'MYSQL_DB']
+  const borrowed = {
+    MARKET_SCHEDULER_ENABLED: 'false',
+    PHASE7B_BROWSER_TASK_ROOT: taskRoot,
+    PHASE7B_BROWSER_TASK_NONCE: 'e'.repeat(32),
+  }
+  try {
+    const stageA = {
+      ...borrowed,
+      ONLY_TEST: 'stage-a',
+      MYSQL_HOST: '127.0.0.1',
+      MYSQL_PORT: '3307',
+      MYSQL_USER: 'root',
+      MYSQL_PASSWORD: 'private-password',
+      MYSQL_DB: 'novel_creator_v113',
+    }
+    assert.deepEqual(runner.validateBorrowedContract(stageA), {
+      nonce: 'e'.repeat(32), taskRoot,
+    })
+    assert.deepEqual(runner.createBackendEnvironment(stageA), {
+      ONLY_TEST: 'stage-a',
+      MYSQL_HOST: '127.0.0.1',
+      MYSQL_PORT: '3307',
+      MYSQL_USER: 'root',
+      MYSQL_PASSWORD: 'private-password',
+      MYSQL_DB: 'novel_creator_v113',
+      MARKET_SCHEDULER_ENABLED: 'false',
+    })
+
+    const stageB = { ...borrowed, ONLY_TEST: 'stage-b' }
+    assert.deepEqual(runner.validateBorrowedContract(stageB), {
+      nonce: 'e'.repeat(32), taskRoot,
+    })
+    const configured = runner.createBackendEnvironment(stageB)
+    assert.deepEqual(configured, {
+      ONLY_TEST: 'stage-b', MARKET_SCHEDULER_ENABLED: 'false',
+    })
+    assert.equal(mysqlKeys.some(key => Object.hasOwn(configured, key)), false)
+
+    for (const invalidDatabase of ['novel_creator', 'wrong', '', undefined]) {
+      const invalid = { ...borrowed, MYSQL_DB: invalidDatabase }
+      assert.throws(() => runner.validateBorrowedContract(invalid), {
+        message: 'Phase7B browser contract is invalid',
+      })
+      assert.throws(() => runner.createBackendEnvironment(invalid), {
+        message: 'Phase7B browser contract is invalid',
+      })
+    }
+  } finally {
+    rmSync(taskRoot, { recursive: true, force: true })
+  }
 })
 
 test('Phase 7B config is one-worker, loopback-only, and direct-child-owned', () => {
