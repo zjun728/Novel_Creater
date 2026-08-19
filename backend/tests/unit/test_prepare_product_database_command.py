@@ -1182,7 +1182,9 @@ def _preparation_receipt() -> PreparationReceipt:
         new_database=NEW_DATABASE,
         legacy_inventory_hash="a" * 64,
         new_inventory_hash="b" * 64,
+        backup_filename="approved-backup.sql",
         backup_sha256="c" * 64,
+        backup_byte_length=42,
         style_count=10,
         experience_card_count=64,
         market_source_count=2,
@@ -1551,6 +1553,21 @@ def test_strict_nested_receipt_parsers_accept_only_exact_domain_documents() -> N
     assert parse_state_receipt_document(canonical_json(asdict(state))) == state
     assert parse_backup_receipt_document(canonical_json(asdict(backup))) == backup
     assert parse_preparation_receipt_document(canonical_json(asdict(receipt))) == receipt
+
+    for missing_key in ("backup_filename", "backup_byte_length"):
+        missing = asdict(receipt)
+        missing.pop(missing_key)
+        with pytest.raises(ProductDatabasePreparationCommandError) as raised:
+            parse_preparation_receipt_document(canonical_json(missing))
+        assert str(raised.value) == "readiness receipt document is invalid"
+
+    for extra_key in ("backup_path", "backup_size"):
+        extra = asdict(receipt)
+        extra[extra_key] = "secret-value"
+        with pytest.raises(ProductDatabasePreparationCommandError) as raised:
+            parse_preparation_receipt_document(canonical_json(extra))
+        assert str(raised.value) == "readiness receipt document is invalid"
+        assert "secret-value" not in repr(raised.value)
 
     invalid_documents: list[str] = []
     for value in (asdict(state), asdict(backup), asdict(receipt)):

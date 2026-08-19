@@ -237,7 +237,7 @@ class World:
         return replace(value, structural_fingerprint="8" * 64) if role == "legacy-after" and self.legacy_drift else value
 
     async def create_backup(self, authority: DatabaseInventory, directory: Path) -> BackupReceipt:
-        self.calls.append("backup"); directory.mkdir(parents=True, exist_ok=True); self.backup_directory = directory; self.backup_path = directory / "phase7b.json"
+        self.calls.append("backup"); directory.mkdir(parents=True, exist_ok=True); self.backup_directory = directory; self.backup_path = directory / "phase7b.sql"
         raw = json.dumps(asdict(authority), allow_nan=False, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode(); self.backup_path.write_bytes(raw)
         first = {"state": ReadinessState.INVENTORY_VERIFIED.value, "previous_receipt_hash": ZERO_HASH, "legacy_database": LEGACY_DATABASE, "new_database": NEW_DATABASE, "evidence_hash": _hash(asdict(authority))}
         receipt = BackupReceipt(ReadinessState.BACKUP_CREATED.value, _hash(first), LEGACY_DATABASE, self.backup_path.name, hashlib.sha256(raw).hexdigest(), len(raw), "8.4.3", _hash(asdict(authority)))
@@ -343,6 +343,9 @@ def _assert_receipts(result: object, world: World, mode: str) -> None:
     for receipt, state, digest in zip(receipts, tuple(state.value for state in tuple(ReadinessState)[:7]), evidence, strict=True):
         expected = {"state": state, "previous_receipt_hash": previous, "legacy_database": LEGACY_DATABASE, "new_database": NEW_DATABASE, "evidence_hash": digest}; assert asdict(receipt) == expected; previous = _hash(expected)
     assert result.previous_receipt_hash == previous  # type: ignore[attr-defined]
+    assert result.backup_filename == backup.backup_filename  # type: ignore[attr-defined]
+    assert result.backup_sha256 == backup.backup_sha256  # type: ignore[attr-defined]
+    assert result.backup_byte_length == backup.backup_byte_length  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio

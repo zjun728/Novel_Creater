@@ -118,6 +118,12 @@ def _is_portable_backup_basename(value: object) -> bool:
     return not windows_path.is_reserved()
 
 
+def _require_backup_basename(value: object) -> str:
+    if not _is_portable_backup_basename(value) or not value.endswith(".sql"):
+        _invalid()
+    return value
+
+
 @dataclass(frozen=True)
 class DatabaseInventory:
     database: str
@@ -236,7 +242,9 @@ class PreparationReceipt:
     new_database: str
     legacy_inventory_hash: str
     new_inventory_hash: str
+    backup_filename: str
     backup_sha256: str
+    backup_byte_length: int
     style_count: int
     experience_card_count: int
     market_source_count: int
@@ -255,7 +263,9 @@ class PreparationReceipt:
             _invalid()
         _require_hash(self.legacy_inventory_hash)
         _require_hash(self.new_inventory_hash)
+        _require_backup_basename(self.backup_filename)
         _require_hash(self.backup_sha256)
+        _require_nonnegative_int(self.backup_byte_length)
         for count in (self.style_count, self.experience_card_count, self.market_source_count):
             _require_nonnegative_int(count)
         if type(self.receipts) is not tuple:

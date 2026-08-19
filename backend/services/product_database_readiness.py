@@ -1028,7 +1028,9 @@ async def prepare_product_database(
                 new_database=request.new_database,
                 legacy_inventory_hash=inventory_hash(before),
                 new_inventory_hash=inventory_hash(target),  # type: ignore[arg-type]
+                backup_filename=backup.backup_filename,
                 backup_sha256=backup.backup_sha256,
+                backup_byte_length=backup.backup_byte_length,
                 style_count=official_payload["styleCount"],  # type: ignore[arg-type]
                 experience_card_count=official_payload["cardCount"],  # type: ignore[arg-type]
                 market_source_count=official_payload["marketSourceCount"],  # type: ignore[arg-type]

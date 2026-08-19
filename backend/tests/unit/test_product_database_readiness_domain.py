@@ -32,6 +32,10 @@ class StringSubclass(str):
     pass
 
 
+class IntSubclass(int):
+    pass
+
+
 def inventory(database: str) -> DatabaseInventory:
     return DatabaseInventory(
         database=database,
@@ -79,7 +83,9 @@ def preparation_receipt(**changes: object) -> PreparationReceipt:
         "new_database": NEW_DATABASE,
         "legacy_inventory_hash": B_HASH,
         "new_inventory_hash": C_HASH,
+        "backup_filename": "phase7b.sql",
         "backup_sha256": A_HASH,
+        "backup_byte_length": 123,
         "style_count": 10,
         "experience_card_count": 64,
         "market_source_count": 2,
@@ -306,6 +312,8 @@ def test_advance_receipt_requires_exact_sequence_and_canonical_link():
 def test_preparation_receipt_requires_exact_database_bound_chain_and_counts():
     valid = preparation_receipt()
     assert valid.receipts[-1].state == ReadinessState.AWAITING_CUTOVER_APPROVAL.value
+    assert valid.backup_filename == "phase7b.sql"
+    assert valid.backup_byte_length == 123
     for changes in (
         {"state": ReadinessState.READINESS_VERIFIED.value},
         {"state": ReadinessState.AWAITING_CUTOVER_APPROVAL},
@@ -314,6 +322,10 @@ def test_preparation_receipt_requires_exact_database_bound_chain_and_counts():
         {"legacy_database": StringSubclass(LEGACY_DATABASE)},
         {"new_database": LEGACY_DATABASE},
         {"new_database": StringSubclass(NEW_DATABASE)},
+        {"backup_sha256": "short"},
+        {"backup_byte_length": -1},
+        {"backup_byte_length": True},
+        {"backup_byte_length": IntSubclass(123)},
         {"style_count": -1},
         {"experience_card_count": True},
         {"market_source_count": -1},
@@ -321,6 +333,31 @@ def test_preparation_receipt_requires_exact_database_bound_chain_and_counts():
         {"receipts": (valid.receipts[0], valid.receipts[2])},
     ):
         assert_contract_error(PreparationReceipt, **(vars(valid) | changes))
+
+
+@pytest.mark.parametrize(
+    "filename",
+    (
+        "folder/phase7b.sql",
+        "folder\\phase7b.sql",
+        ".",
+        "..",
+        "phase7b.sql\0",
+        "phase7b.sql.",
+        "phase7b.sql ",
+        "CON.sql",
+        "prn.SQL",
+        "aux.backup.sql",
+        "com1.sql",
+        "LPT9.sql",
+        "phase7b.dump",
+        "phase7b.SQL",
+        "phase7b",
+        StringSubclass("phase7b.sql"),
+    ),
+)
+def test_preparation_receipt_rejects_unsafe_backup_filename(filename: object):
+    assert_contract_error(preparation_receipt, backup_filename=filename)
 
 
 def test_receipt_mapping_rejects_unknown_and_missing_fields():
