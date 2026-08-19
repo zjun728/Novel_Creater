@@ -1,0 +1,292 @@
+"""Fail-closed, zero-wait serialization for product-database lifecycle work."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+import hashlib
+import os
+from pathlib import Path
+import stat
+import tempfile
+
+
+_LOCK_ERROR = "product database lifecycle lock failed"
+_CLEANUP_ERROR = "product database lifecycle lock cleanup failed"
+_WINDOWS_PREFIX = "Local\\NovelCreator.ProductDatabaseLifecycle."
+_POSIX_PREFIX = "novel-creator-product-database-lifecycle-"
+_WAIT_OBJECT_0 = 0x00000000
+_WAIT_ABANDONED = 0x00000080
+_LOCK_EX = 2
+_LOCK_NB = 4
+
+
+class ProductDatabaseLifecycleError(RuntimeError):
+    """A fixed, public-safe lifecycle-lock failure."""
+
+
+@dataclass(frozen=True)
+class _WindowsAPI:
+    create: Callable[[str], object]
+    wait: Callable[[object], object]
+    release: Callable[[object], object]
+    close: Callable[[object], object]
+
+
+@dataclass(frozen=True)
+class _PosixAPI:
+    open: Callable[[Path, int, int], object]
+    flock: Callable[[int, int], object]
+    unlock: Callable[[int], object]
+    close: Callable[[int], object]
+
+
+def _fixed(message: str) -> ProductDatabaseLifecycleError:
+    return ProductDatabaseLifecycleError(message)
+
+
+def _clean_flow_control(error: BaseException) -> BaseException:
+    if isinstance(error, asyncio.CancelledError):
+        return asyncio.CancelledError()
+    if isinstance(error, KeyboardInterrupt):
+        return KeyboardInterrupt()
+    if isinstance(error, SystemExit):
+        return SystemExit(error.code) if type(error.code) is int else SystemExit()
+    raise TypeError
+
+
+def _sanitize(error: BaseException, message: str) -> BaseException:
+    if isinstance(error, BaseExceptionGroup):
+        return BaseExceptionGroup(
+            message,
+            [_sanitize(child, message) for child in error.exceptions],
+        )
+    if isinstance(error, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+        return _clean_flow_control(error)
+    return _fixed(message)
+
+
+def _strip_metadata(error: BaseException) -> None:
+    error.__cause__ = None
+    error.__context__ = None
+    error.__suppress_context__ = True
+    if hasattr(error, "__notes__"):
+        del error.__notes__
+    if isinstance(error, BaseExceptionGroup):
+        for child in error.exceptions:
+            _strip_metadata(child)
+
+
+def _raise_public(error: BaseException) -> None:
+    _strip_metadata(error)
+    try:
+        raise error from None
+    except BaseException as outgoing:
+        _strip_metadata(outgoing)
+        raise
+
+
+def _raise_failures(
+    primary: BaseException | None,
+    cleanup: list[BaseException],
+) -> None:
+    clean_primary = None if primary is None else _sanitize(primary, _LOCK_ERROR)
+    clean_cleanup = [_sanitize(error, _CLEANUP_ERROR) for error in cleanup]
+    if clean_primary is not None and clean_cleanup:
+        _raise_public(
+            BaseExceptionGroup(_LOCK_ERROR, [clean_primary, *clean_cleanup])
+        )
+    if clean_primary is not None:
+        _raise_public(clean_primary)
+    if len(clean_cleanup) == 1:
+        _raise_public(clean_cleanup[0])
+    if clean_cleanup:
+        _raise_public(BaseExceptionGroup(_CLEANUP_ERROR, clean_cleanup))
+
+
+def _normalized_config_path(config_path: Path, platform_name: str) -> str:
+    path = Path(config_path)
+    normalized = os.path.normpath(os.path.abspath(os.fspath(path)))
+    if platform_name == "nt":
+        normalized = normalized.replace("/", "\\").casefold()
+    return normalized
+
+
+def _path_digest(config_path: Path, platform_name: str) -> str:
+    normalized = _normalized_config_path(config_path, platform_name)
+    return hashlib.sha256(os.fsencode(normalized)).hexdigest()
+
+
+def _windows_lock_name(config_path: Path) -> str:
+    return _WINDOWS_PREFIX + _path_digest(config_path, "nt")
+
+
+def _posix_lock_path(config_path: Path) -> Path:
+    filename = _POSIX_PREFIX + _path_digest(config_path, "posix") + ".lock"
+    return Path(tempfile.gettempdir()).absolute() / filename
+
+
+def _default_windows_api() -> _WindowsAPI:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel32.CreateMutexW
+    create.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+    create.restype = wintypes.HANDLE
+    wait = kernel32.WaitForSingleObject
+    wait.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    wait.restype = wintypes.DWORD
+    release = kernel32.ReleaseMutex
+    release.argtypes = [wintypes.HANDLE]
+    release.restype = wintypes.BOOL
+    close = kernel32.CloseHandle
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    return _WindowsAPI(
+        create=lambda name: create(None, False, name),
+        wait=lambda handle: int(wait(handle, 0)),
+        release=lambda handle: bool(release(handle)),
+        close=lambda handle: bool(close(handle)),
+    )
+
+
+def _default_posix_api() -> _PosixAPI:
+    import fcntl
+
+    return _PosixAPI(
+        open=lambda path, flags, mode: os.open(path, flags, mode),
+        flock=lambda descriptor, operation: fcntl.flock(descriptor, operation),
+        unlock=lambda descriptor: fcntl.flock(descriptor, fcntl.LOCK_UN),
+        close=os.close,
+    )
+
+
+def _api_methods(api: object, names: tuple[str, ...]) -> tuple[Callable[..., object], ...]:
+    methods = tuple(getattr(api, name) for name in names)
+    if not all(callable(method) for method in methods):
+        raise TypeError
+    return methods  # type: ignore[return-value]
+
+
+def _windows_null_handle(handle: object) -> bool:
+    return handle is None or handle is False or (type(handle) is int and handle == 0)
+
+
+def _validate_open_file(descriptor: int) -> os.stat_result:
+    identity = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(identity.st_mode)
+        or identity.st_size != 0
+        or identity.st_nlink != 1
+    ):
+        raise ValueError
+    return identity
+
+
+def _validate_stable_path(
+    descriptor: int,
+    lock_path: Path,
+    opened_identity: os.stat_result,
+) -> None:
+    held_identity = _validate_open_file(descriptor)
+    path_identity = os.lstat(lock_path)
+    if (
+        not stat.S_ISREG(path_identity.st_mode)
+        or path_identity.st_size != 0
+        or path_identity.st_nlink != 1
+        or not os.path.samestat(opened_identity, held_identity)
+        or not os.path.samestat(held_identity, path_identity)
+    ):
+        raise ValueError
+
+
+@contextmanager
+def product_database_lifecycle_lock(
+    config_path: Path,
+    *,
+    platform_name: str = os.name,
+    windows_api: object | None = None,
+    posix_api: object | None = None,
+) -> Iterator[None]:
+    """Acquire the stable lifecycle lock without waiting and release it on exit.
+
+    Only cooperating repository participants are serialized.  All failures are
+    rebuilt at this boundary so paths, operating-system details, and body
+    exception text cannot escape through public exceptions.
+    """
+
+    primary: BaseException | None = None
+    cleanup: list[BaseException] = []
+    resource: object | None = None
+    acquired = False
+    release: Callable[[object], object] | None = None
+    close: Callable[[object], object] | None = None
+    release_success: object = None
+    close_success: object = None
+
+    try:
+        if platform_name == "nt":
+            selected = _default_windows_api() if windows_api is None else windows_api
+            create, wait, release, close = _api_methods(
+                selected, ("create", "wait", "release", "close")
+            )
+            release_success = True
+            close_success = True
+            handle = create(_windows_lock_name(config_path))
+            if _windows_null_handle(handle):
+                raise ValueError
+            resource = handle
+            result = wait(handle)
+            if type(result) is not int:
+                raise ValueError
+            if result == _WAIT_ABANDONED:
+                acquired = True
+                raise ValueError
+            if result != _WAIT_OBJECT_0:
+                raise ValueError
+            acquired = True
+        elif platform_name == "posix":
+            selected = _default_posix_api() if posix_api is None else posix_api
+            open_file, flock, release, close = _api_methods(
+                selected, ("open", "flock", "unlock", "close")
+            )
+            lock_path = _posix_lock_path(config_path)
+            flags = os.O_CREAT | os.O_RDWR
+            flags |= getattr(os, "O_CLOEXEC", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            descriptor = open_file(lock_path, flags, 0o600)
+            if type(descriptor) is not int or descriptor < 0:
+                raise ValueError
+            resource = descriptor
+            opened_identity = _validate_open_file(descriptor)
+            if flock(descriptor, _LOCK_EX | _LOCK_NB) is not None:
+                raise ValueError
+            acquired = True
+            _validate_stable_path(descriptor, lock_path, opened_identity)
+        else:
+            raise ValueError
+        yield
+    except BaseException as error:
+        primary = error
+    finally:
+        if acquired and resource is not None and release is not None:
+            try:
+                released = release(resource)
+                if released is not release_success:
+                    raise ValueError
+            except BaseException as error:
+                cleanup.append(error)
+        if resource is not None and close is not None:
+            try:
+                closed = close(resource)
+                if closed is not close_success:
+                    raise ValueError
+            except BaseException as error:
+                cleanup.append(error)
+        _raise_failures(primary, cleanup)
+
+
+__all__ = ["ProductDatabaseLifecycleError", "product_database_lifecycle_lock"]
