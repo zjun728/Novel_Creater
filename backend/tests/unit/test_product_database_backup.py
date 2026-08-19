@@ -5,6 +5,7 @@ from dataclasses import FrozenInstanceError
 import hashlib
 import os
 from pathlib import Path
+import stat
 import traceback
 from types import SimpleNamespace
 
@@ -23,6 +24,7 @@ from backend.services import product_database_backup as backup
 
 HASH_A = "a" * 64
 RESTORE_DATABASE = "novel_creator_phase7b_restore_0123456789abcdef0123456789abcdef"
+SECRET = "backup-verification-secret-must-not-leak"
 
 
 def make_inventory() -> DatabaseInventory:
@@ -99,6 +101,36 @@ def assert_clean_flow_control(actual: BaseException, source: BaseException) -> N
     assert actual.__cause__ is None
     assert actual.__context__ is None
     assert not hasattr(actual, "__notes__")
+
+
+class ObservedBinaryHandle:
+    def __init__(
+        self,
+        wrapped: object,
+        *,
+        read_failure: BaseException | None = None,
+        close_failure: BaseException | None = None,
+    ) -> None:
+        self.wrapped = wrapped
+        self.read_failure = read_failure
+        self.close_failure = close_failure
+        self.read_calls = 0
+        self.close_calls = 0
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.wrapped, name)
+
+    def read(self, size: int) -> bytes:
+        self.read_calls += 1
+        if self.read_failure is not None:
+            raise self.read_failure
+        return self.wrapped.read(size)  # type: ignore[attr-defined]
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self.wrapped.close()  # type: ignore[attr-defined]
+        if self.close_failure is not None:
+            raise self.close_failure
 
 
 def test_client_pair_is_frozen_and_preflight_requires_matching_84_clients(tmp_path: Path):
@@ -1349,48 +1381,344 @@ def test_public_verify_opens_backup_once(tmp_path: Path, monkeypatch: pytest.Mon
     assert opens == 1
 
 
+@pytest.mark.parametrize(
+    "expected_length",
+    (11, 13, 2**63 - 1),
+    ids=("actual-longer", "actual-shorter", "huge-expected"),
+)
 def test_public_verify_rejects_fstat_size_mismatch_without_reading_and_closes_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, expected_length: int
 ):
     payload = b"small-backup"
     dump = tmp_path / "backup.sql"
     dump.write_bytes(payload)
     real_open = Path.open
-    read_calls = 0
-    close_calls = 0
-
-    class ObservedHandle:
-        def __init__(self, wrapped: object):
-            self.wrapped = wrapped
-
-        def __getattr__(self, name: str) -> object:
-            return getattr(self.wrapped, name)
-
-        def read(self, size: int) -> bytes:
-            nonlocal read_calls
-            read_calls += 1
-            return self.wrapped.read(size)
-
-        def close(self) -> None:
-            nonlocal close_calls
-            close_calls += 1
-            self.wrapped.close()
+    observed: list[ObservedBinaryHandle] = []
 
     def observed_open(path: Path, *args: object, **kwargs: object):
         opened = real_open(path, *args, **kwargs)
-        return ObservedHandle(opened) if path == dump else opened
+        if path != dump:
+            return opened
+        handle = ObservedBinaryHandle(opened)
+        observed.append(handle)
+        return handle
 
     monkeypatch.setattr(Path, "open", observed_open)
     with pytest.raises(backup.ProductDatabaseBackupError) as raised:
         backup.verify_backup_file(
             dump,
             hashlib.sha256(payload).hexdigest(),
-            2**63 - 1,
+            expected_length,
         )
 
     assert str(raised.value) == "backup verification failed"
-    assert read_calls == 0
-    assert close_calls == 1
+    assert len(observed) == 1
+    assert observed[0].read_calls == 0
+    assert observed[0].close_calls == 1
+
+
+@pytest.mark.parametrize("component_kind", ("symlink", "reparse"))
+def test_public_verify_rejects_linked_path_component_before_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, component_kind: str
+):
+    guarded = tmp_path / "guarded"
+    guarded.mkdir()
+    dump = guarded / "backup.sql"
+    payload = b"linked-component"
+    dump.write_bytes(payload)
+    real_is_symlink = Path.is_symlink
+    real_is_reparse = backup._is_reparse
+    real_open = Path.open
+    opens = 0
+
+    if component_kind == "symlink":
+        monkeypatch.setattr(
+            Path,
+            "is_symlink",
+            lambda path: path == guarded or real_is_symlink(path),
+        )
+    else:
+        monkeypatch.setattr(
+            backup,
+            "_is_reparse",
+            lambda path: path == guarded or real_is_reparse(path),
+        )
+
+    def observed_open(path: Path, *args: object, **kwargs: object):
+        nonlocal opens
+        if path == dump:
+            opens += 1
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", observed_open)
+    with pytest.raises(backup.ProductDatabaseBackupError) as raised:
+        backup.verify_backup_file(
+            dump,
+            hashlib.sha256(payload).hexdigest(),
+            len(payload),
+        )
+
+    assert str(raised.value) == "backup verification failed"
+    assert opens == 0
+
+
+def test_public_verify_rejects_path_and_opened_handle_identity_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    payload = b"same-content"
+    dump = tmp_path / "backup.sql"
+    replacement = tmp_path / "replacement.sql"
+    dump.write_bytes(payload)
+    replacement.write_bytes(payload)
+    real_open = Path.open
+    observed: list[ObservedBinaryHandle] = []
+
+    def observed_open(path: Path, *args: object, **kwargs: object):
+        opened = real_open(path, *args, **kwargs)
+        if path != dump:
+            return opened
+        handle = ObservedBinaryHandle(opened)
+        observed.append(handle)
+        return handle
+
+    monkeypatch.setattr(Path, "open", observed_open)
+    monkeypatch.setattr(backup.os, "fstat", lambda _descriptor: replacement.stat())
+    with pytest.raises(backup.ProductDatabaseBackupError) as raised:
+        backup.verify_backup_file(
+            dump,
+            hashlib.sha256(payload).hexdigest(),
+            len(payload),
+        )
+
+    assert str(raised.value) == "backup verification failed"
+    assert not os.path.samestat(dump.lstat(), replacement.stat())
+    assert len(observed) == 1
+    assert observed[0].read_calls == 0
+    assert observed[0].close_calls == 1
+
+
+def test_public_verify_rejects_nonregular_opened_target_with_matching_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    payload = b"regular-path"
+    dump = tmp_path / "backup.sql"
+    dump.write_bytes(payload)
+    path_identity = dump.lstat()
+    values = list(path_identity)
+    values[0] = stat.S_IFDIR | stat.S_IRUSR
+    nonregular_opened = os.stat_result(values)
+    assert os.path.samestat(path_identity, nonregular_opened)
+    assert not stat.S_ISREG(nonregular_opened.st_mode)
+    real_open = Path.open
+    observed: list[ObservedBinaryHandle] = []
+
+    def observed_open(path: Path, *args: object, **kwargs: object):
+        opened = real_open(path, *args, **kwargs)
+        if path != dump:
+            return opened
+        handle = ObservedBinaryHandle(opened)
+        observed.append(handle)
+        return handle
+
+    monkeypatch.setattr(Path, "open", observed_open)
+    monkeypatch.setattr(backup.os, "fstat", lambda _descriptor: nonregular_opened)
+    with pytest.raises(backup.ProductDatabaseBackupError) as raised:
+        backup.verify_backup_file(
+            dump,
+            hashlib.sha256(payload).hexdigest(),
+            len(payload),
+        )
+
+    assert str(raised.value) == "backup verification failed"
+    assert len(observed) == 1
+    assert observed[0].read_calls == 0
+    assert observed[0].close_calls == 1
+
+
+@pytest.mark.parametrize("failure_stage", ("read", "digest"))
+def test_public_verify_keeps_verification_primary_before_fixed_close_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_stage: str
+):
+    payload = b"verification-primary"
+    dump = tmp_path / "backup.sql"
+    dump.write_bytes(payload)
+    primary = BaseExceptionGroup(
+        f"primary {SECRET}", [RuntimeError(f"read {SECRET}")]
+    )
+    cleanup = OSError(f"close {SECRET}")
+    real_open = Path.open
+    observed: list[ObservedBinaryHandle] = []
+
+    def observed_open(path: Path, *args: object, **kwargs: object):
+        opened = real_open(path, *args, **kwargs)
+        if path != dump:
+            return opened
+        handle = ObservedBinaryHandle(
+            opened,
+            read_failure=primary if failure_stage == "read" else None,
+            close_failure=cleanup,
+        )
+        observed.append(handle)
+        return handle
+
+    expected_digest = (
+        hashlib.sha256(payload).hexdigest()
+        if failure_stage == "read"
+        else "0" * 64
+    )
+    monkeypatch.setattr(Path, "open", observed_open)
+    with pytest.raises(BaseExceptionGroup) as raised:
+        backup.verify_backup_file(dump, expected_digest, len(payload))
+
+    assert len(raised.value.exceptions) == 2
+    if failure_stage == "read":
+        assert isinstance(raised.value.exceptions[0], BaseExceptionGroup)
+        assert raised.value.exceptions[0].message == "backup verification failed"
+        nested = raised.value.exceptions[0].exceptions
+        assert len(nested) == 1
+        assert type(nested[0]) is backup.ProductDatabaseBackupError
+        assert str(nested[0]) == "backup verification failed"
+    else:
+        assert type(raised.value.exceptions[0]) is backup.ProductDatabaseBackupError
+        assert str(raised.value.exceptions[0]) == "backup verification failed"
+    assert type(raised.value.exceptions[1]) is backup.ProductDatabaseBackupError
+    assert str(raised.value.exceptions[1]) == "backup verification failed"
+    assert SECRET not in repr(raised.value)
+    assert len(observed) == 1
+    assert observed[0].close_calls == 1
+
+
+@pytest.mark.parametrize("failure_stage", ("read", "close"))
+@pytest.mark.parametrize(
+    "flow_type",
+    (asyncio.CancelledError, KeyboardInterrupt, SystemExit),
+)
+def test_public_verify_preserves_clean_flow_control_from_read_or_close(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+    flow_type: type[BaseException],
+):
+    payload = b"flow-control"
+    dump = tmp_path / "backup.sql"
+    dump.write_bytes(payload)
+    source = SystemExit(17) if flow_type is SystemExit else flow_type()
+    real_open = Path.open
+    observed: list[ObservedBinaryHandle] = []
+
+    def observed_open(path: Path, *args: object, **kwargs: object):
+        opened = real_open(path, *args, **kwargs)
+        if path != dump:
+            return opened
+        handle = ObservedBinaryHandle(
+            opened,
+            read_failure=source if failure_stage == "read" else None,
+            close_failure=source if failure_stage == "close" else None,
+        )
+        observed.append(handle)
+        return handle
+
+    monkeypatch.setattr(Path, "open", observed_open)
+    with pytest.raises(flow_type) as raised:
+        backup.verify_backup_file(
+            dump,
+            hashlib.sha256(payload).hexdigest(),
+            len(payload),
+        )
+
+    assert_clean_flow_control(raised.value, source)
+    assert len(observed) == 1
+    assert observed[0].close_calls == 1
+
+
+@pytest.mark.parametrize(
+    "flow_type",
+    (asyncio.CancelledError, KeyboardInterrupt, SystemExit),
+)
+def test_public_verify_keeps_read_flow_primary_when_close_cleanup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flow_type: type[BaseException],
+):
+    payload = b"primary-flow"
+    dump = tmp_path / "backup.sql"
+    dump.write_bytes(payload)
+    source = SystemExit(19) if flow_type is SystemExit else flow_type()
+    real_open = Path.open
+    observed: list[ObservedBinaryHandle] = []
+
+    def observed_open(path: Path, *args: object, **kwargs: object):
+        opened = real_open(path, *args, **kwargs)
+        if path != dump:
+            return opened
+        handle = ObservedBinaryHandle(
+            opened,
+            read_failure=source,
+            close_failure=OSError(f"cleanup {SECRET}"),
+        )
+        observed.append(handle)
+        return handle
+
+    monkeypatch.setattr(Path, "open", observed_open)
+    with pytest.raises(BaseExceptionGroup) as raised:
+        backup.verify_backup_file(
+            dump,
+            hashlib.sha256(payload).hexdigest(),
+            len(payload),
+        )
+
+    assert len(raised.value.exceptions) == 2
+    assert_clean_flow_control(raised.value.exceptions[0], source)
+    assert type(raised.value.exceptions[1]) is backup.ProductDatabaseBackupError
+    assert str(raised.value.exceptions[1]) == "backup verification failed"
+    assert SECRET not in repr(raised.value)
+    assert len(observed) == 1
+    assert observed[0].close_calls == 1
+
+
+@pytest.mark.parametrize(
+    "flow_type",
+    (asyncio.CancelledError, KeyboardInterrupt, SystemExit),
+)
+def test_public_verify_keeps_fixed_read_primary_before_close_flow_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flow_type: type[BaseException],
+):
+    payload = b"cleanup-flow"
+    dump = tmp_path / "backup.sql"
+    dump.write_bytes(payload)
+    source = SystemExit(23) if flow_type is SystemExit else flow_type()
+    real_open = Path.open
+    observed: list[ObservedBinaryHandle] = []
+
+    def observed_open(path: Path, *args: object, **kwargs: object):
+        opened = real_open(path, *args, **kwargs)
+        if path != dump:
+            return opened
+        handle = ObservedBinaryHandle(
+            opened,
+            read_failure=RuntimeError(f"primary {SECRET}"),
+            close_failure=source,
+        )
+        observed.append(handle)
+        return handle
+
+    monkeypatch.setattr(Path, "open", observed_open)
+    with pytest.raises(BaseExceptionGroup) as raised:
+        backup.verify_backup_file(
+            dump,
+            hashlib.sha256(payload).hexdigest(),
+            len(payload),
+        )
+
+    assert len(raised.value.exceptions) == 2
+    assert type(raised.value.exceptions[0]) is backup.ProductDatabaseBackupError
+    assert str(raised.value.exceptions[0]) == "backup verification failed"
+    assert_clean_flow_control(raised.value.exceptions[1], source)
+    assert SECRET not in repr(raised.value)
+    assert len(observed) == 1
+    assert observed[0].close_calls == 1
 
 
 def test_restore_hashes_seeks_and_spawns_with_the_same_single_open_handle(

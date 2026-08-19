@@ -734,6 +734,94 @@ async def test_cli_requires_exact_preparation_receipt_before_backup_or_other_io(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "unsafe_backup_filename",
+    ("../outside.sql", "nested/backup.sql", "D:/other/backup.sql"),
+)
+async def test_cli_rejects_exact_receipt_forged_with_unsafe_backup_authority(
+    workspace_tmp_path: Path, unsafe_backup_filename: str
+):
+    receipt_path = workspace_tmp_path / "receipts" / "approved.readiness.json"
+    forged = replace(PREPARATION_RECEIPT)
+    object.__setattr__(forged, "backup_filename", unsafe_backup_filename)
+    calls = []
+
+    def load_receipt(path):
+        calls.append(("receipt", path))
+        return forged
+
+    def forbidden(*args, **_kwargs):
+        calls.append(("forbidden", args))
+        raise AssertionError("forged receipt must not authorize any I/O")
+
+    with pytest.raises(command.ProductDatabaseCutoverError) as raised:
+        await command.run_cli(
+            (
+                "--receipt", str(receipt_path),
+                "--database", NEW_DATABASE,
+                "--confirm-cutover", "CUTOVER-PHASE7B",
+                "--execute",
+            ),
+            receipt_loader=load_receipt,
+            backup_verifier=forbidden,
+            inventory_reader=forbidden,
+            smoke=forbidden,
+            writer=forbidden,
+            idle_guard=forbidden,
+            output=forbidden,
+        )
+
+    assert str(raised.value) == "product database cutover evidence is invalid"
+    assert calls == [("receipt", receipt_path)]
+
+
+@pytest.mark.asyncio
+async def test_cli_verifies_only_receipt_parent_and_declared_closed_filename(
+    workspace_tmp_path: Path,
+):
+    receipt_directory = workspace_tmp_path / "receipts"
+    receipt_directory.mkdir()
+    receipt_path = receipt_directory / "misleading-stem.readiness.json"
+    same_stem_decoy = receipt_directory / "misleading-stem.sql"
+    other_directory_decoy = workspace_tmp_path / PREPARATION_RECEIPT.backup_filename
+    calls = []
+
+    def load_receipt(path):
+        calls.append(("receipt", path))
+        return PREPARATION_RECEIPT
+
+    def verify(path, digest, length):
+        calls.append(("verify", path, digest, length))
+        raise RuntimeError(SECRET)
+
+    with pytest.raises(command.ProductDatabaseCutoverError) as raised:
+        await command.run_cli(
+            (
+                "--receipt", str(receipt_path),
+                "--database", NEW_DATABASE,
+                "--confirm-cutover", "CUTOVER-PHASE7B",
+                "--execute",
+            ),
+            receipt_loader=load_receipt,
+            backup_verifier=verify,
+        )
+
+    expected_backup = receipt_directory / PREPARATION_RECEIPT.backup_filename
+    assert expected_backup not in (same_stem_decoy, other_directory_decoy)
+    assert calls == [
+        ("receipt", receipt_path),
+        (
+            "verify",
+            expected_backup,
+            PREPARATION_RECEIPT.backup_sha256,
+            PREPARATION_RECEIPT.backup_byte_length,
+        ),
+    ]
+    assert str(raised.value) == "product database cutover evidence is invalid"
+    assert SECRET not in repr(raised.value)
+
+
+@pytest.mark.asyncio
 async def test_cli_backup_verifier_failure_is_fixed_and_blocks_other_io(
     monkeypatch: pytest.MonkeyPatch,
 ):
