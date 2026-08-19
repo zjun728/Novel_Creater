@@ -1417,6 +1417,66 @@ def test_public_verify_rejects_fstat_size_mismatch_without_reading_and_closes_on
     assert observed[0].close_calls == 1
 
 
+def test_public_verify_uses_opened_fstat_size_not_matching_path_snapshot_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    payload = b"opened-handle-size-authority"
+    dump = tmp_path / "backup.sql"
+    dump.write_bytes(payload)
+    expected_length = len(payload) + 7
+    actual_path_stat = dump.lstat()
+    reported_path_stat = SimpleNamespace(
+        st_mode=actual_path_stat.st_mode,
+        st_ino=actual_path_stat.st_ino,
+        st_dev=actual_path_stat.st_dev,
+        st_size=expected_length,
+        st_file_attributes=getattr(actual_path_stat, "st_file_attributes", 0),
+    )
+    assert os.path.samestat(reported_path_stat, actual_path_stat)
+    assert reported_path_stat.st_mode == actual_path_stat.st_mode
+    real_lstat = Path.lstat
+    real_open = Path.open
+    real_fstat = backup.os.fstat
+    observed: list[ObservedBinaryHandle] = []
+    opened_fstats = []
+
+    def reported_lstat(path: Path):
+        return reported_path_stat if path == dump else real_lstat(path)
+
+    def observed_open(path: Path, *args: object, **kwargs: object):
+        opened = real_open(path, *args, **kwargs)
+        if path != dump:
+            return opened
+        handle = ObservedBinaryHandle(opened)
+        observed.append(handle)
+        return handle
+
+    def observed_fstat(descriptor: int):
+        opened = real_fstat(descriptor)
+        opened_fstats.append(opened)
+        return opened
+
+    monkeypatch.setattr(Path, "lstat", reported_lstat)
+    monkeypatch.setattr(Path, "open", observed_open)
+    monkeypatch.setattr(backup.os, "fstat", observed_fstat)
+    with pytest.raises(backup.ProductDatabaseBackupError) as raised:
+        backup.verify_backup_file(
+            dump,
+            hashlib.sha256(payload).hexdigest(),
+            expected_length,
+        )
+
+    assert str(raised.value) == "backup verification failed"
+    assert len(opened_fstats) == 1
+    assert os.path.samestat(reported_path_stat, opened_fstats[0])
+    assert reported_path_stat.st_mode == opened_fstats[0].st_mode
+    assert reported_path_stat.st_size == expected_length
+    assert opened_fstats[0].st_size == len(payload)
+    assert len(observed) == 1
+    assert observed[0].read_calls == 0
+    assert observed[0].close_calls == 1
+
+
 @pytest.mark.parametrize("component_kind", ("symlink", "reparse"))
 def test_public_verify_rejects_linked_path_component_before_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, component_kind: str

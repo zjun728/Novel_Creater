@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import asdict, replace
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -773,6 +774,66 @@ async def test_cli_rejects_exact_receipt_forged_with_unsafe_backup_authority(
 
     assert str(raised.value) == "product database cutover evidence is invalid"
     assert calls == [("receipt", receipt_path)]
+
+
+@pytest.mark.asyncio
+async def test_cli_uses_trusted_class_validation_before_real_backup_verification(
+    workspace_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    receipt_directory = workspace_tmp_path / "receipts"
+    receipt_directory.mkdir()
+    receipt_path = receipt_directory / "approved.readiness.json"
+    outside_backup = workspace_tmp_path / "outside.sql"
+    payload = b"outside-decoy-must-not-be-verified"
+    outside_backup.write_bytes(payload)
+    forged = replace(PREPARATION_RECEIPT)
+    object.__setattr__(forged, "backup_filename", "../outside.sql")
+    object.__setattr__(forged, "backup_sha256", hashlib.sha256(payload).hexdigest())
+    object.__setattr__(forged, "backup_byte_length", len(payload))
+    object.__setattr__(forged, "__post_init__", lambda: None)
+    real_open = Path.open
+    opened_paths = []
+    config_reads = 0
+    writes = 0
+
+    def observed_open(path: Path, *args: object, **kwargs: object):
+        opened_paths.append(path)
+        return real_open(path, *args, **kwargs)
+
+    def forbidden_config_read(*_args, **_kwargs):
+        nonlocal config_reads
+        config_reads += 1
+        raise AssertionError("forged receipt must not reach configuration")
+
+    def forbidden_write(*_args, **_kwargs):
+        nonlocal writes
+        writes += 1
+        raise AssertionError("forged receipt must not write configuration")
+
+    monkeypatch.setattr(Path, "open", observed_open)
+    monkeypatch.setattr(
+        command, "capture_local_document_snapshot", forbidden_config_read
+    )
+    with pytest.raises(command.ProductDatabaseCutoverError) as raised:
+        await command.run_cli(
+            (
+                "--receipt", str(receipt_path),
+                "--database", NEW_DATABASE,
+                "--confirm-cutover", "CUTOVER-PHASE7B",
+                "--execute",
+            ),
+            receipt_loader=lambda _path: forged,
+            inventory_reader=lambda *_args: pytest.fail("inventory must not run"),
+            smoke=lambda *_args: pytest.fail("smoke must not run"),
+            writer=forbidden_write,
+            idle_guard=lambda: pytest.fail("idle guard must not run"),
+            output=lambda _value: pytest.fail("output must not run"),
+        )
+
+    assert str(raised.value) == "product database cutover evidence is invalid"
+    assert opened_paths == []
+    assert config_reads == 0
+    assert writes == 0
 
 
 @pytest.mark.asyncio

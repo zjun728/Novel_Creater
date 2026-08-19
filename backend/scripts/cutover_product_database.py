@@ -515,7 +515,7 @@ async def run_cli(
                 or receipt.state != ReadinessState.AWAITING_CUTOVER_APPROVAL.value
             ):
                 raise ValueError
-            receipt.__post_init__()
+            PreparationReceipt.__post_init__(receipt)
             backup_path = receipt_path.parent / receipt.backup_filename
             await _invoke(
                 backup_verifier,
