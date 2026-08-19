@@ -215,8 +215,42 @@ Permanent cutover is a separate CLI action and a separate user approval. It requ
 - the exact successful preparation receipt and new-database fingerprint;
 - current `.env.local.json` still targeting `novel_creator`;
 - both databases still present with their recorded identities;
-- no product application process using the configuration;
+- exclusive ownership of the product-database lifecycle lock;
 - explicit `--database novel_creator_v113` and matching confirmation.
+
+The CLI validates `--execute`, the selected mode, the exact database name, and the exact cutover or
+recovery confirmation before opening a receipt, backup, configuration document, or database
+connection. The published preparation receipt binds the backup basename, SHA-256, and exact byte
+length. After approval, cutover derives the sibling backup only from that closed basename and reuses
+the backup service's single-open verification boundary: every path component must be non-link and
+non-reparse, the opened regular-file identity must match the path identity, `fstat` size must equal
+the receipt length before hashing, and the same handle must produce the receipt SHA-256. The command
+never hashes an unbounded, differently sized file and never relies on the receipt filename stem.
+
+Normal application startup and cutover share one internal product-database lifecycle lock. Its
+opaque name is derived from the normalized absolute `.env.local.json` path and exposes no path or
+credential. On Windows it is a zero-wait named mutex with an injectable API for deterministic tests.
+On POSIX it is a zero-wait advisory lock on a stable, hash-named file under the operating-system
+temporary directory; the empty lock file is not deleted, so inode replacement and cleanup races are
+outside the protocol. Both implementations serialize only repository participants and expose the
+same acquire/hold/release contract.
+The backend acquires it before any database access or background-service startup and retains it
+until all gateways, schedulers, registries, and the database pool have completed shutdown. A second
+backend instance, an abandoned mutex, acquisition failure, release failure, or close failure fails
+with a fixed secret-free lifecycle category; a body failure remains primary over release/close
+failures. Flow-control exceptions retain only their safe type and exact integer `SystemExit` code.
+
+Cutover acquires the same lock before reading the configuration, inventory, or writing the CAS
+document. This replaces command-line process discovery; process enumeration is not an authority.
+The lock is held through evidence revalidation and atomic configuration publication, then released
+before normal-config browser smoke so that the smoke backend can acquire and hold it through its
+complete lifespan. After the smoke process tree has stopped, cutover reacquires the lock and
+revalidates the exact switched snapshot before reporting success. If smoke fails, cutover first
+reacquires the lock and only then attempts the one bounded CAS rollback. If another backend wins the
+gap, cutover does not overwrite its configuration: the smoke error remains primary and the lock or
+rollback failure is retained as cleanup evidence. Recovery uses the same acquire-before-read/write
+rule. Repository-supported product startup and administrative cutover are the lock participants;
+uncooperative direct filesystem editors remain governed by the existing exact CAS pre/post checks.
 
 The cutover preserves every existing configuration field and changes only `MYSQL_DB`. It writes a
 same-directory private temporary file, flushes and fsyncs it, applies current-user-only ACL, and
@@ -255,7 +289,9 @@ a receipt for a different database, or silently continue after a failed step.
   stops the stage immediately.
 - The old product database is never in an automatic DDL or cleanup allowlist.
 - Database names and confirmation values must match exactly and satisfy closed role-specific
-  patterns before any DDL.
+  patterns before any receipt, backup, configuration, connection, or DDL access.
+- Product startup, cutover, rollback, and recovery use the shared lifecycle lock rather than a
+  process-list heuristic. No configuration write occurs without lock ownership.
 - Only current-run-created random restore databases and current-run-created new databases are
   eligible for cleanup.
 - A successful backup is retained even if all later steps fail.
@@ -282,8 +318,15 @@ Unit tests cover:
 - executable version/path validation;
 - password absence from command arguments, logs, receipts, and exceptions;
 - option-file and backup ACL/atomic-publication cleanup precedence;
+- approval-before-I/O ordering and receipt-bound, same-handle backup verification;
 - canonical receipt chaining and cross-database replay rejection;
 - configuration atomic switch, rollback, crash recovery, and exact-field preservation;
+- lifecycle-lock acquisition, abandoned/contended/error states, backend whole-lifespan ownership,
+  second-instance rejection, release/close ordering, and sanitized flow control;
+- Windows named-mutex and POSIX advisory-lock implementations producing the same fail-closed
+  participant semantics without storing paths, credentials, or business data;
+- cutover release-before-smoke, reacquire-before-success, reacquire-before-rollback, and a competing
+  backend winning either gap without an unsafe configuration overwrite;
 - browser owner/borrower handoff, root identity acquisition, process registration order, truthful
   post-cleanup summary, and primary-before-cleanup failure ordering;
 - fixed secret-free error categories.
@@ -345,7 +388,9 @@ Phase 7B is accepted only when:
   plus their closed static authorities;
 - project, Provider, corpus, draft/final, backup, and import business state is empty;
 - temporary-override and post-cutover application smoke checks pass with zero Provider/outbound;
-- configuration cutover occurs only after the second user approval and can be rolled back;
+- configuration cutover performs no receipt/backup/config/database I/O before the second exact user
+  approval, is mutually exclusive with a running product backend, and can be rolled back only while
+  holding the same lifecycle lock;
 - all disposable databases and task-owned processes/files except the published backup are cleaned;
 - full verification and both final reviews have no active Critical or Important findings;
 - `novel_creator` remains available until the separately approved post-Phase-7C retirement task.
