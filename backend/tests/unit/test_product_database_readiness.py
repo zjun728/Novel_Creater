@@ -370,6 +370,41 @@ async def test_preexisting_ready_boundary_is_zero_write_resume(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+async def test_restore_callback_cannot_mutate_verified_final_backup_authority(
+    tmp_path: Path,
+) -> None:
+    class MutatingRestoreWorld(World):
+        original_backup: dict[str, object]
+
+        async def restore_drill(
+            self,
+            receipt: BackupReceipt,
+            authority: DatabaseInventory,
+        ) -> RestoreDrillResult:
+            self.original_backup = asdict(receipt)
+            result = await super().restore_drill(receipt, authority)
+            object.__setattr__(receipt, "backup_filename", "mutated.sql")
+            object.__setattr__(receipt, "backup_sha256", "f" * 64)
+            object.__setattr__(receipt, "backup_byte_length", 999)
+            return result
+
+    world = MutatingRestoreWorld()
+
+    result = await world.run(tmp_path)
+
+    assert (
+        result.backup_filename,
+        result.backup_sha256,
+        result.backup_byte_length,
+    ) == (
+        world.original_backup["backup_filename"],
+        world.original_backup["backup_sha256"],
+        world.original_backup["backup_byte_length"],
+    )
+    assert result.receipts[1].evidence_hash == _hash(world.original_backup)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("target", ("absent", "ready"))
 async def test_target_structural_drift_rejects_with_unchanged_counts_and_storage(tmp_path: Path, target: str) -> None:
     world = World(target=target); world.target_structural_fingerprint = "9" * 64
