@@ -19,8 +19,6 @@ _WINDOWS_PREFIX = "Local\\NovelCreator.ProductDatabaseLifecycle."
 _POSIX_PREFIX = "novel-creator-product-database-lifecycle-"
 _WAIT_OBJECT_0 = 0x00000000
 _WAIT_ABANDONED = 0x00000080
-_LOCK_EX = 2
-_LOCK_NB = 4
 
 
 class ProductDatabaseLifecycleError(RuntimeError):
@@ -41,6 +39,10 @@ class _PosixAPI:
     flock: Callable[[int, int], object]
     unlock: Callable[[int], object]
     close: Callable[[int], object]
+    o_cloexec: int
+    o_nofollow: int
+    lock_ex: int
+    lock_nb: int
 
 
 def _fixed(message: str) -> ProductDatabaseLifecycleError:
@@ -161,6 +163,10 @@ def _default_posix_api() -> _PosixAPI:
         flock=lambda descriptor, operation: fcntl.flock(descriptor, operation),
         unlock=lambda descriptor: fcntl.flock(descriptor, fcntl.LOCK_UN),
         close=os.close,
+        o_cloexec=os.O_CLOEXEC,
+        o_nofollow=os.O_NOFOLLOW,
+        lock_ex=fcntl.LOCK_EX,
+        lock_nb=fcntl.LOCK_NB,
     )
 
 
@@ -169,6 +175,23 @@ def _api_methods(api: object, names: tuple[str, ...]) -> tuple[Callable[..., obj
     if not all(callable(method) for method in methods):
         raise TypeError
     return methods  # type: ignore[return-value]
+
+
+def _posix_capabilities(api: object) -> tuple[int, int, int, int]:
+    values = tuple(
+        getattr(api, name)
+        for name in ("o_cloexec", "o_nofollow", "lock_ex", "lock_nb")
+    )
+    if not all(type(value) is int and value > 0 for value in values):
+        raise TypeError
+    o_cloexec, o_nofollow, lock_ex, lock_nb = values
+    if (
+        o_cloexec & o_nofollow
+        or (o_cloexec | o_nofollow) & (os.O_CREAT | os.O_RDWR)
+        or lock_ex & lock_nb
+    ):
+        raise ValueError
+    return o_cloexec, o_nofollow, lock_ex, lock_nb  # type: ignore[return-value]
 
 
 def _windows_null_handle(handle: object) -> bool:
@@ -253,16 +276,17 @@ def product_database_lifecycle_lock(
             open_file, flock, release, close = _api_methods(
                 selected, ("open", "flock", "unlock", "close")
             )
+            o_cloexec, o_nofollow, lock_ex, lock_nb = _posix_capabilities(
+                selected
+            )
             lock_path = _posix_lock_path(config_path)
-            flags = os.O_CREAT | os.O_RDWR
-            flags |= getattr(os, "O_CLOEXEC", 0)
-            flags |= getattr(os, "O_NOFOLLOW", 0)
+            flags = os.O_CREAT | os.O_RDWR | o_cloexec | o_nofollow
             descriptor = open_file(lock_path, flags, 0o600)
             if type(descriptor) is not int or descriptor < 0:
                 raise ValueError
             resource = descriptor
             opened_identity = _validate_open_file(descriptor)
-            if flock(descriptor, _LOCK_EX | _LOCK_NB) is not None:
+            if flock(descriptor, lock_ex | lock_nb) is not None:
                 raise ValueError
             acquired = True
             _validate_stable_path(descriptor, lock_path, opened_identity)

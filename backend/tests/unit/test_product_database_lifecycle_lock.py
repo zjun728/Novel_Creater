@@ -96,6 +96,10 @@ class FakePosixAPI:
         fail_at: str | None = None,
         unlock_error: BaseException | None = None,
         close_error: BaseException | None = None,
+        o_cloexec: object = 0x00100000,
+        o_nofollow: object = 0x00200000,
+        lock_ex: object = 0x00001000,
+        lock_nb: object = 0x00002000,
     ) -> None:
         self.open_result = open_result
         self.opener = opener
@@ -105,6 +109,10 @@ class FakePosixAPI:
         self.fail_at = fail_at
         self.unlock_error = unlock_error
         self.close_error = close_error
+        self.o_cloexec = o_cloexec
+        self.o_nofollow = o_nofollow
+        self.lock_ex = lock_ex
+        self.lock_nb = lock_nb
         self.events: list[object] = []
         self.real_descriptors: set[int] = set()
 
@@ -423,13 +431,9 @@ def test_posix_success_uses_secure_flags_locks_then_unlocks_and_closes(tmp_path:
 
     assert _event_names(api.events) == ["open", "flock", "body", "unlock", "close"]
     _, lock_path, flags, mode = api.events[0]  # type: ignore[misc]
-    assert flags & os.O_CREAT
-    assert flags & os.O_RDWR
-    for optional in (getattr(os, "O_CLOEXEC", 0), getattr(os, "O_NOFOLLOW", 0)):
-        if optional:
-            assert flags & optional
+    assert flags == os.O_CREAT | os.O_RDWR | api.o_cloexec | api.o_nofollow
     assert mode == 0o600
-    assert api.events[1][2] == 6  # LOCK_EX | LOCK_NB  # type: ignore[index]
+    assert api.events[1][2] == api.lock_ex | api.lock_nb  # type: ignore[index]
     assert Path(lock_path).is_file()
     assert Path(lock_path).read_bytes() == b""
 
@@ -458,17 +462,87 @@ def test_posix_malformed_api_fails_before_opening(tmp_path: Path, missing: str):
         for name in ("open", "flock", "unlock", "close")
         if name != missing
     }
+    capabilities = {
+        name: getattr(fake, name)
+        for name in ("o_cloexec", "o_nofollow", "lock_ex", "lock_nb")
+    }
 
     with pytest.raises(lifecycle.ProductDatabaseLifecycleError) as raised:
         with lifecycle.product_database_lifecycle_lock(
             tmp_path / "config.json",
             platform_name="posix",
-            posix_api=SimpleNamespace(**methods),
+            posix_api=SimpleNamespace(**methods, **capabilities),
         ):
             pytest.fail("malformed API entered body")
 
     assert raised.value.args == (LOCK_ERROR,)
     assert fake.events == []
+
+
+@pytest.mark.parametrize(
+    "missing", ("o_cloexec", "o_nofollow", "lock_ex", "lock_nb")
+)
+def test_posix_missing_required_capability_fails_before_opening(
+    tmp_path: Path, missing: str
+):
+    api = FakePosixAPI()
+    delattr(api, missing)
+
+    with pytest.raises(lifecycle.ProductDatabaseLifecycleError) as raised:
+        with lifecycle.product_database_lifecycle_lock(
+            tmp_path / "config.json", platform_name="posix", posix_api=api
+        ):
+            pytest.fail("missing POSIX capability entered body")
+
+    assert raised.value.args == (LOCK_ERROR,)
+    assert api.events == []
+
+
+@pytest.mark.parametrize("capability", ("o_cloexec", "o_nofollow", "lock_ex", "lock_nb"))
+@pytest.mark.parametrize("invalid", (None, False, True, 0, -1, 1.0, "8"))
+def test_posix_malformed_required_capability_fails_before_opening(
+    tmp_path: Path, capability: str, invalid: object
+):
+    api = FakePosixAPI()
+    setattr(api, capability, invalid)
+
+    with pytest.raises(lifecycle.ProductDatabaseLifecycleError) as raised:
+        with lifecycle.product_database_lifecycle_lock(
+            tmp_path / "config.json", platform_name="posix", posix_api=api
+        ):
+            pytest.fail("malformed POSIX capability entered body")
+
+    assert raised.value.args == (LOCK_ERROR,)
+    assert api.events == []
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "value"),
+    (
+        ("o_cloexec", "o_nofollow", 0x00100000),
+        ("o_cloexec", "o_nofollow", 0x00300000),
+        ("o_cloexec", "base", os.O_CREAT),
+        ("o_nofollow", "base", os.O_RDWR),
+        ("lock_ex", "lock_nb", 0x00001000),
+        ("lock_ex", "lock_nb", 0x00003000),
+    ),
+)
+def test_posix_aliased_capabilities_fail_before_opening(
+    tmp_path: Path, first: str, second: str, value: int
+):
+    api = FakePosixAPI()
+    setattr(api, first, value)
+    if second != "base":
+        setattr(api, second, value)
+
+    with pytest.raises(lifecycle.ProductDatabaseLifecycleError) as raised:
+        with lifecycle.product_database_lifecycle_lock(
+            tmp_path / "config.json", platform_name="posix", posix_api=api
+        ):
+            pytest.fail("aliased POSIX capabilities entered body")
+
+    assert raised.value.args == (LOCK_ERROR,)
+    assert api.events == []
 
 
 @pytest.mark.parametrize("bad_result", (False, 0, True, "none"))
