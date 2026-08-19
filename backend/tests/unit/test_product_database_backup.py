@@ -1349,6 +1349,50 @@ def test_public_verify_opens_backup_once(tmp_path: Path, monkeypatch: pytest.Mon
     assert opens == 1
 
 
+def test_public_verify_rejects_fstat_size_mismatch_without_reading_and_closes_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    payload = b"small-backup"
+    dump = tmp_path / "backup.sql"
+    dump.write_bytes(payload)
+    real_open = Path.open
+    read_calls = 0
+    close_calls = 0
+
+    class ObservedHandle:
+        def __init__(self, wrapped: object):
+            self.wrapped = wrapped
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self.wrapped, name)
+
+        def read(self, size: int) -> bytes:
+            nonlocal read_calls
+            read_calls += 1
+            return self.wrapped.read(size)
+
+        def close(self) -> None:
+            nonlocal close_calls
+            close_calls += 1
+            self.wrapped.close()
+
+    def observed_open(path: Path, *args: object, **kwargs: object):
+        opened = real_open(path, *args, **kwargs)
+        return ObservedHandle(opened) if path == dump else opened
+
+    monkeypatch.setattr(Path, "open", observed_open)
+    with pytest.raises(backup.ProductDatabaseBackupError) as raised:
+        backup.verify_backup_file(
+            dump,
+            hashlib.sha256(payload).hexdigest(),
+            2**63 - 1,
+        )
+
+    assert str(raised.value) == "backup verification failed"
+    assert read_calls == 0
+    assert close_calls == 1
+
+
 def test_restore_hashes_seeks_and_spawns_with_the_same_single_open_handle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

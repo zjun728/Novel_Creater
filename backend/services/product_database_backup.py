@@ -1293,6 +1293,8 @@ def _open_verified_backup(
         if (
             not stat.S_ISREG(opened.st_mode)
             or not os.path.samestat(components[-1][1], opened)
+            or type(opened.st_size) is not int
+            or opened.st_size != expected_length
         ):
             raise OSError
         for component, expected in components[:-1]:

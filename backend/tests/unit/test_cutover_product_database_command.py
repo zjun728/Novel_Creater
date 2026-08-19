@@ -1,6 +1,5 @@
 import asyncio
 from dataclasses import asdict, replace
-import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -120,7 +119,6 @@ async def test_cutover_changes_only_mysql_db_and_finishes_legacy_retained(worksp
         smoke=successful_smoke,
         writer=write_json,
         inventory_reader=observe_inventories,
-        observed_backup_sha256="c" * 64,
         acl_runner=object(),
         idle_guard=no_product_process,
     )
@@ -151,7 +149,6 @@ async def test_cutover_requires_both_exact_approvals_before_read_or_write(
             smoke=lambda *_args: calls.append("smoke"),
             writer=lambda *_args: calls.append("write"),
             inventory_reader=lambda *_args: calls.append("inventory"),
-            observed_backup_sha256="c" * 64,
             acl_runner=object(),
             idle_guard=no_product_process,
         )
@@ -180,7 +177,6 @@ async def test_cutover_refuses_an_active_product_process_before_config_write(
             smoke=successful_smoke,
             writer=lambda *_args: writes.append(True),
             inventory_reader=observe_inventories,
-            observed_backup_sha256="c" * 64,
             acl_runner=object(),
             idle_guard=active_process_guard,
         )
@@ -198,7 +194,6 @@ async def test_cutover_refuses_an_active_product_process_before_config_write(
         ),
         lambda receipt: replace(receipt, legacy_inventory_hash="f" * 64),
         lambda receipt: replace(receipt, new_inventory_hash="f" * 64),
-        lambda receipt: replace(receipt, backup_sha256="f" * 64),
     ),
 )
 async def test_cutover_rejects_stale_or_mismatched_evidence_without_write(
@@ -217,7 +212,6 @@ async def test_cutover_rejects_stale_or_mismatched_evidence_without_write(
             smoke=successful_smoke,
             writer=lambda *_args: writes.append(True),
             inventory_reader=observe_inventories,
-            observed_backup_sha256="c" * 64,
             acl_runner=object(),
             idle_guard=no_product_process,
         )
@@ -247,7 +241,6 @@ async def test_cutover_rejects_wrong_or_invalid_current_config(workspace_tmp_pat
             smoke=successful_smoke,
             writer=lambda *_args: writes.append(True),
             inventory_reader=observe_inventories,
-            observed_backup_sha256="c" * 64,
             acl_runner=object(),
             idle_guard=no_product_process,
         )
@@ -277,7 +270,6 @@ async def test_smoke_failure_restores_exact_original_document(workspace_tmp_path
             smoke=fail_smoke,
             writer=writer,
             inventory_reader=observe_inventories,
-            observed_backup_sha256="c" * 64,
             acl_runner=object(),
             idle_guard=no_product_process,
         )
@@ -315,7 +307,6 @@ async def test_smoke_and_rollback_failure_keeps_primary_first_and_sanitized(
             smoke=smoke,
             writer=writer,
             inventory_reader=observe_inventories,
-            observed_backup_sha256="c" * 64,
             acl_runner=object(),
             idle_guard=no_product_process,
         )
@@ -358,22 +349,11 @@ async def test_flow_control_propagates_after_one_successful_rollback(
             smoke=smoke,
             writer=writer,
             inventory_reader=observe_inventories,
-            observed_backup_sha256="c" * 64,
             acl_runner=object(),
             idle_guard=no_product_process,
         )
 
     assert writes == [{**original, "MYSQL_DB": NEW_DATABASE}, original]
-
-
-def test_backup_digest_uses_the_backup_sibling_of_readiness_receipt(workspace_tmp_path):
-    backup = workspace_tmp_path / "novel_creator-phase7b-abc.sql"
-    backup.write_bytes(b"approved-backup")
-    receipt = workspace_tmp_path / "novel_creator-phase7b-abc.readiness.json"
-
-    assert command._backup_sha256_for_receipt(receipt) == hashlib.sha256(
-        b"approved-backup"
-    ).hexdigest()
 
 
 @pytest.mark.asyncio
@@ -513,7 +493,6 @@ async def test_inventory_time_config_edit_is_not_overwritten_by_cutover(workspac
             confirm_cutover="CUTOVER-PHASE7B",
             smoke=successful_smoke,
             inventory_reader=inventories,
-            observed_backup_sha256="c" * 64,
             acl_runner=lambda _path: None,
             idle_guard=no_product_process,
         )
@@ -540,7 +519,6 @@ async def test_smoke_time_config_edit_is_not_overwritten_by_rollback(workspace_t
             confirm_cutover="CUTOVER-PHASE7B",
             smoke=smoke,
             inventory_reader=observe_inventories,
-            observed_backup_sha256="c" * 64,
             acl_runner=lambda _path: None,
             idle_guard=no_product_process,
         )
@@ -574,7 +552,6 @@ async def test_successful_smoke_config_edit_prevents_legacy_retained_result(
             confirm_cutover="CUTOVER-PHASE7B",
             smoke=smoke,
             inventory_reader=observe_inventories,
-            observed_backup_sha256="c" * 64,
             acl_runner=lambda _path: None,
             idle_guard=no_product_process,
         )
@@ -645,6 +622,163 @@ def test_cli_recovery_requires_exact_closed_action_and_execute():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "argv",
+    (
+        (
+            "--receipt", "D:/approved.readiness.json",
+            "--database", NEW_DATABASE,
+            "--confirm-cutover", "CUTOVER-PHASE7B",
+        ),
+        (
+            "--receipt", "D:/approved.readiness.json",
+            "--database", LEGACY_DATABASE,
+            "--confirm-cutover", "CUTOVER-PHASE7B",
+            "--execute",
+        ),
+        (
+            "--receipt", "D:/approved.readiness.json",
+            "--database", NEW_DATABASE,
+            "--confirm-cutover", "wrong",
+            "--execute",
+        ),
+        ("--database", NEW_DATABASE, "--confirm-cutover", "CUTOVER-PHASE7B", "--execute"),
+        (
+            "--recover-legacy",
+            "--database", LEGACY_DATABASE,
+            "--confirm-cutover", "RECOVER-PHASE7B",
+        ),
+        (
+            "--recover-legacy",
+            "--database", NEW_DATABASE,
+            "--confirm-cutover", "RECOVER-PHASE7B",
+            "--execute",
+        ),
+        (
+            "--recover-legacy",
+            "--database", LEGACY_DATABASE,
+            "--confirm-cutover", "wrong",
+            "--execute",
+        ),
+        (
+            "--recover-legacy",
+            "--receipt", "D:/approved.readiness.json",
+            "--database", LEGACY_DATABASE,
+            "--confirm-cutover", "RECOVER-PHASE7B",
+            "--execute",
+        ),
+    ),
+)
+async def test_cli_rejects_inexact_approval_before_every_io(
+    monkeypatch: pytest.MonkeyPatch, argv: tuple[str, ...]
+):
+    calls = []
+
+    def forbidden(*_args, **_kwargs):
+        calls.append("io")
+        raise AssertionError("approval must precede all I/O")
+
+    monkeypatch.setattr(command, "capture_local_document_snapshot", forbidden)
+    with pytest.raises(command.ProductDatabaseCutoverError) as raised:
+        await command.run_cli(
+            argv,
+            receipt_loader=forbidden,
+            backup_verifier=forbidden,
+            inventory_reader=forbidden,
+            smoke=forbidden,
+            writer=forbidden,
+            idle_guard=forbidden,
+            output=forbidden,
+        )
+
+    assert str(raised.value) == "product database cutover approval is invalid"
+    assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("loaded_receipt", (None, SimpleNamespace(state="missing")))
+async def test_cli_requires_exact_preparation_receipt_before_backup_or_other_io(
+    monkeypatch: pytest.MonkeyPatch, loaded_receipt: object
+):
+    receipt_path = Path("D:/approved.readiness.json")
+    calls = []
+
+    def load_receipt(path):
+        calls.append(("receipt", path))
+        return loaded_receipt
+
+    def forbidden(*_args, **_kwargs):
+        calls.append("forbidden")
+        raise AssertionError("invalid receipt must stop I/O")
+
+    monkeypatch.setattr(command, "capture_local_document_snapshot", forbidden)
+    with pytest.raises(command.ProductDatabaseCutoverError) as raised:
+        await command.run_cli(
+            (
+                "--receipt", str(receipt_path),
+                "--database", NEW_DATABASE,
+                "--confirm-cutover", "CUTOVER-PHASE7B",
+                "--execute",
+            ),
+            receipt_loader=load_receipt,
+            backup_verifier=forbidden,
+            inventory_reader=forbidden,
+            smoke=forbidden,
+            writer=forbidden,
+            idle_guard=forbidden,
+            output=forbidden,
+        )
+
+    assert str(raised.value) == "product database cutover evidence is invalid"
+    assert calls == [("receipt", receipt_path)]
+
+
+@pytest.mark.asyncio
+async def test_cli_backup_verifier_failure_is_fixed_and_blocks_other_io(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    receipt_path = Path("D:/approved.readiness.json")
+    calls = []
+
+    def verify(path, digest, length):
+        calls.append(("verify", path, digest, length))
+        raise RuntimeError(SECRET)
+
+    def forbidden(*_args, **_kwargs):
+        calls.append("forbidden")
+        raise AssertionError("failed verification must stop I/O")
+
+    monkeypatch.setattr(command, "capture_local_document_snapshot", forbidden)
+    with pytest.raises(command.ProductDatabaseCutoverError) as raised:
+        await command.run_cli(
+            (
+                "--receipt", str(receipt_path),
+                "--database", NEW_DATABASE,
+                "--confirm-cutover", "CUTOVER-PHASE7B",
+                "--execute",
+            ),
+            receipt_loader=lambda _path: PREPARATION_RECEIPT,
+            backup_verifier=verify,
+            inventory_reader=forbidden,
+            smoke=forbidden,
+            writer=forbidden,
+            idle_guard=forbidden,
+            output=forbidden,
+        )
+
+    assert str(raised.value) == "product database cutover evidence is invalid"
+    assert SECRET not in repr(raised.value)
+    assert calls == [
+        (
+            "verify",
+            receipt_path.parent / PREPARATION_RECEIPT.backup_filename,
+            PREPARATION_RECEIPT.backup_sha256,
+            PREPARATION_RECEIPT.backup_byte_length,
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_execute_cli_loads_exact_receipt_and_runs_guarded_cutover(workspace_tmp_path):
     config = workspace_tmp_path / ".env.local.json"
     original = mysql_document()
@@ -657,9 +791,8 @@ async def test_execute_cli_loads_exact_receipt_and_runs_guarded_cutover(workspac
         events.append(("receipt", path))
         return PREPARATION_RECEIPT
 
-    def backup_digest(path):
-        events.append(("backup", path))
-        return "c" * 64
+    def verify_backup(path, digest, length):
+        events.append(("backup", path, digest, length))
 
     async def inventories(document):
         events.append(("inventory", document["MYSQL_DB"]))
@@ -684,7 +817,7 @@ async def test_execute_cli_loads_exact_receipt_and_runs_guarded_cutover(workspac
         ],
         config_path=config,
         receipt_loader=load_receipt,
-        backup_digest=backup_digest,
+        backup_verifier=verify_backup,
         inventory_reader=inventories,
         smoke=smoke,
         writer=writer,
@@ -696,13 +829,52 @@ async def test_execute_cli_loads_exact_receipt_and_runs_guarded_cutover(workspac
     assert result == 0
     assert events == [
         ("receipt", receipt_path),
-        ("backup", receipt_path),
+        (
+            "backup",
+            receipt_path.parent / PREPARATION_RECEIPT.backup_filename,
+            PREPARATION_RECEIPT.backup_sha256,
+            PREPARATION_RECEIPT.backup_byte_length,
+        ),
         ("inventory", LEGACY_DATABASE),
         "idle",
         ("write", NEW_DATABASE, "private-acl"),
         ("smoke", NEW_DATABASE),
     ]
     assert output == ["state=legacy_retained"]
+
+
+@pytest.mark.asyncio
+async def test_execute_cli_recovery_is_receipt_free(workspace_tmp_path):
+    config = workspace_tmp_path / ".env.local.json"
+    config.write_text(json.dumps(mysql_document(NEW_DATABASE)), encoding="utf-8")
+    output = []
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("recovery must not access receipt or backup")
+
+    result = await command.run_cli(
+        (
+            "--recover-legacy",
+            "--database", LEGACY_DATABASE,
+            "--confirm-cutover", "RECOVER-PHASE7B",
+            "--execute",
+        ),
+        config_path=config,
+        receipt_loader=forbidden,
+        backup_verifier=forbidden,
+        inventory_reader=observe_inventories,
+        writer=write_json,
+        acl_runner=object(),
+        idle_guard=no_product_process,
+        output=output.append,
+    )
+
+    assert result == 0
+    assert output == ["state=legacy_retained"]
+    assert (
+        json.loads(config.read_text(encoding="utf-8"))["MYSQL_DB"]
+        == LEGACY_DATABASE
+    )
 
 
 def test_cli_help_is_successful_and_failures_are_generic_secret_free(monkeypatch, capsys):

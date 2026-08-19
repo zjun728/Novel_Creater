@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 from dataclasses import dataclass
-import hashlib
 import inspect
 import json
 import os
@@ -33,6 +32,7 @@ from backend.scripts.configure_local_mysql import (
     restrict_windows_acl,
 )
 from backend.scripts.prepare_product_database import load_preparation_receipt
+from backend.services.product_database_backup import verify_backup_file
 
 
 _CUTOVER_CONFIRMATION = "CUTOVER-PHASE7B"
@@ -296,7 +296,6 @@ async def cutover(
     smoke: Callable[..., object],
     writer: Callable[..., object] = atomic_compare_and_swap_local_document,
     inventory_reader: Callable[..., object],
-    observed_backup_sha256: str,
     acl_runner: object = restrict_windows_acl,
     idle_guard: Callable[..., object] = assert_no_product_application_process,
 ) -> CutoverResult:
@@ -307,8 +306,6 @@ async def cutover(
         if (
             type(receipt) is not PreparationReceipt
             or receipt.state != ReadinessState.AWAITING_CUTOVER_APPROVAL.value
-            or type(observed_backup_sha256) is not str
-            or observed_backup_sha256 != receipt.backup_sha256
         ):
             raise ValueError
         original_snapshot = capture_local_document_snapshot(Path(config_path))
@@ -415,18 +412,6 @@ async def recover_legacy(
         _raise(_sanitized(error, _RECOVERY_ERROR))
 
 
-def _backup_sha256_for_receipt(receipt_path: Path) -> str:
-    suffix = ".readiness.json"
-    if not receipt_path.name.endswith(suffix):
-        raise ProductDatabaseCutoverError(_EVIDENCE_ERROR)
-    backup = receipt_path.with_name(receipt_path.name[: -len(suffix)] + ".sql")
-    digest = hashlib.sha256()
-    with backup.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 async def _default_inventory_reader(document: Mapping[str, object]) -> object:
     from backend.scripts.prepare_product_database import _default_inventory
 
@@ -483,7 +468,7 @@ async def run_cli(
     *,
     config_path: Path = LOCAL_CONFIG_PATH,
     receipt_loader: Callable[[Path], object] = load_preparation_receipt,
-    backup_digest: Callable[[Path], object] = _backup_sha256_for_receipt,
+    backup_verifier: Callable[[Path, str, int], object] = verify_backup_file,
     inventory_reader: Callable[..., object] = _default_inventory_reader,
     smoke: Callable[..., object] = _default_post_cutover_smoke,
     writer: Callable[..., object] = atomic_compare_and_swap_local_document,
@@ -492,10 +477,16 @@ async def run_cli(
     output: Callable[[str], None] = print,
 ) -> int:
     args = _argument_parser().parse_args(argv)
-    if not args.execute:
+    if type(args.execute) is not bool or not args.execute:
         _raise(ProductDatabaseCutoverError(_APPROVAL_ERROR))
     if args.recover_legacy:
-        if args.receipt is not None:
+        if (
+            args.receipt is not None
+            or type(args.database) is not str
+            or args.database != LEGACY_DATABASE
+            or type(args.confirm_cutover) is not str
+            or args.confirm_cutover != _RECOVERY_CONFIRMATION
+        ):
             _raise(ProductDatabaseCutoverError(_APPROVAL_ERROR))
         result = await recover_legacy(
             config_path=config_path,
@@ -507,11 +498,32 @@ async def run_cli(
             idle_guard=idle_guard,
         )
     else:
-        if type(args.receipt) is not str or not args.receipt:
+        if (
+            type(args.receipt) is not str
+            or not args.receipt
+            or type(args.database) is not str
+            or args.database != NEW_DATABASE
+            or type(args.confirm_cutover) is not str
+            or args.confirm_cutover != _CUTOVER_CONFIRMATION
+        ):
             _raise(ProductDatabaseCutoverError(_APPROVAL_ERROR))
         receipt_path = Path(args.receipt)
-        receipt = await _invoke(receipt_loader, receipt_path)
-        digest = await _invoke(backup_digest, receipt_path)
+        try:
+            receipt = await _invoke(receipt_loader, receipt_path)
+            if (
+                type(receipt) is not PreparationReceipt
+                or receipt.state != ReadinessState.AWAITING_CUTOVER_APPROVAL.value
+            ):
+                raise ValueError
+            backup_path = receipt_path.parent / receipt.backup_filename
+            await _invoke(
+                backup_verifier,
+                backup_path,
+                receipt.backup_sha256,
+                receipt.backup_byte_length,
+            )
+        except BaseException as error:
+            _raise(_sanitized(error, _EVIDENCE_ERROR))
         result = await cutover(
             receipt=receipt,  # type: ignore[arg-type]
             config_path=config_path,
@@ -520,7 +532,6 @@ async def run_cli(
             smoke=smoke,
             writer=writer,
             inventory_reader=inventory_reader,
-            observed_backup_sha256=digest,  # type: ignore[arg-type]
             acl_runner=acl_runner,
             idle_guard=idle_guard,
         )
