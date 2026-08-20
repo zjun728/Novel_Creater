@@ -4,22 +4,8 @@ import aiomysql
 import pytest
 
 from backend import config as backend_config
-
-# Transitional Task 1 compatibility: Task 2 removes this consumer import.
-backend_config.MYSQL_CONFIG = {
-    "host": "127.0.0.1",
-    "port": 3307,
-    "user": "root",
-    "password": None,
-    "db": "novel_creator",
-    "charset": "utf8mb4",
-    "autocommit": True,
-    "minsize": 1,
-    "maxsize": 10,
-}
 from backend import database
-del backend_config.MYSQL_CONFIG
-from backend.config import LocalMySQLConfigError
+from backend.config import RuntimeConfigurationError
 from backend.tests.support.fakes import FakePool
 
 
@@ -30,10 +16,38 @@ def use_pool(monkeypatch, pool):
     monkeypatch.setattr(database, "get_pool", fake_get_pool)
 
 
-def use_complete_mysql_config(monkeypatch):
-    complete = dict(database.MYSQL_CONFIG, password="test-only")
-    monkeypatch.setattr(database, "MYSQL_CONFIG", complete)
-    return complete
+def runtime_configuration(**replacements):
+    values = {
+        "host": "snapshot-host",
+        "port": 3307,
+        "user": "snapshot-user",
+        "password": "snapshot-password",
+        "db": "snapshot-database",
+        "charset": "utf8mb4",
+        "autocommit": True,
+        "minsize": 1,
+        "maxsize": 10,
+    }
+    values.update(replacements)
+    return backend_config.RuntimeConfiguration(
+        mysql_items=tuple(values.items()),
+        corpus_root=None,
+        managed_corpus_root=None,
+        market_scheduler_enabled=False,
+    )
+
+
+@pytest.fixture(autouse=True)
+def no_active_runtime_configuration(monkeypatch):
+    monkeypatch.setattr(
+        backend_config, "_active_runtime_configuration", None, raising=False
+    )
+
+
+def use_complete_runtime_configuration():
+    snapshot = runtime_configuration()
+    backend_config.install_runtime_configuration(snapshot)
+    return snapshot
 
 
 @pytest.mark.asyncio
@@ -173,7 +187,7 @@ async def test_module_helpers_each_use_a_single_connection(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_pool_uses_backend_config_and_caches_pool(monkeypatch):
+async def test_get_pool_uses_installed_snapshot_and_caches_pool(monkeypatch):
     created_pool = FakePool()
     calls = []
 
@@ -181,30 +195,63 @@ async def test_get_pool_uses_backend_config_and_caches_pool(monkeypatch):
         calls.append(kwargs)
         return created_pool
 
-    complete = use_complete_mysql_config(monkeypatch)
+    snapshot = use_complete_runtime_configuration()
+    monkeypatch.setenv("MYSQL_DB", "later-value-must-not-win")
+    monkeypatch.setattr(
+        backend_config,
+        "load_mysql_config",
+        lambda *args, **kwargs: pytest.fail("pool reread local configuration"),
+    )
     monkeypatch.setattr(database, "_pool", None)
     monkeypatch.setattr(database.aiomysql, "create_pool", fake_create_pool)
 
     assert await database.get_pool() is created_pool
     assert await database.get_pool() is created_pool
-    assert calls == [complete]
+    assert calls == [snapshot.mysql_pool_options()]
 
 
 @pytest.mark.asyncio
-async def test_get_pool_rejects_missing_password_before_connector(monkeypatch):
+async def test_get_pool_rejects_missing_runtime_snapshot_before_connector(monkeypatch):
     called = False
 
     async def fake_create_pool(**kwargs):
         nonlocal called
         called = True
 
-    monkeypatch.setattr(database, "MYSQL_CONFIG", dict(database.MYSQL_CONFIG, password=None))
     monkeypatch.setattr(database, "_pool", None)
     monkeypatch.setattr(database.aiomysql, "create_pool", fake_create_pool)
 
-    with pytest.raises(LocalMySQLConfigError, match="MYSQL_PASSWORD"):
+    with pytest.raises(
+        RuntimeConfigurationError,
+        match="^runtime configuration is unavailable$",
+    ):
         await database.get_pool()
 
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_get_pool_rejects_snapshot_invalidated_after_install(monkeypatch):
+    called = False
+
+    async def fake_create_pool(**kwargs):
+        nonlocal called
+        called = True
+
+    snapshot = use_complete_runtime_configuration()
+    object.__setattr__(snapshot, "mysql_items", (("host", "secret"),))
+    monkeypatch.setattr(database, "_pool", None)
+    monkeypatch.setattr(database.aiomysql, "create_pool", fake_create_pool)
+
+    with pytest.raises(
+        RuntimeConfigurationError,
+        match="^runtime configuration is unavailable$",
+    ) as caught:
+        await database.get_pool()
+
+    assert caught.value.args == ("runtime configuration is unavailable",)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
     assert called is False
 
 
@@ -221,7 +268,7 @@ async def test_concurrent_first_get_pool_creates_one_shared_pool(monkeypatch):
         await allow_create.wait()
         return pool
 
-    use_complete_mysql_config(monkeypatch)
+    use_complete_runtime_configuration()
     monkeypatch.setattr(database, "_pool", None)
     monkeypatch.setattr(database, "_pool_lock", asyncio.Lock(), raising=False)
     monkeypatch.setattr(database.aiomysql, "create_pool", fake_create_pool)
@@ -248,7 +295,7 @@ async def test_close_pool_waits_for_initialization_and_closes_once(monkeypatch):
         await allow_create.wait()
         return created_pool
 
-    use_complete_mysql_config(monkeypatch)
+    use_complete_runtime_configuration()
     monkeypatch.setattr(database, "_pool", None)
     monkeypatch.setattr(database, "_pool_lock", asyncio.Lock(), raising=False)
     monkeypatch.setattr(database.aiomysql, "create_pool", fake_create_pool)

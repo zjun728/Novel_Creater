@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.database import transaction
+from backend import config as backend_config
 from backend.domain.corpus import (
     FRAGMENT_PAGE_DEFAULT,
     FRAGMENT_PAGE_MAX,
@@ -31,6 +32,32 @@ from backend.services.creative_assets import CreativeAssetService
 SOURCE_ID = "11111111-1111-1111-1111-111111111111"
 CHAPTER_ID = "22222222-2222-2222-2222-222222222222"
 IMPORT_ID = "33333333-3333-3333-3333-333333333333"
+
+
+@pytest.fixture(autouse=True)
+def no_active_runtime_configuration(monkeypatch):
+    monkeypatch.setattr(
+        backend_config, "_active_runtime_configuration", None, raising=False
+    )
+
+
+@pytest.fixture
+def runtime_configuration(tmp_path):
+    corpus_root = tmp_path / "runtime-corpus"
+    managed_root = tmp_path / "runtime-managed"
+    corpus_root.mkdir()
+    managed_root.mkdir()
+    snapshot = backend_config.RuntimeConfiguration(
+        mysql_items=(("host", "runtime-host"), ("port", 3307),
+                     ("user", "runtime-user"), ("password", "runtime-password"),
+                     ("db", "runtime-db"), ("charset", "utf8mb4"),
+                     ("autocommit", True), ("minsize", 1), ("maxsize", 10)),
+        corpus_root=corpus_root,
+        managed_corpus_root=managed_root,
+        market_scheduler_enabled=False,
+    )
+    backend_config.install_runtime_configuration(snapshot)
+    return snapshot
 
 
 class FakeCorpusService:
@@ -550,7 +577,7 @@ def test_corpus_public_errors_are_stable_and_safe(failure, status, code, path):
     _assert_safe(response.json())
 
 
-def test_production_service_uses_explicit_transactions():
+def test_production_service_uses_explicit_transactions(runtime_configuration):
     service = corpus.get_corpus_service()
     assert isinstance(service, CreativeAssetService)
     assert service.asset_service.transaction_factory is transaction

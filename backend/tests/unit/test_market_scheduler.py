@@ -613,6 +613,15 @@ def test_scheduler_runtime_rejects_ambiguous_enable_values():
         )
 
 
+@pytest.mark.parametrize("enabled", (False, True))
+def test_runtime_composition_requires_explicit_snapshot_enabled_flag(enabled):
+    from backend.runtime.market_scheduler import build_market_scheduler_runtime
+
+    runtime = build_market_scheduler_runtime(enabled=enabled)
+
+    assert runtime.scheduler.enabled is enabled
+
+
 def test_scheduled_attempt_key_is_shared_within_a_poll_bucket_then_rotates():
     from backend.services.market_scheduler import scheduled_idempotency_key
 

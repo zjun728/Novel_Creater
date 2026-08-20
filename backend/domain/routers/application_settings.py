@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.config import MANAGED_CORPUS_ROOT
+from backend.config import current_runtime_configuration
 from backend.database import connection, transaction
 from backend.domain.application_settings import UpdateDefaultModel
 from backend.repositories.application_settings import (
@@ -26,11 +24,8 @@ router = APIRouter(tags=["application-settings"])
 
 
 def _corpus_store_ready() -> bool:
-    return (
-        isinstance(MANAGED_CORPUS_ROOT, Path)
-        and MANAGED_CORPUS_ROOT.exists()
-        and MANAGED_CORPUS_ROOT.is_dir()
-    )
+    root = current_runtime_configuration().managed_corpus_root
+    return root is not None and root.exists() and root.is_dir()
 
 
 _service = ApplicationSettingsService(

@@ -15,7 +15,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
 from starlette.responses import StreamingResponse
 
-from backend.config import require_managed_corpus_root
+from backend.config import (
+    current_runtime_configuration,
+    require_managed_corpus_root,
+)
 from backend.database import get_pool
 from backend.domain.project_packages import (
     ProjectPackageBusy,
@@ -85,8 +88,11 @@ class ProjectPackageFailure(PublicDomainError):
 
 
 async def get_project_package_service() -> ProjectPackageService:
+    snapshot = current_runtime_configuration()
+    managed_corpus_root = require_managed_corpus_root(
+        snapshot.managed_corpus_root
+    )
     pool = await get_pool()
-    managed_corpus_root = require_managed_corpus_root()
     return ProjectPackageService(
         repository=ProjectPackageRepository(pool=pool),
         managed_corpus_root=managed_corpus_root,

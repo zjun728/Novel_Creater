@@ -16,7 +16,10 @@ from starlette.datastructures import UploadFile
 from starlette.requests import ClientDisconnect
 from python_multipart.multipart import MultipartParser, parse_options_header
 
-from backend.config import require_managed_corpus_root
+from backend.config import (
+    current_runtime_configuration,
+    require_managed_corpus_root,
+)
 from backend.domain.project_imports import (
     OwnedImportQuarantine,
     ProjectImportInvalid,
@@ -49,9 +52,12 @@ MAX_IMPORT_MULTIPART_OVERHEAD = 64 * 1024
 
 
 async def get_project_import_service() -> ProjectImportService:
+    snapshot = current_runtime_configuration()
     return ProjectImportService(
         repository=ProjectImportRepository(),
-        managed_corpus_root=require_managed_corpus_root(),
+        managed_corpus_root=require_managed_corpus_root(
+            snapshot.managed_corpus_root
+        ),
         temp_parent=PROJECT_IMPORT_TEMP_PARENT,
     )
 

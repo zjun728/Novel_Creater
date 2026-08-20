@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import asyncio
 
-from backend.config import MARKET_SCHEDULER_ENABLED
 from backend.services.market_cleanup import MarketCleanupLedger
 
 
 MIN_POLL_INTERVAL_SECONDS = 60.0
 DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 3.0
 _STATUS = {
-    "enabled": MARKET_SCHEDULER_ENABLED,
-    "state": "idle" if MARKET_SCHEDULER_ENABLED else "disabled",
+    "enabled": False,
+    "state": "disabled",
     "next_run_at": None,
 }
 
@@ -260,7 +259,7 @@ class MarketSchedulerRuntime:
             )
 
 
-def build_market_scheduler_runtime() -> MarketSchedulerRuntime:
+def build_market_scheduler_runtime(*, enabled: bool) -> MarketSchedulerRuntime:
     from backend.database import connection, transaction
     from backend.gateways.market_sources.base import HttpxMarketTransport
     from backend.gateways.market_sources.qidian_public_rank import (
@@ -290,7 +289,7 @@ def build_market_scheduler_runtime() -> MarketSchedulerRuntime:
         repository,
         connection_factory=connection,
         executor=snapshots.refresh_scheduled,
-        enabled=MARKET_SCHEDULER_ENABLED,
+        enabled=enabled,
     )
     return MarketSchedulerRuntime(
         scheduler,

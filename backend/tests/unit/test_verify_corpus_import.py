@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import re
+from types import SimpleNamespace
 
 import pytest
 
+from backend.scripts import verify_corpus_import as verifier
 from backend.scripts.verify_corpus_import import build_receipt
 
 
@@ -87,3 +89,51 @@ async def test_verifier_missing_source_is_stable_and_non_sensitive():
 
     with pytest.raises(LookupError, match="corpus source not found"):
         await build_receipt(MissingSession(), source_hash="b" * 64)
+
+
+@pytest.mark.asyncio
+async def test_command_loads_mysql_configuration_when_invoked(monkeypatch):
+    events = []
+    mysql = {
+        "host": "invocation-host", "port": 3307, "user": "invocation-user",
+        "password": "invocation-password", "db": "ignored-by-selector",
+        "charset": "utf8mb4", "autocommit": True, "minsize": 1,
+        "maxsize": 10,
+    }
+
+    class Connection:
+        def close(self):
+            events.append(("close",))
+
+    async def fake_connect(**kwargs):
+        events.append(("connect", kwargs))
+        return Connection()
+
+    async def fake_receipt(session, **selectors):
+        events.append(("receipt", selectors))
+        return {"status": "analyzed"}
+
+    def load_mysql_config():
+        events.append(("load",))
+        return mysql
+
+    monkeypatch.setattr(verifier, "load_mysql_config", load_mysql_config)
+    monkeypatch.setattr(verifier.aiomysql, "connect", fake_connect)
+    monkeypatch.setattr(verifier, "build_receipt", fake_receipt)
+
+    result = await verifier._run(SimpleNamespace(
+        database="phase7b_disposable", source_id="source-1", source_hash=None,
+    ))
+
+    assert result == {"status": "analyzed"}
+    assert events == [
+        ("load",),
+        ("connect", {
+            "host": "invocation-host", "port": 3307,
+            "user": "invocation-user", "password": "invocation-password",
+            "db": "phase7b_disposable", "charset": "utf8mb4",
+            "autocommit": True,
+        }),
+        ("receipt", {"source_id": "source-1", "source_hash": None}),
+        ("close",),
+    ]

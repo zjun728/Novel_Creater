@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 
 import aiomysql
 
-from backend.config import MYSQL_CONFIG, require_mysql_config
+from backend.config import current_runtime_configuration
 
 
 _pool = None
@@ -39,8 +39,9 @@ async def get_pool():
     if _pool is None:
         async with _pool_lock:
             if _pool is None:
+                snapshot = current_runtime_configuration()
                 _pool = await aiomysql.create_pool(
-                    **require_mysql_config(MYSQL_CONFIG)
+                    **snapshot.mysql_pool_options()
                 )
     return _pool
 

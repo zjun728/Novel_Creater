@@ -9,7 +9,7 @@ import re
 
 import aiomysql
 
-from backend.config import MYSQL_CONFIG, require_mysql_config
+from backend.config import load_mysql_config, require_mysql_config
 from backend.database import DatabaseSession
 
 
@@ -97,7 +97,7 @@ def _parser() -> argparse.ArgumentParser:
 async def _run(args) -> dict[str, object]:
     if _DATABASE_NAME.fullmatch(args.database) is None:
         raise RuntimeError("database name contains unsupported characters")
-    config = require_mysql_config(MYSQL_CONFIG)
+    config = require_mysql_config(load_mysql_config())
     connection = await aiomysql.connect(
         host=config["host"], port=config["port"], user=config["user"],
         password=config["password"], db=args.database, charset="utf8mb4",

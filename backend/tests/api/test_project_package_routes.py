@@ -19,6 +19,7 @@ from backend.domain.project_packages import (
     ProjectPackageTooLarge,
 )
 from backend.domain.routers import project_packages
+from backend import config as backend_config
 from backend.security.redaction import install_error_handlers
 from backend.services.project_packages import ProjectPackageFile
 
@@ -32,6 +33,72 @@ _PRIVATE_SENTINELS = (
     "PRIVATE_CORPUS_BYTES_SENTINEL",
     "PRIVATE_CAUSE_SENTINEL",
 )
+
+
+@pytest.fixture(autouse=True)
+def no_active_runtime_configuration(monkeypatch):
+    monkeypatch.setattr(
+        backend_config, "_active_runtime_configuration", None, raising=False
+    )
+
+
+def install_runtime_configuration(tmp_path):
+    corpus_root = tmp_path / "corpus"
+    managed_root = tmp_path / "managed"
+    corpus_root.mkdir()
+    managed_root.mkdir()
+    snapshot = backend_config.RuntimeConfiguration(
+        mysql_items=(("host", "runtime-host"), ("port", 3307),
+                     ("user", "runtime-user"), ("password", "runtime-password"),
+                     ("db", "runtime-db"), ("charset", "utf8mb4"),
+                     ("autocommit", True), ("minsize", 1), ("maxsize", 10)),
+        corpus_root=corpus_root,
+        managed_corpus_root=managed_root,
+        market_scheduler_enabled=False,
+    )
+    backend_config.install_runtime_configuration(snapshot)
+    return snapshot
+
+
+@pytest.mark.asyncio
+async def test_production_service_uses_installed_snapshot_root(
+    monkeypatch, tmp_path,
+):
+    snapshot = install_runtime_configuration(tmp_path)
+    pool = object()
+
+    async def get_pool():
+        return pool
+
+    monkeypatch.setattr(project_packages, "get_pool", get_pool)
+    monkeypatch.setenv("MANAGED_CORPUS_ROOT", str(tmp_path / "later"))
+    monkeypatch.setattr(
+        backend_config,
+        "load_managed_corpus_root",
+        lambda *args, **kwargs: pytest.fail("service reread local configuration"),
+    )
+
+    service = await project_packages.get_project_package_service()
+
+    assert service._managed_corpus_root == (
+        snapshot.managed_corpus_root.resolve(strict=True)
+    )
+
+
+@pytest.mark.asyncio
+async def test_production_service_requires_snapshot_before_database_access(
+    monkeypatch,
+):
+    async def forbidden_pool():
+        pytest.fail("database accessed before runtime configuration")
+
+    monkeypatch.setattr(project_packages, "get_pool", forbidden_pool)
+
+    with pytest.raises(
+        backend_config.RuntimeConfigurationError,
+        match="^runtime configuration is unavailable$",
+    ):
+        await project_packages.get_project_package_service()
 
 
 class FakeProjectPackageService:

@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 import unicodedata
 
-from backend.config import CORPUS_ROOT, MANAGED_CORPUS_ROOT
+from backend.config import current_runtime_configuration
 from backend.database import connection, transaction
 from backend.domain.asset_eligibility import (
     AssetEligibilityEntry,
@@ -347,6 +347,9 @@ class CreativeAssetService:
 
 def build_creative_asset_service() -> CreativeAssetService:
     try:
+        snapshot = current_runtime_configuration()
+        corpus_root = snapshot.corpus_root
+        managed_root = snapshot.managed_corpus_root
         taxonomy = load_release_taxonomy()
         asset_repository = AssetRepository()
         corpus_repository = CorpusRepository()
@@ -366,14 +369,14 @@ def build_creative_asset_service() -> CreativeAssetService:
             ),
             corpus_service=CorpusImportService(
                 corpus_repository,
-                corpus_root=CORPUS_ROOT,
-                managed_root=MANAGED_CORPUS_ROOT,
+                corpus_root=corpus_root,
+                managed_root=managed_root,
                 transaction_factory=transaction,
                 connection_factory=transaction,
             ),
             corpus_library_service=CorpusLibraryService(
                 corpus_repository,
-                managed_root=MANAGED_CORPUS_ROOT,
+                managed_root=managed_root,
                 transaction_factory=transaction,
                 connection_factory=transaction,
             ),

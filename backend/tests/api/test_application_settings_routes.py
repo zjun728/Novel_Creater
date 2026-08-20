@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.security.redaction import install_error_handlers
+from backend import config as backend_config
 
 
 SECRET = "application-route-secret"
@@ -85,6 +86,49 @@ def assert_safe(payload):
         "password",
     ):
         assert forbidden.casefold() not in rendered.casefold()
+
+
+@pytest.fixture(autouse=True)
+def no_active_runtime_configuration(monkeypatch):
+    monkeypatch.setattr(
+        backend_config, "_active_runtime_configuration", None, raising=False
+    )
+
+
+def test_corpus_readiness_uses_only_installed_snapshot(monkeypatch, tmp_path):
+    module = router_module()
+    corpus_root = tmp_path / "corpus"
+    managed_root = tmp_path / "managed"
+    corpus_root.mkdir()
+    managed_root.mkdir()
+    snapshot = backend_config.RuntimeConfiguration(
+        mysql_items=(("host", "runtime-host"), ("port", 3307),
+                     ("user", "runtime-user"), ("password", "runtime-password"),
+                     ("db", "runtime-db"), ("charset", "utf8mb4"),
+                     ("autocommit", True), ("minsize", 1), ("maxsize", 10)),
+        corpus_root=corpus_root,
+        managed_corpus_root=managed_root,
+        market_scheduler_enabled=False,
+    )
+    backend_config.install_runtime_configuration(snapshot)
+    monkeypatch.setenv("MANAGED_CORPUS_ROOT", str(tmp_path / "later"))
+    monkeypatch.setattr(
+        backend_config,
+        "load_managed_corpus_root",
+        lambda *args, **kwargs: pytest.fail("readiness reread local configuration"),
+    )
+
+    assert module._corpus_store_ready() is True
+
+
+def test_corpus_readiness_requires_an_active_snapshot():
+    module = router_module()
+
+    with pytest.raises(
+        backend_config.RuntimeConfigurationError,
+        match="^runtime configuration is unavailable$",
+    ):
+        module._corpus_store_ready()
 
 
 def test_get_and_nullable_put_expose_only_public_model_identity():

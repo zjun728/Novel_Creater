@@ -15,6 +15,7 @@ from backend.domain.asset_eligibility import (
 )
 from backend.domain.assets import AssetPackageError, load_asset_package
 from backend.database import transaction
+from backend import config as backend_config
 from backend.http_errors import (
     AssetCatalogNotReady,
     AssetNotFound,
@@ -45,6 +46,32 @@ RECOMMENDATION_BODY = {
     "status": "active",
     "prohibitedDirections": [],
 }
+
+
+@pytest.fixture(autouse=True)
+def no_active_runtime_configuration(monkeypatch):
+    monkeypatch.setattr(
+        backend_config, "_active_runtime_configuration", None, raising=False
+    )
+
+
+@pytest.fixture
+def runtime_configuration(tmp_path):
+    corpus_root = tmp_path / "runtime-corpus"
+    managed_root = tmp_path / "runtime-managed"
+    corpus_root.mkdir()
+    managed_root.mkdir()
+    snapshot = backend_config.RuntimeConfiguration(
+        mysql_items=(("host", "runtime-host"), ("port", 3307),
+                     ("user", "runtime-user"), ("password", "runtime-password"),
+                     ("db", "runtime-db"), ("charset", "utf8mb4"),
+                     ("autocommit", True), ("minsize", 1), ("maxsize", 10)),
+        corpus_root=corpus_root,
+        managed_corpus_root=managed_root,
+        market_scheduler_enabled=False,
+    )
+    backend_config.install_runtime_configuration(snapshot)
+    return snapshot
 
 
 def _recommendation_path(project_id="project-1"):
@@ -380,6 +407,7 @@ def test_production_composition_package_failures_are_safe_503_on_asset_and_corpu
     monkeypatch,
     tmp_path,
     loader_name,
+    runtime_configuration,
 ):
     if loader_name == "load_asset_package":
         with pytest.raises(AssetPackageError) as captured:
@@ -442,7 +470,9 @@ def test_invalid_category_and_missing_recommendation_body_are_422():
     assert missing_engine.status_code == 422
 
 
-def test_production_asset_service_uses_transaction_and_main_registers_read_routes():
+def test_production_asset_service_uses_transaction_and_main_registers_read_routes(
+    runtime_configuration,
+):
     service = assets.get_asset_service()
 
     assert service.asset_service.transaction_factory is transaction
@@ -453,6 +483,31 @@ def test_production_asset_service_uses_transaction_and_main_registers_read_route
     assert "/api/assets/style-templates" in registered
     assert "/api/assets/experience-cards" in registered
     assert "/api/projects/{pid}/asset-recommendations" in registered
+
+
+def test_production_asset_service_uses_installed_snapshot_roots(
+    monkeypatch, runtime_configuration,
+):
+    monkeypatch.setattr(
+        backend_config,
+        "load_corpus_root",
+        lambda *args, **kwargs: pytest.fail("service reread local configuration"),
+    )
+    monkeypatch.setattr(
+        backend_config,
+        "load_managed_corpus_root",
+        lambda *args, **kwargs: pytest.fail("service reread local configuration"),
+    )
+
+    service = creative_asset_services.build_creative_asset_service()
+
+    assert service.corpus_service.corpus_root == runtime_configuration.corpus_root
+    assert service.corpus_service.managed_root == (
+        runtime_configuration.managed_corpus_root
+    )
+    assert service.corpus_library_service.managed_root == (
+        runtime_configuration.managed_corpus_root
+    )
 
 
 def test_inventory_and_search_filters_are_forwarded_with_bounded_public_metadata():

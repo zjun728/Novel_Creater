@@ -18,6 +18,7 @@ from backend.repositories.project_imports import (
     ProjectImportCommandView, ProjectImportPersistenceError,
 )
 from backend.domain.routers import project_imports
+from backend import config as backend_config
 
 
 COMMAND = "11111111-1111-4111-8111-111111111111"
@@ -26,6 +27,61 @@ PRIVATE = (
     r"C:\private\package.zip", "internal-row-id", "PRIVATE_PACKAGE_BODY",
     "mysql://root:password@product", "provider-output-secret",
 )
+
+
+@pytest.fixture(autouse=True)
+def no_active_runtime_configuration(monkeypatch):
+    monkeypatch.setattr(
+        backend_config, "_active_runtime_configuration", None, raising=False
+    )
+
+
+def install_runtime_configuration(tmp_path):
+    corpus_root = tmp_path / "corpus"
+    managed_root = tmp_path / "managed"
+    corpus_root.mkdir()
+    managed_root.mkdir()
+    snapshot = backend_config.RuntimeConfiguration(
+        mysql_items=(("host", "runtime-host"), ("port", 3307),
+                     ("user", "runtime-user"), ("password", "runtime-password"),
+                     ("db", "runtime-db"), ("charset", "utf8mb4"),
+                     ("autocommit", True), ("minsize", 1), ("maxsize", 10)),
+        corpus_root=corpus_root,
+        managed_corpus_root=managed_root,
+        market_scheduler_enabled=False,
+    )
+    backend_config.install_runtime_configuration(snapshot)
+    return snapshot
+
+
+@pytest.mark.asyncio
+async def test_production_service_uses_installed_snapshot_root(
+    monkeypatch, tmp_path,
+):
+    snapshot = install_runtime_configuration(tmp_path)
+    monkeypatch.setenv("MANAGED_CORPUS_ROOT", str(tmp_path / "later"))
+    monkeypatch.setattr(
+        backend_config,
+        "load_managed_corpus_root",
+        lambda *args, **kwargs: pytest.fail("service reread local configuration"),
+    )
+
+    service = await project_imports.get_project_import_service()
+
+    assert service._managed_root == snapshot.managed_corpus_root.resolve(strict=True)
+
+
+@pytest.mark.asyncio
+async def test_production_service_requires_active_snapshot():
+    with pytest.raises(
+        backend_config.RuntimeConfigurationError,
+        match="^runtime configuration is unavailable$",
+    ) as caught:
+        await project_imports.get_project_import_service()
+
+    assert caught.value.args == ("runtime configuration is unavailable",)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
 
 
 class FakeService:
