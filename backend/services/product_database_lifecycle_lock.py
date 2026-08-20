@@ -25,6 +25,29 @@ class ProductDatabaseLifecycleError(RuntimeError):
     """A fixed, public-safe lifecycle-lock failure."""
 
 
+class _CleanupFailures(BaseException):
+    """A trusted, internal transport for cleanup failures."""
+
+    def __init__(self, failures: tuple[BaseException, ...]) -> None:
+        super().__init__()
+        self.failures = failures
+
+
+def _trusted_cleanup_failures(
+    error: BaseException,
+) -> tuple[BaseException, ...] | None:
+    if type(error) is not _CleanupFailures:
+        return None
+    failures = object.__getattribute__(error, "failures")
+    if (
+        type(failures) is not tuple
+        or not failures
+        or not all(issubclass(type(failure), BaseException) for failure in failures)
+    ):
+        return None
+    return failures
+
+
 def _consume_deferred_result(future: asyncio.Future[object]) -> None:
     if future.cancelled():
         return
@@ -453,6 +476,8 @@ def _product_database_lifecycle_lock_scope(
             cleanup.append(error)
         if not deferred:
             cleanup.extend(cleanup_resource())
+        if primary is None and cleanup:
+            raise _CleanupFailures(tuple(cleanup)) from None
         _raise_failures(primary, cleanup)
 
 
@@ -477,12 +502,9 @@ class _ProductDatabaseLifecycleLockBoundary:
         try:
             self._exit(None, None, None)
         except BaseException as cleanup_error:
-            if _is_exception_kind(cleanup_error, (BaseExceptionGroup,)):
-                children = _exception_group_children(cleanup_error)
-                if children is not None:
-                    cleanup.extend(children)
-                else:
-                    cleanup.append(cleanup_error)
+            transported = _trusted_cleanup_failures(cleanup_error)
+            if transported is not None:
+                cleanup.extend(transported)
             else:
                 cleanup.append(cleanup_error)
         _raise_failures(error, cleanup)

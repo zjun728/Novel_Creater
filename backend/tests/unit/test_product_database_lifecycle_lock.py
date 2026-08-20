@@ -1247,6 +1247,37 @@ def test_body_primary_first_and_cleanup_failure_groups_retain_operation_order(
     assert SECRET not in "".join(traceback.format_exception(raised.value))
 
 
+@pytest.mark.parametrize("platform_name", ("nt", "posix"))
+def test_single_cleanup_exception_group_retains_its_group_node(
+    tmp_path: Path,
+    platform_name: str,
+):
+    cleanup_group = BaseExceptionGroup(SECRET, [RuntimeError(SECRET)])
+    if platform_name == "nt":
+        api_kwargs = {
+            "windows_api": FakeWindowsAPI(release_error=cleanup_group),
+        }
+    else:
+        api_kwargs = {
+            "posix_api": FakePosixAPI(unlock_error=cleanup_group),
+        }
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        with lifecycle.product_database_lifecycle_lock(
+            tmp_path / "config.json",
+            platform_name=platform_name,
+            **api_kwargs,
+        ):
+            raise RuntimeError(SECRET)
+
+    primary, nested_cleanup = raised.value.exceptions
+    assert type(primary) is lifecycle.ProductDatabaseLifecycleError
+    assert isinstance(nested_cleanup, BaseExceptionGroup)
+    assert len(nested_cleanup.exceptions) == 1
+    assert type(nested_cleanup.exceptions[0]) is lifecycle.ProductDatabaseLifecycleError
+    _assert_clean_tree(raised.value)
+
+
 @pytest.mark.parametrize("platform_name", ("bad", "windows", "", None, True))
 def test_unsupported_or_malformed_platform_fails_fixed_safe(
     tmp_path: Path, platform_name: object
