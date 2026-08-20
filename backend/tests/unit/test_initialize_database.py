@@ -112,8 +112,8 @@ async def test_cli_default_config_rejects_missing_password_before_connection(mon
 
     monkeypatch.setattr(
         backend_config,
-        "MYSQL_CONFIG",
-        dict(backend_config.MYSQL_CONFIG, password=None),
+        "load_mysql_config",
+        lambda: {"password": None},
     )
 
     with pytest.raises(LocalMySQLConfigError, match="MYSQL_PASSWORD"):

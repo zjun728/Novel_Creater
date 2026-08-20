@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 import stat
 from typing import Mapping
@@ -48,6 +49,26 @@ class LocalCorpusConfigError(RuntimeError):
 
 class LocalSchedulerConfigError(RuntimeError):
     """The optional local market scheduler flag is invalid."""
+
+
+class RuntimeConfigurationError(RuntimeError):
+    """The process-local runtime configuration authority is unavailable."""
+
+
+@dataclass(frozen=True)
+class RuntimeConfiguration:
+    """One immutable configuration snapshot owned by a backend lifespan."""
+
+    mysql_items: tuple[tuple[str, object], ...]
+    corpus_root: Path | None
+    managed_corpus_root: Path | None
+    market_scheduler_enabled: bool
+
+    def mysql_pool_options(self) -> dict[str, object]:
+        return dict(self.mysql_items)
+
+
+_active_runtime_configuration: RuntimeConfiguration | None = None
 
 
 def load_market_scheduler_enabled(
@@ -127,9 +148,15 @@ def load_mysql_config(
 ) -> dict[str, object]:
     """Load strict file values, overlay explicit environment values, and add pool options."""
     source = os.environ if environment is None else environment
-    values = dict(_DEFAULTS)
     file_values = _read_local_document(Path(config_path))
-    for name, value in file_values.items():
+    return _mysql_config_from_document(document=file_values, environment=source)
+
+
+def _mysql_config_from_document(
+    *, document: Mapping[str, object], environment: Mapping[str, str],
+) -> dict[str, object]:
+    values = dict(_DEFAULTS)
+    for name, value in document.items():
         if name not in _MYSQL_FILE_KEYS:
             continue
         values[name] = (
@@ -138,9 +165,9 @@ def load_mysql_config(
             else _checked_text(name, value)
         )
     for name in _MYSQL_FILE_KEYS:
-        if name not in source:
+        if name not in environment:
             continue
-        value = source[name]
+        value = environment[name]
         values[name] = (
             _checked_port(value, environment_value=True)
             if name == "MYSQL_PORT"
@@ -161,7 +188,7 @@ def require_mysql_config(
     config: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Return a safe copy or fail before a real MySQL connector is called."""
-    selected = MYSQL_CONFIG if config is None else config
+    selected = load_mysql_config() if config is None else config
     if type(selected.get("password")) is not str or not selected["password"]:
         raise LocalMySQLConfigError(
             "MYSQL_PASSWORD is not configured; run the local MySQL setup command"
@@ -213,12 +240,11 @@ def load_corpus_root(
         error_type=LocalCorpusConfigError,
         subject="corpus",
     )
-    selected = file_values.get("CORPUS_ROOT")
-    if "CORPUS_ROOT" in source:
-        selected = source["CORPUS_ROOT"]
-    if selected is None:
-        return None
-    return _checked_corpus_root(selected)
+    return _corpus_root_from_document(
+        document=file_values,
+        environment=source,
+        name="CORPUS_ROOT",
+    )
 
 
 def load_managed_corpus_root(
@@ -234,12 +260,74 @@ def load_managed_corpus_root(
         error_type=LocalCorpusConfigError,
         subject="corpus",
     )
-    selected = file_values.get("MANAGED_CORPUS_ROOT")
-    if "MANAGED_CORPUS_ROOT" in source:
-        selected = source["MANAGED_CORPUS_ROOT"]
+    return _corpus_root_from_document(
+        document=file_values,
+        environment=source,
+        name="MANAGED_CORPUS_ROOT",
+    )
+
+
+def _corpus_root_from_document(
+    *, document: Mapping[str, object], environment: Mapping[str, str], name: str,
+) -> Path | None:
+    selected = document.get(name)
+    if name in environment:
+        selected = environment[name]
     if selected is None:
         return None
-    return _checked_corpus_root(selected, "MANAGED_CORPUS_ROOT")
+    return _checked_corpus_root(selected, name)
+
+
+def load_runtime_configuration(
+    *,
+    environment: Mapping[str, str] | None = None,
+    config_path: Path = LOCAL_CONFIG_PATH,
+) -> RuntimeConfiguration:
+    """Read once and build the closed configuration authority for one lifespan."""
+
+    source = os.environ if environment is None else environment
+    document = _read_local_document(Path(config_path))
+    mysql = _mysql_config_from_document(document=document, environment=source)
+    return RuntimeConfiguration(
+        mysql_items=tuple(mysql.items()),
+        corpus_root=_corpus_root_from_document(
+            document=document,
+            environment=source,
+            name="CORPUS_ROOT",
+        ),
+        managed_corpus_root=_corpus_root_from_document(
+            document=document,
+            environment=source,
+            name="MANAGED_CORPUS_ROOT",
+        ),
+        market_scheduler_enabled=load_market_scheduler_enabled(environment=source),
+    )
+
+
+def install_runtime_configuration(snapshot: RuntimeConfiguration) -> None:
+    global _active_runtime_configuration
+    if type(snapshot) is not RuntimeConfiguration or _active_runtime_configuration is not None:
+        raise RuntimeConfigurationError(
+            "runtime configuration installation failed"
+        ) from None
+    _active_runtime_configuration = snapshot
+
+
+def current_runtime_configuration() -> RuntimeConfiguration:
+    if _active_runtime_configuration is None:
+        raise RuntimeConfigurationError(
+            "runtime configuration is unavailable"
+        ) from None
+    return _active_runtime_configuration
+
+
+def clear_runtime_configuration(snapshot: RuntimeConfiguration) -> None:
+    global _active_runtime_configuration
+    if _active_runtime_configuration is not snapshot:
+        raise RuntimeConfigurationError(
+            "runtime configuration cleanup failed"
+        ) from None
+    _active_runtime_configuration = None
 
 
 _UNSET = object()
@@ -247,7 +335,7 @@ _UNSET = object()
 
 def require_corpus_root(root: Path | None | object = _UNSET) -> Path:
     """Return the configured corpus root or fail before any corpus file access."""
-    selected = CORPUS_ROOT if root is _UNSET else root
+    selected = load_corpus_root() if root is _UNSET else root
     if not isinstance(selected, Path):
         raise LocalCorpusConfigError("CORPUS_ROOT is not configured")
     return _checked_corpus_root(str(selected))
@@ -256,13 +344,7 @@ def require_corpus_root(root: Path | None | object = _UNSET) -> Path:
 def require_managed_corpus_root(root: Path | None | object = _UNSET) -> Path:
     """Return the configured managed root or fail before any blob write."""
 
-    selected = MANAGED_CORPUS_ROOT if root is _UNSET else root
+    selected = load_managed_corpus_root() if root is _UNSET else root
     if not isinstance(selected, Path):
         raise LocalCorpusConfigError("MANAGED_CORPUS_ROOT is not configured")
     return _checked_corpus_root(str(selected), "MANAGED_CORPUS_ROOT")
-
-
-MYSQL_CONFIG = load_mysql_config()
-CORPUS_ROOT = load_corpus_root()
-MANAGED_CORPUS_ROOT = load_managed_corpus_root()
-MARKET_SCHEDULER_ENABLED = load_market_scheduler_enabled()

@@ -3,7 +3,22 @@ import asyncio
 import aiomysql
 import pytest
 
+from backend import config as backend_config
+
+# Transitional Task 1 compatibility: Task 2 removes this consumer import.
+backend_config.MYSQL_CONFIG = {
+    "host": "127.0.0.1",
+    "port": 3307,
+    "user": "root",
+    "password": None,
+    "db": "novel_creator",
+    "charset": "utf8mb4",
+    "autocommit": True,
+    "minsize": 1,
+    "maxsize": 10,
+}
 from backend import database
+del backend_config.MYSQL_CONFIG
 from backend.config import LocalMySQLConfigError
 from backend.tests.support.fakes import FakePool
 

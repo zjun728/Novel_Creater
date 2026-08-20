@@ -1,9 +1,200 @@
+import dataclasses
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
 from backend import config
+
+
+@pytest.fixture(autouse=True)
+def no_active_runtime_configuration(monkeypatch):
+    monkeypatch.setattr(config, "_active_runtime_configuration", None, raising=False)
+
+
+@pytest.fixture
+def runtime_configuration(workspace_tmp_path):
+    corpus_root = workspace_tmp_path / "runtime-corpus"
+    managed_root = workspace_tmp_path / "runtime-managed"
+    corpus_root.mkdir()
+    managed_root.mkdir()
+    return config.RuntimeConfiguration(
+        mysql_items=(("host", "runtime-host"), ("port", 3307)),
+        corpus_root=corpus_root,
+        managed_corpus_root=managed_root,
+        market_scheduler_enabled=True,
+    )
+
+
+def test_import_performs_no_configuration_document_reads():
+    script = """
+from pathlib import Path
+
+def forbidden_read(*args, **kwargs):
+    raise AssertionError("configuration read during import")
+
+Path.read_text = forbidden_read
+import backend.config
+print("IMPORTED_WITHOUT_READ")
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(config.__file__).resolve().parents[1],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "IMPORTED_WITHOUT_READ"
+
+
+def test_runtime_configuration_is_frozen_and_exact(runtime_configuration):
+    assert type(runtime_configuration) is config.RuntimeConfiguration
+    assert type(runtime_configuration.mysql_items) is tuple
+    assert runtime_configuration.mysql_pool_options() == {
+        "host": "runtime-host",
+        "port": 3307,
+    }
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        runtime_configuration.market_scheduler_enabled = False
+
+
+def test_runtime_configuration_loader_reads_one_document_for_all_values(
+    workspace_tmp_path, monkeypatch,
+):
+    corpus_root = workspace_tmp_path / "loaded-corpus"
+    managed_root = workspace_tmp_path / "loaded-managed"
+    corpus_root.mkdir()
+    managed_root.mkdir()
+    path = missing_config(workspace_tmp_path)
+    path.write_text(json.dumps({
+        "MYSQL_HOST": "file-host",
+        "MYSQL_PASSWORD": "file-password",
+        "CORPUS_ROOT": str(corpus_root),
+        "MANAGED_CORPUS_ROOT": str(managed_root),
+    }), encoding="utf-8")
+    original_read_text = Path.read_text
+    reads = []
+
+    def counted_read_text(selected, *args, **kwargs):
+        reads.append(selected)
+        return original_read_text(selected, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counted_read_text)
+
+    snapshot = config.load_runtime_configuration(
+        environment={
+            "MYSQL_HOST": "environment-host",
+            "MARKET_SCHEDULER_ENABLED": "true",
+        },
+        config_path=path,
+    )
+
+    assert reads == [path]
+    assert snapshot.mysql_pool_options()["host"] == "environment-host"
+    assert snapshot.mysql_pool_options()["password"] == "file-password"
+    assert snapshot.corpus_root == corpus_root.resolve(strict=True)
+    assert snapshot.managed_corpus_root == managed_root.resolve(strict=True)
+    assert snapshot.market_scheduler_enabled is True
+
+
+def test_runtime_configuration_registry_is_identity_bound(runtime_configuration):
+    with pytest.raises(
+        config.RuntimeConfigurationError,
+        match="^runtime configuration is unavailable$",
+    ):
+        config.current_runtime_configuration()
+
+    config.install_runtime_configuration(runtime_configuration)
+    assert config.current_runtime_configuration() is runtime_configuration
+    with pytest.raises(
+        config.RuntimeConfigurationError,
+        match="^runtime configuration cleanup failed$",
+    ):
+        config.clear_runtime_configuration(dataclasses.replace(runtime_configuration))
+    assert config.current_runtime_configuration() is runtime_configuration
+    config.clear_runtime_configuration(runtime_configuration)
+
+    with pytest.raises(
+        config.RuntimeConfigurationError,
+        match="^runtime configuration is unavailable$",
+    ):
+        config.current_runtime_configuration()
+
+
+def test_runtime_configuration_rejects_duplicate_and_non_exact_install(
+    runtime_configuration,
+):
+    class RuntimeConfigurationSubclass(config.RuntimeConfiguration):
+        pass
+
+    subclass = RuntimeConfigurationSubclass(
+        mysql_items=runtime_configuration.mysql_items,
+        corpus_root=runtime_configuration.corpus_root,
+        managed_corpus_root=runtime_configuration.managed_corpus_root,
+        market_scheduler_enabled=True,
+    )
+    with pytest.raises(
+        config.RuntimeConfigurationError,
+        match="^runtime configuration installation failed$",
+    ) as invalid:
+        config.install_runtime_configuration(subclass)
+    assert invalid.value.__cause__ is None
+
+    config.install_runtime_configuration(runtime_configuration)
+    with pytest.raises(
+        config.RuntimeConfigurationError,
+        match="^runtime configuration installation failed$",
+    ) as duplicate:
+        config.install_runtime_configuration(dataclasses.replace(runtime_configuration))
+    assert duplicate.value.__cause__ is None
+    assert config.current_runtime_configuration() is runtime_configuration
+    config.clear_runtime_configuration(runtime_configuration)
+
+
+def test_administrative_helpers_load_configuration_when_invoked(
+    workspace_tmp_path, monkeypatch,
+):
+    path = missing_config(workspace_tmp_path)
+    reads = []
+
+    def fake_loader(*, environment=None, config_path=config.LOCAL_CONFIG_PATH):
+        reads.append((environment, config_path))
+        return {"password": "command-secret"}
+
+    monkeypatch.setattr(config, "load_mysql_config", fake_loader)
+
+    assert config.require_mysql_config() == {"password": "command-secret"}
+    assert reads == [(None, config.LOCAL_CONFIG_PATH)]
+
+
+def test_administrative_corpus_helpers_load_configuration_when_invoked(
+    workspace_tmp_path, monkeypatch,
+):
+    corpus_root = workspace_tmp_path / "command-corpus"
+    managed_root = workspace_tmp_path / "command-managed"
+    corpus_root.mkdir()
+    managed_root.mkdir()
+    calls = []
+
+    monkeypatch.setattr(
+        config,
+        "load_corpus_root",
+        lambda: calls.append("corpus") or corpus_root,
+    )
+    monkeypatch.setattr(
+        config,
+        "load_managed_corpus_root",
+        lambda: calls.append("managed") or managed_root,
+    )
+
+    assert config.require_corpus_root() == corpus_root.resolve(strict=True)
+    assert config.require_managed_corpus_root() == managed_root.resolve(strict=True)
+    assert calls == ["corpus", "managed"]
 
 
 def missing_config(workspace_tmp_path):
