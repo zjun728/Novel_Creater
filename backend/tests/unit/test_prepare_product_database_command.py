@@ -10,7 +10,6 @@ import json
 import stat
 import subprocess
 from types import SimpleNamespace
-import warnings
 
 import pytest
 import backend.scripts.prepare_product_database as command_module
@@ -88,14 +87,11 @@ def sync_main_event_loop_owner() -> Iterator[None]:
 
 @contextmanager
 def _owned_sync_main_event_loop() -> Iterator[asyncio.AbstractEventLoop]:
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore", message="There is no current event loop", category=DeprecationWarning
-        )
-        try:
-            preexisting = asyncio.get_event_loop()
-        except RuntimeError:
-            preexisting = None
+    policy = asyncio.get_event_loop_policy()
+    policy_local = getattr(policy, "_local", None)
+    if policy_local is None:
+        raise RuntimeError("sync main tests require the default asyncio event loop policy")
+    preexisting = getattr(policy_local, "_loop", None)
     owned = asyncio.new_event_loop()
     asyncio.set_event_loop(owned)
     try:
@@ -135,6 +131,36 @@ def test_sync_main_loop_owner_restores_no_current_loop() -> None:
     assert owned.is_closed()
     with pytest.raises(RuntimeError, match="There is no current event loop"):
         asyncio.get_event_loop()
+
+
+@pytest.mark.parametrize("exceptional_exit", (False, True))
+def test_sync_main_loop_owner_does_not_adopt_fresh_policy_implicit_loop(
+    exceptional_exit: bool,
+) -> None:
+    original_policy = asyncio.get_event_loop_policy()
+    fresh_policy = asyncio.DefaultEventLoopPolicy()
+    asyncio.set_event_loop_policy(fresh_policy)
+    try:
+        policy_local = fresh_policy._local  # type: ignore[attr-defined]
+        assert vars(policy_local) == {}
+
+        if exceptional_exit:
+            with pytest.raises(RuntimeError, match="fixture-body-failed"):
+                with _owned_sync_main_event_loop() as owned:
+                    raise RuntimeError("fixture-body-failed")
+        else:
+            with _owned_sync_main_event_loop() as owned:
+                asyncio.run(asyncio.sleep(0))
+
+        assert owned.is_closed()
+        assert getattr(policy_local, "_loop", None) is None
+        with pytest.raises(RuntimeError, match="There is no current event loop"):
+            asyncio.get_event_loop()
+    finally:
+        implicit = getattr(fresh_policy._local, "_loop", None)  # type: ignore[attr-defined]
+        if implicit is not None and not implicit.is_closed():
+            implicit.close()
+        asyncio.set_event_loop_policy(original_policy)
 
 
 def _secret_flow_control(flow_type: type[BaseException]) -> BaseException:
