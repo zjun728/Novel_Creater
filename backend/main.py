@@ -430,12 +430,10 @@ async def _application_lifespan(
 async def _complete_runtime_configuration(
     transfer: asyncio.Future,
     snapshot: RuntimeConfiguration,
-    started: asyncio.Future,
 ):
     result = None
     primary = None
     clear_error = None
-    started.set_result(None)
     try:
         result = await asyncio.shield(transfer)
     except BaseException as error:
@@ -590,12 +588,9 @@ async def lifespan(app: FastAPI):
             if len(transfers) > 1:
                 raise ValueError
             if transfers:
-                loop = asyncio.get_running_loop()
-                runtime_transfer_started = loop.create_future()
                 runtime_transfer_coroutine = _complete_runtime_configuration(
                     transfers[0],
                     runtime_configuration,
-                    runtime_transfer_started,
                 )
                 try:
                     runtime_transfer = asyncio.create_task(
@@ -605,32 +600,16 @@ async def lifespan(app: FastAPI):
                 except BaseException:
                     runtime_transfer_coroutine.close()
                     raise
-                await runtime_transfer_started
-                runtime_configuration_owned = False
-                completion = None
                 try:
                     completion = lock_lease.defer_until(runtime_transfer)
-                    if publish_draft:
-                        app.state.draft_operation_shutdown_transfer = completion
-                    if publish_market:
-                        app.state.market_scheduler_shutdown_transfer = completion
-                except BaseException as publication_error:
-                    if completion is not None:
-                        completion.cancel()
+                except BaseException:
                     runtime_transfer.cancel()
-                    runtime_transfer_error = None
-                    try:
-                        await runtime_transfer
-                    except asyncio.CancelledError:
-                        pass
-                    except BaseException as error:
-                        runtime_transfer_error = error
-                    if runtime_transfer_error is not None:
-                        raise BaseExceptionGroup(
-                            "runtime configuration publication failed",
-                            [publication_error, runtime_transfer_error],
-                        )
                     raise
+                runtime_configuration_owned = False
+                if publish_draft:
+                    app.state.draft_operation_shutdown_transfer = completion
+                if publish_market:
+                    app.state.market_scheduler_shutdown_transfer = completion
         except BaseException as error:
             application_error = _combine_lifespan_errors(
                 application_error,

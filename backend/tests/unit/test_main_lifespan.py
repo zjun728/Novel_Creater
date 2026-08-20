@@ -1190,8 +1190,9 @@ async def test_lifespan_rejects_distinct_final_transfers_before_deferral(
 
 
 @pytest.mark.asyncio
-async def test_lifespan_publication_failure_cancels_deferral_and_exits_lock_once(
+async def test_lifespan_publication_failure_keeps_deferral_until_transfer_settles(
     monkeypatch,
+    isolated_runtime_configuration,
 ):
     events = []
     lifecycle = ExclusiveRecordingLifecycleLockAPI(events)
@@ -1201,6 +1202,7 @@ async def test_lifespan_publication_failure_cancels_deferral_and_exits_lock_once
         draft_operation_shutdown_transfer = None
         market_scheduler_shutdown_transfer = None
         reject_publication = False
+        rejected_completion = None
 
         def __setattr__(self, name, value):
             if (
@@ -1208,6 +1210,7 @@ async def test_lifespan_publication_failure_cancels_deferral_and_exits_lock_once
                 and name == "draft_operation_shutdown_transfer"
                 and type(value) is asyncio.Future
             ):
+                object.__setattr__(self, "rejected_completion", value)
                 raise RuntimeError("PRIVATE_PUBLICATION_FAILURE")
             object.__setattr__(self, name, value)
 
@@ -1222,10 +1225,16 @@ async def test_lifespan_publication_failure_cancels_deferral_and_exits_lock_once
         state.reject_publication = True
 
     monkeypatch.setattr(main, "_application_lifespan", application_context)
+    clear_runtime_configuration = main.clear_runtime_configuration
+
+    def record_clear(snapshot):
+        events.append("config-clear")
+        clear_runtime_configuration(snapshot)
+
     monkeypatch.setattr(
         main,
         "clear_runtime_configuration",
-        lambda _snapshot: events.append("config-clear"),
+        record_clear,
     )
     context = main.lifespan(app)
     await context.__aenter__()
@@ -1236,6 +1245,17 @@ async def test_lifespan_publication_failure_cancels_deferral_and_exits_lock_once
 
     assert caught.value.args == ("product database lifecycle lock failed",)
     assert "PRIVATE_PUBLICATION_FAILURE" not in repr(caught.value)
+    assert events == ["lock-attempt", "lock-enter"]
+    assert isolated_runtime_configuration.installed is not None
+    assert lifecycle.active
+    assert state.draft_operation_shutdown_transfer is transfer
+    assert type(state.rejected_completion) is asyncio.Future
+    assert not state.rejected_completion.done()
+    assert not transfer.done()
+
+    transfer.set_result(None)
+    await asyncio.wait_for(state.rejected_completion, timeout=1)
+
     assert events == [
         "lock-attempt",
         "lock-enter",
@@ -1243,9 +1263,149 @@ async def test_lifespan_publication_failure_cancels_deferral_and_exits_lock_once
         "lock-exit",
         "lock-close",
     ]
+    assert isolated_runtime_configuration.installed is None
     assert not lifecycle.active
-    assert state.draft_operation_shutdown_transfer is transfer
-    assert not transfer.done()
+    _assert_no_sensitive_error_graph(caught.value, ())
+
+
+@pytest.mark.asyncio
+async def test_lifespan_defers_before_cancellation_can_reach_first_await(
+    monkeypatch,
+    isolated_runtime_configuration,
+):
+    events = []
+    lifecycle = ExclusiveRecordingLifecycleLockAPI(events)
+    install_exclusive_lifecycle_lock(monkeypatch, lifecycle)
+    state = SimpleNamespace(
+        draft_operation_shutdown_transfer=None,
+        market_scheduler_shutdown_transfer=None,
+    )
+    app = SimpleNamespace(state=state)
+    transfer = asyncio.get_running_loop().create_future()
+
+    @asynccontextmanager
+    async def application_context(_app, _runtime_configuration):
+        yield
+        state.draft_operation_shutdown_transfer = transfer
+
+    monkeypatch.setattr(main, "_application_lifespan", application_context)
+    context = main.lifespan(app)
+    await context.__aenter__()
+
+    original_create_task = asyncio.create_task
+    runtime_wrappers = []
+
+    def create_task_and_cancel_owner(coroutine, *, name=None):
+        task = original_create_task(coroutine, name=name)
+        if name == "runtime-configuration-shutdown-transfer":
+            runtime_wrappers.append(task)
+            owner = asyncio.current_task()
+            assert owner is not None
+            asyncio.get_running_loop().call_soon(owner.cancel)
+        return task
+
+    monkeypatch.setattr(main.asyncio, "create_task", create_task_and_cancel_owner)
+    shutdown = original_create_task(context.__aexit__(None, None, None))
+
+    try:
+        assert await shutdown is False
+        completion = state.draft_operation_shutdown_transfer
+        assert completion is not transfer
+        assert isolated_runtime_configuration.installed is not None
+        assert lifecycle.active
+        assert events == ["lock-attempt", "lock-enter"]
+
+        transfer.set_result(None)
+        await asyncio.wait_for(completion, timeout=1)
+
+        assert isolated_runtime_configuration.installed is None
+        assert events == [
+            "lock-attempt",
+            "lock-enter",
+            "lock-exit",
+            "lock-close",
+        ]
+        assert not lifecycle.active
+    finally:
+        if not transfer.done():
+            transfer.set_result(None)
+        if runtime_wrappers:
+            await asyncio.gather(*runtime_wrappers, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_lifespan_defer_failure_cancels_only_wrapper_and_releases_owned_state(
+    monkeypatch,
+    isolated_runtime_configuration,
+):
+    events = []
+    lifecycle = ExclusiveRecordingLifecycleLockAPI(events)
+    state = SimpleNamespace(
+        draft_operation_shutdown_transfer=None,
+        market_scheduler_shutdown_transfer=None,
+    )
+    app = SimpleNamespace(state=state)
+    transfer = asyncio.get_running_loop().create_future()
+
+    def acquire(config_path):
+        boundary = lifecycle_lock.product_database_lifecycle_lock(
+            config_path,
+            platform_name="nt",
+            windows_api=lifecycle,
+        )
+
+        class RejectingBoundary:
+            def __enter__(self):
+                boundary.__enter__()
+
+                class RejectingLease:
+                    @staticmethod
+                    def defer_until(_runtime_transfer):
+                        events.append("defer-reject")
+                        raise RuntimeError("PRIVATE_DEFER_FAILURE")
+
+                return RejectingLease()
+
+            @staticmethod
+            def __exit__(exception_type, error, traceback):
+                return boundary.__exit__(exception_type, error, traceback)
+
+        return RejectingBoundary()
+
+    @asynccontextmanager
+    async def application_context(_app, _runtime_configuration):
+        yield
+        state.draft_operation_shutdown_transfer = transfer
+
+    monkeypatch.setattr(main, "product_database_lifecycle_lock", acquire)
+    monkeypatch.setattr(main, "_application_lifespan", application_context)
+    clear_runtime_configuration = main.clear_runtime_configuration
+
+    def record_clear(snapshot):
+        events.append("config-clear")
+        clear_runtime_configuration(snapshot)
+
+    monkeypatch.setattr(main, "clear_runtime_configuration", record_clear)
+    context = main.lifespan(app)
+    await context.__aenter__()
+
+    with pytest.raises(lifecycle_lock.ProductDatabaseLifecycleError) as caught:
+        await context.__aexit__(None, None, None)
+    await _next_loop_turn()
+
+    assert caught.value.args == ("product database lifecycle lock failed",)
+    assert "PRIVATE_DEFER_FAILURE" not in repr(caught.value)
+    assert transfer.done() is False
+    assert isolated_runtime_configuration.installed is None
+    assert events == [
+        "lock-attempt",
+        "lock-enter",
+        "defer-reject",
+        "config-clear",
+        "lock-exit",
+        "lock-close",
+    ]
+    assert not lifecycle.active
     transfer.cancel()
     _assert_no_sensitive_error_graph(caught.value, ())
 
