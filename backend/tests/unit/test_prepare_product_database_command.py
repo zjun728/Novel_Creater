@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 from dataclasses import asdict, replace
 from contextlib import asynccontextmanager, contextmanager
 import asyncio
+import gc
 import json
 import stat
 import subprocess
 from types import SimpleNamespace
+import warnings
 
 import pytest
 import backend.scripts.prepare_product_database as command_module
@@ -72,6 +75,25 @@ FLOW_MATRIX_CASES = (
     "system-exit-int",
     "system-exit-text",
 )
+
+
+@pytest.fixture
+def sync_main_event_loop_owner() -> Iterator[None]:
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message="There is no current event loop", category=DeprecationWarning
+        )
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+    try:
+        yield
+    finally:
+        if not loop.is_closed():
+            loop.close()
+        gc.collect()
 
 
 def _secret_flow_control(flow_type: type[BaseException]) -> BaseException:
@@ -3656,7 +3678,9 @@ async def test_execute_all_stage_flow_matrix_uses_real_task4_and_closes_resource
     assert output == []
 
 
-def test_main_prints_only_fixed_failure(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+def test_main_prints_only_fixed_failure(
+    monkeypatch: pytest.MonkeyPatch, capsys, sync_main_event_loop_owner: None
+) -> None:
     secret = "never-print-this-secret"
 
     async def fail(*_args: object, **_kwargs: object) -> int:
@@ -3676,7 +3700,10 @@ def test_main_prints_only_fixed_failure(monkeypatch: pytest.MonkeyPatch, capsys)
 
 @pytest.mark.parametrize("code", (None, 0, "secret-system-exit"))
 def test_main_never_treats_execute_system_exit_as_help_success(
-    monkeypatch: pytest.MonkeyPatch, capsys, code: object
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    code: object,
+    sync_main_event_loop_owner: None,
 ) -> None:
     async def fail(*_args: object, **_kwargs: object) -> int:
         raise SystemExit(code)
@@ -3690,7 +3717,9 @@ def test_main_never_treats_execute_system_exit_as_help_success(
     assert "secret" not in captured.err
 
 
-def test_main_help_uses_dedicated_success_path(capsys) -> None:
+def test_main_help_uses_dedicated_success_path(
+    capsys, sync_main_event_loop_owner: None
+) -> None:
     assert main(["--help"]) == 0
     captured = capsys.readouterr()
     assert captured.err == ""
@@ -3753,7 +3782,7 @@ def test_primary_first_context_uses_type_exit_cached_before_enter() -> None:
     ),
 )
 def test_main_normalizes_real_argument_errors_to_one_fixed_line(
-    argv: list[str], capsys
+    argv: list[str], capsys, sync_main_event_loop_owner: None
 ) -> None:
     assert main(argv) == 1
     captured = capsys.readouterr()
