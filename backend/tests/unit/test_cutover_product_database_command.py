@@ -343,6 +343,16 @@ def exception_children(error):
     return BaseExceptionGroup.exceptions.__get__(error, BaseExceptionGroup)
 
 
+def exception_group_messages(error):
+    if not isinstance(error, BaseExceptionGroup):
+        return []
+    message = BaseExceptionGroup.message.__get__(error, BaseExceptionGroup)
+    messages = [message]
+    for child in exception_children(error):
+        messages.extend(exception_group_messages(child))
+    return messages
+
+
 @pytest.mark.asyncio
 async def test_final_lock_contention_skips_final_read_and_retains_new_config(
     workspace_tmp_path, monkeypatch,
@@ -642,6 +652,39 @@ class StatefulLifecycleGroup(BaseExceptionGroup):
         return BaseExceptionGroup.exceptions.__get__(self, BaseExceptionGroup)
 
 
+class ExplodingSanitizerGroup(BaseExceptionGroup):
+    def __new__(cls):
+        nested = BaseExceptionGroup(SECRET, [RuntimeError(SECRET)])
+        instance = super().__new__(cls, SECRET, [RuntimeError(SECRET), nested])
+        instance.calls = 0
+        instance.__cause__ = RuntimeError(SECRET)
+        instance.__context__ = RuntimeError(SECRET)
+        instance.add_note(SECRET)
+        for child in BaseExceptionGroup.exceptions.__get__(
+            instance, BaseExceptionGroup
+        ):
+            child.__cause__ = RuntimeError(SECRET)
+            child.__context__ = RuntimeError(SECRET)
+            child.add_note(SECRET)
+        return instance
+
+    @property
+    def exceptions(self):
+        self.calls += 1
+        raise RuntimeError(SECRET)
+
+
+class ExplodingClassRuntimeError(RuntimeError):
+    def __init__(self):
+        super().__init__(SECRET)
+        self.calls = 0
+
+    @property
+    def __class__(self):
+        self.calls += 1
+        raise RuntimeError(SECRET)
+
+
 def test_lifecycle_boundary_never_calls_stateful_subclass_stringification():
     error = StatefulLifecycleError()
 
@@ -937,6 +980,212 @@ def test_lifecycle_boundary_bypasses_group_subclass_exception_property():
         ("product database lifecycle lock cleanup failed",)
     ]
     assert SECRET not in repr(rebuilt)
+
+
+def assert_clean_exception_tree(error):
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert not hasattr(error, "__notes__")
+    assert SECRET not in repr(error)
+    if isinstance(error, BaseExceptionGroup):
+        for child in exception_children(error):
+            assert_clean_exception_tree(child)
+
+
+@pytest.mark.asyncio
+async def test_smoke_exception_subclass_never_exposes_dynamic_class_property(
+    workspace_tmp_path,
+):
+    config = workspace_tmp_path / ".env.local.json"
+    original = mysql_document()
+    config.write_text(json.dumps(original), encoding="utf-8")
+    failure = ExplodingClassRuntimeError()
+
+    async def smoke(_document):
+        raise failure
+
+    with pytest.raises(command.ProductDatabaseCutoverError) as raised:
+        await command.cutover(
+            receipt=PREPARATION_RECEIPT,
+            config_path=config,
+            confirm_database=NEW_DATABASE,
+            confirm_cutover="CUTOVER-PHASE7B",
+            smoke=smoke,
+            writer=write_json,
+            inventory_reader=observe_inventories,
+            lifecycle_lock=open_lifecycle_lock,
+        )
+
+    raised_value = raised.value
+    assert type(raised_value) is command.ProductDatabaseCutoverError
+    assert raised_value.args == ("product database cutover smoke failed",)
+    assert failure.calls == 0
+    assert_clean_exception_tree(raised_value)
+    assert json.loads(config.read_text(encoding="utf-8")) == original
+
+
+def test_lifecycle_boundary_never_exposes_dynamic_class_property():
+    failure = ExplodingClassRuntimeError()
+
+    rebuilt = command._lock_boundary_error(
+        failure,
+        entered=True,
+        operation_error=None,
+    )
+
+    assert type(rebuilt) is command.ProductDatabaseCutoverError
+    assert rebuilt.args == ("product database lifecycle lock cleanup failed",)
+    assert failure.calls == 0
+    assert_clean_exception_tree(rebuilt)
+
+
+@pytest.mark.parametrize(("initial", "mutated"), ((9, 17), (None, 23)))
+def test_exact_system_exit_uses_trusted_builtin_code_descriptor(initial, mutated):
+    failure = SystemExit() if initial is None else SystemExit(initial)
+    failure.code = mutated
+
+    rebuilt = command._lock_boundary_error(
+        failure,
+        entered=True,
+        operation_error=None,
+    )
+
+    assert type(rebuilt) is SystemExit
+    assert rebuilt.args == (mutated,)
+    assert rebuilt.code == mutated
+
+
+@pytest.mark.asyncio
+async def test_smoke_group_subclass_is_sanitized_without_dynamic_children_access(
+    workspace_tmp_path,
+):
+    config = workspace_tmp_path / ".env.local.json"
+    original = mysql_document()
+    config.write_text(json.dumps(original), encoding="utf-8")
+    failure = ExplodingSanitizerGroup()
+
+    async def smoke(_document):
+        raise failure
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await command.cutover(
+            receipt=PREPARATION_RECEIPT,
+            config_path=config,
+            confirm_database=NEW_DATABASE,
+            confirm_cutover="CUTOVER-PHASE7B",
+            smoke=smoke,
+            writer=write_json,
+            inventory_reader=observe_inventories,
+            lifecycle_lock=open_lifecycle_lock,
+        )
+
+    raised_value = raised.value
+    assert isinstance(raised_value, BaseExceptionGroup)
+    assert failure.calls == 0
+    assert [str(leaf) for leaf in exception_leaves(raised_value)] == [
+        "product database cutover smoke failed",
+        "product database cutover smoke failed",
+    ]
+    assert len(exception_children(raised_value)) == 2
+    assert [type(child) for child in exception_children(raised_value)] == [
+        command.ProductDatabaseCutoverError,
+        ExceptionGroup,
+    ]
+    assert exception_group_messages(raised_value) == [
+        "product database cutover smoke failed",
+        "product database cutover smoke failed",
+    ]
+    assert_clean_exception_tree(raised_value)
+    assert json.loads(config.read_text(encoding="utf-8")) == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ("config", "evidence", "rollback"))
+async def test_staged_group_subclass_preserves_public_operation_category(
+    workspace_tmp_path, monkeypatch, stage,
+):
+    config = workspace_tmp_path / ".env.local.json"
+    config.write_text(json.dumps(mysql_document()), encoding="utf-8")
+    failure = ExplodingSanitizerGroup()
+    writes = 0
+
+    if stage == "config":
+        monkeypatch.setattr(
+            command,
+            "capture_local_document_snapshot",
+            lambda _path: (_ for _ in ()).throw(failure),
+        )
+
+    async def inventories(_document):
+        if stage == "evidence":
+            raise failure
+        return LEGACY_INVENTORY, NEW_INVENTORY
+
+    def writer(path, document, acl, expected_snapshot):
+        nonlocal writes
+        writes += 1
+        if stage == "rollback" and writes == 2:
+            raise failure
+        return write_json(path, document, acl, expected_snapshot)
+
+    async def smoke(_document):
+        if stage == "rollback":
+            raise RuntimeError(SECRET)
+
+    with pytest.raises(BaseException) as raised:
+        await command.cutover(
+            receipt=PREPARATION_RECEIPT,
+            config_path=config,
+            confirm_database=NEW_DATABASE,
+            confirm_cutover="CUTOVER-PHASE7B",
+            smoke=smoke,
+            writer=writer,
+            inventory_reader=inventories,
+            lifecycle_lock=open_lifecycle_lock,
+        )
+    raised_value = raised.value
+
+    expected = {
+        "config": [
+            "product database cutover configuration is invalid",
+            "product database cutover configuration is invalid",
+        ],
+        "evidence": [
+            "product database cutover evidence is invalid",
+            "product database cutover evidence is invalid",
+        ],
+        "rollback": [
+            "product database cutover smoke failed",
+            "product database cutover rollback failed",
+            "product database cutover rollback failed",
+        ],
+    }[stage]
+    assert failure.calls == 0
+    assert [str(leaf) for leaf in exception_leaves(raised_value)] == expected
+    outer = exception_children(raised_value)
+    if stage == "rollback":
+        assert [type(child) for child in outer] == [
+            command.ProductDatabaseCutoverError,
+            ExceptionGroup,
+        ]
+        assert [type(child) for child in exception_children(outer[1])] == [
+            command.ProductDatabaseCutoverError,
+            ExceptionGroup,
+        ]
+        assert exception_group_messages(raised_value) == [
+            "product database cutover rollback failed",
+            "product database cutover rollback failed",
+            "product database cutover rollback failed",
+        ]
+    else:
+        assert [type(child) for child in outer] == [
+            command.ProductDatabaseCutoverError,
+            ExceptionGroup,
+        ]
+        assert exception_group_messages(raised_value) == [expected[0], expected[0]]
+    assert_clean_exception_tree(raised_value)
+    expected_database = NEW_DATABASE if stage == "rollback" else LEGACY_DATABASE
+    assert json.loads(config.read_text(encoding="utf-8"))["MYSQL_DB"] == expected_database
 
 
 @pytest.mark.asyncio
