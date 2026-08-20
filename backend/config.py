@@ -120,6 +120,18 @@ def _runtime_configuration_is_valid(snapshot: RuntimeConfiguration) -> bool:
             return False
         if key == "autocommit" and type(value) is not bool:
             return False
+        if key in {"host", "user", "password", "db"} and not value.strip():
+            return False
+        if key == "port" and not 1 <= value <= 65535:
+            return False
+        if key == "charset" and value != "utf8mb4":
+            return False
+        if key == "autocommit" and value is not True:
+            return False
+        if key == "minsize" and value != 1:
+            return False
+        if key == "maxsize" and value != 10:
+            return False
     if (
         snapshot.corpus_root is not None
         and type(snapshot.corpus_root) is not _RUNTIME_PATH_TYPE

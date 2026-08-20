@@ -153,6 +153,38 @@ def test_runtime_configuration_rejects_non_exact_mysql_values(
     assert_safe_runtime_configuration_error(caught.value, "is invalid")
 
 
+@pytest.mark.parametrize(
+    ("key", "value"),
+    (
+        ("host", ""),
+        ("host", "   "),
+        ("user", "\t"),
+        ("password", "\n"),
+        ("db", ""),
+        ("port", 0),
+        ("port", 65536),
+        ("charset", "utf8"),
+        ("autocommit", False),
+        ("minsize", 0),
+        ("minsize", 2),
+        ("maxsize", -1),
+        ("maxsize", 11),
+    ),
+)
+def test_runtime_configuration_rejects_semantically_invalid_mysql_values(
+    workspace_tmp_path, key, value,
+):
+    with pytest.raises(config.RuntimeConfigurationError) as caught:
+        config.RuntimeConfiguration(
+            mysql_items=runtime_mysql_items(**{key: value}),
+            corpus_root=workspace_tmp_path,
+            managed_corpus_root=None,
+            market_scheduler_enabled=False,
+        )
+
+    assert_safe_runtime_configuration_error(caught.value, "is invalid")
+
+
 def test_runtime_configuration_rejects_non_exact_roots_and_scheduler(
     workspace_tmp_path,
 ):
@@ -204,6 +236,32 @@ def test_install_revalidates_a_forged_exact_snapshot(workspace_tmp_path):
         config.install_runtime_configuration(forged)
 
     assert_safe_runtime_configuration_error(caught.value, "installation failed")
+
+
+def test_install_and_pool_copy_revalidate_semantically_forged_snapshots(
+    runtime_configuration,
+):
+    object.__setattr__(
+        runtime_configuration,
+        "mysql_items",
+        runtime_mysql_items(port=0),
+    )
+    with pytest.raises(config.RuntimeConfigurationError) as install_error:
+        config.install_runtime_configuration(runtime_configuration)
+    assert_safe_runtime_configuration_error(
+        install_error.value, "installation failed"
+    )
+
+    valid = dataclasses.replace(
+        runtime_configuration,
+        mysql_items=runtime_mysql_items(),
+    )
+    config.install_runtime_configuration(valid)
+    object.__setattr__(valid, "mysql_items", runtime_mysql_items(charset="utf8"))
+    with pytest.raises(config.RuntimeConfigurationError) as copy_error:
+        valid.mysql_pool_options()
+    assert_safe_runtime_configuration_error(copy_error.value, "is invalid")
+    config.clear_runtime_configuration(valid)
 
 
 def test_registry_rejects_hostile_class_spoof_without_reading_metadata():
