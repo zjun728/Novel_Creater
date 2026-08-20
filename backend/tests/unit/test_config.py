@@ -9,6 +9,30 @@ import pytest
 from backend import config
 
 
+def runtime_mysql_items(**replacements):
+    values = {
+        "host": "runtime-host",
+        "port": 3307,
+        "user": "runtime-user",
+        "password": "runtime-password",
+        "db": "runtime-db",
+        "charset": "utf8mb4",
+        "autocommit": True,
+        "minsize": 1,
+        "maxsize": 10,
+    }
+    values.update(replacements)
+    return tuple(values.items())
+
+
+def assert_safe_runtime_configuration_error(error, suffix):
+    assert type(error) is config.RuntimeConfigurationError
+    assert error.args == (f"runtime configuration {suffix}",)
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert not hasattr(error, "__notes__")
+
+
 @pytest.fixture(autouse=True)
 def no_active_runtime_configuration(monkeypatch):
     monkeypatch.setattr(config, "_active_runtime_configuration", None, raising=False)
@@ -21,7 +45,7 @@ def runtime_configuration(workspace_tmp_path):
     corpus_root.mkdir()
     managed_root.mkdir()
     return config.RuntimeConfiguration(
-        mysql_items=(("host", "runtime-host"), ("port", 3307)),
+        mysql_items=runtime_mysql_items(),
         corpus_root=corpus_root,
         managed_corpus_root=managed_root,
         market_scheduler_enabled=True,
@@ -58,9 +82,172 @@ def test_runtime_configuration_is_frozen_and_exact(runtime_configuration):
     assert runtime_configuration.mysql_pool_options() == {
         "host": "runtime-host",
         "port": 3307,
+        "user": "runtime-user",
+        "password": "runtime-password",
+        "db": "runtime-db",
+        "charset": "utf8mb4",
+        "autocommit": True,
+        "minsize": 1,
+        "maxsize": 10,
     }
     with pytest.raises(dataclasses.FrozenInstanceError):
         runtime_configuration.market_scheduler_enabled = False
+
+
+@pytest.mark.parametrize(
+    "mysql_items",
+    (
+        list(runtime_mysql_items()),
+        tuple([key, value] for key, value in runtime_mysql_items()),
+        type("TupleSubclass", (tuple,), {})(runtime_mysql_items()),
+        (
+            type("InnerTupleSubclass", (tuple,), {})(runtime_mysql_items()[0]),
+            *runtime_mysql_items()[1:],
+        ),
+        runtime_mysql_items() + (("host", "duplicate-host"),),
+        runtime_mysql_items()[:-1],
+        runtime_mysql_items() + (("extra", "value"),),
+        tuple(reversed(runtime_mysql_items())),
+    ),
+)
+def test_runtime_configuration_rejects_open_mysql_containers(
+    workspace_tmp_path, mysql_items,
+):
+    with pytest.raises(config.RuntimeConfigurationError) as caught:
+        config.RuntimeConfiguration(
+            mysql_items=mysql_items,
+            corpus_root=workspace_tmp_path,
+            managed_corpus_root=None,
+            market_scheduler_enabled=False,
+        )
+
+    assert_safe_runtime_configuration_error(caught.value, "is invalid")
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    (
+        ("host", type("TextSubclass", (str,), {})("host")),
+        ("user", None),
+        ("password", None),
+        ("db", 7),
+        ("charset", type("CharsetSubclass", (str,), {})("utf8mb4")),
+        ("port", True),
+        ("port", type("IntegerSubclass", (int,), {})(3307)),
+        ("minsize", False),
+        ("maxsize", 10.0),
+        ("autocommit", 1),
+    ),
+)
+def test_runtime_configuration_rejects_non_exact_mysql_values(
+    workspace_tmp_path, key, value,
+):
+    with pytest.raises(config.RuntimeConfigurationError) as caught:
+        config.RuntimeConfiguration(
+            mysql_items=runtime_mysql_items(**{key: value}),
+            corpus_root=workspace_tmp_path,
+            managed_corpus_root=None,
+            market_scheduler_enabled=False,
+        )
+
+    assert_safe_runtime_configuration_error(caught.value, "is invalid")
+
+
+def test_runtime_configuration_rejects_non_exact_roots_and_scheduler(
+    workspace_tmp_path,
+):
+    concrete_path_type = type(Path())
+
+    class PathSubclass(concrete_path_type):
+        pass
+
+    invalid_fields = (
+        {"corpus_root": str(workspace_tmp_path)},
+        {"managed_corpus_root": PathSubclass(workspace_tmp_path)},
+        {"market_scheduler_enabled": 1},
+    )
+    for replacement in invalid_fields:
+        fields = {
+            "mysql_items": runtime_mysql_items(),
+            "corpus_root": workspace_tmp_path,
+            "managed_corpus_root": None,
+            "market_scheduler_enabled": False,
+        }
+        fields.update(replacement)
+        with pytest.raises(config.RuntimeConfigurationError) as caught:
+            config.RuntimeConfiguration(**fields)
+        assert_safe_runtime_configuration_error(caught.value, "is invalid")
+
+
+def test_runtime_configuration_copies_cannot_mutate_installed_authority(
+    runtime_configuration,
+):
+    config.install_runtime_configuration(runtime_configuration)
+    mutable_copy = runtime_configuration.mysql_pool_options()
+
+    mutable_copy["host"] = "mutated-host"
+
+    assert config.current_runtime_configuration().mysql_pool_options()["host"] == (
+        "runtime-host"
+    )
+    config.clear_runtime_configuration(runtime_configuration)
+
+
+def test_install_revalidates_a_forged_exact_snapshot(workspace_tmp_path):
+    forged = object.__new__(config.RuntimeConfiguration)
+    object.__setattr__(forged, "mysql_items", list(runtime_mysql_items()))
+    object.__setattr__(forged, "corpus_root", workspace_tmp_path)
+    object.__setattr__(forged, "managed_corpus_root", None)
+    object.__setattr__(forged, "market_scheduler_enabled", False)
+
+    with pytest.raises(config.RuntimeConfigurationError) as caught:
+        config.install_runtime_configuration(forged)
+
+    assert_safe_runtime_configuration_error(caught.value, "installation failed")
+
+
+def test_registry_rejects_hostile_class_spoof_without_reading_metadata():
+    class FlowSentinel(KeyboardInterrupt):
+        pass
+
+    class Hostile:
+        @property
+        def __class__(self):
+            raise FlowSentinel("class metadata was read")
+
+        @property
+        def args(self):
+            raise FlowSentinel("args metadata was read")
+
+        def __str__(self):
+            raise FlowSentinel("string conversion was attempted")
+
+    hostile = Hostile()
+    with pytest.raises(config.RuntimeConfigurationError) as install_error:
+        config.install_runtime_configuration(hostile)
+    assert_safe_runtime_configuration_error(
+        install_error.value, "installation failed"
+    )
+
+    with pytest.raises(config.RuntimeConfigurationError) as clear_error:
+        config.clear_runtime_configuration(hostile)
+    assert_safe_runtime_configuration_error(clear_error.value, "cleanup failed")
+
+
+def test_registry_rejects_hostile_snapshot_subclass_before_field_access():
+    class FlowSentinel(SystemExit):
+        pass
+
+    class HostileSnapshot(config.RuntimeConfiguration):
+        def __getattribute__(self, name):
+            raise FlowSentinel(19)
+
+    hostile = object.__new__(HostileSnapshot)
+
+    with pytest.raises(config.RuntimeConfigurationError) as caught:
+        config.install_runtime_configuration(hostile)
+
+    assert_safe_runtime_configuration_error(caught.value, "installation failed")
 
 
 def test_runtime_configuration_loader_reads_one_document_for_all_values(
@@ -106,24 +293,29 @@ def test_runtime_configuration_registry_is_identity_bound(runtime_configuration)
     with pytest.raises(
         config.RuntimeConfigurationError,
         match="^runtime configuration is unavailable$",
-    ):
+    ) as unavailable:
         config.current_runtime_configuration()
+    assert_safe_runtime_configuration_error(unavailable.value, "is unavailable")
 
     config.install_runtime_configuration(runtime_configuration)
     assert config.current_runtime_configuration() is runtime_configuration
     with pytest.raises(
         config.RuntimeConfigurationError,
         match="^runtime configuration cleanup failed$",
-    ):
+    ) as wrong_snapshot:
         config.clear_runtime_configuration(dataclasses.replace(runtime_configuration))
+    assert_safe_runtime_configuration_error(
+        wrong_snapshot.value, "cleanup failed"
+    )
     assert config.current_runtime_configuration() is runtime_configuration
     config.clear_runtime_configuration(runtime_configuration)
 
     with pytest.raises(
         config.RuntimeConfigurationError,
         match="^runtime configuration is unavailable$",
-    ):
+    ) as cleared:
         config.current_runtime_configuration()
+    assert_safe_runtime_configuration_error(cleared.value, "is unavailable")
 
 
 def test_runtime_configuration_rejects_duplicate_and_non_exact_install(
@@ -143,7 +335,9 @@ def test_runtime_configuration_rejects_duplicate_and_non_exact_install(
         match="^runtime configuration installation failed$",
     ) as invalid:
         config.install_runtime_configuration(subclass)
-    assert invalid.value.__cause__ is None
+    assert_safe_runtime_configuration_error(
+        invalid.value, "installation failed"
+    )
 
     config.install_runtime_configuration(runtime_configuration)
     with pytest.raises(
@@ -151,7 +345,9 @@ def test_runtime_configuration_rejects_duplicate_and_non_exact_install(
         match="^runtime configuration installation failed$",
     ) as duplicate:
         config.install_runtime_configuration(dataclasses.replace(runtime_configuration))
-    assert duplicate.value.__cause__ is None
+    assert_safe_runtime_configuration_error(
+        duplicate.value, "installation failed"
+    )
     assert config.current_runtime_configuration() is runtime_configuration
     config.clear_runtime_configuration(runtime_configuration)
 

@@ -37,6 +37,26 @@ _DEFAULTS: dict[str, object] = {
     "MYSQL_PASSWORD": None,
     "MYSQL_DB": "novel_creator",
 }
+_RUNTIME_MYSQL_KEYS = (
+    "host",
+    "port",
+    "user",
+    "password",
+    "db",
+    "charset",
+    "autocommit",
+    "minsize",
+    "maxsize",
+)
+_RUNTIME_TEXT_KEYS = frozenset({
+    "host",
+    "user",
+    "password",
+    "db",
+    "charset",
+})
+_RUNTIME_INTEGER_KEYS = frozenset({"port", "minsize", "maxsize"})
+_RUNTIME_PATH_TYPE = type(Path())
 
 
 class LocalMySQLConfigError(RuntimeError):
@@ -64,11 +84,53 @@ class RuntimeConfiguration:
     managed_corpus_root: Path | None
     market_scheduler_enabled: bool
 
+    def __post_init__(self) -> None:
+        if not _runtime_configuration_is_valid(self):
+            raise RuntimeConfigurationError(
+                "runtime configuration is invalid"
+            ) from None
+
     def mysql_pool_options(self) -> dict[str, object]:
+        if not _runtime_configuration_is_valid(self):
+            raise RuntimeConfigurationError(
+                "runtime configuration is invalid"
+            ) from None
         return dict(self.mysql_items)
 
 
 _active_runtime_configuration: RuntimeConfiguration | None = None
+
+
+def _runtime_configuration_is_valid(snapshot: RuntimeConfiguration) -> bool:
+    mysql_items = snapshot.mysql_items
+    if type(mysql_items) is not tuple or len(mysql_items) != len(
+        _RUNTIME_MYSQL_KEYS
+    ):
+        return False
+    for index, expected_key in enumerate(_RUNTIME_MYSQL_KEYS):
+        item = mysql_items[index]
+        if type(item) is not tuple or len(item) != 2:
+            return False
+        key, value = item
+        if type(key) is not str or key != expected_key:
+            return False
+        if key in _RUNTIME_TEXT_KEYS and type(value) is not str:
+            return False
+        if key in _RUNTIME_INTEGER_KEYS and type(value) is not int:
+            return False
+        if key == "autocommit" and type(value) is not bool:
+            return False
+    if (
+        snapshot.corpus_root is not None
+        and type(snapshot.corpus_root) is not _RUNTIME_PATH_TYPE
+    ):
+        return False
+    if (
+        snapshot.managed_corpus_root is not None
+        and type(snapshot.managed_corpus_root) is not _RUNTIME_PATH_TYPE
+    ):
+        return False
+    return type(snapshot.market_scheduler_enabled) is bool
 
 
 def load_market_scheduler_enabled(
@@ -306,7 +368,11 @@ def load_runtime_configuration(
 
 def install_runtime_configuration(snapshot: RuntimeConfiguration) -> None:
     global _active_runtime_configuration
-    if type(snapshot) is not RuntimeConfiguration or _active_runtime_configuration is not None:
+    if (
+        type(snapshot) is not RuntimeConfiguration
+        or _active_runtime_configuration is not None
+        or not _runtime_configuration_is_valid(snapshot)
+    ):
         raise RuntimeConfigurationError(
             "runtime configuration installation failed"
         ) from None
