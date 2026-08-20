@@ -9,9 +9,8 @@ import inspect
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
-from typing import Callable, Mapping, NoReturn, Sequence
+from typing import Callable, ContextManager, Mapping, NoReturn, Sequence, cast
 
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.product_database_readiness import (
@@ -33,6 +32,10 @@ from backend.scripts.configure_local_mysql import (
 )
 from backend.scripts.prepare_product_database import load_preparation_receipt
 from backend.services.product_database_backup import verify_backup_file
+from backend.services.product_database_lifecycle_lock import (
+    ProductDatabaseLifecycleError,
+    product_database_lifecycle_lock,
+)
 
 
 _CUTOVER_CONFIRMATION = "CUTOVER-PHASE7B"
@@ -51,7 +54,8 @@ _EVIDENCE_ERROR = "product database cutover evidence is invalid"
 _SMOKE_ERROR = "product database cutover smoke failed"
 _ROLLBACK_ERROR = "product database cutover rollback failed"
 _RECOVERY_ERROR = "product database recovery failed"
-_PROCESS_ERROR = "product database cutover process guard failed"
+_LIFECYCLE_ERROR = "product database lifecycle lock failed"
+_LIFECYCLE_CLEANUP_ERROR = "product database lifecycle lock cleanup failed"
 _BROWSER_SMOKE_EXPECTED = {
     "firstStage": None,
     "firstCause": None,
@@ -247,44 +251,35 @@ def _cutover_receipts(receipt: PreparationReceipt) -> tuple[StateReceipt, ...]:
     return switched, verified, retained
 
 
-def assert_no_product_application_process(
+def _lock_boundary_error(
+    lock_error: BaseException,
     *,
-    runner: Callable[..., object] = subprocess.run,
-) -> None:
-    """Fail closed when a repository-owned product application is running."""
-    script = (
-        "$root=$env:PHASE7B_REPOSITORY_ROOT;"
-        "$matches=@(Get-CimInstance Win32_Process | Where-Object {"
-        "$_.ProcessId -ne $PID -and $_.CommandLine -like \"*$root*\" -and "
-        "$_.CommandLine -match '(?i)(uvicorn|backend[./\\\\]main|"
-        "npm(?:\\.cmd)?\\s+run\\s+(?:dev|start)|vite)'"
-        "});Write-Output $matches.Count"
-    )
-    try:
-        result = runner(
-            [
-                str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" /
-                    "WindowsPowerShell" / "v1.0" / "powershell.exe"),
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                script,
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=15,
-            shell=False,
-            env={**os.environ, "PHASE7B_REPOSITORY_ROOT": str(Path(__file__).resolve().parents[2])},
-        )
-        if (
-            getattr(result, "returncode", None) != 0
-            or getattr(result, "stdout", "").strip() != "0"
+    entered: bool,
+    operation_error: BaseException | None,
+) -> BaseException:
+    def sanitized_boundary(error: BaseException) -> BaseException:
+        if isinstance(error, BaseExceptionGroup):
+            return BaseExceptionGroup(
+                _LIFECYCLE_CLEANUP_ERROR if entered else _LIFECYCLE_ERROR,
+                [sanitized_boundary(child) for child in error.exceptions],
+            )
+        if isinstance(error, ProductDatabaseLifecycleError) and str(error) in (
+            _LIFECYCLE_ERROR,
+            _LIFECYCLE_CLEANUP_ERROR,
         ):
-            raise RuntimeError
-    except BaseException as error:
-        _raise(_sanitized(error, _PROCESS_ERROR))
+            return ProductDatabaseLifecycleError(str(error))
+        return _sanitized(
+            error,
+            _LIFECYCLE_CLEANUP_ERROR if entered else _LIFECYCLE_ERROR,
+        )
+
+    cleanup_error = sanitized_boundary(lock_error)
+    if operation_error is None:
+        return cleanup_error
+    return BaseExceptionGroup(
+        _LIFECYCLE_CLEANUP_ERROR,
+        [operation_error, cleanup_error],
+    )
 
 
 async def cutover(
@@ -297,7 +292,9 @@ async def cutover(
     writer: Callable[..., object] = atomic_compare_and_swap_local_document,
     inventory_reader: Callable[..., object],
     acl_runner: object = restrict_windows_acl,
-    idle_guard: Callable[..., object] = assert_no_product_application_process,
+    lifecycle_lock: Callable[[Path], ContextManager[object]] = (
+        product_database_lifecycle_lock
+    ),
 ) -> CutoverResult:
     """Verify Stage A evidence, switch one field, smoke, and retain legacy."""
     if confirm_database != NEW_DATABASE or confirm_cutover != _CUTOVER_CONFIRMATION:
@@ -308,67 +305,127 @@ async def cutover(
             or receipt.state != ReadinessState.AWAITING_CUTOVER_APPROVAL.value
         ):
             raise ValueError
-        original_snapshot = capture_local_document_snapshot(Path(config_path))
-        original = _parse_local_document(original_snapshot.content)
-        if original["MYSQL_DB"] != LEGACY_DATABASE:
-            _raise(ProductDatabaseCutoverError(_CONFIG_ERROR))
-        observed = await _invoke(inventory_reader, original)
-        _validate_observed_inventories(observed, receipt)
-    except ProductDatabaseCutoverError:
-        raise
+        PreparationReceipt.__post_init__(receipt)
     except BaseException as error:
         _raise(_sanitized(error, _EVIDENCE_ERROR))
 
+    path = Path(config_path)
+    original_snapshot: LocalDocumentSnapshot | None = None
+    original: dict[str, object] | None = None
+    switched_snapshot: LocalDocumentSnapshot | None = None
+    operation_error: BaseException | None = None
+    entered = False
     try:
-        await _invoke(idle_guard)
+        with lifecycle_lock(path):
+            entered = True
+            try:
+                original_snapshot = capture_local_document_snapshot(path)
+                original = _parse_local_document(original_snapshot.content)
+                if original["MYSQL_DB"] != LEGACY_DATABASE:
+                    raise ValueError
+            except BaseException as error:
+                operation_error = _sanitized(error, _CONFIG_ERROR)
+            if operation_error is None:
+                try:
+                    observed = await _invoke(
+                        inventory_reader,
+                        cast(dict[str, object], original),
+                    )
+                    _validate_observed_inventories(observed, receipt)
+                except BaseException as error:
+                    operation_error = _sanitized(error, _EVIDENCE_ERROR)
+            if operation_error is None:
+                try:
+                    switched = {
+                        **cast(dict[str, object], original),
+                        "MYSQL_DB": NEW_DATABASE,
+                    }
+                    candidate_snapshot = await _invoke(
+                        writer,
+                        path,
+                        switched,
+                        acl_runner,
+                        original_snapshot,
+                    )
+                    if type(candidate_snapshot) is not LocalDocumentSnapshot:
+                        raise TypeError
+                    switched_snapshot = candidate_snapshot
+                except BaseException as error:
+                    operation_error = _sanitized(error, _CONFIG_ERROR)
     except BaseException as error:
-        _raise(_sanitized(error, _PROCESS_ERROR))
-
-    switched = {**original, "MYSQL_DB": NEW_DATABASE}
-    try:
-        switched_snapshot = await _invoke(
-            writer,
-            Path(config_path),
-            switched,
-            acl_runner,
-            original_snapshot,
+        _raise(
+            _lock_boundary_error(
+                error,
+                entered=entered,
+                operation_error=operation_error,
+            )
         )
-        if type(switched_snapshot) is not LocalDocumentSnapshot:
-            raise TypeError
-    except BaseException as error:
-        _raise(_sanitized(error, _CONFIG_ERROR))
+    if operation_error is not None:
+        _raise(operation_error)
+    original = cast(dict[str, object], original)
+    original_snapshot = cast(LocalDocumentSnapshot, original_snapshot)
+    switched_snapshot = cast(LocalDocumentSnapshot, switched_snapshot)
+    switched = {**original, "MYSQL_DB": NEW_DATABASE}
 
     try:
         await _invoke(smoke, switched)
     except BaseException as smoke_error:
+        rollback_error: BaseException | None = None
+        rollback_entered = False
         try:
-            # One atomic attempt is deliberately bounded: never retry a secret write.
-            rollback_snapshot = await _invoke(
-                writer,
-                Path(config_path),
-                original,
-                acl_runner,
-                switched_snapshot,
+            with lifecycle_lock(path):
+                rollback_entered = True
+                try:
+                    # One atomic attempt is deliberately bounded: never retry a secret write.
+                    rollback_snapshot = await _invoke(
+                        writer,
+                        path,
+                        original,
+                        acl_runner,
+                        switched_snapshot,
+                    )
+                    if type(rollback_snapshot) is not LocalDocumentSnapshot:
+                        raise TypeError
+                except BaseException as error:
+                    rollback_error = _sanitized(error, _ROLLBACK_ERROR)
+        except BaseException as error:
+            rollback_error = _lock_boundary_error(
+                error,
+                entered=rollback_entered,
+                operation_error=rollback_error,
             )
-            if type(rollback_snapshot) is not LocalDocumentSnapshot:
-                raise TypeError
-        except BaseException as rollback_error:
+        if rollback_error is not None:
             _raise(
                 BaseExceptionGroup(
                     _ROLLBACK_ERROR,
                     [
                         _sanitized(smoke_error, _SMOKE_ERROR),
-                        _sanitized(rollback_error, _ROLLBACK_ERROR),
+                        rollback_error,
                     ],
                 )
             )
         _raise(_sanitized(smoke_error, _SMOKE_ERROR))
 
+    verify_error: BaseException | None = None
+    verify_entered = False
     try:
-        if capture_local_document_snapshot(Path(config_path)) != switched_snapshot:
-            raise ValueError
+        with lifecycle_lock(path):
+            verify_entered = True
+            try:
+                if capture_local_document_snapshot(path) != switched_snapshot:
+                    raise ValueError
+            except BaseException as error:
+                verify_error = _sanitized(error, _CONFIG_ERROR)
     except BaseException as error:
-        _raise(_sanitized(error, _CONFIG_ERROR))
+        _raise(
+            _lock_boundary_error(
+                error,
+                entered=verify_entered,
+                operation_error=verify_error,
+            )
+        )
+    if verify_error is not None:
+        _raise(verify_error)
 
     receipts = _cutover_receipts(receipt)
     return CutoverResult(ReadinessState.LEGACY_RETAINED.value, receipts)
@@ -382,34 +439,49 @@ async def recover_legacy(
     writer: Callable[..., object] = atomic_compare_and_swap_local_document,
     inventory_reader: Callable[..., object],
     acl_runner: object = restrict_windows_acl,
-    idle_guard: Callable[..., object] = assert_no_product_application_process,
+    lifecycle_lock: Callable[[Path], ContextManager[object]] = (
+        product_database_lifecycle_lock
+    ),
 ) -> CutoverResult:
     """Switch only MYSQL_DB back to legacy after proving both databases exist."""
     if database != LEGACY_DATABASE or confirm_cutover != _RECOVERY_CONFIRMATION:
         _raise(ProductDatabaseCutoverError(_APPROVAL_ERROR))
+    path = Path(config_path)
+    operation_error: BaseException | None = None
+    entered = False
     try:
-        original_snapshot = capture_local_document_snapshot(Path(config_path))
-        original = _parse_local_document(original_snapshot.content)
-        if original["MYSQL_DB"] != NEW_DATABASE:
-            raise ValueError
-        _validate_observed_inventories(
-            await _invoke(inventory_reader, original)
-        )
-        await _invoke(idle_guard)
-        recovered_snapshot = await _invoke(
-            writer,
-            Path(config_path),
-            {**original, "MYSQL_DB": LEGACY_DATABASE},
-            acl_runner,
-            original_snapshot,
-        )
-        if type(recovered_snapshot) is not LocalDocumentSnapshot:
-            raise TypeError
-        return CutoverResult(ReadinessState.LEGACY_RETAINED.value)
-    except ProductDatabaseCutoverError:
-        raise
+        with lifecycle_lock(path):
+            entered = True
+            try:
+                original_snapshot = capture_local_document_snapshot(path)
+                original = _parse_local_document(original_snapshot.content)
+                if original["MYSQL_DB"] != NEW_DATABASE:
+                    raise ValueError
+                _validate_observed_inventories(
+                    await _invoke(inventory_reader, original)
+                )
+                recovered_snapshot = await _invoke(
+                    writer,
+                    path,
+                    {**original, "MYSQL_DB": LEGACY_DATABASE},
+                    acl_runner,
+                    original_snapshot,
+                )
+                if type(recovered_snapshot) is not LocalDocumentSnapshot:
+                    raise TypeError
+            except BaseException as error:
+                operation_error = _sanitized(error, _RECOVERY_ERROR)
     except BaseException as error:
-        _raise(_sanitized(error, _RECOVERY_ERROR))
+        _raise(
+            _lock_boundary_error(
+                error,
+                entered=entered,
+                operation_error=operation_error,
+            )
+        )
+    if operation_error is not None:
+        _raise(operation_error)
+    return CutoverResult(ReadinessState.LEGACY_RETAINED.value)
 
 
 async def _default_inventory_reader(document: Mapping[str, object]) -> object:
@@ -473,7 +545,9 @@ async def run_cli(
     smoke: Callable[..., object] = _default_post_cutover_smoke,
     writer: Callable[..., object] = atomic_compare_and_swap_local_document,
     acl_runner: object = restrict_windows_acl,
-    idle_guard: Callable[..., object] = assert_no_product_application_process,
+    lifecycle_lock: Callable[[Path], ContextManager[object]] = (
+        product_database_lifecycle_lock
+    ),
     output: Callable[[str], None] = print,
 ) -> int:
     args = _argument_parser().parse_args(argv)
@@ -495,7 +569,7 @@ async def run_cli(
             writer=writer,
             inventory_reader=inventory_reader,
             acl_runner=acl_runner,
-            idle_guard=idle_guard,
+            lifecycle_lock=lifecycle_lock,
         )
     else:
         if (
@@ -534,7 +608,7 @@ async def run_cli(
             writer=writer,
             inventory_reader=inventory_reader,
             acl_runner=acl_runner,
-            idle_guard=idle_guard,
+            lifecycle_lock=lifecycle_lock,
         )
     output(f"state={result.state}")
     return 0

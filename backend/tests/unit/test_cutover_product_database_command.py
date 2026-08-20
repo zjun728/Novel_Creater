@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import asdict, replace
+from contextlib import contextmanager
 import hashlib
 import json
 from pathlib import Path
@@ -22,6 +23,7 @@ from backend.domain.product_database_readiness import (
 from backend.domain.json_contracts import canonical_json
 from backend.scripts import cutover_product_database as command
 from backend.scripts import prepare_product_database as preparation_command
+from backend.services import product_database_lifecycle_lock as lifecycle_service
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -93,8 +95,37 @@ async def observe_inventories(_document):
     return LEGACY_INVENTORY, NEW_INVENTORY
 
 
-def no_product_process():
-    return None
+@contextmanager
+def open_lifecycle_lock(_config_path):
+    yield object()
+
+
+class RecordingLifecycleLock:
+    def __init__(self, events, *, failures=()):
+        self.events = events
+        self.failures = list(failures)
+        self.active = False
+        self.scopes = 0
+
+    @contextmanager
+    def __call__(self, config_path):
+        self.events.append(("lock-attempt", Path(config_path)))
+        failure = self.failures.pop(0) if self.failures else None
+        if failure == "acquire":
+            raise RuntimeError(f"acquire {SECRET}")
+        assert not self.active
+        self.active = True
+        self.scopes += 1
+        self.events.append("lock-enter")
+        try:
+            yield SimpleNamespace(
+                defer_until=lambda *_args: pytest.fail("cutover must never defer")
+            )
+        finally:
+            self.events.append("lock-exit")
+            self.active = False
+            if failure == "release":
+                raise RuntimeError(f"release {SECRET}")
 
 
 def write_json(path, document, _acl, expected_snapshot):
@@ -121,7 +152,7 @@ async def test_cutover_changes_only_mysql_db_and_finishes_legacy_retained(worksp
         writer=write_json,
         inventory_reader=observe_inventories,
         acl_runner=object(),
-        idle_guard=no_product_process,
+        lifecycle_lock=open_lifecycle_lock,
     )
 
     current = json.loads(config.read_text(encoding="utf-8"))
@@ -151,38 +182,488 @@ async def test_cutover_requires_both_exact_approvals_before_read_or_write(
             writer=lambda *_args: calls.append("write"),
             inventory_reader=lambda *_args: calls.append("inventory"),
             acl_runner=object(),
-            idle_guard=no_product_process,
+            lifecycle_lock=open_lifecycle_lock,
         )
 
     assert calls == []
 
 
 @pytest.mark.asyncio
-async def test_cutover_refuses_an_active_product_process_before_config_write(
+async def test_cutover_contention_precedes_config_inventory_write_and_smoke(
     workspace_tmp_path,
 ):
     config = workspace_tmp_path / ".env.local.json"
     original = mysql_document()
     config.write_text(json.dumps(original), encoding="utf-8")
-    writes = []
+    calls = []
 
-    def active_process_guard():
-        raise RuntimeError(f"active {SECRET}")
+    def contended_lock(_path):
+        calls.append("lock")
+        raise RuntimeError(f"contended {SECRET}")
 
-    with pytest.raises(command.ProductDatabaseCutoverError, match="process") as raised:
+    def forbidden(*_args, **_kwargs):
+        calls.append("forbidden")
+        raise AssertionError("contention must precede protected work")
+
+    original_capture = command.capture_local_document_snapshot
+    command.capture_local_document_snapshot = forbidden
+    try:
+        with pytest.raises(Exception, match="lifecycle") as raised:
+            await command.cutover(
+                receipt=PREPARATION_RECEIPT,
+                config_path=config,
+                confirm_database=NEW_DATABASE,
+                confirm_cutover="CUTOVER-PHASE7B",
+                smoke=forbidden,
+                writer=forbidden,
+                inventory_reader=forbidden,
+                acl_runner=object(),
+                lifecycle_lock=contended_lock,
+            )
+    finally:
+        command.capture_local_document_snapshot = original_capture
+
+    assert calls == ["lock"]
+    assert SECRET not in repr(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_cutover_success_uses_two_exact_nondeferred_lock_scopes(
+    workspace_tmp_path, monkeypatch,
+):
+    config = workspace_tmp_path / ".env.local.json"
+    config.write_text(json.dumps(mysql_document()), encoding="utf-8")
+    events = []
+    lifecycle = RecordingLifecycleLock(events)
+    real_capture = command.capture_local_document_snapshot
+
+    def capture(path):
+        assert lifecycle.active
+        events.append("capture")
+        return real_capture(path)
+
+    monkeypatch.setattr(command, "capture_local_document_snapshot", capture)
+
+    async def inventories(_document):
+        assert lifecycle.active
+        events.append("inventory")
+        return LEGACY_INVENTORY, NEW_INVENTORY
+
+    def writer(path, document, acl, expected_snapshot):
+        assert lifecycle.active
+        events.append(("write", document["MYSQL_DB"]))
+        return write_json(path, document, acl, expected_snapshot)
+
+    async def smoke(_document):
+        assert not lifecycle.active
+        events.append("smoke")
+
+    result = await command.cutover(
+        receipt=PREPARATION_RECEIPT,
+        config_path=config,
+        confirm_database=NEW_DATABASE,
+        confirm_cutover="CUTOVER-PHASE7B",
+        smoke=smoke,
+        writer=writer,
+        inventory_reader=inventories,
+        acl_runner=object(),
+        lifecycle_lock=lifecycle,
+    )
+
+    assert result.state == ReadinessState.LEGACY_RETAINED.value
+    assert events == [
+        ("lock-attempt", config),
+        "lock-enter",
+        "capture",
+        "inventory",
+        ("write", NEW_DATABASE),
+        "lock-exit",
+        "smoke",
+        ("lock-attempt", config),
+        "lock-enter",
+        "capture",
+        "lock-exit",
+    ]
+    assert lifecycle.scopes == 2
+
+
+@pytest.mark.asyncio
+async def test_smoke_gap_is_unlocked_and_failure_rollback_uses_fresh_scope(
+    workspace_tmp_path,
+):
+    config = workspace_tmp_path / ".env.local.json"
+    original = mysql_document()
+    config.write_text(json.dumps(original), encoding="utf-8")
+    events = []
+    lifecycle = RecordingLifecycleLock(events)
+
+    def writer(path, document, acl, expected_snapshot):
+        assert lifecycle.active
+        events.append(("write", document["MYSQL_DB"]))
+        return write_json(path, document, acl, expected_snapshot)
+
+    async def smoke(_document):
+        assert not lifecycle.active
+        events.append("smoke")
+        with lifecycle(config):
+            events.append("contender")
+        raise RuntimeError(SECRET)
+
+    with pytest.raises(command.ProductDatabaseCutoverError, match="smoke"):
+        await command.cutover(
+            receipt=PREPARATION_RECEIPT,
+            config_path=config,
+            confirm_database=NEW_DATABASE,
+            confirm_cutover="CUTOVER-PHASE7B",
+            smoke=smoke,
+            writer=writer,
+            inventory_reader=observe_inventories,
+            acl_runner=object(),
+            lifecycle_lock=lifecycle,
+        )
+
+    assert events == [
+        ("lock-attempt", config), "lock-enter", ("write", NEW_DATABASE), "lock-exit",
+        "smoke", ("lock-attempt", config), "lock-enter", "contender", "lock-exit",
+        ("lock-attempt", config), "lock-enter", ("write", LEGACY_DATABASE), "lock-exit",
+    ]
+    assert lifecycle.scopes == 3
+    assert json.loads(config.read_text(encoding="utf-8")) == original
+
+
+def exception_leaves(error):
+    if isinstance(error, BaseExceptionGroup):
+        return [leaf for child in error.exceptions for leaf in exception_leaves(child)]
+    return [error]
+
+
+@pytest.mark.asyncio
+async def test_final_lock_contention_skips_final_read_and_retains_new_config(
+    workspace_tmp_path, monkeypatch,
+):
+    config = workspace_tmp_path / ".env.local.json"
+    config.write_text(json.dumps(mysql_document()), encoding="utf-8")
+    events = []
+    lifecycle = RecordingLifecycleLock(events, failures=(None, "acquire"))
+    captures = 0
+    real_capture = command.capture_local_document_snapshot
+
+    def capture(path):
+        nonlocal captures
+        captures += 1
+        return real_capture(path)
+
+    monkeypatch.setattr(command, "capture_local_document_snapshot", capture)
+    with pytest.raises(Exception, match="lifecycle"):
         await command.cutover(
             receipt=PREPARATION_RECEIPT,
             config_path=config,
             confirm_database=NEW_DATABASE,
             confirm_cutover="CUTOVER-PHASE7B",
             smoke=successful_smoke,
-            writer=lambda *_args: writes.append(True),
+            writer=write_json,
             inventory_reader=observe_inventories,
             acl_runner=object(),
-            idle_guard=active_process_guard,
+            lifecycle_lock=lifecycle,
         )
 
-    assert writes == []
+    assert captures == 1
+    assert lifecycle.scopes == 1
+    assert json.loads(config.read_text(encoding="utf-8"))["MYSQL_DB"] == NEW_DATABASE
+
+
+@pytest.mark.asyncio
+async def test_rollback_lock_contention_skips_rollback_write_and_keeps_smoke_first(
+    workspace_tmp_path,
+):
+    config = workspace_tmp_path / ".env.local.json"
+    config.write_text(json.dumps(mysql_document()), encoding="utf-8")
+    events = []
+    lifecycle = RecordingLifecycleLock(events, failures=(None, "acquire"))
+    writes = []
+
+    def writer(path, document, acl, expected_snapshot):
+        writes.append(document["MYSQL_DB"])
+        return write_json(path, document, acl, expected_snapshot)
+
+    async def smoke(_document):
+        raise RuntimeError(SECRET)
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await command.cutover(
+            receipt=PREPARATION_RECEIPT,
+            config_path=config,
+            confirm_database=NEW_DATABASE,
+            confirm_cutover="CUTOVER-PHASE7B",
+            smoke=smoke,
+            writer=writer,
+            inventory_reader=observe_inventories,
+            acl_runner=object(),
+            lifecycle_lock=lifecycle,
+        )
+
+    assert writes == [NEW_DATABASE]
+    assert str(raised.value.exceptions[0]) == "product database cutover smoke failed"
+    assert str(raised.value.exceptions[1]) == "product database lifecycle lock failed"
+    assert json.loads(config.read_text(encoding="utf-8"))["MYSQL_DB"] == NEW_DATABASE
+    assert SECRET not in repr(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_recovery_contention_precedes_config_inventory_and_write(
+    workspace_tmp_path, monkeypatch,
+):
+    config = workspace_tmp_path / ".env.local.json"
+    config.write_text(json.dumps(mysql_document(NEW_DATABASE)), encoding="utf-8")
+    lifecycle = RecordingLifecycleLock([], failures=("acquire",))
+    calls = []
+
+    def forbidden(*_args, **_kwargs):
+        calls.append("io")
+        raise AssertionError
+
+    monkeypatch.setattr(command, "capture_local_document_snapshot", forbidden)
+    with pytest.raises(Exception, match="lifecycle"):
+        await command.recover_legacy(
+            config_path=config,
+            database=LEGACY_DATABASE,
+            confirm_cutover="RECOVER-PHASE7B",
+            inventory_reader=forbidden,
+            writer=forbidden,
+            lifecycle_lock=lifecycle,
+        )
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ("initial", "final", "rollback", "recovery"))
+async def test_release_failures_are_fixed_and_never_erase_primary(
+    workspace_tmp_path, stage,
+):
+    config = workspace_tmp_path / ".env.local.json"
+    config.write_text(
+        json.dumps(mysql_document(NEW_DATABASE if stage == "recovery" else LEGACY_DATABASE)),
+        encoding="utf-8",
+    )
+    failures = ("release",) if stage in ("initial", "recovery") else (None, "release")
+    lifecycle = RecordingLifecycleLock([], failures=failures)
+
+    async def smoke(_document):
+        if stage == "rollback":
+            raise RuntimeError(SECRET)
+
+    with pytest.raises(BaseException) as raised:
+        if stage == "recovery":
+            await command.recover_legacy(
+                config_path=config,
+                database=LEGACY_DATABASE,
+                confirm_cutover="RECOVER-PHASE7B",
+                inventory_reader=observe_inventories,
+                writer=write_json,
+                lifecycle_lock=lifecycle,
+            )
+        else:
+            await command.cutover(
+                receipt=PREPARATION_RECEIPT,
+                config_path=config,
+                confirm_database=NEW_DATABASE,
+                confirm_cutover="CUTOVER-PHASE7B",
+                smoke=smoke,
+                writer=write_json,
+                inventory_reader=observe_inventories,
+                lifecycle_lock=lifecycle,
+            )
+
+    leaves = exception_leaves(raised.value)
+    if stage == "rollback":
+        assert str(leaves[0]) == "product database cutover smoke failed"
+        assert str(leaves[1]) == "product database lifecycle lock cleanup failed"
+    else:
+        assert [str(leaf) for leaf in leaves] == [
+            "product database lifecycle lock cleanup failed"
+        ]
+    assert SECRET not in repr(raised.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stage", "expected_messages"),
+    (
+        ("initial", (
+            "product database cutover configuration is invalid",
+            "product database lifecycle lock cleanup failed",
+        )),
+        ("final", (
+            "product database cutover configuration is invalid",
+            "product database lifecycle lock cleanup failed",
+        )),
+        ("rollback", (
+            "product database cutover smoke failed",
+            "product database cutover rollback failed",
+            "product database lifecycle lock cleanup failed",
+        )),
+        ("recovery", (
+            "product database recovery failed",
+            "product database lifecycle lock cleanup failed",
+        )),
+    ),
+)
+async def test_stage_error_remains_first_when_same_scope_release_also_fails(
+    workspace_tmp_path, stage, expected_messages,
+):
+    config = workspace_tmp_path / ".env.local.json"
+    original = mysql_document(NEW_DATABASE if stage == "recovery" else LEGACY_DATABASE)
+    config.write_text(json.dumps(original), encoding="utf-8")
+    failures = ("release",) if stage in ("initial", "recovery") else (None, "release")
+    lifecycle = RecordingLifecycleLock([], failures=failures)
+    writes = 0
+
+    def writer(path, document, acl, expected_snapshot):
+        nonlocal writes
+        writes += 1
+        if stage == "initial" or (stage == "rollback" and writes == 2):
+            return None
+        return write_json(path, document, acl, expected_snapshot)
+
+    async def inventories(_document):
+        if stage == "recovery":
+            raise RuntimeError(SECRET)
+        return LEGACY_INVENTORY, NEW_INVENTORY
+
+    async def smoke(_document):
+        if stage == "final":
+            concurrent = {**original, "MYSQL_DB": NEW_DATABASE, "CORPUS_ROOT": "D:/winner"}
+            config.write_text(json.dumps(concurrent), encoding="utf-8")
+        if stage == "rollback":
+            raise RuntimeError(SECRET)
+
+    with pytest.raises(BaseException) as raised:
+        if stage == "recovery":
+            await command.recover_legacy(
+                config_path=config,
+                database=LEGACY_DATABASE,
+                confirm_cutover="RECOVER-PHASE7B",
+                inventory_reader=inventories,
+                writer=writer,
+                lifecycle_lock=lifecycle,
+            )
+        else:
+            await command.cutover(
+                receipt=PREPARATION_RECEIPT,
+                config_path=config,
+                confirm_database=NEW_DATABASE,
+                confirm_cutover="CUTOVER-PHASE7B",
+                smoke=smoke,
+                inventory_reader=inventories,
+                writer=writer,
+                lifecycle_lock=lifecycle,
+            )
+
+    assert tuple(str(leaf) for leaf in exception_leaves(raised.value)) == expected_messages
+    assert SECRET not in repr(raised.value)
+
+
+class FakeWindowsLifecycleAPI:
+    def __init__(self, *, wait_result=0, release_result=False, close_result=False):
+        self.handle = object()
+        self.wait_result = wait_result
+        self.release_result = release_result
+        self.close_result = close_result
+
+    def create(self, _name):
+        return self.handle
+
+    def wait(self, handle):
+        assert handle is self.handle
+        return self.wait_result
+
+    def release(self, handle):
+        assert handle is self.handle
+        return self.release_result
+
+    def close(self, handle):
+        assert handle is self.handle
+        return self.close_result
+
+
+@pytest.mark.asyncio
+async def test_real_lifecycle_cm_preserves_operation_then_release_close_categories(
+    workspace_tmp_path,
+):
+    config = workspace_tmp_path / ".env.local.json"
+    config.write_text(json.dumps(mysql_document()), encoding="utf-8")
+    api = FakeWindowsLifecycleAPI()
+
+    def lifecycle(path):
+        return lifecycle_service.product_database_lifecycle_lock(
+            path, platform_name="nt", windows_api=api
+        )
+
+    async def inventories(_document):
+        raise RuntimeError(SECRET)
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await command.cutover(
+            receipt=PREPARATION_RECEIPT,
+            config_path=config,
+            confirm_database=NEW_DATABASE,
+            confirm_cutover="CUTOVER-PHASE7B",
+            smoke=successful_smoke,
+            inventory_reader=inventories,
+            lifecycle_lock=lifecycle,
+        )
+
+    leaves = exception_leaves(raised.value)
+    assert [type(leaf) for leaf in leaves] == [
+        command.ProductDatabaseCutoverError,
+        lifecycle_service.ProductDatabaseLifecycleError,
+        lifecycle_service.ProductDatabaseLifecycleError,
+    ]
+    assert [leaf.args for leaf in leaves] == [
+        ("product database cutover evidence is invalid",),
+        ("product database lifecycle lock cleanup failed",),
+        ("product database lifecycle lock cleanup failed",),
+    ]
+    assert SECRET not in repr(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_real_lifecycle_cm_preserves_acquisition_then_close_categories(
+    workspace_tmp_path, monkeypatch,
+):
+    config = workspace_tmp_path / ".env.local.json"
+    config.write_text(json.dumps(mysql_document()), encoding="utf-8")
+    api = FakeWindowsLifecycleAPI(wait_result=0x00000102)
+    reads = 0
+
+    def lifecycle(path):
+        return lifecycle_service.product_database_lifecycle_lock(
+            path, platform_name="nt", windows_api=api
+        )
+
+    def forbidden(_path):
+        nonlocal reads
+        reads += 1
+        raise AssertionError
+
+    monkeypatch.setattr(command, "capture_local_document_snapshot", forbidden)
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await command.cutover(
+            receipt=PREPARATION_RECEIPT,
+            config_path=config,
+            confirm_database=NEW_DATABASE,
+            confirm_cutover="CUTOVER-PHASE7B",
+            smoke=successful_smoke,
+            inventory_reader=observe_inventories,
+            lifecycle_lock=lifecycle,
+        )
+
+    assert reads == 0
+    assert [leaf.args for leaf in exception_leaves(raised.value)] == [
+        ("product database lifecycle lock failed",),
+        ("product database lifecycle lock cleanup failed",),
+    ]
     assert SECRET not in repr(raised.value)
 
 
@@ -214,10 +695,36 @@ async def test_cutover_rejects_stale_or_mismatched_evidence_without_write(
             writer=lambda *_args: writes.append(True),
             inventory_reader=observe_inventories,
             acl_runner=object(),
-            idle_guard=no_product_process,
+            lifecycle_lock=open_lifecycle_lock,
         )
 
     assert writes == []
+
+
+@pytest.mark.asyncio
+async def test_cutover_validates_exact_receipt_before_lifecycle_lock(workspace_tmp_path):
+    config = workspace_tmp_path / ".env.local.json"
+    config.write_text(json.dumps(mysql_document()), encoding="utf-8")
+    forged = replace(PREPARATION_RECEIPT)
+    object.__setattr__(forged, "backup_filename", "../outside.sql")
+    calls = []
+
+    def forbidden_lock(_path):
+        calls.append("lock")
+        raise AssertionError
+
+    with pytest.raises(command.ProductDatabaseCutoverError, match="evidence"):
+        await command.cutover(
+            receipt=forged,
+            config_path=config,
+            confirm_database=NEW_DATABASE,
+            confirm_cutover="CUTOVER-PHASE7B",
+            smoke=successful_smoke,
+            inventory_reader=observe_inventories,
+            lifecycle_lock=forbidden_lock,
+        )
+
+    assert calls == []
 
 
 @pytest.mark.asyncio
@@ -243,7 +750,7 @@ async def test_cutover_rejects_wrong_or_invalid_current_config(workspace_tmp_pat
             writer=lambda *_args: writes.append(True),
             inventory_reader=observe_inventories,
             acl_runner=object(),
-            idle_guard=no_product_process,
+            lifecycle_lock=open_lifecycle_lock,
         )
     assert writes == []
 
@@ -254,12 +761,18 @@ async def test_smoke_failure_restores_exact_original_document(workspace_tmp_path
     original = mysql_document()
     config.write_text(json.dumps(original), encoding="utf-8")
     writes = []
+    events = []
+    lifecycle = RecordingLifecycleLock(events)
 
     def writer(path, document, acl, expected_snapshot):
+        assert lifecycle.active
         writes.append(dict(document))
+        events.append(("write", document["MYSQL_DB"]))
         return write_json(path, document, acl, expected_snapshot)
 
     async def fail_smoke(_document):
+        assert not lifecycle.active
+        events.append("smoke")
         raise RuntimeError(f"private {SECRET}")
 
     with pytest.raises(command.ProductDatabaseCutoverError, match="smoke") as raised:
@@ -272,10 +785,16 @@ async def test_smoke_failure_restores_exact_original_document(workspace_tmp_path
             writer=writer,
             inventory_reader=observe_inventories,
             acl_runner=object(),
-            idle_guard=no_product_process,
+            lifecycle_lock=lifecycle,
         )
 
     assert writes == [{**original, "MYSQL_DB": NEW_DATABASE}, original]
+    assert events == [
+        ("lock-attempt", config), "lock-enter", ("write", NEW_DATABASE), "lock-exit",
+        "smoke",
+        ("lock-attempt", config), "lock-enter", ("write", LEGACY_DATABASE), "lock-exit",
+    ]
+    assert lifecycle.scopes == 2
     assert json.loads(config.read_text(encoding="utf-8")) == original
     assert SECRET not in repr(raised.value)
 
@@ -309,7 +828,7 @@ async def test_smoke_and_rollback_failure_keeps_primary_first_and_sanitized(
             writer=writer,
             inventory_reader=observe_inventories,
             acl_runner=object(),
-            idle_guard=no_product_process,
+            lifecycle_lock=open_lifecycle_lock,
         )
 
     assert len(raised.value.exceptions) == 2
@@ -351,10 +870,93 @@ async def test_flow_control_propagates_after_one_successful_rollback(
             writer=writer,
             inventory_reader=observe_inventories,
             acl_runner=object(),
-            idle_guard=no_product_process,
+            lifecycle_lock=open_lifecycle_lock,
         )
 
     assert writes == [{**original, "MYSQL_DB": NEW_DATABASE}, original]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure_factory", "expected_type", "expected_args"),
+    (
+        (lambda: RuntimeError(SECRET), command.ProductDatabaseCutoverError,
+         ("product database cutover evidence is invalid",)),
+        (asyncio.CancelledError, asyncio.CancelledError, ()),
+        (KeyboardInterrupt, KeyboardInterrupt, ()),
+        (lambda: SystemExit(7), SystemExit, (7,)),
+        (lambda: SystemExit(True), SystemExit, ()),
+        (lambda: SystemExit(SECRET), SystemExit, ()),
+    ),
+)
+async def test_staged_operation_flow_control_precedes_lock_cleanup_exactly(
+    workspace_tmp_path, failure_factory, expected_type, expected_args,
+):
+    config = workspace_tmp_path / ".env.local.json"
+    config.write_text(json.dumps(mysql_document()), encoding="utf-8")
+    lifecycle = RecordingLifecycleLock([], failures=("release",))
+
+    async def inventories(_document):
+        raise failure_factory()
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await command.cutover(
+            receipt=PREPARATION_RECEIPT,
+            config_path=config,
+            confirm_database=NEW_DATABASE,
+            confirm_cutover="CUTOVER-PHASE7B",
+            smoke=successful_smoke,
+            inventory_reader=inventories,
+            lifecycle_lock=lifecycle,
+        )
+
+    assert len(raised.value.exceptions) == 2
+    primary, cleanup = raised.value.exceptions
+    assert type(primary) is expected_type
+    assert primary.args == expected_args
+    assert type(cleanup) is command.ProductDatabaseCutoverError
+    assert cleanup.args == ("product database lifecycle lock cleanup failed",)
+    assert SECRET not in repr(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_nested_operation_group_is_preserved_before_lock_cleanup(
+    workspace_tmp_path,
+):
+    config = workspace_tmp_path / ".env.local.json"
+    config.write_text(json.dumps(mysql_document()), encoding="utf-8")
+    lifecycle = RecordingLifecycleLock([], failures=("release",))
+
+    async def inventories(_document):
+        raise BaseExceptionGroup(
+            SECRET,
+            [RuntimeError(SECRET), BaseExceptionGroup(SECRET, [SystemExit(True)])],
+        )
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await command.cutover(
+            receipt=PREPARATION_RECEIPT,
+            config_path=config,
+            confirm_database=NEW_DATABASE,
+            confirm_cutover="CUTOVER-PHASE7B",
+            smoke=successful_smoke,
+            inventory_reader=inventories,
+            lifecycle_lock=lifecycle,
+        )
+
+    assert isinstance(raised.value.exceptions[0], BaseExceptionGroup)
+    assert [type(leaf) for leaf in exception_leaves(raised.value.exceptions[0])] == [
+        command.ProductDatabaseCutoverError,
+        SystemExit,
+    ]
+    assert [leaf.args for leaf in exception_leaves(raised.value.exceptions[0])] == [
+        ("product database cutover evidence is invalid",),
+        (),
+    ]
+    assert str(raised.value.exceptions[1]) == (
+        "product database lifecycle lock cleanup failed"
+    )
+    assert SECRET not in repr(raised.value)
 
 
 @pytest.mark.asyncio
@@ -495,7 +1097,7 @@ async def test_inventory_time_config_edit_is_not_overwritten_by_cutover(workspac
             smoke=successful_smoke,
             inventory_reader=inventories,
             acl_runner=lambda _path: None,
-            idle_guard=no_product_process,
+            lifecycle_lock=open_lifecycle_lock,
         )
 
     assert json.loads(config.read_text(encoding="utf-8")) == concurrent
@@ -521,7 +1123,7 @@ async def test_smoke_time_config_edit_is_not_overwritten_by_rollback(workspace_t
             smoke=smoke,
             inventory_reader=observe_inventories,
             acl_runner=lambda _path: None,
-            idle_guard=no_product_process,
+            lifecycle_lock=open_lifecycle_lock,
         )
 
     assert isinstance(raised.value.exceptions[0], command.ProductDatabaseCutoverError)
@@ -554,7 +1156,7 @@ async def test_successful_smoke_config_edit_prevents_legacy_retained_result(
             smoke=smoke,
             inventory_reader=observe_inventories,
             acl_runner=lambda _path: None,
-            idle_guard=no_product_process,
+            lifecycle_lock=open_lifecycle_lock,
         )
 
     assert json.loads(config.read_text(encoding="utf-8")) == concurrent
@@ -578,7 +1180,7 @@ async def test_inventory_time_config_edit_is_not_overwritten_by_recovery(workspa
             confirm_cutover="RECOVER-PHASE7B",
             inventory_reader=inventories,
             acl_runner=lambda _path: None,
-            idle_guard=no_product_process,
+            lifecycle_lock=open_lifecycle_lock,
         )
 
     assert json.loads(config.read_text(encoding="utf-8")) == concurrent
@@ -602,7 +1204,7 @@ async def test_recovery_changes_only_database_and_never_exposes_drop_authority(w
         writer=write_json,
         inventory_reader=inventories,
         acl_runner=object(),
-        idle_guard=no_product_process,
+        lifecycle_lock=open_lifecycle_lock,
     )
 
     assert result.state == ReadinessState.LEGACY_RETAINED.value
@@ -612,6 +1214,40 @@ async def test_recovery_changes_only_database_and_never_exposes_drop_authority(w
     }
     assert observed == [original]
     assert "drop" not in command.recover_legacy.__code__.co_names
+
+
+@pytest.mark.asyncio
+async def test_recovery_uses_one_exact_nondeferred_lock_scope(workspace_tmp_path):
+    config = workspace_tmp_path / ".env.local.json"
+    config.write_text(json.dumps(mysql_document(NEW_DATABASE)), encoding="utf-8")
+    events = []
+    lifecycle = RecordingLifecycleLock(events)
+
+    async def inventories(_document):
+        assert lifecycle.active
+        events.append("inventory")
+        return LEGACY_INVENTORY, NEW_INVENTORY
+
+    def writer(path, document, acl, expected_snapshot):
+        assert lifecycle.active
+        events.append(("write", document["MYSQL_DB"]))
+        return write_json(path, document, acl, expected_snapshot)
+
+    result = await command.recover_legacy(
+        config_path=config,
+        database=LEGACY_DATABASE,
+        confirm_cutover="RECOVER-PHASE7B",
+        inventory_reader=inventories,
+        writer=writer,
+        lifecycle_lock=lifecycle,
+    )
+
+    assert result.state == ReadinessState.LEGACY_RETAINED.value
+    assert events == [
+        ("lock-attempt", config), "lock-enter", "inventory",
+        ("write", LEGACY_DATABASE), "lock-exit",
+    ]
+    assert lifecycle.scopes == 1
 
 
 def test_cli_recovery_requires_exact_closed_action_and_execute():
@@ -688,7 +1324,7 @@ async def test_cli_rejects_inexact_approval_before_every_io(
             inventory_reader=forbidden,
             smoke=forbidden,
             writer=forbidden,
-            idle_guard=forbidden,
+            lifecycle_lock=forbidden,
             output=forbidden,
         )
 
@@ -726,7 +1362,7 @@ async def test_cli_requires_exact_preparation_receipt_before_backup_or_other_io(
             inventory_reader=forbidden,
             smoke=forbidden,
             writer=forbidden,
-            idle_guard=forbidden,
+            lifecycle_lock=forbidden,
             output=forbidden,
         )
 
@@ -768,7 +1404,7 @@ async def test_cli_rejects_exact_receipt_forged_with_unsafe_backup_authority(
             inventory_reader=forbidden,
             smoke=forbidden,
             writer=forbidden,
-            idle_guard=forbidden,
+            lifecycle_lock=forbidden,
             output=forbidden,
         )
 
@@ -826,7 +1462,7 @@ async def test_cli_uses_trusted_class_validation_before_real_backup_verification
             inventory_reader=lambda *_args: pytest.fail("inventory must not run"),
             smoke=lambda *_args: pytest.fail("smoke must not run"),
             writer=forbidden_write,
-            idle_guard=lambda: pytest.fail("idle guard must not run"),
+            lifecycle_lock=lambda _path: pytest.fail("lifecycle lock must not run"),
             output=lambda _value: pytest.fail("output must not run"),
         )
 
@@ -911,7 +1547,7 @@ async def test_cli_backup_verifier_failure_is_fixed_and_blocks_other_io(
             inventory_reader=forbidden,
             smoke=forbidden,
             writer=forbidden,
-            idle_guard=forbidden,
+            lifecycle_lock=forbidden,
             output=forbidden,
         )
 
@@ -947,8 +1583,11 @@ async def test_execute_cli_loads_exact_receipt_and_runs_guarded_cutover(workspac
         events.append(("inventory", document["MYSQL_DB"]))
         return LEGACY_INVENTORY, NEW_INVENTORY
 
-    def idle():
-        events.append("idle")
+    @contextmanager
+    def idle(_path):
+        events.append("lock-enter")
+        yield object()
+        events.append("lock-exit")
 
     def writer(path, document, acl, expected_snapshot):
         events.append(("write", document["MYSQL_DB"], acl))
@@ -971,7 +1610,7 @@ async def test_execute_cli_loads_exact_receipt_and_runs_guarded_cutover(workspac
         smoke=smoke,
         writer=writer,
         acl_runner="private-acl",
-        idle_guard=idle,
+        lifecycle_lock=idle,
         output=output.append,
     )
 
@@ -984,10 +1623,13 @@ async def test_execute_cli_loads_exact_receipt_and_runs_guarded_cutover(workspac
             PREPARATION_RECEIPT.backup_sha256,
             PREPARATION_RECEIPT.backup_byte_length,
         ),
+        "lock-enter",
         ("inventory", LEGACY_DATABASE),
-        "idle",
         ("write", NEW_DATABASE, "private-acl"),
+        "lock-exit",
         ("smoke", NEW_DATABASE),
+        "lock-enter",
+        "lock-exit",
     ]
     assert output == ["state=legacy_retained"]
 
@@ -1014,7 +1656,7 @@ async def test_execute_cli_recovery_is_receipt_free(workspace_tmp_path):
         inventory_reader=observe_inventories,
         writer=write_json,
         acl_runner=object(),
-        idle_guard=no_product_process,
+        lifecycle_lock=open_lifecycle_lock,
         output=output.append,
     )
 
@@ -1053,3 +1695,17 @@ def test_module_help_uses_no_real_database_or_configuration():
     assert result.returncode == 0
     assert "usage:" in result.stdout
     assert result.stderr == ""
+
+
+def test_cutover_source_has_no_process_enumeration_or_idle_guard():
+    source = Path(command.__file__).read_text(encoding="utf-8")
+    for forbidden in (
+        "idle_guard",
+        "assert_no_product_application_process",
+        "_PROCESS_ERROR",
+        "Get-CimInstance",
+        "Win32_Process",
+        "subprocess",
+    ):
+        assert forbidden not in source
+    assert "product_database_lifecycle_lock" in source
