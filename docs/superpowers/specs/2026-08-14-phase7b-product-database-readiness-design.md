@@ -252,6 +252,43 @@ rollback failure is retained as cleanup evidence. Recovery uses the same acquire
 rule. Repository-supported product startup and administrative cutover are the lock participants;
 uncooperative direct filesystem editors remain governed by the existing exact CAS pre/post checks.
 
+#### Locked startup configuration snapshot amendment
+
+The lifecycle lock must precede configuration **observation**, not only database and background
+service work. Importing `backend.main`, `backend.database`, routers, services, or scheduler modules
+therefore performs no repository-local configuration read and captures no MySQL, corpus-root, or
+scheduler value. `LOCAL_CONFIG_PATH` may remain an import-time path constant because deriving that
+path performs no configuration I/O.
+
+After startup acquires the lifecycle lock, it reads the local document and environment exactly once
+into one closed, immutable runtime configuration snapshot. The snapshot contains the validated
+MySQL pool fields, optional discovery and managed corpus roots, and the market-scheduler enabled
+flag. Startup installs that exact snapshot before schema verification, reconciliation, pool
+creation, route-owned service construction, or scheduler construction. Every backend consumer uses
+the installed snapshot; it must not retain an earlier imported value or reread the document during
+the same lifespan.
+
+The process owns at most one installed snapshot. Installation fails closed if a snapshot is already
+active. Access before installation or after clearing fails with a fixed secret-free configuration
+error. Shutdown first drains all application resources and closes the database pool, then clears
+the snapshot, and only then releases the lifecycle lock. Startup failure follows the same ordering:
+all resources acquired after installation are cleaned, the snapshot is cleared exactly once, and
+the lock is released last. Ordinary and flow-control error precedence continues to use the shared
+lifecycle boundary; no raw configuration value, path content, credential, or exception metadata is
+published.
+
+Administrative scripts remain explicit readers: their existing load functions may read the local
+document when the command invokes them, but importing `backend.config` itself is I/O-free. The
+backend database pool uses the installed snapshot rather than those command helpers. Request-time
+corpus and application-settings paths, creative-asset factories, startup reconciliation, and the
+market scheduler all resolve from the same installed snapshot.
+
+This closes the deterministic stale-import race: if cutover owns the lifecycle lock while a backend
+process imports its modules, the import observes no database selection. The backend waits for the
+lock and only then loads the post-cutover document. Conversely, while a backend holds the lock its
+installed snapshot remains authoritative until complete shutdown, so a repository-supported
+cutover cannot change the document underneath the running process.
+
 The cutover preserves every existing configuration field and changes only `MYSQL_DB`. It writes a
 same-directory private temporary file, flushes and fsyncs it, applies current-user-only ACL, and
 atomically replaces `.env.local.json`.
@@ -323,6 +360,11 @@ Unit tests cover:
 - configuration atomic switch, rollback, crash recovery, and exact-field preservation;
 - lifecycle-lock acquisition, abandoned/contended/error states, backend whole-lifespan ownership,
   second-instance rejection, release/close ordering, and sanitized flow control;
+- import-time zero-configuration-I/O, lock-before-snapshot ordering, one immutable snapshot per
+  lifespan, exact consumer consistency, and clear-before-lock-release on every startup/shutdown
+  outcome;
+- a deterministic cutover/import race in which backend module import observes no database and the
+  later locked startup loads only the post-cutover configuration;
 - Windows named-mutex and POSIX advisory-lock implementations producing the same fail-closed
   participant semantics without storing paths, credentials, or business data;
 - cutover release-before-smoke, reacquire-before-success, reacquire-before-rollback, and a competing
@@ -391,6 +433,8 @@ Phase 7B is accepted only when:
 - configuration cutover performs no receipt/backup/config/database I/O before the second exact user
   approval, is mutually exclusive with a running product backend, and can be rolled back only while
   holding the same lifecycle lock;
+- backend module import performs no repository-local configuration I/O, and each backend lifespan
+  loads exactly one immutable runtime configuration snapshot only after acquiring that lock;
 - all disposable databases and task-owned processes/files except the published backup are cleaned;
 - full verification and both final reviews have no active Critical or Important findings;
 - `novel_creator` remains available until the separately approved post-Phase-7C retirement task.
