@@ -137,23 +137,60 @@ def _fixed(message: str) -> ProductDatabaseLifecycleError:
     return ProductDatabaseLifecycleError(message)
 
 
+def _is_exception_kind(
+    error: BaseException,
+    kinds: tuple[type[BaseException], ...],
+) -> bool:
+    actual_type = type(error)
+    return any(issubclass(actual_type, kind) for kind in kinds)
+
+
+def _exception_group_children(
+    error: BaseExceptionGroup,
+) -> tuple[BaseException, ...] | None:
+    try:
+        children = BaseExceptionGroup.exceptions.__get__(
+            error,
+            BaseExceptionGroup,
+        )
+    except BaseException:
+        return None
+    if (
+        type(children) is not tuple
+        or not children
+        or not all(issubclass(type(child), BaseException) for child in children)
+    ):
+        return None
+    return children
+
+
 def _clean_flow_control(error: BaseException) -> BaseException:
-    if isinstance(error, asyncio.CancelledError):
+    if _is_exception_kind(error, (asyncio.CancelledError,)):
         return asyncio.CancelledError()
-    if isinstance(error, KeyboardInterrupt):
+    if _is_exception_kind(error, (KeyboardInterrupt,)):
         return KeyboardInterrupt()
-    if isinstance(error, SystemExit):
-        return SystemExit(error.code) if type(error.code) is int else SystemExit()
+    if _is_exception_kind(error, (SystemExit,)):
+        if type(error) is SystemExit:
+            code = SystemExit.code.__get__(error, SystemExit)
+            if type(code) is int:
+                return SystemExit(code)
+        return SystemExit()
     raise TypeError
 
 
 def _sanitize(error: BaseException, message: str) -> BaseException:
-    if isinstance(error, BaseExceptionGroup):
+    if _is_exception_kind(error, (BaseExceptionGroup,)):
+        children = _exception_group_children(error)
+        if children is None:
+            return _fixed(message)
         return BaseExceptionGroup(
             message,
-            [_sanitize(child, message) for child in error.exceptions],
+            [_sanitize(child, message) for child in children],
         )
-    if isinstance(error, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+    if _is_exception_kind(
+        error,
+        (asyncio.CancelledError, KeyboardInterrupt, SystemExit),
+    ):
         return _clean_flow_control(error)
     return _fixed(message)
 
@@ -164,9 +201,11 @@ def _strip_metadata(error: BaseException) -> None:
     error.__suppress_context__ = True
     if hasattr(error, "__notes__"):
         del error.__notes__
-    if isinstance(error, BaseExceptionGroup):
-        for child in error.exceptions:
-            _strip_metadata(child)
+    if _is_exception_kind(error, (BaseExceptionGroup,)):
+        children = _exception_group_children(error)
+        if children is not None:
+            for child in children:
+                _strip_metadata(child)
 
 
 def _raise_public(error: BaseException) -> None:
@@ -315,7 +354,7 @@ def _validate_stable_path(
 
 
 @contextmanager
-def product_database_lifecycle_lock(
+def _product_database_lifecycle_lock_scope(
     config_path: Path,
     *,
     platform_name: str = os.name,
@@ -415,6 +454,57 @@ def product_database_lifecycle_lock(
         if not deferred:
             cleanup.extend(cleanup_resource())
         _raise_failures(primary, cleanup)
+
+
+class _ProductDatabaseLifecycleLockBoundary:
+    """Keep untrusted body exceptions out of contextlib's dynamic type checks."""
+
+    def __init__(self, scope: object) -> None:
+        self._enter = getattr(scope, "__enter__")
+        self._exit = getattr(scope, "__exit__")
+
+    def __enter__(self) -> ProductDatabaseLifecycleLease:
+        return self._enter()
+
+    def __exit__(
+        self,
+        exception_type: type[BaseException] | None,
+        error: BaseException | None,
+        traceback: object,
+    ) -> bool:
+        del exception_type, traceback
+        cleanup: list[BaseException] = []
+        try:
+            self._exit(None, None, None)
+        except BaseException as cleanup_error:
+            if _is_exception_kind(cleanup_error, (BaseExceptionGroup,)):
+                children = _exception_group_children(cleanup_error)
+                if children is not None:
+                    cleanup.extend(children)
+                else:
+                    cleanup.append(cleanup_error)
+            else:
+                cleanup.append(cleanup_error)
+        _raise_failures(error, cleanup)
+        return False
+
+
+def product_database_lifecycle_lock(
+    config_path: Path,
+    *,
+    platform_name: str = os.name,
+    windows_api: object | None = None,
+    posix_api: object | None = None,
+) -> _ProductDatabaseLifecycleLockBoundary:
+    """Build a lifecycle-lock boundary that never inspects body attributes."""
+
+    scope = _product_database_lifecycle_lock_scope(
+        config_path,
+        platform_name=platform_name,
+        windows_api=windows_api,
+        posix_api=posix_api,
+    )
+    return _ProductDatabaseLifecycleLockBoundary(scope)
 
 
 __all__ = [

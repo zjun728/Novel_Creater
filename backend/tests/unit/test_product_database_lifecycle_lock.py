@@ -108,6 +108,70 @@ class FutureClassSpoof:
         return None
 
 
+class HostileSystemExit(SystemExit):
+    def __init__(self) -> None:
+        super().__init__(7)
+        self.accesses: list[str] = []
+
+    def __getattribute__(self, name: str):
+        if name in ("__class__", "args", "code"):
+            accesses = object.__getattribute__(self, "accesses")
+            accesses.append(name)
+            if name == "__class__":
+                return SystemExit
+            if name == "args":
+                return BaseException.args.__get__(self, BaseException)
+            return SystemExit.code.__get__(self, SystemExit)
+        return super().__getattribute__(name)
+
+    def __str__(self) -> str:
+        accesses = object.__getattribute__(self, "accesses")
+        accesses.append("__str__")
+        raise RuntimeError(SECRET)
+
+
+class HostileExceptionGroup(BaseExceptionGroup):
+    def __new__(cls):
+        instance = super().__new__(
+            cls,
+            SECRET,
+            [RuntimeError(SECRET), SystemExit(11)],
+        )
+        instance.accesses = []
+        return instance
+
+    def __getattribute__(self, name: str):
+        if name in ("__class__", "args", "exceptions"):
+            accesses = object.__getattribute__(self, "accesses")
+            accesses.append(name)
+            if name == "__class__":
+                return HostileExceptionGroup
+            if name == "args":
+                return BaseException.args.__get__(self, BaseException)
+            return BaseExceptionGroup.exceptions.__get__(self, BaseExceptionGroup)
+        return super().__getattribute__(name)
+
+    def __str__(self) -> str:
+        accesses = object.__getattribute__(self, "accesses")
+        accesses.append("__str__")
+        raise RuntimeError(SECRET)
+
+
+class ClassSpoofRuntimeError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__(SECRET)
+        self.accesses: list[str] = []
+
+    @property
+    def __class__(self):
+        self.accesses.append("__class__")
+        raise ValueError(SECRET)
+
+    def __str__(self) -> str:
+        self.accesses.append("__str__")
+        raise RuntimeError(SECRET)
+
+
 class FakePosixAPI:
     def __init__(
         self,
@@ -1085,6 +1149,61 @@ def test_body_exception_groups_are_recursively_rebuilt_without_secrets(
     assert leaves[3].args == (9,)
     _assert_clean_tree(raised.value)
     assert SECRET not in "".join(traceback.format_exception(raised.value))
+
+
+def test_body_group_sanitizer_uses_builtin_children_without_dynamic_access(
+    tmp_path: Path,
+):
+    group = HostileExceptionGroup()
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        with lifecycle.product_database_lifecycle_lock(
+            tmp_path / "config.json",
+            platform_name="nt",
+            windows_api=FakeWindowsAPI(),
+        ):
+            raise group
+
+    assert object.__getattribute__(group, "accesses") == []
+    assert [type(leaf) for leaf in _leaves(raised.value)] == [
+        lifecycle.ProductDatabaseLifecycleError,
+        SystemExit,
+    ]
+    assert _leaves(raised.value)[1].args == (11,)
+    _assert_clean_tree(raised.value)
+
+
+def test_body_system_exit_subclass_is_rebuilt_without_dynamic_access(tmp_path: Path):
+    error = HostileSystemExit()
+
+    with pytest.raises(SystemExit) as raised:
+        with lifecycle.product_database_lifecycle_lock(
+            tmp_path / "config.json",
+            platform_name="nt",
+            windows_api=FakeWindowsAPI(),
+        ):
+            raise error
+
+    assert object.__getattribute__(error, "accesses") == []
+    assert type(raised.value) is SystemExit
+    assert raised.value.args == ()
+    _assert_clean_tree(raised.value)
+
+
+def test_body_class_spoof_is_fixed_without_dynamic_access(tmp_path: Path):
+    error = ClassSpoofRuntimeError()
+
+    with pytest.raises(lifecycle.ProductDatabaseLifecycleError) as raised:
+        with lifecycle.product_database_lifecycle_lock(
+            tmp_path / "config.json",
+            platform_name="nt",
+            windows_api=FakeWindowsAPI(),
+        ):
+            raise error
+
+    assert object.__getattribute__(error, "accesses") == []
+    assert raised.value.args == (LOCK_ERROR,)
+    _assert_clean_tree(raised.value)
 
 
 @pytest.mark.parametrize("platform_name", ("nt", "posix"))
