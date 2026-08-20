@@ -1,8 +1,8 @@
 import asyncio
 from collections.abc import Mapping
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 import json
-from types import TracebackType
+from types import SimpleNamespace, TracebackType
 
 import httpx
 import pytest
@@ -139,6 +139,26 @@ class ControlledShutdownTransfer:
                 else None
             )
         return self.task
+
+
+class SuccessfulTransferDuck:
+    @staticmethod
+    def done():
+        return True
+
+    @staticmethod
+    def cancelled():
+        return False
+
+    @staticmethod
+    def result():
+        return None
+
+
+class FutureClassSpoof(SuccessfulTransferDuck):
+    @property
+    def __class__(self):
+        return asyncio.Future
 
 
 def _assert_no_sensitive_error_graph(
@@ -419,6 +439,41 @@ async def test_lifespan_lock_acquisition_failure_runs_no_application_actions(
     _assert_no_sensitive_error_graph(caught.value, ())
 
 
+@pytest.mark.parametrize(
+    "authority_factory",
+    (SuccessfulTransferDuck, FutureClassSpoof),
+)
+@pytest.mark.asyncio
+async def test_lifespan_rejects_spoofed_previous_transfer_before_app_actions(
+    monkeypatch,
+    authority_factory,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    lifecycle = ExclusiveRecordingLifecycleLockAPI(events)
+    install_exclusive_lifecycle_lock(monkeypatch, lifecycle)
+    main.app.state.market_scheduler_shutdown_transfer = authority_factory()
+    context = main.lifespan(main.app)
+    caught = None
+
+    try:
+        await context.__aenter__()
+    except BaseException as error:
+        caught = error
+    else:
+        await context.__aexit__(None, None, None)
+
+    assert isinstance(caught, lifecycle_lock.ProductDatabaseLifecycleError)
+    assert caught.args == ("product database lifecycle lock failed",)
+    assert events == [
+        "lock-attempt",
+        "lock-enter",
+        "lock-exit",
+        "lock-close",
+    ]
+    assert not lifecycle.active
+    _assert_no_sensitive_error_graph(caught, ())
+
+
 @pytest.mark.asyncio
 async def test_lifespan_surfaces_safe_lock_cleanup_failure_after_success(
     monkeypatch,
@@ -593,6 +648,144 @@ async def test_lifespan_retains_lock_through_draft_shutdown_transfer(monkeypatch
     assert events.index("close") < events.index("lock-exit")
     assert events.count("lock-exit") == 1
     assert not lifecycle.active
+
+
+@pytest.mark.asyncio
+async def test_lifespan_invalid_final_transfer_exits_lock_once_with_safe_error(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    lifecycle = ExclusiveRecordingLifecycleLockAPI(events)
+    install_exclusive_lifecycle_lock(monkeypatch, lifecycle)
+
+    class InvalidFinalTransfer:
+        @staticmethod
+        def start_pool_close(_close_pool_callback):
+            return FutureClassSpoof()
+
+    class PendingDraftRegistry(FakeDraftOperationTaskRegistry):
+        async def aclose(self):
+            raise draft_operation_tasks.DraftOperationTasksDrainPending(
+                InvalidFinalTransfer()
+            )
+
+    monkeypatch.setattr(
+        main.chapter_sessions,
+        "draft_operation_task_registry",
+        PendingDraftRegistry(events),
+    )
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+
+    with pytest.raises(BaseException) as caught:
+        await context.__aexit__(None, None, None)
+
+    assert isinstance(
+        caught.value,
+        (
+            lifecycle_lock.ProductDatabaseLifecycleError,
+            BaseExceptionGroup,
+        ),
+    )
+    _assert_no_sensitive_error_graph(caught.value, ())
+    assert events.count("lock-exit") == 1
+    assert events.count("lock-close") == 1
+    assert not lifecycle.active
+
+
+@pytest.mark.asyncio
+async def test_lifespan_rejects_distinct_final_transfers_before_deferral(
+    monkeypatch,
+):
+    events = []
+    lifecycle = ExclusiveRecordingLifecycleLockAPI(events)
+    install_exclusive_lifecycle_lock(monkeypatch, lifecycle)
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            draft_operation_shutdown_transfer=None,
+            market_scheduler_shutdown_transfer=None,
+        )
+    )
+    loop = asyncio.get_running_loop()
+    draft_transfer = loop.create_future()
+    market_transfer = loop.create_future()
+    draft_transfer.set_result(None)
+    market_transfer.set_result(None)
+
+    @asynccontextmanager
+    async def application_context(_app):
+        yield
+        app.state.draft_operation_shutdown_transfer = draft_transfer
+        app.state.market_scheduler_shutdown_transfer = market_transfer
+
+    monkeypatch.setattr(main, "_application_lifespan", application_context)
+    context = main.lifespan(app)
+    await context.__aenter__()
+
+    with pytest.raises(lifecycle_lock.ProductDatabaseLifecycleError) as caught:
+        await context.__aexit__(None, None, None)
+
+    assert caught.value.args == ("product database lifecycle lock failed",)
+    assert events == [
+        "lock-attempt",
+        "lock-enter",
+        "lock-exit",
+        "lock-close",
+    ]
+    assert not lifecycle.active
+    _assert_no_sensitive_error_graph(caught.value, ())
+
+
+@pytest.mark.asyncio
+async def test_lifespan_publication_failure_cancels_deferral_and_exits_lock_once(
+    monkeypatch,
+):
+    events = []
+    lifecycle = ExclusiveRecordingLifecycleLockAPI(events)
+    install_exclusive_lifecycle_lock(monkeypatch, lifecycle)
+
+    class RejectingState:
+        draft_operation_shutdown_transfer = None
+        market_scheduler_shutdown_transfer = None
+        reject_publication = False
+
+        def __setattr__(self, name, value):
+            if (
+                self.reject_publication
+                and name == "draft_operation_shutdown_transfer"
+                and type(value) is asyncio.Future
+            ):
+                raise RuntimeError("PRIVATE_PUBLICATION_FAILURE")
+            object.__setattr__(self, name, value)
+
+    state = RejectingState()
+    app = SimpleNamespace(state=state)
+    transfer = asyncio.get_running_loop().create_future()
+    transfer.set_result(None)
+
+    @asynccontextmanager
+    async def application_context(_app):
+        yield
+        state.draft_operation_shutdown_transfer = transfer
+        state.reject_publication = True
+
+    monkeypatch.setattr(main, "_application_lifespan", application_context)
+    context = main.lifespan(app)
+    await context.__aenter__()
+
+    with pytest.raises(lifecycle_lock.ProductDatabaseLifecycleError) as caught:
+        await context.__aexit__(None, None, None)
+
+    assert caught.value.args == ("product database lifecycle lock failed",)
+    assert "PRIVATE_PUBLICATION_FAILURE" not in repr(caught.value)
+    assert events == [
+        "lock-attempt",
+        "lock-enter",
+        "lock-exit",
+        "lock-close",
+    ]
+    assert not lifecycle.active
+    _assert_no_sensitive_error_graph(caught.value, ())
 
 
 @pytest.mark.parametrize(
@@ -2502,20 +2695,9 @@ async def test_lifespan_deduplicates_same_successful_draft_and_market_transfer(
         registry,
     )
 
-    class SuccessfulTransfer:
-        def __init__(self):
-            self.result_calls = 0
-
-        def done(self):
-            return True
-
-        def cancelled(self):
-            return False
-
-        def result(self):
-            self.result_calls += 1
-
-    previous_transfer = SuccessfulTransfer()
+    previous_transfer = asyncio.get_running_loop().create_future()
+    previous_transfer.set_result(None)
+    assert type(previous_transfer) is asyncio.Future
     main.app.state.draft_operation_shutdown_transfer = previous_transfer
     main.app.state.market_scheduler_shutdown_transfer = previous_transfer
     context = main.lifespan(main.app)
@@ -2523,7 +2705,7 @@ async def test_lifespan_deduplicates_same_successful_draft_and_market_transfer(
     await context.__aenter__()
     await context.__aexit__(None, None, None)
 
-    assert previous_transfer.result_calls == 1
+    assert previous_transfer.result() is None
 
 
 @pytest.mark.asyncio

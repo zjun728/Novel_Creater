@@ -123,10 +123,13 @@ def _previous_shutdown_transfer_failed(app: FastAPI) -> bool:
     )
     transfers = []
     for transfer in (draft_transfer, market_transfer):
-        if transfer is not None and not any(
+        if transfer is None or any(
             existing is transfer for existing in transfers
         ):
-            transfers.append(transfer)
+            continue
+        if type(transfer) not in (asyncio.Future, asyncio.Task):
+            return True
+        transfers.append(transfer)
 
     failed = False
     for transfer in transfers:
@@ -150,6 +153,18 @@ def _previous_shutdown_transfer_failed(app: FastAPI) -> bool:
         if not registry_closed:
             failed = True
     return failed
+
+
+def _combine_lifespan_errors(
+    primary: BaseException | None,
+    secondary: BaseException,
+) -> BaseException:
+    if primary is None:
+        return secondary
+    return BaseExceptionGroup(
+        "application lifespan failed",
+        [primary, secondary],
+    )
 
 
 @asynccontextmanager
@@ -394,89 +409,123 @@ async def _application_lifespan(app: FastAPI):
 async def lifespan(app: FastAPI):
     lock_context = product_database_lifecycle_lock(LOCAL_CONFIG_PATH)
     lock_lease = lock_context.__enter__()
-    previous_draft_transfer = getattr(
-        app.state,
-        "draft_operation_shutdown_transfer",
-        None,
-    )
-    previous_market_transfer = getattr(
-        app.state,
-        "market_scheduler_shutdown_transfer",
-        None,
-    )
-    application_context = _application_lifespan(app)
+    lock_owned = True
     application_error = None
     body_error = None
     try:
-        await application_context.__aenter__()
-    except BaseException as error:
-        application_error = error
-    else:
         try:
-            yield
-        except BaseException as error:
-            body_error = error
-        try:
-            application_suppressed = await application_context.__aexit__(
-                type(body_error) if body_error is not None else None,
-                body_error,
-                body_error.__traceback__ if body_error is not None else None,
+            previous_draft_transfer = getattr(
+                app.state,
+                "draft_operation_shutdown_transfer",
+                None,
             )
+            previous_market_transfer = getattr(
+                app.state,
+                "market_scheduler_shutdown_transfer",
+                None,
+            )
+            application_context = _application_lifespan(app)
+            try:
+                await application_context.__aenter__()
+            except BaseException as error:
+                application_error = error
+            else:
+                try:
+                    yield
+                except BaseException as error:
+                    body_error = error
+                try:
+                    application_suppressed = await application_context.__aexit__(
+                        type(body_error) if body_error is not None else None,
+                        body_error,
+                        body_error.__traceback__
+                        if body_error is not None
+                        else None,
+                    )
+                except BaseException as error:
+                    application_error = error
+                else:
+                    if body_error is not None and not application_suppressed:
+                        application_error = body_error
+
+            draft_transfer = getattr(
+                app.state,
+                "draft_operation_shutdown_transfer",
+                None,
+            )
+            market_transfer = getattr(
+                app.state,
+                "market_scheduler_shutdown_transfer",
+                None,
+            )
+            publish_draft = (
+                draft_transfer is not None
+                and draft_transfer is not previous_draft_transfer
+            )
+            publish_market = (
+                market_transfer is not None
+                and market_transfer is not previous_market_transfer
+            )
+            transfers = []
+            for transfer in (
+                draft_transfer if publish_draft else None,
+                market_transfer if publish_market else None,
+            ):
+                if transfer is None or any(
+                    existing is transfer for existing in transfers
+                ):
+                    continue
+                if type(transfer) not in (asyncio.Future, asyncio.Task):
+                    raise TypeError
+                transfers.append(transfer)
+            if len(transfers) > 1:
+                raise ValueError
+            if transfers:
+                completion = lock_lease.defer_until(transfers[0])
+                try:
+                    if publish_draft:
+                        app.state.draft_operation_shutdown_transfer = completion
+                    if publish_market:
+                        app.state.market_scheduler_shutdown_transfer = completion
+                except BaseException:
+                    completion.cancel()
+                    raise
         except BaseException as error:
-            application_error = error
-        else:
-            if body_error is not None and not application_suppressed:
-                application_error = body_error
+            application_error = _combine_lifespan_errors(
+                application_error,
+                error,
+            )
 
-    draft_transfer = getattr(
-        app.state,
-        "draft_operation_shutdown_transfer",
-        None,
-    )
-    market_transfer = getattr(
-        app.state,
-        "market_scheduler_shutdown_transfer",
-        None,
-    )
-    publish_draft = (
-        draft_transfer is not None
-        and draft_transfer is not previous_draft_transfer
-    )
-    publish_market = (
-        market_transfer is not None
-        and market_transfer is not previous_market_transfer
-    )
-    transfer = (
-        market_transfer
-        if publish_market
-        else draft_transfer
-        if publish_draft
-        else None
-    )
-    if transfer is not None:
-        completion = lock_lease.defer_until(transfer)
-        if publish_draft:
-            app.state.draft_operation_shutdown_transfer = completion
-        if publish_market:
-            app.state.market_scheduler_shutdown_transfer = completion
+        if application_error is None:
+            lock_owned = False
+            lock_context.__exit__(None, None, None)
+            return
 
-    if application_error is None:
-        lock_context.__exit__(None, None, None)
-        return
-
-    try:
-        lock_context.__exit__(
-            type(application_error),
-            application_error,
-            application_error.__traceback__,
-        )
-    except BaseException:
-        application_error = None
-        body_error = None
-        application_context = None
-        lock_context = None
-        raise
-    raise application_error
+        try:
+            lock_owned = False
+            lock_context.__exit__(
+                type(application_error),
+                application_error,
+                application_error.__traceback__,
+            )
+        except BaseException:
+            application_error = None
+            body_error = None
+            application_context = None
+            lock_context = None
+            raise
+        raise application_error
+    finally:
+        if lock_owned:
+            lock_owned = False
+            if application_error is None:
+                lock_context.__exit__(None, None, None)
+            else:
+                lock_context.__exit__(
+                    type(application_error),
+                    application_error,
+                    application_error.__traceback__,
+                )
 
 
 app = FastAPI(title="Novel Creator API", version="1.0", lifespan=lifespan)

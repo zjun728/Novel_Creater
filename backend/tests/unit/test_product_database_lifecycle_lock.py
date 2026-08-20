@@ -84,6 +84,30 @@ class FakeWindowsAPI:
         return self.close_result
 
 
+class DiscardingFuture(asyncio.Future):
+    def add_done_callback(self, _callback, *, context=None):
+        return None
+
+
+class RaisingFuture(asyncio.Future):
+    def add_done_callback(self, _callback, *, context=None):
+        raise RuntimeError(SECRET)
+
+
+class FutureClassSpoof:
+    @property
+    def __class__(self):
+        return asyncio.Future
+
+    @staticmethod
+    def get_loop():
+        return asyncio.get_running_loop()
+
+    @staticmethod
+    def add_done_callback(_callback):
+        return None
+
+
 class FakePosixAPI:
     def __init__(
         self,
@@ -276,6 +300,62 @@ async def test_deferred_cleanup_failure_is_observable_without_repeating_body_pri
         (CLEANUP_ERROR,),
     ]
     _assert_clean_tree(cleanup_raised.value)
+    assert _event_names(api.events) == [
+        "create",
+        "wait",
+        "release",
+        "close",
+    ]
+
+
+@pytest.mark.parametrize(
+    "authority_factory",
+    (DiscardingFuture, RaisingFuture, FutureClassSpoof),
+)
+@pytest.mark.asyncio
+async def test_deferred_cleanup_rejects_spoofed_authority_and_releases_directly(
+    tmp_path: Path,
+    authority_factory: Callable[[], object],
+):
+    api = FakeWindowsAPI()
+
+    with pytest.raises(lifecycle.ProductDatabaseLifecycleError) as raised:
+        with lifecycle.product_database_lifecycle_lock(
+            tmp_path / "config.json",
+            platform_name="nt",
+            windows_api=api,
+        ) as lease:
+            lease.defer_until(authority_factory())  # type: ignore[arg-type]
+
+    assert raised.value.args == (LOCK_ERROR,)
+    assert _event_names(api.events) == [
+        "create",
+        "wait",
+        "release",
+        "close",
+    ]
+    _assert_clean_tree(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_external_completion_cancel_does_not_cancel_deferred_lock_cleanup(
+    tmp_path: Path,
+):
+    api = FakeWindowsAPI()
+    transfer = asyncio.get_running_loop().create_future()
+
+    with lifecycle.product_database_lifecycle_lock(
+        tmp_path / "config.json",
+        platform_name="nt",
+        windows_api=api,
+    ) as lease:
+        completion = lease.defer_until(transfer)
+
+    assert completion.cancel()
+    transfer.set_result(None)
+    await asyncio.sleep(0)
+
+    assert completion.cancelled()
     assert _event_names(api.events) == [
         "create",
         "wait",

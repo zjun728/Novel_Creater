@@ -48,7 +48,7 @@ class ProductDatabaseLifecycleLease:
     ) -> asyncio.Future[object]:
         """Publish completion after transfer settlement and lock cleanup."""
 
-        if not isinstance(transfer, asyncio.Future):
+        if type(transfer) not in (asyncio.Future, asyncio.Task):
             raise TypeError
         if self._transfer is not None:
             if transfer is self._transfer and self._completion is not None:
@@ -66,8 +66,21 @@ class ProductDatabaseLifecycleLease:
     def _arm(self, cleanup: Callable[[], list[BaseException]]) -> bool:
         if self._transfer is None:
             return False
+        if self._completion is None or self._completion.cancelled():
+            self._transfer = None
+            self._completion = None
+            return False
         self._cleanup = cleanup
-        self._transfer.add_done_callback(self._finish)
+        try:
+            self._transfer.add_done_callback(self._finish)
+        except BaseException:
+            completion = self._completion
+            self._transfer = None
+            self._completion = None
+            self._cleanup = None
+            if completion is not None:
+                completion.cancel()
+            raise
         return True
 
     def _finish(self, transfer: asyncio.Future[object]) -> None:
@@ -394,7 +407,12 @@ def product_database_lifecycle_lock(
     except BaseException as error:
         primary = error
     finally:
-        if not lease._arm(cleanup_resource):
+        deferred = False
+        try:
+            deferred = lease._arm(cleanup_resource)
+        except BaseException as error:
+            cleanup.append(error)
+        if not deferred:
             cleanup.extend(cleanup_resource())
         _raise_failures(primary, cleanup)
 
