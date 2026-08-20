@@ -352,10 +352,39 @@ async def test_external_completion_cancel_does_not_cancel_deferred_lock_cleanup(
         completion = lease.defer_until(transfer)
 
     assert completion.cancel()
-    transfer.set_result(None)
+    transfer.set_exception(RuntimeError(SECRET))
     await asyncio.sleep(0)
 
     assert completion.cancelled()
+    assert _event_names(api.events) == [
+        "create",
+        "wait",
+        "release",
+        "close",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_completion_cancel_before_context_exit_retains_underlying_transfer(
+    tmp_path: Path,
+):
+    api = FakeWindowsAPI()
+    transfer = asyncio.get_running_loop().create_future()
+
+    with lifecycle.product_database_lifecycle_lock(
+        tmp_path / "config.json",
+        platform_name="nt",
+        windows_api=api,
+    ) as lease:
+        completion = lease.defer_until(transfer)
+        assert completion.cancel()
+
+    assert completion.cancelled()
+    assert _event_names(api.events) == ["create", "wait"]
+
+    transfer.set_result(None)
+    await asyncio.sleep(0)
+
     assert _event_names(api.events) == [
         "create",
         "wait",

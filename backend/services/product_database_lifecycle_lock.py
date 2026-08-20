@@ -66,7 +66,7 @@ class ProductDatabaseLifecycleLease:
     def _arm(self, cleanup: Callable[[], list[BaseException]]) -> bool:
         if self._transfer is None:
             return False
-        if self._completion is None or self._completion.cancelled():
+        if self._completion is None:
             self._transfer = None
             self._completion = None
             return False

@@ -761,7 +761,6 @@ async def test_lifespan_publication_failure_cancels_deferral_and_exits_lock_once
     state = RejectingState()
     app = SimpleNamespace(state=state)
     transfer = asyncio.get_running_loop().create_future()
-    transfer.set_result(None)
 
     @asynccontextmanager
     async def application_context(_app):
@@ -778,6 +777,13 @@ async def test_lifespan_publication_failure_cancels_deferral_and_exits_lock_once
 
     assert caught.value.args == ("product database lifecycle lock failed",)
     assert "PRIVATE_PUBLICATION_FAILURE" not in repr(caught.value)
+    assert events == ["lock-attempt", "lock-enter"]
+    assert lifecycle.active
+    assert state.draft_operation_shutdown_transfer is transfer
+
+    transfer.set_result(None)
+    await _next_loop_turn()
+
     assert events == [
         "lock-attempt",
         "lock-enter",
