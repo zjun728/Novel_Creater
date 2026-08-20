@@ -134,7 +134,15 @@ def _sanitized(error: BaseException, message: str) -> BaseException:
     if isinstance(error, KeyboardInterrupt):
         return KeyboardInterrupt()
     if isinstance(error, SystemExit):
-        return SystemExit(error.code) if type(error.code) is int else SystemExit()
+        if type(error) is SystemExit:
+            arguments = error.args
+            if (
+                type(arguments) is tuple
+                and len(arguments) == 1
+                and type(arguments[0]) is int
+            ):
+                return SystemExit(arguments[0])
+        return SystemExit()
     return ProductDatabaseCutoverError(message)
 
 
@@ -257,23 +265,110 @@ def _lock_boundary_error(
     entered: bool,
     operation_error: BaseException | None,
 ) -> BaseException:
-    def sanitized_boundary(error: BaseException) -> BaseException:
-        if isinstance(error, BaseExceptionGroup):
-            return BaseExceptionGroup(
-                _LIFECYCLE_CLEANUP_ERROR if entered else _LIFECYCLE_ERROR,
-                [sanitized_boundary(child) for child in error.exceptions],
-            )
-        if isinstance(error, ProductDatabaseLifecycleError) and str(error) in (
-            _LIFECYCLE_ERROR,
-            _LIFECYCLE_CLEANUP_ERROR,
+    def exact_lifecycle_category(error: BaseException) -> str | None:
+        if type(error) is not ProductDatabaseLifecycleError:
+            return None
+        arguments = error.args
+        if (
+            type(arguments) is tuple
+            and len(arguments) == 1
+            and type(arguments[0]) is str
+            and arguments[0] in (_LIFECYCLE_ERROR, _LIFECYCLE_CLEANUP_ERROR)
         ):
-            return ProductDatabaseLifecycleError(str(error))
-        return _sanitized(
+            return arguments[0]
+        return None
+
+    def group_children(error: BaseExceptionGroup) -> tuple[BaseException, ...]:
+        return BaseExceptionGroup.exceptions.__get__(
             error,
-            _LIFECYCLE_CLEANUP_ERROR if entered else _LIFECYCLE_ERROR,
+            BaseExceptionGroup,
         )
 
-    cleanup_error = sanitized_boundary(lock_error)
+    def subtree_matches(error: BaseException, expected: str) -> bool:
+        if isinstance(error, BaseExceptionGroup):
+            return all(
+                subtree_matches(child, expected)
+                for child in group_children(error)
+            )
+        if isinstance(error, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+            return True
+        return exact_lifecycle_category(error) == expected
+
+    def rebuild_subtree(
+        error: BaseException,
+        expected: str,
+        *,
+        trusted: bool,
+    ) -> BaseException:
+        if isinstance(error, BaseExceptionGroup):
+            return BaseExceptionGroup(
+                expected,
+                [
+                    rebuild_subtree(child, expected, trusted=trusted)
+                    for child in group_children(error)
+                ],
+            )
+        if isinstance(error, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+            return _sanitized(error, expected)
+        if trusted and exact_lifecycle_category(error) == expected:
+            return ProductDatabaseLifecycleError(expected)
+        return ProductDatabaseCutoverError(expected)
+
+    if entered:
+        consistent = subtree_matches(lock_error, _LIFECYCLE_CLEANUP_ERROR)
+        cleanup_error = rebuild_subtree(
+            lock_error,
+            _LIFECYCLE_CLEANUP_ERROR,
+            trusted=consistent,
+        )
+    elif isinstance(lock_error, BaseExceptionGroup):
+        children = group_children(lock_error)
+        primary_only = subtree_matches(lock_error, _LIFECYCLE_ERROR)
+        primary_with_cleanup = (
+            subtree_matches(children[0], _LIFECYCLE_ERROR)
+            and all(
+                subtree_matches(child, _LIFECYCLE_CLEANUP_ERROR)
+                for child in children[1:]
+            )
+        )
+        if primary_only:
+            cleanup_error = rebuild_subtree(
+                lock_error,
+                _LIFECYCLE_ERROR,
+                trusted=True,
+            )
+        elif primary_with_cleanup:
+            cleanup_error = BaseExceptionGroup(
+                _LIFECYCLE_ERROR,
+                [
+                    rebuild_subtree(
+                        children[0],
+                        _LIFECYCLE_ERROR,
+                        trusted=True,
+                    ),
+                    *[
+                        rebuild_subtree(
+                            child,
+                            _LIFECYCLE_CLEANUP_ERROR,
+                            trusted=True,
+                        )
+                        for child in children[1:]
+                    ],
+                ],
+            )
+        else:
+            cleanup_error = rebuild_subtree(
+                lock_error,
+                _LIFECYCLE_ERROR,
+                trusted=False,
+            )
+    else:
+        consistent = subtree_matches(lock_error, _LIFECYCLE_ERROR)
+        cleanup_error = rebuild_subtree(
+            lock_error,
+            _LIFECYCLE_ERROR,
+            trusted=consistent,
+        )
     if operation_error is None:
         return cleanup_error
     return BaseExceptionGroup(

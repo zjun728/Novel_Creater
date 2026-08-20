@@ -333,8 +333,14 @@ async def test_smoke_gap_is_unlocked_and_failure_rollback_uses_fresh_scope(
 
 def exception_leaves(error):
     if isinstance(error, BaseExceptionGroup):
-        return [leaf for child in error.exceptions for leaf in exception_leaves(child)]
+        children = BaseExceptionGroup.exceptions.__get__(error, BaseExceptionGroup)
+        return [leaf for child in children for leaf in exception_leaves(child)]
     return [error]
+
+
+def exception_children(error):
+    assert isinstance(error, BaseExceptionGroup)
+    return BaseExceptionGroup.exceptions.__get__(error, BaseExceptionGroup)
 
 
 @pytest.mark.asyncio
@@ -587,6 +593,352 @@ class FakeWindowsLifecycleAPI:
         return self.close_result
 
 
+class StatefulLifecycleError(lifecycle_service.ProductDatabaseLifecycleError):
+    def __init__(self):
+        super().__init__("ignored")
+        self.calls = 0
+
+    def __str__(self):
+        self.calls += 1
+        if self.calls == 1:
+            return "product database lifecycle lock failed"
+        return SECRET
+
+
+class SecretString(str):
+    pass
+
+
+class StatefulSystemExit(SystemExit):
+    def __init__(self):
+        super().__init__(SECRET)
+        self.calls = 0
+        self.arg_calls = 0
+
+    def __getattribute__(self, name):
+        if name == "args":
+            current = object.__getattribute__(self, "arg_calls")
+            object.__setattr__(self, "arg_calls", current + 1)
+            return (SECRET,)
+        return super().__getattribute__(name)
+
+    @property
+    def code(self):
+        self.calls += 1
+        if self.calls == 1:
+            return 9
+        return SECRET
+
+
+class StatefulLifecycleGroup(BaseExceptionGroup):
+    def __new__(cls, message, exceptions):
+        instance = super().__new__(cls, message, exceptions)
+        instance.calls = 0
+        return instance
+
+    @property
+    def exceptions(self):
+        self.calls += 1
+        return BaseExceptionGroup.exceptions.__get__(self, BaseExceptionGroup)
+
+
+def test_lifecycle_boundary_never_calls_stateful_subclass_stringification():
+    error = StatefulLifecycleError()
+
+    rebuilt = command._lock_boundary_error(
+        error,
+        entered=False,
+        operation_error=None,
+    )
+
+    assert error.calls == 0
+    assert type(rebuilt) is command.ProductDatabaseCutoverError
+    assert rebuilt.args == ("product database lifecycle lock failed",)
+    assert SECRET not in repr(rebuilt)
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    (
+        lifecycle_service.ProductDatabaseLifecycleError(),
+        lifecycle_service.ProductDatabaseLifecycleError(
+            "product database lifecycle lock failed", SECRET
+        ),
+        lifecycle_service.ProductDatabaseLifecycleError(7),
+        lifecycle_service.ProductDatabaseLifecycleError(SECRET),
+        lifecycle_service.ProductDatabaseLifecycleError(
+            SecretString("product database lifecycle lock failed")
+        ),
+    ),
+)
+def test_lifecycle_boundary_rejects_malformed_exact_lifecycle_arguments(malformed):
+    rebuilt = command._lock_boundary_error(
+        malformed,
+        entered=False,
+        operation_error=None,
+    )
+
+    assert type(rebuilt) is command.ProductDatabaseCutoverError
+    assert rebuilt.args == ("product database lifecycle lock failed",)
+    assert SECRET not in repr(rebuilt)
+
+
+def test_lifecycle_boundary_ignores_instance_shadow_and_rebuilds_exact_error():
+    error = lifecycle_service.ProductDatabaseLifecycleError(
+        "product database lifecycle lock failed"
+    )
+    error.__dict__["args"] = (SECRET,)
+    error.__dict__["__str__"] = lambda: SECRET
+    error.__cause__ = RuntimeError(SECRET)
+    error.__context__ = RuntimeError(SECRET)
+    error.add_note(SECRET)
+
+    rebuilt = command._lock_boundary_error(
+        error,
+        entered=False,
+        operation_error=None,
+    )
+
+    assert type(rebuilt) is lifecycle_service.ProductDatabaseLifecycleError
+    assert rebuilt is not error
+    assert rebuilt.args == ("product database lifecycle lock failed",)
+    assert rebuilt.__dict__ == {}
+    assert rebuilt.__cause__ is None
+    assert rebuilt.__context__ is None
+    assert not hasattr(rebuilt, "__notes__")
+    assert SECRET not in repr(rebuilt)
+
+
+def test_nested_lifecycle_spoofs_are_reclassified_by_boundary_position():
+    nested = BaseExceptionGroup(
+        SECRET,
+        [
+            lifecycle_service.ProductDatabaseLifecycleError(
+                "product database lifecycle lock failed"
+            ),
+            BaseExceptionGroup(
+                SECRET,
+                [
+                    lifecycle_service.ProductDatabaseLifecycleError(
+                        "product database lifecycle lock cleanup failed"
+                    ),
+                    lifecycle_service.ProductDatabaseLifecycleError(
+                        "product database lifecycle lock failed"
+                    ),
+                    StatefulLifecycleError(),
+                ],
+            ),
+        ],
+    )
+
+    rebuilt = command._lock_boundary_error(
+        nested,
+        entered=False,
+        operation_error=None,
+    )
+
+    outer = exception_children(rebuilt)
+    assert len(outer) == 2
+    assert type(outer[0]) is command.ProductDatabaseCutoverError
+    assert type(outer[1]) is ExceptionGroup
+    assert [type(child) for child in exception_children(outer[1])] == [
+        command.ProductDatabaseCutoverError,
+        command.ProductDatabaseCutoverError,
+        command.ProductDatabaseCutoverError,
+    ]
+    leaves = exception_leaves(rebuilt)
+    assert [type(leaf) for leaf in leaves] == [
+        command.ProductDatabaseCutoverError,
+        command.ProductDatabaseCutoverError,
+        command.ProductDatabaseCutoverError,
+        command.ProductDatabaseCutoverError,
+    ]
+    assert [leaf.args for leaf in leaves] == [
+        ("product database lifecycle lock failed",),
+        ("product database lifecycle lock failed",),
+        ("product database lifecycle lock failed",),
+        ("product database lifecycle lock failed",),
+    ]
+    assert SECRET not in repr(rebuilt)
+
+
+def test_root_primary_group_preserves_multiple_exact_acquisition_leaves():
+    primary = BaseExceptionGroup(
+        SECRET,
+        [
+            lifecycle_service.ProductDatabaseLifecycleError(
+                "product database lifecycle lock failed"
+            ),
+            BaseExceptionGroup(
+                SECRET,
+                [
+                    lifecycle_service.ProductDatabaseLifecycleError(
+                        "product database lifecycle lock failed"
+                    )
+                ],
+            ),
+        ],
+    )
+
+    rebuilt = command._lock_boundary_error(
+        primary,
+        entered=False,
+        operation_error=None,
+    )
+
+    outer = exception_children(rebuilt)
+    assert len(outer) == 2
+    assert type(outer[0]) is lifecycle_service.ProductDatabaseLifecycleError
+    assert type(outer[1]) is ExceptionGroup
+    nested_children = exception_children(outer[1])
+    assert len(nested_children) == 1
+    assert type(nested_children[0]) is (
+        lifecycle_service.ProductDatabaseLifecycleError
+    )
+    assert [type(leaf) for leaf in exception_leaves(rebuilt)] == [
+        lifecycle_service.ProductDatabaseLifecycleError,
+        lifecycle_service.ProductDatabaseLifecycleError,
+    ]
+    assert [leaf.args for leaf in exception_leaves(rebuilt)] == [
+        ("product database lifecycle lock failed",),
+        ("product database lifecycle lock failed",),
+    ]
+    assert SECRET not in repr(rebuilt)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_label_from_enter_is_reclassified_as_acquisition(workspace_tmp_path):
+    config = workspace_tmp_path / ".env.local.json"
+    config.write_text(json.dumps(mysql_document()), encoding="utf-8")
+    reads = []
+
+    class WrongEnterCategory:
+        def __enter__(self):
+            raise lifecycle_service.ProductDatabaseLifecycleError(
+                "product database lifecycle lock cleanup failed"
+            )
+
+        def __exit__(self, *_args):
+            pytest.fail("failed enter must not exit")
+
+    with pytest.raises(command.ProductDatabaseCutoverError) as raised:
+        await command.cutover(
+            receipt=PREPARATION_RECEIPT,
+            config_path=config,
+            confirm_database=NEW_DATABASE,
+            confirm_cutover="CUTOVER-PHASE7B",
+            smoke=successful_smoke,
+            inventory_reader=lambda *_args: reads.append("inventory"),
+            lifecycle_lock=lambda _path: WrongEnterCategory(),
+        )
+
+    assert raised.value.args == ("product database lifecycle lock failed",)
+    assert reads == []
+
+
+@pytest.mark.asyncio
+async def test_acquisition_label_from_exit_is_reclassified_as_cleanup(workspace_tmp_path):
+    config = workspace_tmp_path / ".env.local.json"
+    config.write_text(json.dumps(mysql_document()), encoding="utf-8")
+    smoke_calls = []
+
+    class WrongExitCategory:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *_args):
+            raise lifecycle_service.ProductDatabaseLifecycleError(
+                "product database lifecycle lock failed"
+            )
+
+    with pytest.raises(command.ProductDatabaseCutoverError) as raised:
+        await command.cutover(
+            receipt=PREPARATION_RECEIPT,
+            config_path=config,
+            confirm_database=NEW_DATABASE,
+            confirm_cutover="CUTOVER-PHASE7B",
+            smoke=lambda *_args: smoke_calls.append("smoke"),
+            writer=write_json,
+            inventory_reader=observe_inventories,
+            lifecycle_lock=lambda _path: WrongExitCategory(),
+        )
+
+    assert raised.value.args == ("product database lifecycle lock cleanup failed",)
+    assert smoke_calls == []
+    assert json.loads(config.read_text(encoding="utf-8"))["MYSQL_DB"] == NEW_DATABASE
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_type", "expected_args"),
+    (
+        (asyncio.CancelledError(SECRET), asyncio.CancelledError, ()),
+        (KeyboardInterrupt(SECRET), KeyboardInterrupt, ()),
+        (SystemExit(9), SystemExit, (9,)),
+        (SystemExit(True), SystemExit, ()),
+        (SystemExit(SECRET), SystemExit, ()),
+    ),
+)
+def test_lifecycle_boundary_rebuilds_tainted_flow_control_leaves(
+    failure, expected_type, expected_args,
+):
+    failure.__cause__ = RuntimeError(SECRET)
+    failure.__context__ = RuntimeError(SECRET)
+    failure.add_note(SECRET)
+
+    rebuilt = command._lock_boundary_error(
+        BaseExceptionGroup(SECRET, [failure]),
+        entered=True,
+        operation_error=None,
+    )
+    leaf = exception_leaves(rebuilt)[0]
+
+    assert type(leaf) is expected_type
+    assert leaf.args == expected_args
+    assert leaf.__cause__ is None
+    assert leaf.__context__ is None
+    assert not hasattr(leaf, "__notes__")
+    assert SECRET not in repr(rebuilt)
+
+
+def test_lifecycle_boundary_never_reads_stateful_system_exit_subclass_code():
+    failure = StatefulSystemExit()
+
+    rebuilt = command._lock_boundary_error(
+        failure,
+        entered=True,
+        operation_error=None,
+    )
+
+    assert failure.calls == 0
+    assert failure.arg_calls == 0
+    assert type(rebuilt) is SystemExit
+    assert rebuilt.args == ()
+    assert SECRET not in repr(rebuilt)
+
+
+def test_lifecycle_boundary_bypasses_group_subclass_exception_property():
+    failure = StatefulLifecycleGroup(
+        SECRET,
+        [
+            lifecycle_service.ProductDatabaseLifecycleError(
+                "product database lifecycle lock cleanup failed"
+            )
+        ],
+    )
+
+    rebuilt = command._lock_boundary_error(
+        failure,
+        entered=True,
+        operation_error=None,
+    )
+
+    assert failure.calls == 0
+    assert [leaf.args for leaf in exception_leaves(rebuilt)] == [
+        ("product database lifecycle lock cleanup failed",)
+    ]
+    assert SECRET not in repr(rebuilt)
+
+
 @pytest.mark.asyncio
 async def test_real_lifecycle_cm_preserves_operation_then_release_close_categories(
     workspace_tmp_path,
@@ -614,6 +966,14 @@ async def test_real_lifecycle_cm_preserves_operation_then_release_close_categori
             lifecycle_lock=lifecycle,
         )
 
+    outer = exception_children(raised.value)
+    assert len(outer) == 2
+    assert type(outer[0]) is command.ProductDatabaseCutoverError
+    assert type(outer[1]) is ExceptionGroup
+    assert [type(child) for child in exception_children(outer[1])] == [
+        lifecycle_service.ProductDatabaseLifecycleError,
+        lifecycle_service.ProductDatabaseLifecycleError,
+    ]
     leaves = exception_leaves(raised.value)
     assert [type(leaf) for leaf in leaves] == [
         command.ProductDatabaseCutoverError,
@@ -660,6 +1020,11 @@ async def test_real_lifecycle_cm_preserves_acquisition_then_close_categories(
         )
 
     assert reads == 0
+    children = exception_children(raised.value)
+    assert [type(child) for child in children] == [
+        lifecycle_service.ProductDatabaseLifecycleError,
+        lifecycle_service.ProductDatabaseLifecycleError,
+    ]
     assert [leaf.args for leaf in exception_leaves(raised.value)] == [
         ("product database lifecycle lock failed",),
         ("product database lifecycle lock cleanup failed",),
