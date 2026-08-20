@@ -79,21 +79,62 @@ FLOW_MATRIX_CASES = (
 
 @pytest.fixture
 def sync_main_event_loop_owner() -> Iterator[None]:
+    try:
+        with _owned_sync_main_event_loop():
+            yield
+    finally:
+        gc.collect()
+
+
+@contextmanager
+def _owned_sync_main_event_loop() -> Iterator[asyncio.AbstractEventLoop]:
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore", message="There is no current event loop", category=DeprecationWarning
         )
         try:
-            loop = asyncio.get_event_loop()
+            preexisting = asyncio.get_event_loop()
         except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+            preexisting = None
+    owned = asyncio.new_event_loop()
+    asyncio.set_event_loop(owned)
     try:
-        yield
+        yield owned
     finally:
-        if not loop.is_closed():
-            loop.close()
-        gc.collect()
+        if not owned.is_closed():
+            owned.close()
+        if preexisting is not None and not preexisting.is_closed():
+            asyncio.set_event_loop(preexisting)
+        else:
+            asyncio.set_event_loop(None)
+
+
+def test_sync_main_loop_owner_restores_unrelated_loop_without_closing_it() -> None:
+    unrelated = asyncio.new_event_loop()
+    asyncio.set_event_loop(unrelated)
+    try:
+        with _owned_sync_main_event_loop() as owned:
+            assert asyncio.get_event_loop() is owned
+            asyncio.run(asyncio.sleep(0))
+
+        assert owned.is_closed()
+        assert unrelated.is_closed() is False
+        assert asyncio.get_event_loop() is unrelated
+    finally:
+        unrelated.close()
+        asyncio.set_event_loop(None)
+
+
+def test_sync_main_loop_owner_restores_no_current_loop() -> None:
+    asyncio.set_event_loop(None)
+
+    with _owned_sync_main_event_loop() as owned:
+        assert asyncio.get_event_loop() is owned
+        asyncio.run(asyncio.sleep(0))
+
+    assert owned.is_closed()
+    with pytest.raises(RuntimeError, match="There is no current event loop"):
+        asyncio.get_event_loop()
 
 
 def _secret_flow_control(flow_type: type[BaseException]) -> BaseException:
