@@ -12,7 +12,13 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.database import close_pool, connection, transaction
-from backend.config import LOCAL_CONFIG_PATH, MANAGED_CORPUS_ROOT
+from backend.config import (
+    LOCAL_CONFIG_PATH,
+    RuntimeConfiguration,
+    clear_runtime_configuration,
+    install_runtime_configuration,
+    load_runtime_configuration,
+)
 from backend.gateways.openai_json_transport import (
     OpenAIJSONTransportLifecycleError,
 )
@@ -55,6 +61,11 @@ _project_import_logger = logging.getLogger("backend.project_imports")
 
 class DraftOperationTaskRegistryLifecycleError(RuntimeError):
     pass
+
+
+class _ApplicationLifespanLease:
+    def __init__(self) -> None:
+        self.body_error: BaseException | None = None
 
 
 async def _close_draft_operation_task_registry(
@@ -168,7 +179,10 @@ def _combine_lifespan_errors(
 
 
 @asynccontextmanager
-async def _application_lifespan(app: FastAPI):
+async def _application_lifespan(
+    app: FastAPI,
+    runtime_configuration: RuntimeConfiguration,
+):
     if _previous_shutdown_transfer_failed(app):
         raise DraftOperationTaskRegistryLifecycleError(
             "Draft operation task registry lifecycle failed"
@@ -183,6 +197,7 @@ async def _application_lifespan(app: FastAPI):
             "project_package_stale_cleanup_failed"
         )
 
+    application_lease = _ApplicationLifespanLease()
     scheduler_runtime = None
     application_error = None
     planning_gateway_start_attempted = False
@@ -200,10 +215,10 @@ async def _application_lifespan(app: FastAPI):
     try:
         async with connection() as session:
             await verify_schema_version(session)
-        if MANAGED_CORPUS_ROOT is not None:
+        if runtime_configuration.managed_corpus_root is not None:
             try:
                 await project_import_service.reconcile_project_import_staging(
-                    managed_corpus_root=MANAGED_CORPUS_ROOT,
+                    managed_corpus_root=runtime_configuration.managed_corpus_root,
                     connection_factory=connection,
                     transaction_factory=transaction,
                 )
@@ -215,7 +230,9 @@ async def _application_lifespan(app: FastAPI):
                 )
         draft_registry_start_attempted = True
         await chapter_sessions.draft_operation_task_registry.start()
-        scheduler_runtime = build_market_scheduler_runtime()
+        scheduler_runtime = build_market_scheduler_runtime(
+            enabled=runtime_configuration.market_scheduler_enabled,
+        )
         app.state.market_scheduler_runtime = scheduler_runtime
         scheduler_runtime.start()
         planning_gateway_start_attempted = True
@@ -226,7 +243,7 @@ async def _application_lifespan(app: FastAPI):
         await finalization.finalization_quality_gateway.start()
         finalization_extraction_start_attempted = True
         await finalization.finalization_extraction_gateway.start()
-        yield
+        yield application_lease
     except BaseException as error:
         application_error = error
     finally:
@@ -390,6 +407,11 @@ async def _application_lifespan(app: FastAPI):
         all_errors = (
             ([application_error] if application_error is not None else [])
             + (
+                [application_lease.body_error]
+                if application_lease.body_error is not None
+                else []
+            )
+            + (
                 [asyncio.CancelledError()]
                 if shutdown_cancellations
                 else []
@@ -405,15 +427,89 @@ async def _application_lifespan(app: FastAPI):
             )
 
 
+async def _complete_runtime_configuration(
+    transfer: asyncio.Future,
+    snapshot: RuntimeConfiguration,
+    started: asyncio.Future,
+):
+    result = None
+    primary = None
+    clear_error = None
+    started.set_result(None)
+    try:
+        result = await asyncio.shield(transfer)
+    except BaseException as error:
+        primary = error
+    finally:
+        transfer = None
+    try:
+        clear_runtime_configuration(snapshot)
+    except BaseException as error:
+        clear_error = error
+    finally:
+        snapshot = None
+    if primary is not None and clear_error is not None:
+        raise BaseExceptionGroup(
+            "runtime configuration completion failed",
+            [primary, clear_error],
+        )
+    if primary is not None:
+        if issubclass(type(primary), (KeyboardInterrupt, SystemExit)):
+            raise BaseExceptionGroup(
+                "runtime configuration completion failed",
+                [primary],
+            )
+        raise primary
+    if clear_error is not None:
+        if issubclass(type(clear_error), (KeyboardInterrupt, SystemExit)):
+            raise BaseExceptionGroup(
+                "runtime configuration completion failed",
+                [clear_error],
+            )
+        raise clear_error
+    return result
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     lock_context = product_database_lifecycle_lock(LOCAL_CONFIG_PATH)
     lock_lease = lock_context.__enter__()
     lock_owned = True
+    runtime_configuration = None
+    runtime_configuration_owned = False
+
+    def exit_lifecycle_lock(error: BaseException | None) -> None:
+        nonlocal lock_owned
+        try:
+            lock_context.__exit__(None, error, None)
+        except BaseException as outgoing:
+            error = None
+            BaseException.__traceback__.__set__(outgoing, None)
+            raise outgoing from None
+        finally:
+            lock_owned = False
+
+    def clear_runtime_configuration_once() -> BaseException | None:
+        nonlocal runtime_configuration_owned
+        if not runtime_configuration_owned:
+            return None
+        try:
+            clear_runtime_configuration(runtime_configuration)
+        except BaseException as error:
+            return error
+        finally:
+            runtime_configuration_owned = False
+        return None
+
     application_error = None
     body_error = None
     try:
         try:
+            runtime_configuration = load_runtime_configuration(
+                config_path=LOCAL_CONFIG_PATH,
+            )
+            install_runtime_configuration(runtime_configuration)
+            runtime_configuration_owned = True
             previous_draft_transfer = getattr(
                 app.state,
                 "draft_operation_shutdown_transfer",
@@ -424,9 +520,12 @@ async def lifespan(app: FastAPI):
                 "market_scheduler_shutdown_transfer",
                 None,
             )
-            application_context = _application_lifespan(app)
+            application_context = _application_lifespan(
+                app,
+                runtime_configuration,
+            )
             try:
-                await application_context.__aenter__()
+                application_lease = await application_context.__aenter__()
             except BaseException as error:
                 application_error = error
             else:
@@ -434,18 +533,28 @@ async def lifespan(app: FastAPI):
                     yield
                 except BaseException as error:
                     body_error = error
+                if type(application_lease) is _ApplicationLifespanLease:
+                    application_lease.body_error = body_error
                 try:
                     application_suppressed = await application_context.__aexit__(
-                        type(body_error) if body_error is not None else None,
-                        body_error,
-                        body_error.__traceback__
-                        if body_error is not None
-                        else None,
+                        None,
+                        None,
+                        None,
                     )
                 except BaseException as error:
-                    application_error = error
+                    if type(application_lease) is _ApplicationLifespanLease:
+                        application_error = error
+                    else:
+                        application_error = _combine_lifespan_errors(
+                            body_error,
+                            error,
+                        )
                 else:
-                    if body_error is not None and not application_suppressed:
+                    if (
+                        type(application_lease) is not _ApplicationLifespanLease
+                        and body_error is not None
+                        and not application_suppressed
+                    ):
                         application_error = body_error
 
             draft_transfer = getattr(
@@ -481,14 +590,46 @@ async def lifespan(app: FastAPI):
             if len(transfers) > 1:
                 raise ValueError
             if transfers:
-                completion = lock_lease.defer_until(transfers[0])
+                loop = asyncio.get_running_loop()
+                runtime_transfer_started = loop.create_future()
+                runtime_transfer_coroutine = _complete_runtime_configuration(
+                    transfers[0],
+                    runtime_configuration,
+                    runtime_transfer_started,
+                )
                 try:
+                    runtime_transfer = asyncio.create_task(
+                        runtime_transfer_coroutine,
+                        name="runtime-configuration-shutdown-transfer",
+                    )
+                except BaseException:
+                    runtime_transfer_coroutine.close()
+                    raise
+                await runtime_transfer_started
+                runtime_configuration_owned = False
+                completion = None
+                try:
+                    completion = lock_lease.defer_until(runtime_transfer)
                     if publish_draft:
                         app.state.draft_operation_shutdown_transfer = completion
                     if publish_market:
                         app.state.market_scheduler_shutdown_transfer = completion
-                except BaseException:
-                    completion.cancel()
+                except BaseException as publication_error:
+                    if completion is not None:
+                        completion.cancel()
+                    runtime_transfer.cancel()
+                    runtime_transfer_error = None
+                    try:
+                        await runtime_transfer
+                    except asyncio.CancelledError:
+                        pass
+                    except BaseException as error:
+                        runtime_transfer_error = error
+                    if runtime_transfer_error is not None:
+                        raise BaseExceptionGroup(
+                            "runtime configuration publication failed",
+                            [publication_error, runtime_transfer_error],
+                        )
                     raise
         except BaseException as error:
             application_error = _combine_lifespan_errors(
@@ -496,18 +637,20 @@ async def lifespan(app: FastAPI):
                 error,
             )
 
+        clear_error = clear_runtime_configuration_once()
+        if clear_error is not None:
+            application_error = _combine_lifespan_errors(
+                application_error,
+                clear_error,
+            )
+            clear_error = None
+
         if application_error is None:
-            lock_owned = False
-            lock_context.__exit__(None, None, None)
+            exit_lifecycle_lock(None)
             return
 
         try:
-            lock_owned = False
-            lock_context.__exit__(
-                type(application_error),
-                application_error,
-                application_error.__traceback__,
-            )
+            exit_lifecycle_lock(application_error)
         except BaseException:
             application_error = None
             body_error = None
@@ -517,15 +660,14 @@ async def lifespan(app: FastAPI):
         raise application_error
     finally:
         if lock_owned:
-            lock_owned = False
-            if application_error is None:
-                lock_context.__exit__(None, None, None)
-            else:
-                lock_context.__exit__(
-                    type(application_error),
+            clear_error = clear_runtime_configuration_once()
+            if clear_error is not None:
+                application_error = _combine_lifespan_errors(
                     application_error,
-                    application_error.__traceback__,
+                    clear_error,
                 )
+                clear_error = None
+            exit_lifecycle_lock(application_error)
 
 
 app = FastAPI(title="Novel Creator API", version="1.0", lifespan=lifespan)

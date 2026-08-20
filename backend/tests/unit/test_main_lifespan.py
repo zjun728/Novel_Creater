@@ -2,11 +2,15 @@ import asyncio
 from collections.abc import Mapping
 from contextlib import asynccontextmanager, contextmanager
 import json
+from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace, TracebackType
 
 import httpx
 import pytest
 
+from backend import config as runtime_config
 from backend import main
 from backend.gateways.openai_json_transport import (
     OpenAIJSONTransportLifecycleError,
@@ -111,6 +115,56 @@ class ExclusiveRecordingLifecycleLockAPI:
         self.handles.remove(handle)
         self.events.append("lock-close")
         return True
+
+
+class HostileTracebackRuntimeError(RuntimeError):
+    def __init__(self, secret):
+        super().__init__(secret)
+        self.traceback_accesses = 0
+
+    @property
+    def __traceback__(self):
+        self.traceback_accesses += 1
+        raise ValueError(self.args[0])
+
+
+def runtime_configuration(**changes):
+    values = {
+        "mysql_items": (
+            ("host", "127.0.0.1"), ("port", 3307), ("user", "root"),
+            ("password", "test-only"), ("db", "novel_creator"),
+            ("charset", "utf8mb4"), ("autocommit", True),
+            ("minsize", 1), ("maxsize", 10),
+        ),
+        "corpus_root": None,
+        "managed_corpus_root": None,
+        "market_scheduler_enabled": False,
+    }
+    values.update(changes)
+    return runtime_config.RuntimeConfiguration(**values)
+
+
+@pytest.fixture(autouse=True)
+def isolated_runtime_configuration(monkeypatch):
+    authority = SimpleNamespace(snapshot=runtime_configuration(), installed=None)
+
+    def load(*, config_path):
+        assert config_path is main.LOCAL_CONFIG_PATH
+        return authority.snapshot
+
+    def install(snapshot):
+        assert snapshot is authority.snapshot
+        assert authority.installed is None
+        authority.installed = snapshot
+
+    def clear(snapshot):
+        assert snapshot is authority.installed
+        authority.installed = None
+
+    monkeypatch.setattr(main, "load_runtime_configuration", load)
+    monkeypatch.setattr(main, "install_runtime_configuration", install)
+    monkeypatch.setattr(main, "clear_runtime_configuration", clear)
+    yield authority
 
 
 class ControlledShutdownTransfer:
@@ -248,6 +302,10 @@ async def _next_loop_turn():
     await asyncio.wait_for(reached.wait(), timeout=1)
 
 
+async def _record_event(events, event):
+    events.append(event)
+
+
 def install_lifespan_fakes(monkeypatch, verify_error=None):
     events = []
     main.app.state.draft_operation_shutdown_transfer = None
@@ -271,7 +329,8 @@ def install_lifespan_fakes(monkeypatch, verify_error=None):
         async def stop(self):
             events.append("scheduler-stop")
 
-    def fake_build_runtime():
+    def fake_build_runtime(*, enabled):
+        assert type(enabled) is bool
         events.append("scheduler-build")
         return FakeRuntime()
 
@@ -329,6 +388,196 @@ def install_lifespan_fakes(monkeypatch, verify_error=None):
         FakeDraftOperationTaskRegistry(),
     )
     return events
+
+
+@pytest.mark.asyncio
+async def test_lifespan_snapshot_is_loaded_inside_lock_and_cleared_before_release(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    lifecycle = ExclusiveRecordingLifecycleLockAPI(events)
+    install_exclusive_lifecycle_lock(monkeypatch, lifecycle)
+    snapshot = runtime_configuration(
+        mysql_items=tuple(
+            (key, "post_cutover" if key == "db" else value)
+            for key, value in runtime_configuration().mysql_items
+        ),
+        market_scheduler_enabled=True,
+    )
+
+    monkeypatch.setattr(
+        main,
+        "load_runtime_configuration",
+        lambda *, config_path: events.append("config-load") or snapshot,
+    )
+    monkeypatch.setattr(
+        main,
+        "install_runtime_configuration",
+        lambda actual: events.append(("config-install", actual)),
+    )
+    monkeypatch.setattr(
+        main,
+        "clear_runtime_configuration",
+        lambda actual: events.append(("config-clear", actual)),
+    )
+    monkeypatch.setattr(
+        main,
+        "build_market_scheduler_runtime",
+        lambda *, enabled: events.append(("scheduler-enabled", enabled))
+        or SimpleNamespace(
+            start=lambda: events.append("scheduler-start"),
+            stop=lambda: _record_event(events, "scheduler-stop"),
+        ),
+    )
+
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+    await context.__aexit__(None, None, None)
+
+    assert events.index("lock-enter") < events.index("config-load")
+    assert events.index("config-load") < events.index(("config-install", snapshot))
+    assert events.index(("config-install", snapshot)) < events.index("verify")
+    assert events.index("close") < events.index(("config-clear", snapshot))
+    assert events.index(("config-clear", snapshot)) < events.index("lock-exit")
+    assert events.count(("scheduler-enabled", True)) == 1
+
+
+@pytest.mark.parametrize("failure_phase", ("load", "install"))
+@pytest.mark.asyncio
+async def test_runtime_configuration_setup_failure_runs_no_application_actions(
+    monkeypatch,
+    failure_phase,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    lifecycle = ExclusiveRecordingLifecycleLockAPI(events)
+    install_exclusive_lifecycle_lock(monkeypatch, lifecycle)
+    snapshot = runtime_configuration()
+
+    def load(*, config_path):
+        events.append("config-load")
+        if failure_phase == "load":
+            raise RuntimeError("PRIVATE_CONFIG_LOAD")
+        return snapshot
+
+    def install(actual):
+        assert actual is snapshot
+        events.append("config-install")
+        raise RuntimeError("PRIVATE_CONFIG_INSTALL")
+
+    monkeypatch.setattr(main, "load_runtime_configuration", load)
+    monkeypatch.setattr(main, "install_runtime_configuration", install)
+
+    with pytest.raises(lifecycle_lock.ProductDatabaseLifecycleError) as caught:
+        await main.lifespan(main.app).__aenter__()
+
+    expected = ["lock-attempt", "lock-enter", "config-load"]
+    if failure_phase == "install":
+        expected.append("config-install")
+    expected.extend(("lock-exit", "lock-close"))
+    assert events == expected
+    assert lifecycle.active is False
+    _assert_no_sensitive_error_graph(
+        caught.value,
+        ("PRIVATE_CONFIG_LOAD", "PRIVATE_CONFIG_INSTALL"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_lifespan_failure_graph_does_not_retain_runtime_snapshot_credentials(
+    monkeypatch,
+    isolated_runtime_configuration,
+):
+    secret = "PRIVATE_RUNTIME_SNAPSHOT_PASSWORD"
+    isolated_runtime_configuration.snapshot = runtime_configuration(
+        mysql_items=tuple(
+            (key, secret if key == "password" else value)
+            for key, value in runtime_configuration().mysql_items
+        ),
+    )
+    events = install_lifespan_fakes(
+        monkeypatch,
+        verify_error=RuntimeError("PRIVATE_STARTUP_FAILURE"),
+    )
+    lifecycle = ExclusiveRecordingLifecycleLockAPI(events)
+    install_exclusive_lifecycle_lock(monkeypatch, lifecycle)
+
+    with pytest.raises(lifecycle_lock.ProductDatabaseLifecycleError) as caught:
+        await main.lifespan(main.app).__aenter__()
+
+    _assert_no_sensitive_error_graph(caught.value, (secret,))
+
+
+@pytest.mark.parametrize(
+    ("error_factory", "expected_type", "expected_args"),
+    (
+        (
+            lambda: RuntimeError("PRIVATE_CONFIG_CLEAR"),
+            lifecycle_lock.ProductDatabaseLifecycleError,
+            ("product database lifecycle lock failed",),
+        ),
+        (lambda: asyncio.CancelledError("PRIVATE_CLEAR_CANCEL"), asyncio.CancelledError, ()),
+        (lambda: KeyboardInterrupt("PRIVATE_CLEAR_INTERRUPT"), KeyboardInterrupt, ()),
+        (lambda: SystemExit(37), SystemExit, (37,)),
+    ),
+)
+@pytest.mark.asyncio
+async def test_runtime_configuration_clear_failure_precedes_physical_release(
+    monkeypatch,
+    error_factory,
+    expected_type,
+    expected_args,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    lifecycle = ExclusiveRecordingLifecycleLockAPI(events)
+    install_exclusive_lifecycle_lock(monkeypatch, lifecycle)
+
+    def fail_clear(_snapshot):
+        events.append("config-clear")
+        raise error_factory()
+
+    monkeypatch.setattr(main, "clear_runtime_configuration", fail_clear)
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+
+    with pytest.raises(expected_type) as caught:
+        await context.__aexit__(None, None, None)
+
+    assert caught.value.args == expected_args
+    assert events.index("close") < events.index("config-clear")
+    assert events.index("config-clear") < events.index("lock-exit")
+    assert events.count("config-clear") == 1
+    assert events.count("lock-exit") == 1
+    assert events.count("lock-close") == 1
+    assert lifecycle.active is False
+
+
+def test_importing_main_performs_no_local_configuration_read():
+    script = """
+from pathlib import Path
+from backend.config import LOCAL_CONFIG_PATH
+
+original_read_text = Path.read_text
+
+def forbidden(self, *args, **kwargs):
+    if self.resolve() == LOCAL_CONFIG_PATH.resolve():
+        raise AssertionError(f\"configuration read during import: {self}\")
+    return original_read_text(self, *args, **kwargs)
+
+Path.read_text = forbidden
+import backend.main
+print(\"imported\")
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[3],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "imported"
 
 
 def install_real_lifecycle_lock(monkeypatch, api):
@@ -575,6 +824,27 @@ async def test_lifespan_application_failure_stays_first_when_lock_cleanup_fails(
 
 
 @pytest.mark.asyncio
+async def test_lifespan_never_reads_application_error_traceback_before_lock_exit(
+    monkeypatch,
+):
+    secret = "HOSTILE_APPLICATION_TRACEBACK_SECRET"
+    application_error = HostileTracebackRuntimeError(secret)
+    events = install_lifespan_fakes(monkeypatch, verify_error=application_error)
+    lifecycle = ExclusiveRecordingLifecycleLockAPI(events)
+    install_exclusive_lifecycle_lock(monkeypatch, lifecycle)
+
+    with pytest.raises(lifecycle_lock.ProductDatabaseLifecycleError) as caught:
+        await main.lifespan(main.app).__aenter__()
+
+    assert application_error.traceback_accesses == 0
+    assert caught.value.args == ("product database lifecycle lock failed",)
+    assert events.count("lock-exit") == 1
+    assert events.count("lock-close") == 1
+    assert lifecycle.active is False
+    _assert_no_sensitive_error_graph(caught.value, (secret,))
+
+
+@pytest.mark.asyncio
 async def test_lifespan_re_raises_body_primary_suppressed_by_lock_context(
     monkeypatch,
 ):
@@ -607,7 +877,10 @@ async def test_lifespan_re_raises_body_primary_suppressed_by_lock_context(
 
 
 @pytest.mark.asyncio
-async def test_lifespan_retains_lock_through_draft_shutdown_transfer(monkeypatch):
+async def test_lifespan_retains_lock_through_draft_shutdown_transfer(
+    monkeypatch,
+    isolated_runtime_configuration,
+):
     events = install_lifespan_fakes(monkeypatch)
     lifecycle = ExclusiveRecordingLifecycleLockAPI(events)
     install_exclusive_lifecycle_lock(monkeypatch, lifecycle)
@@ -635,6 +908,7 @@ async def test_lifespan_retains_lock_through_draft_shutdown_transfer(monkeypatch
     assert published is not transfer.task
     assert main.app.state.market_scheduler_shutdown_transfer is None
     assert not published.done()
+    assert isolated_runtime_configuration.installed is not None
     assert lifecycle.active
     assert events.count("lock-exit") == 0
     with pytest.raises(lifecycle_lock.ProductDatabaseLifecycleError):
@@ -647,7 +921,186 @@ async def test_lifespan_retains_lock_through_draft_shutdown_transfer(monkeypatch
     assert events.index("draft-transfer-finish") < events.index("close")
     assert events.index("close") < events.index("lock-exit")
     assert events.count("lock-exit") == 1
+    assert isolated_runtime_configuration.installed is None
     assert not lifecycle.active
+
+
+@pytest.mark.asyncio
+async def test_external_completion_cancellation_cannot_clear_snapshot_early(
+    monkeypatch,
+    isolated_runtime_configuration,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    lifecycle = ExclusiveRecordingLifecycleLockAPI(events)
+    install_exclusive_lifecycle_lock(monkeypatch, lifecycle)
+    transfer = ControlledShutdownTransfer(events, "draft")
+
+    class PendingDraftRegistry(FakeDraftOperationTaskRegistry):
+        async def aclose(self):
+            raise draft_operation_tasks.DraftOperationTasksDrainPending(transfer)
+
+    monkeypatch.setattr(
+        main.chapter_sessions,
+        "draft_operation_task_registry",
+        PendingDraftRegistry(events),
+    )
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+    snapshot = isolated_runtime_configuration.installed
+
+    with pytest.raises(lifecycle_lock.ProductDatabaseLifecycleError):
+        await context.__aexit__(None, None, None)
+
+    completion = main.app.state.draft_operation_shutdown_transfer
+    completion.cancel()
+    await _next_loop_turn()
+
+    assert isolated_runtime_configuration.installed is snapshot
+    assert lifecycle.active
+    assert events.count("lock-exit") == 0
+
+    transfer.release.set()
+    await asyncio.wait_for(transfer.task, timeout=1)
+    await _next_loop_turn()
+
+    assert completion.cancelled()
+    assert isolated_runtime_configuration.installed is None
+    assert events.count("lock-exit") == 1
+    assert events.count("lock-close") == 1
+    assert lifecycle.active is False
+
+
+@pytest.mark.parametrize(
+    ("error_factory", "expected_type", "expected_args"),
+    (
+        (
+            lambda: RuntimeError("PRIVATE_DEFERRED_CLEAR"),
+            lifecycle_lock.ProductDatabaseLifecycleError,
+            ("product database lifecycle lock failed",),
+        ),
+        (lambda: asyncio.CancelledError("PRIVATE_DEFERRED_CANCEL"), asyncio.CancelledError, ()),
+        (lambda: KeyboardInterrupt("PRIVATE_DEFERRED_INTERRUPT"), BaseExceptionGroup, ()),
+        (lambda: SystemExit(41), BaseExceptionGroup, (41,)),
+    ),
+)
+@pytest.mark.asyncio
+async def test_deferred_runtime_clear_failure_is_published_before_release(
+    monkeypatch,
+    error_factory,
+    expected_type,
+    expected_args,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    lifecycle = ExclusiveRecordingLifecycleLockAPI(events)
+    install_exclusive_lifecycle_lock(monkeypatch, lifecycle)
+    transfer = ControlledShutdownTransfer(events, "draft")
+
+    class PendingDraftRegistry(FakeDraftOperationTaskRegistry):
+        async def aclose(self):
+            raise draft_operation_tasks.DraftOperationTasksDrainPending(transfer)
+
+    def fail_clear(_snapshot):
+        events.append("config-clear")
+        raise error_factory()
+
+    monkeypatch.setattr(
+        main.chapter_sessions,
+        "draft_operation_task_registry",
+        PendingDraftRegistry(events),
+    )
+    monkeypatch.setattr(main, "clear_runtime_configuration", fail_clear)
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+
+    with pytest.raises(lifecycle_lock.ProductDatabaseLifecycleError):
+        await context.__aexit__(None, None, None)
+
+    completion = main.app.state.draft_operation_shutdown_transfer
+    transfer.release.set()
+    with pytest.raises(expected_type) as caught:
+        await asyncio.wait_for(completion, timeout=1)
+
+    if expected_type is BaseExceptionGroup:
+        assert len(caught.value.exceptions) == 1
+        flow = caught.value.exceptions[0]
+        assert type(flow) in (KeyboardInterrupt, SystemExit)
+        assert flow.args == expected_args
+    else:
+        assert caught.value.args == expected_args
+    assert events.index("close") < events.index("config-clear")
+    assert events.index("config-clear") < events.index("lock-exit")
+    assert events.count("config-clear") == 1
+    assert events.count("lock-exit") == 1
+    assert events.count("lock-close") == 1
+    assert lifecycle.active is False
+
+
+@pytest.mark.parametrize(
+    ("error_factory", "expected_type", "expected_args"),
+    (
+        (
+            lambda: RuntimeError("PRIVATE_TRANSFER_FAILURE"),
+            lifecycle_lock.ProductDatabaseLifecycleError,
+            ("product database lifecycle lock failed",),
+        ),
+        (lambda: asyncio.CancelledError("PRIVATE_TRANSFER_CANCEL"), asyncio.CancelledError, ()),
+        (lambda: KeyboardInterrupt("PRIVATE_TRANSFER_INTERRUPT"), BaseExceptionGroup, ()),
+        (lambda: SystemExit(43), BaseExceptionGroup, (43,)),
+    ),
+)
+@pytest.mark.asyncio
+async def test_deferred_transfer_failure_clears_snapshot_before_release(
+    monkeypatch,
+    error_factory,
+    expected_type,
+    expected_args,
+):
+    events = []
+    lifecycle = ExclusiveRecordingLifecycleLockAPI(events)
+    install_exclusive_lifecycle_lock(monkeypatch, lifecycle)
+    transfer = asyncio.get_running_loop().create_future()
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            draft_operation_shutdown_transfer=None,
+            market_scheduler_shutdown_transfer=None,
+        )
+    )
+
+    @asynccontextmanager
+    async def application_context(_app, _runtime_configuration):
+        yield
+        app.state.draft_operation_shutdown_transfer = transfer
+
+    monkeypatch.setattr(main, "_application_lifespan", application_context)
+    monkeypatch.setattr(
+        main,
+        "clear_runtime_configuration",
+        lambda _snapshot: events.append("config-clear"),
+    )
+    context = main.lifespan(app)
+    await context.__aenter__()
+    await context.__aexit__(None, None, None)
+    completion = app.state.draft_operation_shutdown_transfer
+
+    transfer.set_exception(error_factory())
+    with pytest.raises(expected_type) as caught:
+        await asyncio.wait_for(completion, timeout=1)
+
+    if expected_type is BaseExceptionGroup:
+        assert len(caught.value.exceptions) == 1
+        flow = caught.value.exceptions[0]
+        assert type(flow) in (KeyboardInterrupt, SystemExit)
+        assert flow.args == expected_args
+    else:
+        assert caught.value.args == expected_args
+    assert events == [
+        "lock-attempt",
+        "lock-enter",
+        "config-clear",
+        "lock-exit",
+        "lock-close",
+    ]
+    assert lifecycle.active is False
 
 
 @pytest.mark.asyncio
@@ -713,7 +1166,7 @@ async def test_lifespan_rejects_distinct_final_transfers_before_deferral(
     market_transfer.set_result(None)
 
     @asynccontextmanager
-    async def application_context(_app):
+    async def application_context(_app, _runtime_configuration):
         yield
         app.state.draft_operation_shutdown_transfer = draft_transfer
         app.state.market_scheduler_shutdown_transfer = market_transfer
@@ -763,34 +1216,37 @@ async def test_lifespan_publication_failure_cancels_deferral_and_exits_lock_once
     transfer = asyncio.get_running_loop().create_future()
 
     @asynccontextmanager
-    async def application_context(_app):
+    async def application_context(_app, _runtime_configuration):
         yield
         state.draft_operation_shutdown_transfer = transfer
         state.reject_publication = True
 
     monkeypatch.setattr(main, "_application_lifespan", application_context)
+    monkeypatch.setattr(
+        main,
+        "clear_runtime_configuration",
+        lambda _snapshot: events.append("config-clear"),
+    )
     context = main.lifespan(app)
     await context.__aenter__()
 
     with pytest.raises(lifecycle_lock.ProductDatabaseLifecycleError) as caught:
         await context.__aexit__(None, None, None)
+    await _next_loop_turn()
 
     assert caught.value.args == ("product database lifecycle lock failed",)
     assert "PRIVATE_PUBLICATION_FAILURE" not in repr(caught.value)
-    assert events == ["lock-attempt", "lock-enter"]
-    assert lifecycle.active
-    assert state.draft_operation_shutdown_transfer is transfer
-
-    transfer.set_result(None)
-    await _next_loop_turn()
-
     assert events == [
         "lock-attempt",
         "lock-enter",
+        "config-clear",
         "lock-exit",
         "lock-close",
     ]
     assert not lifecycle.active
+    assert state.draft_operation_shutdown_transfer is transfer
+    assert not transfer.done()
+    transfer.cancel()
     _assert_no_sensitive_error_graph(caught.value, ())
 
 
@@ -872,7 +1328,10 @@ async def test_deferred_application_primary_is_immediately_safe_and_first(
 
 
 @pytest.mark.asyncio
-async def test_lifespan_retains_lock_through_market_shutdown_transfer(monkeypatch):
+async def test_lifespan_retains_lock_through_market_shutdown_transfer(
+    monkeypatch,
+    isolated_runtime_configuration,
+):
     events = install_lifespan_fakes(monkeypatch)
     lifecycle = ExclusiveRecordingLifecycleLockAPI(events)
     install_exclusive_lifecycle_lock(monkeypatch, lifecycle)
@@ -891,7 +1350,7 @@ async def test_lifespan_retains_lock_through_market_shutdown_transfer(monkeypatc
     monkeypatch.setattr(
         main,
         "build_market_scheduler_runtime",
-        PendingMarketRuntime,
+        lambda *, enabled: PendingMarketRuntime(),
     )
     context = main.lifespan(main.app)
     await context.__aenter__()
@@ -903,6 +1362,7 @@ async def test_lifespan_retains_lock_through_market_shutdown_transfer(monkeypatc
     assert published is not transfer.task
     assert main.app.state.draft_operation_shutdown_transfer is None
     assert not published.done()
+    assert isolated_runtime_configuration.installed is not None
     assert lifecycle.active
     assert events.count("lock-exit") == 0
     with pytest.raises(lifecycle_lock.ProductDatabaseLifecycleError):
@@ -915,12 +1375,14 @@ async def test_lifespan_retains_lock_through_market_shutdown_transfer(monkeypatc
     assert events.index("market-transfer-finish") < events.index("close")
     assert events.index("close") < events.index("lock-exit")
     assert events.count("lock-exit") == 1
+    assert isolated_runtime_configuration.installed is None
     assert not lifecycle.active
 
 
 @pytest.mark.asyncio
 async def test_lifespan_retains_one_lock_through_combined_shutdown_transfer(
     monkeypatch,
+    isolated_runtime_configuration,
 ):
     events = install_lifespan_fakes(monkeypatch)
     lifecycle = ExclusiveRecordingLifecycleLockAPI(events)
@@ -953,7 +1415,7 @@ async def test_lifespan_retains_one_lock_through_combined_shutdown_transfer(
     monkeypatch.setattr(
         main,
         "build_market_scheduler_runtime",
-        PendingMarketRuntime,
+        lambda *, enabled: PendingMarketRuntime(),
     )
     context = main.lifespan(main.app)
     await context.__aenter__()
@@ -971,6 +1433,7 @@ async def test_lifespan_retains_one_lock_through_combined_shutdown_transfer(
     assert draft_published is market_published
     assert draft_published is not market_transfer.task
     assert lifecycle.active
+    assert isolated_runtime_configuration.installed is not None
     assert events.count("lock-exit") == 0
 
     market_transfer.release.set()
@@ -990,6 +1453,7 @@ async def test_lifespan_retains_one_lock_through_combined_shutdown_transfer(
     assert events.index("draft-transfer-finish") < events.index("close")
     assert events.index("close") < events.index("lock-exit")
     assert events.count("lock-exit") == 1
+    assert isolated_runtime_configuration.installed is None
     assert not lifecycle.active
 
 
@@ -1081,7 +1545,7 @@ async def test_lifespan_runs_one_bounded_project_package_cleanup_before_services
 
 @pytest.mark.asyncio
 async def test_lifespan_runs_bounded_project_import_reconciliation_after_schema(
-    monkeypatch, tmp_path,
+    monkeypatch, tmp_path, isolated_runtime_configuration,
 ):
     events = install_lifespan_fakes(monkeypatch)
     managed = tmp_path / "managed"
@@ -1094,7 +1558,9 @@ async def test_lifespan_runs_bounded_project_import_reconciliation_after_schema(
         events.append("project-import-reconcile")
         return 0
 
-    monkeypatch.setattr(main, "MANAGED_CORPUS_ROOT", managed)
+    isolated_runtime_configuration.snapshot = runtime_configuration(
+        managed_corpus_root=managed,
+    )
     monkeypatch.setattr(
         main.project_import_service, "reconcile_project_import_staging", reconcile,
     )
@@ -1513,7 +1979,11 @@ async def test_lifespan_aggregates_scheduler_and_pool_cleanup_failures(monkeypat
             events.append("scheduler-stop")
             raise scheduler_error
 
-    monkeypatch.setattr(main, "build_market_scheduler_runtime", FailingRuntime)
+    monkeypatch.setattr(
+        main,
+        "build_market_scheduler_runtime",
+        lambda *, enabled: FailingRuntime(),
+    )
 
     async def failing_close_pool():
         events.append("close")
@@ -1553,7 +2023,11 @@ async def test_lifespan_preserves_application_error_with_all_cleanup_failures(
             events.append("scheduler-stop")
             raise scheduler_error
 
-    monkeypatch.setattr(main, "build_market_scheduler_runtime", FailingRuntime)
+    monkeypatch.setattr(
+        main,
+        "build_market_scheduler_runtime",
+        lambda *, enabled: FailingRuntime(),
+    )
 
     async def failing_close_pool():
         events.append("close")
@@ -1942,7 +2416,7 @@ async def test_lifespan_transfers_stalled_cleanup_before_pool_close(
     monkeypatch.setattr(
         main,
         "build_market_scheduler_runtime",
-        lambda: runtime,
+        lambda *, enabled: runtime,
     )
 
     async def ordered_close_pool():
@@ -2017,7 +2491,7 @@ async def test_lifespan_cancellation_during_stop_defers_pool_close(
     monkeypatch.setattr(
         main,
         "build_market_scheduler_runtime",
-        lambda: runtime,
+        lambda *, enabled: runtime,
     )
 
     async def ordered_close_pool():
@@ -2289,7 +2763,7 @@ async def test_generic_draft_failure_blocks_market_transfer_pool_callback(
     monkeypatch.setattr(
         main,
         "build_market_scheduler_runtime",
-        lambda: TransferredRuntime(),
+        lambda *, enabled: TransferredRuntime(),
     )
     context = main.lifespan(main.app)
     await context.__aenter__()
@@ -2443,7 +2917,7 @@ async def test_draft_and_market_pending_drains_share_one_ordered_pool_transfer(
     monkeypatch.setattr(
         main,
         "build_market_scheduler_runtime",
-        lambda: runtime,
+        lambda *, enabled: runtime,
     )
     draft_started = asyncio.Event()
     draft_cancelled = asyncio.Event()
