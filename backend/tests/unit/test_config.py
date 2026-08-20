@@ -264,6 +264,167 @@ def test_install_and_pool_copy_revalidate_semantically_forged_snapshots(
     config.clear_runtime_configuration(valid)
 
 
+@pytest.mark.parametrize(
+    "missing_field",
+    (
+        "mysql_items",
+        "corpus_root",
+        "managed_corpus_root",
+        "market_scheduler_enabled",
+    ),
+)
+def test_registry_rejects_exact_snapshots_with_each_field_missing(
+    runtime_configuration, missing_field,
+):
+    forged = dataclasses.replace(runtime_configuration)
+    object.__delattr__(forged, missing_field)
+
+    assert config._runtime_configuration_is_valid(forged) is False
+    with pytest.raises(config.RuntimeConfigurationError) as install_error:
+        config.install_runtime_configuration(forged)
+    assert_safe_runtime_configuration_error(
+        install_error.value, "installation failed"
+    )
+
+    with pytest.raises(config.RuntimeConfigurationError) as copy_error:
+        forged.mysql_pool_options()
+    assert_safe_runtime_configuration_error(copy_error.value, "is invalid")
+
+
+def test_current_and_pool_copy_revalidate_every_post_install_mutation(
+    runtime_configuration, workspace_tmp_path,
+):
+    missing_root = workspace_tmp_path / "missing-runtime-root"
+    regular_file = workspace_tmp_path / "runtime-root-file"
+    regular_file.write_text("not a directory", encoding="utf-8")
+    mutations = (
+        ("mysql_items", runtime_mysql_items(port=0)),
+        ("corpus_root", missing_root),
+        ("managed_corpus_root", regular_file),
+        ("market_scheduler_enabled", 1),
+    )
+
+    for field, value in mutations:
+        snapshot = dataclasses.replace(runtime_configuration)
+        config.install_runtime_configuration(snapshot)
+        object.__setattr__(snapshot, field, value)
+
+        with pytest.raises(config.RuntimeConfigurationError) as current_error:
+            config.current_runtime_configuration()
+        assert_safe_runtime_configuration_error(
+            current_error.value, "is unavailable"
+        )
+        with pytest.raises(config.RuntimeConfigurationError) as copy_error:
+            snapshot.mysql_pool_options()
+        assert_safe_runtime_configuration_error(copy_error.value, "is invalid")
+        config.clear_runtime_configuration(snapshot)
+
+
+@pytest.mark.parametrize("root_field", ("corpus_root", "managed_corpus_root"))
+def test_runtime_configuration_rejects_missing_file_and_noncanonical_roots(
+    workspace_tmp_path, root_field,
+):
+    missing = workspace_tmp_path / "missing-root"
+    regular_file = workspace_tmp_path / "regular-root-file"
+    regular_file.write_text("not a directory", encoding="utf-8")
+    canonical = workspace_tmp_path / "canonical-root"
+    canonical.mkdir()
+    noncanonical = canonical / ".." / canonical.name
+
+    for invalid_root in (missing, regular_file, noncanonical):
+        fields = {
+            "mysql_items": runtime_mysql_items(),
+            "corpus_root": workspace_tmp_path,
+            "managed_corpus_root": None,
+            "market_scheduler_enabled": False,
+        }
+        fields[root_field] = invalid_root
+        with pytest.raises(config.RuntimeConfigurationError) as caught:
+            config.RuntimeConfiguration(**fields)
+        assert_safe_runtime_configuration_error(caught.value, "is invalid")
+
+
+@pytest.mark.parametrize("root_field", ("corpus_root", "managed_corpus_root"))
+def test_runtime_configuration_rejects_linked_roots(
+    workspace_tmp_path, root_field,
+):
+    actual = workspace_tmp_path / "actual-runtime-root"
+    linked = workspace_tmp_path / "linked-runtime-root"
+    actual.mkdir()
+    try:
+        linked.symlink_to(actual, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    fields = {
+        "mysql_items": runtime_mysql_items(),
+        "corpus_root": workspace_tmp_path,
+        "managed_corpus_root": None,
+        "market_scheduler_enabled": False,
+    }
+    fields[root_field] = linked
+    with pytest.raises(config.RuntimeConfigurationError) as caught:
+        config.RuntimeConfiguration(**fields)
+    assert_safe_runtime_configuration_error(caught.value, "is invalid")
+
+
+def test_runtime_configuration_rejects_managed_reparse_metadata(
+    workspace_tmp_path, monkeypatch,
+):
+    managed = workspace_tmp_path / "managed-reparse-root"
+    managed.mkdir()
+    real_metadata = managed.lstat()
+
+    class ReparseMetadata:
+        st_mode = real_metadata.st_mode
+        st_file_attributes = 0x400
+
+    concrete_path_type = type(Path())
+    original_lstat = concrete_path_type.lstat
+
+    def marked_lstat(selected):
+        if selected == managed:
+            return ReparseMetadata()
+        return original_lstat(selected)
+
+    monkeypatch.setattr(concrete_path_type, "lstat", marked_lstat)
+
+    with pytest.raises(config.RuntimeConfigurationError) as caught:
+        config.RuntimeConfiguration(
+            mysql_items=runtime_mysql_items(),
+            corpus_root=workspace_tmp_path,
+            managed_corpus_root=managed,
+            market_scheduler_enabled=False,
+        )
+    assert_safe_runtime_configuration_error(caught.value, "is invalid")
+
+
+def test_runtime_root_validation_wraps_unexpected_metadata_failure(
+    workspace_tmp_path, monkeypatch,
+):
+    managed = workspace_tmp_path / "managed-metadata-failure"
+    managed.mkdir()
+    concrete_path_type = type(Path())
+    original_lstat = concrete_path_type.lstat
+
+    def failing_lstat(selected):
+        if selected == managed:
+            raise AttributeError("secret-metadata-sentinel")
+        return original_lstat(selected)
+
+    monkeypatch.setattr(concrete_path_type, "lstat", failing_lstat)
+
+    with pytest.raises(config.RuntimeConfigurationError) as caught:
+        config.RuntimeConfiguration(
+            mysql_items=runtime_mysql_items(),
+            corpus_root=workspace_tmp_path,
+            managed_corpus_root=managed,
+            market_scheduler_enabled=False,
+        )
+    assert_safe_runtime_configuration_error(caught.value, "is invalid")
+    assert "secret-metadata-sentinel" not in str(caught.value)
+
+
 def test_registry_rejects_hostile_class_spoof_without_reading_metadata():
     class FlowSentinel(KeyboardInterrupt):
         pass
@@ -302,6 +463,7 @@ def test_registry_rejects_hostile_snapshot_subclass_before_field_access():
 
     hostile = object.__new__(HostileSnapshot)
 
+    assert config._runtime_configuration_is_valid(hostile) is False
     with pytest.raises(config.RuntimeConfigurationError) as caught:
         config.install_runtime_configuration(hostile)
 
@@ -382,12 +544,7 @@ def test_runtime_configuration_rejects_duplicate_and_non_exact_install(
     class RuntimeConfigurationSubclass(config.RuntimeConfiguration):
         pass
 
-    subclass = RuntimeConfigurationSubclass(
-        mysql_items=runtime_configuration.mysql_items,
-        corpus_root=runtime_configuration.corpus_root,
-        managed_corpus_root=runtime_configuration.managed_corpus_root,
-        market_scheduler_enabled=True,
-    )
+    subclass = object.__new__(RuntimeConfigurationSubclass)
     with pytest.raises(
         config.RuntimeConfigurationError,
         match="^runtime configuration installation failed$",

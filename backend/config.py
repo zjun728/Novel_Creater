@@ -102,7 +102,19 @@ _active_runtime_configuration: RuntimeConfiguration | None = None
 
 
 def _runtime_configuration_is_valid(snapshot: RuntimeConfiguration) -> bool:
-    mysql_items = snapshot.mysql_items
+    if type(snapshot) is not RuntimeConfiguration:
+        return False
+    try:
+        mysql_items = object.__getattribute__(snapshot, "mysql_items")
+        corpus_root = object.__getattribute__(snapshot, "corpus_root")
+        managed_corpus_root = object.__getattribute__(
+            snapshot, "managed_corpus_root"
+        )
+        market_scheduler_enabled = object.__getattribute__(
+            snapshot, "market_scheduler_enabled"
+        )
+    except AttributeError:
+        return False
     if type(mysql_items) is not tuple or len(mysql_items) != len(
         _RUNTIME_MYSQL_KEYS
     ):
@@ -132,17 +144,23 @@ def _runtime_configuration_is_valid(snapshot: RuntimeConfiguration) -> bool:
             return False
         if key == "maxsize" and value != 10:
             return False
-    if (
-        snapshot.corpus_root is not None
-        and type(snapshot.corpus_root) is not _RUNTIME_PATH_TYPE
-    ):
+    if not _runtime_root_is_valid(corpus_root, "CORPUS_ROOT"):
         return False
-    if (
-        snapshot.managed_corpus_root is not None
-        and type(snapshot.managed_corpus_root) is not _RUNTIME_PATH_TYPE
-    ):
+    if not _runtime_root_is_valid(managed_corpus_root, "MANAGED_CORPUS_ROOT"):
         return False
-    return type(snapshot.market_scheduler_enabled) is bool
+    return type(market_scheduler_enabled) is bool
+
+
+def _runtime_root_is_valid(root: object, name: str) -> bool:
+    if root is None:
+        return True
+    if type(root) is not _RUNTIME_PATH_TYPE:
+        return False
+    try:
+        validated = _checked_corpus_root(str(root), name)
+    except Exception:
+        return False
+    return type(validated) is _RUNTIME_PATH_TYPE and validated == root
 
 
 def load_market_scheduler_enabled(
@@ -392,7 +410,10 @@ def install_runtime_configuration(snapshot: RuntimeConfiguration) -> None:
 
 
 def current_runtime_configuration() -> RuntimeConfiguration:
-    if _active_runtime_configuration is None:
+    if (
+        _active_runtime_configuration is None
+        or not _runtime_configuration_is_valid(_active_runtime_configuration)
+    ):
         raise RuntimeConfigurationError(
             "runtime configuration is unavailable"
         ) from None
