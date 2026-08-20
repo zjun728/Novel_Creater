@@ -1,6 +1,8 @@
 import asyncio
+from collections.abc import Iterator
 from dataclasses import asdict, replace
 from contextlib import contextmanager
+import gc
 import hashlib
 import json
 from pathlib import Path
@@ -28,6 +30,93 @@ from backend.services import product_database_lifecycle_lock as lifecycle_servic
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 SECRET = "cutover-secret-must-not-leak"
+
+
+@pytest.fixture
+def sync_main_event_loop_owner() -> Iterator[None]:
+    try:
+        with _owned_sync_main_event_loop():
+            yield
+    finally:
+        gc.collect()
+
+
+@contextmanager
+def _owned_sync_main_event_loop() -> Iterator[asyncio.AbstractEventLoop]:
+    policy = asyncio.get_event_loop_policy()
+    policy_local = getattr(policy, "_local", None)
+    if policy_local is None:
+        raise RuntimeError("sync main tests require the default asyncio event loop policy")
+    preexisting = getattr(policy_local, "_loop", None)
+    owned = asyncio.new_event_loop()
+    asyncio.set_event_loop(owned)
+    try:
+        yield owned
+    finally:
+        if not owned.is_closed():
+            owned.close()
+        if preexisting is not None and not preexisting.is_closed():
+            asyncio.set_event_loop(preexisting)
+        else:
+            asyncio.set_event_loop(None)
+
+
+def test_sync_main_loop_owner_restores_unrelated_loop_without_closing_it() -> None:
+    unrelated = asyncio.new_event_loop()
+    asyncio.set_event_loop(unrelated)
+    try:
+        with _owned_sync_main_event_loop() as owned:
+            assert asyncio.get_event_loop() is owned
+            asyncio.run(asyncio.sleep(0))
+
+        assert owned.is_closed()
+        assert unrelated.is_closed() is False
+        assert asyncio.get_event_loop() is unrelated
+    finally:
+        unrelated.close()
+        asyncio.set_event_loop(None)
+
+
+def test_sync_main_loop_owner_restores_no_current_loop() -> None:
+    asyncio.set_event_loop(None)
+
+    with _owned_sync_main_event_loop() as owned:
+        assert asyncio.get_event_loop() is owned
+        asyncio.run(asyncio.sleep(0))
+
+    assert owned.is_closed()
+    with pytest.raises(RuntimeError, match="There is no current event loop"):
+        asyncio.get_event_loop()
+
+
+@pytest.mark.parametrize("exceptional_exit", (False, True))
+def test_sync_main_loop_owner_does_not_adopt_fresh_policy_implicit_loop(
+    exceptional_exit: bool,
+) -> None:
+    original_policy = asyncio.get_event_loop_policy()
+    fresh_policy = asyncio.DefaultEventLoopPolicy()
+    asyncio.set_event_loop_policy(fresh_policy)
+    try:
+        policy_local = fresh_policy._local  # type: ignore[attr-defined]
+        assert vars(policy_local) == {}
+
+        if exceptional_exit:
+            with pytest.raises(RuntimeError, match="fixture-body-failed"):
+                with _owned_sync_main_event_loop() as owned:
+                    raise RuntimeError("fixture-body-failed")
+        else:
+            with _owned_sync_main_event_loop() as owned:
+                asyncio.run(asyncio.sleep(0))
+
+        assert owned.is_closed()
+        assert getattr(policy_local, "_loop", None) is None
+        with pytest.raises(RuntimeError, match="There is no current event loop"):
+            asyncio.get_event_loop()
+    finally:
+        implicit = getattr(fresh_policy._local, "_loop", None)  # type: ignore[attr-defined]
+        if implicit is not None and not implicit.is_closed():
+            implicit.close()
+        asyncio.set_event_loop_policy(original_policy)
 
 
 def inventory(database: str, fingerprint: str) -> DatabaseInventory:
@@ -1864,7 +1953,9 @@ async def test_recovery_uses_one_exact_nondeferred_lock_scope(workspace_tmp_path
     assert lifecycle.scopes == 1
 
 
-def test_cli_recovery_requires_exact_closed_action_and_execute():
+def test_cli_recovery_requires_exact_closed_action_and_execute(
+    sync_main_event_loop_owner,
+):
     assert command.main([
         "--recover-legacy",
         "--database", LEGACY_DATABASE,
@@ -2282,7 +2373,9 @@ async def test_execute_cli_recovery_is_receipt_free(workspace_tmp_path):
     )
 
 
-def test_cli_help_is_successful_and_failures_are_generic_secret_free(monkeypatch, capsys):
+def test_cli_help_is_successful_and_failures_are_generic_secret_free(
+    monkeypatch, capsys, sync_main_event_loop_owner,
+):
     assert command.main(["--help"]) == 0
     capsys.readouterr()
 
