@@ -25,6 +25,81 @@ class ProductDatabaseLifecycleError(RuntimeError):
     """A fixed, public-safe lifecycle-lock failure."""
 
 
+def _consume_deferred_result(future: asyncio.Future[object]) -> None:
+    if future.cancelled():
+        return
+    try:
+        future.exception()
+    except BaseException:
+        return
+
+
+class ProductDatabaseLifecycleLease:
+    """Own deferred physical cleanup for one acquired lifecycle lock."""
+
+    def __init__(self) -> None:
+        self._transfer: asyncio.Future[object] | None = None
+        self._completion: asyncio.Future[object] | None = None
+        self._cleanup: Callable[[], list[BaseException]] | None = None
+
+    def defer_until(
+        self,
+        transfer: asyncio.Future[object],
+    ) -> asyncio.Future[object]:
+        """Publish completion after transfer settlement and lock cleanup."""
+
+        if not isinstance(transfer, asyncio.Future):
+            raise TypeError
+        if self._transfer is not None:
+            if transfer is self._transfer and self._completion is not None:
+                return self._completion
+            raise RuntimeError
+        loop = asyncio.get_running_loop()
+        if transfer.get_loop() is not loop:
+            raise ValueError
+        completion = loop.create_future()
+        completion.add_done_callback(_consume_deferred_result)
+        self._transfer = transfer
+        self._completion = completion
+        return completion
+
+    def _arm(self, cleanup: Callable[[], list[BaseException]]) -> bool:
+        if self._transfer is None:
+            return False
+        self._cleanup = cleanup
+        self._transfer.add_done_callback(self._finish)
+        return True
+
+    def _finish(self, transfer: asyncio.Future[object]) -> None:
+        if transfer is not self._transfer or self._cleanup is None:
+            return
+        result = None
+        primary = None
+        try:
+            result = transfer.result()
+        except BaseException as error:
+            primary = error
+        cleanup = self._cleanup()
+        outgoing = None
+        try:
+            _raise_failures(primary, cleanup)
+        except BaseException as error:
+            outgoing = error
+
+        completion = self._completion
+        self._transfer = None
+        self._completion = None
+        self._cleanup = None
+        primary = None
+        cleanup = []
+        if completion is None or completion.done():
+            return
+        if outgoing is not None:
+            completion.set_exception(outgoing)
+        else:
+            completion.set_result(result)
+
+
 @dataclass(frozen=True)
 class _WindowsAPI:
     create: Callable[[str], object]
@@ -233,7 +308,7 @@ def product_database_lifecycle_lock(
     platform_name: str = os.name,
     windows_api: object | None = None,
     posix_api: object | None = None,
-) -> Iterator[None]:
+) -> Iterator[ProductDatabaseLifecycleLease]:
     """Acquire the stable lifecycle lock without waiting and release it on exit.
 
     Only cooperating repository participants are serialized.  All failures are
@@ -249,6 +324,29 @@ def product_database_lifecycle_lock(
     close: Callable[[object], object] | None = None
     release_success: object = None
     close_success: object = None
+    lease = ProductDatabaseLifecycleLease()
+
+    def cleanup_resource() -> list[BaseException]:
+        nonlocal resource, release, close
+        errors: list[BaseException] = []
+        if acquired and resource is not None and release is not None:
+            try:
+                released = release(resource)
+                if released is not release_success:
+                    raise ValueError
+            except BaseException as error:
+                errors.append(error)
+        if resource is not None and close is not None:
+            try:
+                closed = close(resource)
+                if closed is not close_success:
+                    raise ValueError
+            except BaseException as error:
+                errors.append(error)
+        resource = None
+        release = None
+        close = None
+        return errors
 
     try:
         if platform_name == "nt":
@@ -292,25 +390,17 @@ def product_database_lifecycle_lock(
             _validate_stable_path(descriptor, lock_path, opened_identity)
         else:
             raise ValueError
-        yield
+        yield lease
     except BaseException as error:
         primary = error
     finally:
-        if acquired and resource is not None and release is not None:
-            try:
-                released = release(resource)
-                if released is not release_success:
-                    raise ValueError
-            except BaseException as error:
-                cleanup.append(error)
-        if resource is not None and close is not None:
-            try:
-                closed = close(resource)
-                if closed is not close_success:
-                    raise ValueError
-            except BaseException as error:
-                cleanup.append(error)
+        if not lease._arm(cleanup_resource):
+            cleanup.extend(cleanup_resource())
         _raise_failures(primary, cleanup)
 
 
-__all__ = ["ProductDatabaseLifecycleError", "product_database_lifecycle_lock"]
+__all__ = [
+    "ProductDatabaseLifecycleError",
+    "ProductDatabaseLifecycleLease",
+    "product_database_lifecycle_lock",
+]

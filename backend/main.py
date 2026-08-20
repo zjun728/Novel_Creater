@@ -393,7 +393,17 @@ async def _application_lifespan(app: FastAPI):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     lock_context = product_database_lifecycle_lock(LOCAL_CONFIG_PATH)
-    lock_context.__enter__()
+    lock_lease = lock_context.__enter__()
+    previous_draft_transfer = getattr(
+        app.state,
+        "draft_operation_shutdown_transfer",
+        None,
+    )
+    previous_market_transfer = getattr(
+        app.state,
+        "market_scheduler_shutdown_transfer",
+        None,
+    )
     application_context = _application_lifespan(app)
     application_error = None
     body_error = None
@@ -417,6 +427,38 @@ async def lifespan(app: FastAPI):
         else:
             if body_error is not None and not application_suppressed:
                 application_error = body_error
+
+    draft_transfer = getattr(
+        app.state,
+        "draft_operation_shutdown_transfer",
+        None,
+    )
+    market_transfer = getattr(
+        app.state,
+        "market_scheduler_shutdown_transfer",
+        None,
+    )
+    publish_draft = (
+        draft_transfer is not None
+        and draft_transfer is not previous_draft_transfer
+    )
+    publish_market = (
+        market_transfer is not None
+        and market_transfer is not previous_market_transfer
+    )
+    transfer = (
+        market_transfer
+        if publish_market
+        else draft_transfer
+        if publish_draft
+        else None
+    )
+    if transfer is not None:
+        completion = lock_lease.defer_until(transfer)
+        if publish_draft:
+            app.state.draft_operation_shutdown_transfer = completion
+        if publish_market:
+            app.state.market_scheduler_shutdown_transfer = completion
 
     if application_error is None:
         lock_context.__exit__(None, None, None)

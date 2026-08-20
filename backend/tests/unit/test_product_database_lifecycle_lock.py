@@ -208,6 +208,165 @@ def test_windows_success_is_zero_wait_and_releases_then_closes(tmp_path: Path):
     assert api.events[4][1] is api.handle  # type: ignore[index]
 
 
+@pytest.mark.asyncio
+async def test_deferred_cleanup_sanitizes_body_then_releases_after_transfer(
+    tmp_path: Path,
+):
+    api = FakeWindowsAPI()
+    transfer = asyncio.get_running_loop().create_future()
+    completion = None
+
+    with pytest.raises(lifecycle.ProductDatabaseLifecycleError) as raised:
+        with lifecycle.product_database_lifecycle_lock(
+            tmp_path / "config.json",
+            platform_name="nt",
+            windows_api=api,
+        ) as lease:
+            assert lease is not None
+            completion = lease.defer_until(transfer)
+            _raise_dirty(RuntimeError(SECRET))
+
+    assert raised.value.args == (LOCK_ERROR,)
+    assert completion is not None
+    assert not completion.done()
+    assert _event_names(api.events) == ["create", "wait"]
+    _assert_clean_tree(raised.value)
+
+    transfer.set_result("finished")
+
+    assert await completion == "finished"
+    assert await completion == "finished"
+    assert _event_names(api.events) == [
+        "create",
+        "wait",
+        "release",
+        "close",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_deferred_cleanup_failure_is_observable_without_repeating_body_primary(
+    tmp_path: Path,
+):
+    api = FakeWindowsAPI(release_result=False, close_result=False)
+    transfer = asyncio.get_running_loop().create_future()
+    completion = None
+
+    with pytest.raises(lifecycle.ProductDatabaseLifecycleError) as body_raised:
+        with lifecycle.product_database_lifecycle_lock(
+            tmp_path / "config.json",
+            platform_name="nt",
+            windows_api=api,
+        ) as lease:
+            completion = lease.defer_until(transfer)
+            _raise_dirty(RuntimeError(SECRET))
+
+    assert body_raised.value.args == (LOCK_ERROR,)
+    assert completion is not None
+    assert not completion.done()
+    _assert_clean_tree(body_raised.value)
+
+    transfer.set_result(None)
+
+    with pytest.raises(BaseExceptionGroup) as cleanup_raised:
+        await completion
+    assert cleanup_raised.value.message == CLEANUP_ERROR
+    assert [error.args for error in cleanup_raised.value.exceptions] == [
+        (CLEANUP_ERROR,),
+        (CLEANUP_ERROR,),
+    ]
+    _assert_clean_tree(cleanup_raised.value)
+    assert _event_names(api.events) == [
+        "create",
+        "wait",
+        "release",
+        "close",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_deferred_release_and_close_failures_surface_once_on_completion(
+    tmp_path: Path,
+):
+    api = FakeWindowsAPI(release_result=False, close_result=False)
+    transfer = asyncio.get_running_loop().create_future()
+
+    with lifecycle.product_database_lifecycle_lock(
+        tmp_path / "config.json",
+        platform_name="nt",
+        windows_api=api,
+    ) as lease:
+        completion = lease.defer_until(transfer)
+
+    assert _event_names(api.events) == ["create", "wait"]
+    transfer.set_result(None)
+
+    for _ in range(2):
+        with pytest.raises(BaseExceptionGroup) as raised:
+            await completion
+        assert raised.value.message == CLEANUP_ERROR
+        assert [error.args for error in raised.value.exceptions] == [
+            (CLEANUP_ERROR,),
+            (CLEANUP_ERROR,),
+        ]
+        _assert_clean_tree(raised.value)
+    assert _event_names(api.events) == [
+        "create",
+        "wait",
+        "release",
+        "close",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("factory", "expected_type", "expected_args"),
+    (
+        (
+            lambda: RuntimeError(SECRET),
+            lifecycle.ProductDatabaseLifecycleError,
+            (LOCK_ERROR,),
+        ),
+        (lambda: asyncio.CancelledError(SECRET), asyncio.CancelledError, ()),
+        (lambda: KeyboardInterrupt(SECRET), KeyboardInterrupt, ()),
+        (lambda: SystemExit(23), SystemExit, (23,)),
+    ),
+)
+@pytest.mark.asyncio
+async def test_deferred_transfer_primary_precedes_release_and_close_failures(
+    tmp_path: Path,
+    factory: Callable[[], BaseException],
+    expected_type: type[BaseException],
+    expected_args: tuple[object, ...],
+):
+    api = FakeWindowsAPI(release_result=False, close_result=False)
+    transfer = asyncio.get_running_loop().create_future()
+
+    with lifecycle.product_database_lifecycle_lock(
+        tmp_path / "config.json",
+        platform_name="nt",
+        windows_api=api,
+    ) as lease:
+        completion = lease.defer_until(transfer)
+
+    transfer.set_exception(factory())
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await completion
+
+    primary, release_error, close_error = raised.value.exceptions
+    assert type(primary) is expected_type
+    assert primary.args == expected_args
+    assert release_error.args == (CLEANUP_ERROR,)
+    assert close_error.args == (CLEANUP_ERROR,)
+    assert _event_names(api.events) == [
+        "create",
+        "wait",
+        "release",
+        "close",
+    ]
+    _assert_clean_tree(raised.value)
+
+
 @pytest.mark.parametrize("handle", (None, 0, False))
 def test_windows_null_create_fails_without_wait_release_or_close(
     tmp_path: Path, handle: object

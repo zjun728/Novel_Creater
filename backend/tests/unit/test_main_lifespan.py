@@ -76,6 +76,71 @@ class FakeWindowsLifecycleLockAPI:
         return self.close_result
 
 
+class ExclusiveRecordingLifecycleLockAPI:
+    def __init__(self, events, *, release_failures=0):
+        self.events = events
+        self.release_failures = release_failures
+        self.active = False
+        self.handles = set()
+
+    def create(self, _name):
+        handle = object()
+        self.handles.add(handle)
+        return handle
+
+    def wait(self, handle):
+        assert handle in self.handles
+        self.events.append("lock-attempt")
+        if self.active:
+            return 0x00000102
+        self.active = True
+        self.events.append("lock-enter")
+        return 0x00000000
+
+    def release(self, handle):
+        assert handle in self.handles
+        self.events.append("lock-exit")
+        self.active = False
+        if self.release_failures:
+            self.release_failures -= 1
+            return False
+        return True
+
+    def close(self, handle):
+        assert handle in self.handles
+        self.handles.remove(handle)
+        self.events.append("lock-close")
+        return True
+
+
+class ControlledShutdownTransfer:
+    def __init__(self, events, name):
+        self.events = events
+        self.name = name
+        self.release = asyncio.Event()
+        self.task = None
+
+    def start_pool_close(self, close_pool_callback):
+        if self.task is None:
+
+            async def finish():
+                self.events.append(f"{self.name}-transfer-wait")
+                await self.release.wait()
+                self.events.append(f"{self.name}-transfer-finish")
+                await close_pool_callback()
+
+            self.task = asyncio.create_task(
+                finish(),
+                name=f"{self.name}-test-shutdown-transfer",
+            )
+            self.task.add_done_callback(
+                lambda task: task.exception()
+                if not task.cancelled()
+                else None
+            )
+        return self.task
+
+
 def _assert_no_sensitive_error_graph(
     error: BaseException,
     sentinels: tuple[str, ...],
@@ -197,7 +262,13 @@ def install_lifespan_fakes(monkeypatch, verify_error=None):
     @contextmanager
     def fake_lifecycle_lock(config_path):
         assert config_path is main.LOCAL_CONFIG_PATH
-        yield
+
+        class FakeLifecycleLease:
+            @staticmethod
+            def defer_until(transfer):
+                return transfer
+
+        yield FakeLifecycleLease()
 
     monkeypatch.setattr(
         main,
@@ -255,6 +326,18 @@ def install_real_lifecycle_lock(monkeypatch, api):
         acquire,
         raising=False,
     )
+
+
+def install_exclusive_lifecycle_lock(monkeypatch, api):
+    def acquire(config_path):
+        assert config_path is main.LOCAL_CONFIG_PATH
+        return lifecycle_lock.product_database_lifecycle_lock(
+            config_path,
+            platform_name="nt",
+            windows_api=api,
+        )
+
+    monkeypatch.setattr(main, "product_database_lifecycle_lock", acquire)
 
 
 @pytest.mark.asyncio
@@ -466,6 +549,308 @@ async def test_lifespan_re_raises_body_primary_suppressed_by_lock_context(
     )
 
     assert suppressed is False
+
+
+@pytest.mark.asyncio
+async def test_lifespan_retains_lock_through_draft_shutdown_transfer(monkeypatch):
+    events = install_lifespan_fakes(monkeypatch)
+    lifecycle = ExclusiveRecordingLifecycleLockAPI(events)
+    install_exclusive_lifecycle_lock(monkeypatch, lifecycle)
+    transfer = ControlledShutdownTransfer(events, "draft")
+
+    class PendingDraftRegistry(FakeDraftOperationTaskRegistry):
+        async def aclose(self):
+            events.append("draft-registry-close")
+            raise draft_operation_tasks.DraftOperationTasksDrainPending(
+                transfer
+            )
+
+    monkeypatch.setattr(
+        main.chapter_sessions,
+        "draft_operation_task_registry",
+        PendingDraftRegistry(events),
+    )
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+
+    with pytest.raises(lifecycle_lock.ProductDatabaseLifecycleError):
+        await context.__aexit__(None, None, None)
+
+    published = main.app.state.draft_operation_shutdown_transfer
+    assert published is not transfer.task
+    assert main.app.state.market_scheduler_shutdown_transfer is None
+    assert not published.done()
+    assert lifecycle.active
+    assert events.count("lock-exit") == 0
+    with pytest.raises(lifecycle_lock.ProductDatabaseLifecycleError):
+        with main.product_database_lifecycle_lock(main.LOCAL_CONFIG_PATH):
+            pytest.fail("second lifecycle lock acquisition succeeded")
+
+    transfer.release.set()
+    await asyncio.wait_for(published, timeout=1)
+
+    assert events.index("draft-transfer-finish") < events.index("close")
+    assert events.index("close") < events.index("lock-exit")
+    assert events.count("lock-exit") == 1
+    assert not lifecycle.active
+
+
+@pytest.mark.parametrize(
+    ("error_factory", "expected_type", "expected_args"),
+    (
+        (
+            lambda: RuntimeError("PRIVATE_DEFERRED_APPLICATION_FAILURE"),
+            lifecycle_lock.ProductDatabaseLifecycleError,
+            ("product database lifecycle lock failed",),
+        ),
+        (
+            lambda: asyncio.CancelledError("PRIVATE_DEFERRED_CANCEL"),
+            asyncio.CancelledError,
+            (),
+        ),
+        (
+            lambda: KeyboardInterrupt("PRIVATE_DEFERRED_INTERRUPT"),
+            KeyboardInterrupt,
+            (),
+        ),
+        (lambda: SystemExit(29), SystemExit, (29,)),
+    ),
+)
+@pytest.mark.asyncio
+async def test_deferred_application_primary_is_immediately_safe_and_first(
+    monkeypatch,
+    error_factory,
+    expected_type,
+    expected_args,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    lifecycle = ExclusiveRecordingLifecycleLockAPI(events)
+    install_exclusive_lifecycle_lock(monkeypatch, lifecycle)
+    transfer = ControlledShutdownTransfer(events, "draft")
+
+    class PendingDraftRegistry(FakeDraftOperationTaskRegistry):
+        async def aclose(self):
+            raise draft_operation_tasks.DraftOperationTasksDrainPending(
+                transfer
+            )
+
+    monkeypatch.setattr(
+        main.chapter_sessions,
+        "draft_operation_task_registry",
+        PendingDraftRegistry(events),
+    )
+    application_error = error_factory()
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+
+    with pytest.raises(BaseExceptionGroup) as caught:
+        await context.__aexit__(
+            type(application_error),
+            application_error,
+            application_error.__traceback__,
+        )
+
+    primary = caught.value.exceptions[0]
+    assert type(primary) is expected_type
+    assert primary.args == expected_args
+    assert lifecycle.active
+    assert events.count("lock-exit") == 0
+    assert all(
+        sentinel not in repr(caught.value)
+        for sentinel in (
+            "PRIVATE_DEFERRED_APPLICATION_FAILURE",
+            "PRIVATE_DEFERRED_CANCEL",
+            "PRIVATE_DEFERRED_INTERRUPT",
+        )
+    )
+
+    completion = main.app.state.draft_operation_shutdown_transfer
+    transfer.release.set()
+    await asyncio.wait_for(completion, timeout=1)
+
+    assert events.count("lock-exit") == 1
+    assert not lifecycle.active
+
+
+@pytest.mark.asyncio
+async def test_lifespan_retains_lock_through_market_shutdown_transfer(monkeypatch):
+    events = install_lifespan_fakes(monkeypatch)
+    lifecycle = ExclusiveRecordingLifecycleLockAPI(events)
+    install_exclusive_lifecycle_lock(monkeypatch, lifecycle)
+    transfer = ControlledShutdownTransfer(events, "market")
+
+    class PendingMarketRuntime:
+        def start(self):
+            events.append("scheduler-start")
+
+        async def stop(self):
+            events.append("scheduler-stop")
+            error = TimeoutError("market scheduler shutdown timed out")
+            error.cleanup_transfer = transfer
+            raise error
+
+    monkeypatch.setattr(
+        main,
+        "build_market_scheduler_runtime",
+        PendingMarketRuntime,
+    )
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+
+    with pytest.raises(lifecycle_lock.ProductDatabaseLifecycleError):
+        await context.__aexit__(None, None, None)
+
+    published = main.app.state.market_scheduler_shutdown_transfer
+    assert published is not transfer.task
+    assert main.app.state.draft_operation_shutdown_transfer is None
+    assert not published.done()
+    assert lifecycle.active
+    assert events.count("lock-exit") == 0
+    with pytest.raises(lifecycle_lock.ProductDatabaseLifecycleError):
+        with main.product_database_lifecycle_lock(main.LOCAL_CONFIG_PATH):
+            pytest.fail("second lifecycle lock acquisition succeeded")
+
+    transfer.release.set()
+    await asyncio.wait_for(published, timeout=1)
+
+    assert events.index("market-transfer-finish") < events.index("close")
+    assert events.index("close") < events.index("lock-exit")
+    assert events.count("lock-exit") == 1
+    assert not lifecycle.active
+
+
+@pytest.mark.asyncio
+async def test_lifespan_retains_one_lock_through_combined_shutdown_transfer(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    lifecycle = ExclusiveRecordingLifecycleLockAPI(events)
+    install_exclusive_lifecycle_lock(monkeypatch, lifecycle)
+    draft_transfer = ControlledShutdownTransfer(events, "draft")
+    market_transfer = ControlledShutdownTransfer(events, "market")
+
+    class PendingDraftRegistry(FakeDraftOperationTaskRegistry):
+        async def aclose(self):
+            events.append("draft-registry-close")
+            raise draft_operation_tasks.DraftOperationTasksDrainPending(
+                draft_transfer
+            )
+
+    class PendingMarketRuntime:
+        def start(self):
+            events.append("scheduler-start")
+
+        async def stop(self):
+            events.append("scheduler-stop")
+            error = TimeoutError("market scheduler shutdown timed out")
+            error.cleanup_transfer = market_transfer
+            raise error
+
+    monkeypatch.setattr(
+        main.chapter_sessions,
+        "draft_operation_task_registry",
+        PendingDraftRegistry(events),
+    )
+    monkeypatch.setattr(
+        main,
+        "build_market_scheduler_runtime",
+        PendingMarketRuntime,
+    )
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+
+    with pytest.raises(BaseExceptionGroup) as caught:
+        await context.__aexit__(None, None, None)
+
+    assert [type(error) for error in caught.value.exceptions] == [
+        lifecycle_lock.ProductDatabaseLifecycleError,
+        lifecycle_lock.ProductDatabaseLifecycleError,
+    ]
+
+    draft_published = main.app.state.draft_operation_shutdown_transfer
+    market_published = main.app.state.market_scheduler_shutdown_transfer
+    assert draft_published is market_published
+    assert draft_published is not market_transfer.task
+    assert lifecycle.active
+    assert events.count("lock-exit") == 0
+
+    market_transfer.release.set()
+    await _next_loop_turn()
+    assert "close" not in events
+    assert events.count("lock-exit") == 0
+    with pytest.raises(lifecycle_lock.ProductDatabaseLifecycleError):
+        with main.product_database_lifecycle_lock(main.LOCAL_CONFIG_PATH):
+            pytest.fail("second lifecycle lock acquisition succeeded")
+
+    draft_transfer.release.set()
+    await asyncio.wait_for(draft_published, timeout=1)
+
+    assert events.index("market-transfer-finish") < events.index(
+        "draft-transfer-finish"
+    )
+    assert events.index("draft-transfer-finish") < events.index("close")
+    assert events.index("close") < events.index("lock-exit")
+    assert events.count("lock-exit") == 1
+    assert not lifecycle.active
+
+
+@pytest.mark.asyncio
+async def test_transferred_lock_release_failure_is_published_and_blocks_restart(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    lifecycle = ExclusiveRecordingLifecycleLockAPI(
+        events,
+        release_failures=1,
+    )
+    install_exclusive_lifecycle_lock(monkeypatch, lifecycle)
+    transfer = ControlledShutdownTransfer(events, "draft")
+
+    class PendingDraftRegistry(FakeDraftOperationTaskRegistry):
+        async def aclose(self):
+            raise draft_operation_tasks.DraftOperationTasksDrainPending(
+                transfer
+            )
+
+    monkeypatch.setattr(
+        main.chapter_sessions,
+        "draft_operation_task_registry",
+        PendingDraftRegistry(events),
+    )
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+    with pytest.raises(lifecycle_lock.ProductDatabaseLifecycleError):
+        await context.__aexit__(None, None, None)
+
+    published = main.app.state.draft_operation_shutdown_transfer
+    transfer.release.set()
+    await asyncio.wait_for(transfer.task, timeout=1)
+    await _next_loop_turn()
+
+    assert published.done()
+    published_error = published.exception()
+    assert isinstance(
+        published_error,
+        lifecycle_lock.ProductDatabaseLifecycleError,
+    )
+    assert published_error.args == (
+        "product database lifecycle lock cleanup failed",
+    )
+    assert events.count("lock-exit") == 1
+    app_actions_before_restart = tuple(events)
+
+    restart = main.lifespan(main.app)
+    with pytest.raises(lifecycle_lock.ProductDatabaseLifecycleError):
+        await restart.__aenter__()
+
+    assert events[len(app_actions_before_restart) :] == [
+        "lock-attempt",
+        "lock-enter",
+        "lock-exit",
+        "lock-close",
+    ]
+    assert events.count("lock-exit") == 2
+    assert not lifecycle.active
 
 
 @pytest.mark.asyncio
