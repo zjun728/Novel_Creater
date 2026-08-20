@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.database import close_pool, connection, transaction
-from backend.config import MANAGED_CORPUS_ROOT
+from backend.config import LOCAL_CONFIG_PATH, MANAGED_CORPUS_ROOT
 from backend.gateways.openai_json_transport import (
     OpenAIJSONTransportLifecycleError,
 )
@@ -44,6 +44,9 @@ from backend.schema_version import verify_schema_version
 from backend.security.paths import resolve_spa_file
 from backend.security.redaction import install_error_handlers
 from backend.services import project_imports as project_import_service
+from backend.services.product_database_lifecycle_lock import (
+    product_database_lifecycle_lock,
+)
 
 
 _project_package_logger = logging.getLogger("backend.project_packages")
@@ -150,7 +153,7 @@ def _previous_shutdown_transfer_failed(app: FastAPI) -> bool:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def _application_lifespan(app: FastAPI):
     if _previous_shutdown_transfer_failed(app):
         raise DraftOperationTaskRegistryLifecycleError(
             "Draft operation task registry lifecycle failed"
@@ -385,6 +388,53 @@ async def lifespan(app: FastAPI):
                 "application shutdown cleanup failed",
                 all_errors,
             )
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    lock_context = product_database_lifecycle_lock(LOCAL_CONFIG_PATH)
+    lock_context.__enter__()
+    application_context = _application_lifespan(app)
+    application_error = None
+    body_error = None
+    try:
+        await application_context.__aenter__()
+    except BaseException as error:
+        application_error = error
+    else:
+        try:
+            yield
+        except BaseException as error:
+            body_error = error
+        try:
+            application_suppressed = await application_context.__aexit__(
+                type(body_error) if body_error is not None else None,
+                body_error,
+                body_error.__traceback__ if body_error is not None else None,
+            )
+        except BaseException as error:
+            application_error = error
+        else:
+            if body_error is not None and not application_suppressed:
+                application_error = body_error
+
+    if application_error is None:
+        lock_context.__exit__(None, None, None)
+        return
+
+    try:
+        lock_context.__exit__(
+            type(application_error),
+            application_error,
+            application_error.__traceback__,
+        )
+    except BaseException:
+        application_error = None
+        body_error = None
+        application_context = None
+        lock_context = None
+        raise
+    raise application_error
 
 
 app = FastAPI(title="Novel Creator API", version="1.0", lifespan=lifespan)

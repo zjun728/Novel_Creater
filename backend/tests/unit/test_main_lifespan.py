@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Mapping
+from contextlib import contextmanager
 import json
 from types import TracebackType
 
@@ -18,6 +19,7 @@ from backend.domain.routers import chapter_outlines, finalization, planning
 from backend.runtime import draft_operation_tasks
 from backend.runtime.draft_operation_tasks import DraftOperationTaskRegistry
 from backend.schema_version import SchemaMismatch
+from backend.services import product_database_lifecycle_lock as lifecycle_lock
 from backend.tests.support.fakes import FakeAsyncContext
 
 
@@ -43,6 +45,35 @@ class FakeDraftOperationTaskRegistry:
     async def aclose(self):
         if self.events is not None:
             self.events.append("draft-registry-close")
+
+
+class FakeWindowsLifecycleLockAPI:
+    def __init__(
+        self,
+        *,
+        wait_result=0,
+        release_result=True,
+        close_result=True,
+    ):
+        self.handle = object()
+        self.wait_result = wait_result
+        self.release_result = release_result
+        self.close_result = close_result
+
+    def create(self, _name):
+        return self.handle
+
+    def wait(self, handle):
+        assert handle is self.handle
+        return self.wait_result
+
+    def release(self, handle):
+        assert handle is self.handle
+        return self.release_result
+
+    def close(self, handle):
+        assert handle is self.handle
+        return self.close_result
 
 
 def _assert_no_sensitive_error_graph(
@@ -162,6 +193,18 @@ def install_lifespan_fakes(monkeypatch, verify_error=None):
     monkeypatch.setattr(main, "connection", lambda: context)
     monkeypatch.setattr(main, "verify_schema_version", fake_verify)
     monkeypatch.setattr(main, "close_pool", fake_close_pool)
+
+    @contextmanager
+    def fake_lifecycle_lock(config_path):
+        assert config_path is main.LOCAL_CONFIG_PATH
+        yield
+
+    monkeypatch.setattr(
+        main,
+        "product_database_lifecycle_lock",
+        fake_lifecycle_lock,
+        raising=False,
+    )
     monkeypatch.setattr(
         main.project_packages,
         "cleanup_stale_project_package_roots",
@@ -195,6 +238,234 @@ def install_lifespan_fakes(monkeypatch, verify_error=None):
         FakeDraftOperationTaskRegistry(),
     )
     return events
+
+
+def install_real_lifecycle_lock(monkeypatch, api):
+    def acquire(config_path):
+        assert config_path is main.LOCAL_CONFIG_PATH
+        return lifecycle_lock.product_database_lifecycle_lock(
+            config_path,
+            platform_name="nt",
+            windows_api=api,
+        )
+
+    monkeypatch.setattr(
+        main,
+        "product_database_lifecycle_lock",
+        acquire,
+        raising=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_lifespan_lock_wraps_all_startup_and_shutdown_resources(monkeypatch):
+    events = install_lifespan_fakes(monkeypatch)
+
+    @contextmanager
+    def recording_lock(config_path):
+        assert config_path is main.LOCAL_CONFIG_PATH
+        events.append("lock-enter")
+        try:
+            yield
+        finally:
+            events.append("lock-exit")
+
+    monkeypatch.setattr(
+        main,
+        "product_database_lifecycle_lock",
+        recording_lock,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        main.project_packages,
+        "cleanup_stale_project_package_roots",
+        lambda _temp_parent: events.append("project-package-stale-cleanup"),
+    )
+    monkeypatch.setattr(
+        main.chapter_sessions,
+        "draft_operation_task_registry",
+        FakeDraftOperationTaskRegistry(events),
+    )
+    for module, attribute in (
+        (main.planning, "planning_provider_gateway"),
+        (main.chapter_outlines, "chapter_outline_provider_gateway"),
+        (main.finalization, "finalization_quality_gateway"),
+        (main.finalization, "finalization_extraction_gateway"),
+    ):
+        monkeypatch.setattr(
+            module,
+            attribute,
+            FakePlanningProviderGateway(events),
+            raising=False,
+        )
+
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+    events.append("application-body")
+    await context.__aexit__(None, None, None)
+
+    assert events[0] == "lock-enter"
+    assert events.index("lock-enter") < events.index(
+        "project-package-stale-cleanup"
+    )
+    assert events.index("lock-enter") < events.index("connection-enter")
+    for cleanup in (
+        "draft-registry-close",
+        "provider-close",
+        "scheduler-stop",
+        "close",
+    ):
+        assert events.index(cleanup) < events.index("lock-exit")
+    assert events[-1] == "lock-exit"
+
+
+@pytest.mark.asyncio
+async def test_lifespan_lock_acquisition_failure_runs_no_application_actions(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    api = FakeWindowsLifecycleLockAPI(wait_result=0x00000102)
+    install_real_lifecycle_lock(monkeypatch, api)
+    context = main.lifespan(main.app)
+
+    with pytest.raises(lifecycle_lock.ProductDatabaseLifecycleError) as caught:
+        await context.__aenter__()
+
+    assert caught.value.args == ("product database lifecycle lock failed",)
+    assert events == []
+    _assert_no_sensitive_error_graph(caught.value, ())
+
+
+@pytest.mark.asyncio
+async def test_lifespan_surfaces_safe_lock_cleanup_failure_after_success(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    api = FakeWindowsLifecycleLockAPI(
+        release_result=False,
+        close_result=False,
+    )
+    install_real_lifecycle_lock(monkeypatch, api)
+    context = main.lifespan(main.app)
+
+    await context.__aenter__()
+    with pytest.raises(BaseExceptionGroup) as caught:
+        await context.__aexit__(None, None, None)
+
+    assert events[-1] == "close"
+    assert caught.value.message == "product database lifecycle lock cleanup failed"
+    assert [error.args for error in caught.value.exceptions] == [
+        ("product database lifecycle lock cleanup failed",),
+        ("product database lifecycle lock cleanup failed",),
+    ]
+    _assert_no_sensitive_error_graph(caught.value, ())
+
+
+@pytest.mark.parametrize("phase", ("startup", "body", "shutdown"))
+@pytest.mark.parametrize(
+    ("error_factory", "expected_type", "expected_args"),
+    (
+        (
+            lambda: RuntimeError("PRIVATE_APPLICATION_FAILURE"),
+            lifecycle_lock.ProductDatabaseLifecycleError,
+            ("product database lifecycle lock failed",),
+        ),
+        (lambda: asyncio.CancelledError("PRIVATE_CANCEL"), asyncio.CancelledError, ()),
+        (lambda: KeyboardInterrupt("PRIVATE_INTERRUPT"), KeyboardInterrupt, ()),
+        (lambda: SystemExit(17), SystemExit, (17,)),
+    ),
+)
+@pytest.mark.asyncio
+async def test_lifespan_application_failure_stays_first_when_lock_cleanup_fails(
+    monkeypatch,
+    phase,
+    error_factory,
+    expected_type,
+    expected_args,
+):
+    application_error = error_factory()
+    events = install_lifespan_fakes(
+        monkeypatch,
+        verify_error=application_error if phase == "startup" else None,
+    )
+    if phase == "shutdown":
+
+        async def fail_pool_close():
+            events.append("close")
+            raise application_error
+
+        monkeypatch.setattr(main, "close_pool", fail_pool_close)
+    api = FakeWindowsLifecycleLockAPI(
+        release_result=False,
+        close_result=False,
+    )
+    install_real_lifecycle_lock(monkeypatch, api)
+    context = main.lifespan(main.app)
+
+    with pytest.raises(BaseExceptionGroup) as caught:
+        if phase == "startup":
+            await context.__aenter__()
+        else:
+            await context.__aenter__()
+            if phase == "body":
+                await context.__aexit__(
+                    type(application_error),
+                    application_error,
+                    application_error.__traceback__,
+                )
+            else:
+                await context.__aexit__(None, None, None)
+
+    primary, release_error, close_error = caught.value.exceptions
+    assert type(primary) is expected_type
+    assert primary.args == expected_args
+    assert release_error.args == (
+        "product database lifecycle lock cleanup failed",
+    )
+    assert close_error.args == (
+        "product database lifecycle lock cleanup failed",
+    )
+    _assert_no_sensitive_error_graph(caught.value, ())
+    assert all(
+        sentinel not in repr(caught.value)
+        for sentinel in (
+            "PRIVATE_APPLICATION_FAILURE",
+            "PRIVATE_CANCEL",
+            "PRIVATE_INTERRUPT",
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_lifespan_re_raises_body_primary_suppressed_by_lock_context(
+    monkeypatch,
+):
+    install_lifespan_fakes(monkeypatch)
+
+    @contextmanager
+    def malicious_suppressing_lock(_config_path):
+        try:
+            yield
+        except BaseException:
+            return
+
+    monkeypatch.setattr(
+        main,
+        "product_database_lifecycle_lock",
+        malicious_suppressing_lock,
+        raising=False,
+    )
+    application_error = RuntimeError("application body failure")
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+
+    suppressed = await context.__aexit__(
+        RuntimeError,
+        application_error,
+        application_error.__traceback__,
+    )
+
+    assert suppressed is False
 
 
 @pytest.mark.asyncio
