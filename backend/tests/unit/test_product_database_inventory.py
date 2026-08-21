@@ -661,8 +661,9 @@ async def test_empty_server_version_is_rejected():
         await inventory_database(BadSession(), LEGACY_DATABASE)
 
 
-def test_assert_inventory_equal_ignores_database_and_server_only():
-    baseline = asyncio.run(inventory_database(RecordingSession(), LEGACY_DATABASE))
+@pytest.mark.asyncio
+async def test_assert_inventory_equal_ignores_database_and_server_only():
+    baseline = await inventory_database(RecordingSession(), LEGACY_DATABASE)
     assert_inventory_equal(baseline, replace(baseline, database=RESTORE_DATABASE, server_version="8.4.11"))
     cases = (
         {"table_names": (), "row_counts": (), "nonempty_table_count": 0, "total_row_count": 0},
@@ -675,8 +676,9 @@ def test_assert_inventory_equal_ignores_database_and_server_only():
             assert_inventory_equal(baseline, replace(baseline, **changes))
 
 
-def test_public_assertion_errors_suppress_ambient_sensitive_context():
-    baseline = asyncio.run(inventory_database(RecordingSession(), LEGACY_DATABASE))
+@pytest.mark.asyncio
+async def test_public_assertion_errors_suppress_ambient_sensitive_context():
+    baseline = await inventory_database(RecordingSession(), LEGACY_DATABASE)
     sentinel = "password=ambient dsn=mysql://private"
     comparison_changes = (
         {"table_names": (), "row_counts": (), "nonempty_table_count": 0, "total_row_count": 0},
