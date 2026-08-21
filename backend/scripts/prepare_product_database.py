@@ -1916,6 +1916,7 @@ async def _default_smoke(
 def _default_dependencies() -> PreparationCommandDependencies:
     from backend.services.product_database_backup import (
         create_logical_backup,
+        preflight_backup_directory,
         preflight_client_connection,
         preflight_client_pair,
         private_mysql_option_file,
@@ -1942,12 +1943,13 @@ def _default_dependencies() -> PreparationCommandDependencies:
 
     def option_file(config: Mapping[str, object], root: Path) -> object:
         connection = _mysql_connection_config(config)
+        private_root = preflight_backup_directory(root, REPOSITORY_ROOT)
         return private_mysql_option_file(
             {
                 name: connection[name]
                 for name in ("host", "port", "user", "password")
             },
-            root,
+            private_root,
             repository_root=REPOSITORY_ROOT,
         )
 

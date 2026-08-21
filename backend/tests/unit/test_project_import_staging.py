@@ -1,6 +1,10 @@
 import asyncio
 from hashlib import sha256
+import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
 from types import SimpleNamespace
 import zipfile
 
@@ -12,6 +16,7 @@ from backend.repositories.project_imports import (
     ProjectImportPersistenceError,
     ProjectImportRecoveryCommand,
 )
+from backend.security.private_files import apply_private_permissions
 from backend.security.paths import managed_corpus_blob_path
 from backend.services import project_imports
 from backend.services.corpus_import import CorpusImportService
@@ -34,6 +39,125 @@ def _package(tmp_path: Path, data: bytes, *, archive_data: bytes | None = None):
 
 def _no_acl(monkeypatch):
     monkeypatch.setattr(project_imports, "apply_private_permissions", lambda *_args, **_kwargs: None)
+
+
+def _windows_acl_observation(path: Path, powershell: str) -> dict[str, object]:
+    script = """
+$ErrorActionPreference = 'Stop'
+$rules = @((Get-Acl -LiteralPath $env:PRIVATE_ACL_LITERAL_PATH).Access |
+    ForEach-Object {
+    [pscustomobject]@{
+        sid = $_.IdentityReference.Translate(
+            [System.Security.Principal.SecurityIdentifier]
+        ).Value
+        rights = [uint32]$_.FileSystemRights
+        access_type = [int]$_.AccessControlType
+        inherited = [bool]$_.IsInherited
+        inheritance_flags = [int]$_.InheritanceFlags
+        propagation_flags = [int]$_.PropagationFlags
+    }
+})
+$observation = [pscustomobject]@{
+    currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    rules = $rules
+}
+ConvertTo-Json -InputObject $observation -Compress -Depth 3
+"""
+    result = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-Command", script],
+        check=False,
+        shell=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=5,
+        env={**os.environ, "PRIVATE_ACL_LITERAL_PATH": os.fspath(path)},
+    )
+    assert result.returncode == 0
+    observed = json.loads(result.stdout)
+    assert isinstance(observed, dict)
+    return observed
+
+
+def _set_windows_legacy_grant(path: Path, sid: str) -> None:
+    result = subprocess.run(
+        [
+            "icacls",
+            os.fspath(path),
+            "/inheritance:r",
+            "/grant:r",
+            f"*{sid}:(R,W)",
+        ],
+        check=False,
+        shell=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+    )
+    assert result.returncode == 0
+
+
+def _remove_windows_current_grant(path: Path, sid: str) -> None:
+    result = subprocess.run(
+        ["icacls", os.fspath(path), "/remove:g", f"*{sid}"],
+        check=False,
+        shell=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+    )
+    assert result.returncode == 0
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows private directory ACL")
+def test_private_directory_upgrades_legacy_explicit_grant(tmp_path: Path) -> None:
+    powershell = shutil.which("pwsh.exe") or shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("PowerShell ACL observation is unavailable")
+    private = tmp_path / "private"
+    private.mkdir()
+    sid: str | None = None
+    upgraded_acl: dict[str, object] = {}
+    failure: BaseException | None = None
+    cleanup_failures: list[str] = []
+
+    try:
+        initial_acl = _windows_acl_observation(private, powershell)
+        observed_sid = initial_acl["currentSid"]
+        assert isinstance(observed_sid, str)
+        sid = observed_sid
+        _set_windows_legacy_grant(private, sid)
+        apply_private_permissions(private, is_directory=True)
+        upgraded_acl = _windows_acl_observation(private, powershell)
+    except BaseException as error:
+        failure = error
+    finally:
+        if sid is not None:
+            try:
+                _remove_windows_current_grant(private, sid)
+            except BaseException:
+                cleanup_failures.append("legacy grant removal failed")
+        try:
+            apply_private_permissions(private, is_directory=True)
+        except BaseException:
+            cleanup_failures.append("directory permission reset failed")
+
+    assert cleanup_failures == []
+    assert failure is None, type(failure).__name__ if failure is not None else None
+    assert sid is not None
+    assert upgraded_acl == {
+        "currentSid": sid,
+        "rules": [
+            {
+                "sid": sid,
+                "rights": 0x001F01FF,
+                "access_type": 0,
+                "inherited": False,
+                "inheritance_flags": 3,
+                "propagation_flags": 0,
+            }
+        ],
+    }
 
 
 @pytest.mark.asyncio

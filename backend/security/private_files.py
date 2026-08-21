@@ -138,7 +138,7 @@ def apply_private_permissions(path: Path, *, is_directory: bool) -> None:
             sid = _windows_current_process_sid()
             inheritance = "(OI)(CI)" if is_directory else ""
             result = subprocess.run(
-                ["icacls", os.fspath(path), "/inheritance:r", "/remove:g", "*S-1-5-18", "*S-1-5-32-544", "*S-1-3-4", "/grant:r", f"*{sid}:{inheritance}F"],
+                ["icacls", os.fspath(path), "/inheritance:r", "/remove:g", f"*{sid}", "*S-1-5-18", "*S-1-5-32-544", "*S-1-3-4", "/grant:r", f"*{sid}:{inheritance}F"],
                 check=False, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=_WINDOWS_ACL_TIMEOUT_SECONDS,
             )
             if result.returncode != 0 or not _windows_private_acl_is_valid(path, sid, is_directory=is_directory):

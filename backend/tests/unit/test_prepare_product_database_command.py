@@ -7,6 +7,8 @@ from contextlib import asynccontextmanager, contextmanager
 import asyncio
 import gc
 import json
+import os
+import shutil
 import stat
 import subprocess
 from types import SimpleNamespace
@@ -34,6 +36,7 @@ from backend.domain.market_sources import (
 )
 from backend.schema_manifest import created_table_names, manifest_hash
 from backend.schema_version import EXPECTED_SCHEMA_VERSION
+from backend.security.private_files import apply_private_permissions
 from backend.scripts.prepare_product_database import (
     ProductDatabasePreparationCommandError,
     PreparationCommandDependencies,
@@ -2452,6 +2455,155 @@ async def test_malformed_browser_smoke_rolls_back_task4_and_never_publishes_rece
     assert output == []
 
 
+def _windows_acl_observation(
+    path: Path, powershell_executable: str
+) -> dict[str, object]:
+    script = """
+$ErrorActionPreference = 'Stop'
+$rules = @((Get-Acl -LiteralPath $env:PHASE7B_ACL_LITERAL_PATH).Access |
+    ForEach-Object {
+    [pscustomobject]@{
+        sid = $_.IdentityReference.Translate(
+            [System.Security.Principal.SecurityIdentifier]
+        ).Value
+        rights = [uint32]$_.FileSystemRights
+        access_type = [int]$_.AccessControlType
+        inherited = [bool]$_.IsInherited
+        inheritance_flags = [int]$_.InheritanceFlags
+        propagation_flags = [int]$_.PropagationFlags
+    }
+})
+$observation = [pscustomobject]@{
+    currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    rules = $rules
+}
+ConvertTo-Json -InputObject $observation -Compress -Depth 3
+"""
+    result = subprocess.run(
+        [
+            powershell_executable,
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+        ],
+        check=False,
+        shell=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=5,
+        env={**os.environ, "PHASE7B_ACL_LITERAL_PATH": os.fspath(path)},
+    )
+    assert result.returncode == 0
+    observed = json.loads(result.stdout)
+    assert isinstance(observed, dict)
+    return observed
+
+
+def _set_windows_legacy_directory_acl(path: Path, sid: str) -> None:
+    result = subprocess.run(
+        [
+            "icacls",
+            os.fspath(path),
+            "/inheritance:r",
+            "/grant:r",
+            f"*{sid}:(R,W)",
+        ],
+        check=False,
+        shell=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+    )
+    assert result.returncode == 0
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows private option ACL")
+def test_default_dependencies_repairs_legacy_directory_before_option_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    powershell = shutil.which("pwsh.exe") or shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("PowerShell ACL observation is unavailable")
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    monkeypatch.setattr(command_module, "REPOSITORY_ROOT", repository)
+    sid: str | None = None
+    option: Path | None = None
+    option_acl: dict[str, object] = {}
+    failure: BaseException | None = None
+    residue_lengths: list[int] = []
+    cleanup_failures: list[str] = []
+
+    try:
+        initial_acl = _windows_acl_observation(backup_dir, powershell)
+        observed_sid = initial_acl["currentSid"]
+        assert isinstance(observed_sid, str)
+        sid = observed_sid
+        _set_windows_legacy_directory_acl(backup_dir, sid)
+        dependencies = _default_dependencies()
+        with dependencies.option_file(
+            {
+                "host": "127.0.0.1",
+                "port": 3307,
+                "user": "writer",
+                "password": "test-only",
+                "db": LEGACY_DATABASE,
+            },
+            backup_dir,
+        ) as option:
+            option_acl = _windows_acl_observation(option, powershell)
+    except BaseException as error:
+        failure = error
+    finally:
+        try:
+            residue_lengths = [path.stat().st_size for path in backup_dir.iterdir()]
+        except BaseException:
+            cleanup_failures.append("residue observation failed")
+        try:
+            apply_private_permissions(backup_dir, is_directory=True)
+        except BaseException:
+            cleanup_failures.append("parent permission reset failed")
+        try:
+            residues = list(backup_dir.iterdir())
+        except BaseException:
+            cleanup_failures.append("residue enumeration failed")
+            residues = []
+        for residue in residues:
+            try:
+                apply_private_permissions(residue, is_directory=False)
+            except BaseException:
+                cleanup_failures.append("child permission reset failed")
+            try:
+                residue.unlink()
+            except BaseException:
+                cleanup_failures.append("child unlink failed")
+
+    assert cleanup_failures == []
+    assert failure is None, type(failure).__name__ if failure is not None else None
+    assert sid is not None
+    assert option_acl == {
+        "currentSid": sid,
+        "rules": [
+            {
+                "sid": sid,
+                "rights": 0x001F01FF,
+                "access_type": 0,
+                "inherited": False,
+                "inheritance_flags": 0,
+                "propagation_flags": 0,
+            }
+        ],
+    }
+    assert residue_lengths == []
+    assert option is not None
+    assert not option.exists()
+    assert sum(1 for _ in backup_dir.iterdir()) == 0
+
+
 def test_default_dependencies_wire_public_resources_with_exact_arguments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2462,6 +2614,7 @@ def test_default_dependencies_wire_public_resources_with_exact_arguments(
     pair = object()
     option_context = object()
     backup_value = object()
+    validated_backup_dir = Path("D:/validated-backups")
     config = {
         "host": "127.0.0.1",
         "port": 3307,
@@ -2487,6 +2640,10 @@ def test_default_dependencies_wire_public_resources_with_exact_arguments(
         calls.append(("option", args, kwargs))
         return option_context
 
+    def directory_factory(directory: Path, repository: Path) -> Path:
+        calls.append(("directory-preflight", directory, repository))
+        return validated_backup_dir
+
     def connection_factory(*args: object) -> None:
         calls.append(("connection", args))
 
@@ -2496,6 +2653,9 @@ def test_default_dependencies_wire_public_resources_with_exact_arguments(
 
     monkeypatch.setattr(command_module.subprocess, "run", runner)
     monkeypatch.setattr(backup_module, "preflight_client_pair", pair_factory)
+    monkeypatch.setattr(
+        backup_module, "preflight_backup_directory", directory_factory
+    )
     monkeypatch.setattr(backup_module, "private_mysql_option_file", option_factory)
     monkeypatch.setattr(
         backup_module, "preflight_client_connection", connection_factory
@@ -2556,6 +2716,11 @@ def test_default_dependencies_wire_public_resources_with_exact_arguments(
             {"capture_output": True, "text": True, "check": False},
         ),
         (
+            "directory-preflight",
+            backup_dir,
+            command_module.REPOSITORY_ROOT,
+        ),
+        (
             "option",
             (
                 {
@@ -2564,7 +2729,7 @@ def test_default_dependencies_wire_public_resources_with_exact_arguments(
                     "user": "writer",
                     "password": "injected-only",
                 },
-                backup_dir,
+                validated_backup_dir,
             ),
             {"repository_root": command_module.REPOSITORY_ROOT},
         ),
