@@ -19,6 +19,8 @@ _WINDOWS_PREFIX = "Local\\NovelCreator.ProductDatabaseLifecycle."
 _POSIX_PREFIX = "novel-creator-product-database-lifecycle-"
 _WAIT_OBJECT_0 = 0x00000000
 _WAIT_ABANDONED = 0x00000080
+_MAX_PUBLIC_EXCEPTION_GROUP_DEPTH = 64
+_MAX_PUBLIC_EXCEPTION_OCCURRENCES = 256
 
 
 class ProductDatabaseLifecycleError(RuntimeError):
@@ -201,34 +203,81 @@ def _clean_flow_control(error: BaseException) -> BaseException:
     raise TypeError
 
 
+def _exception_group_within_budget(error: BaseExceptionGroup) -> bool:
+    pending: list[tuple[BaseException, int]] = [(error, 0)]
+    scheduled = 1
+    while pending:
+        current, depth = pending.pop()
+        if depth > _MAX_PUBLIC_EXCEPTION_GROUP_DEPTH:
+            return False
+        if not _is_exception_kind(current, (BaseExceptionGroup,)):
+            continue
+        children = _exception_group_children(current)
+        if children is None:
+            return False
+        if len(children) > _MAX_PUBLIC_EXCEPTION_OCCURRENCES - scheduled:
+            return False
+        scheduled += len(children)
+        pending.extend((child, depth + 1) for child in reversed(children))
+    return True
+
+
+def _sanitize_validated(error: BaseException, message: str) -> BaseException:
+    pending: list[
+        tuple[BaseException, tuple[BaseException, ...] | None]
+    ] = [(error, None)]
+    rebuilt: list[BaseException] = []
+    while pending:
+        current, expanded_children = pending.pop()
+        if expanded_children is not None:
+            child_count = len(expanded_children)
+            clean_children = rebuilt[-child_count:]
+            del rebuilt[-child_count:]
+            rebuilt.append(BaseExceptionGroup(message, clean_children))
+            continue
+        if _is_exception_kind(current, (BaseExceptionGroup,)):
+            children = _exception_group_children(current)
+            if children is None:
+                rebuilt.append(_fixed(message))
+                continue
+            pending.append((current, children))
+            pending.extend((child, None) for child in reversed(children))
+            continue
+        if _is_exception_kind(
+            current,
+            (asyncio.CancelledError, KeyboardInterrupt, SystemExit),
+        ):
+            rebuilt.append(_clean_flow_control(current))
+        else:
+            rebuilt.append(_fixed(message))
+    return rebuilt[0]
+
+
 def _sanitize(error: BaseException, message: str) -> BaseException:
     if _is_exception_kind(error, (BaseExceptionGroup,)):
-        children = _exception_group_children(error)
-        if children is None:
+        if not _exception_group_within_budget(error):
             return _fixed(message)
-        return BaseExceptionGroup(
-            message,
-            [_sanitize(child, message) for child in children],
-        )
-    if _is_exception_kind(
-        error,
-        (asyncio.CancelledError, KeyboardInterrupt, SystemExit),
-    ):
-        return _clean_flow_control(error)
-    return _fixed(message)
+    return _sanitize_validated(error, message)
 
 
 def _strip_metadata(error: BaseException) -> None:
-    error.__cause__ = None
-    error.__context__ = None
-    error.__suppress_context__ = True
-    if hasattr(error, "__notes__"):
-        del error.__notes__
-    if _is_exception_kind(error, (BaseExceptionGroup,)):
-        children = _exception_group_children(error)
-        if children is not None:
-            for child in children:
-                _strip_metadata(child)
+    pending = [error]
+    visited: set[int] = set()
+    while pending:
+        current = pending.pop()
+        identity = id(current)
+        if identity in visited:
+            continue
+        visited.add(identity)
+        current.__cause__ = None
+        current.__context__ = None
+        current.__suppress_context__ = True
+        if hasattr(current, "__notes__"):
+            del current.__notes__
+        if _is_exception_kind(current, (BaseExceptionGroup,)):
+            children = _exception_group_children(current)
+            if children is not None:
+                pending.extend(reversed(children))
 
 
 def _raise_public(error: BaseException) -> None:

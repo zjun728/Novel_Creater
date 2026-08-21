@@ -1151,6 +1151,92 @@ def test_body_exception_groups_are_recursively_rebuilt_without_secrets(
     assert SECRET not in "".join(traceback.format_exception(raised.value))
 
 
+def test_body_exception_group_over_depth_budget_collapses_to_fixed_error(
+    tmp_path: Path,
+):
+    error: BaseException = RuntimeError(SECRET)
+    for _ in range(sys.getrecursionlimit() + 100):
+        error = BaseExceptionGroup(SECRET, [error])
+
+    with pytest.raises(lifecycle.ProductDatabaseLifecycleError) as raised:
+        with lifecycle.product_database_lifecycle_lock(
+            tmp_path / "config.json",
+            platform_name="nt",
+            windows_api=FakeWindowsAPI(),
+        ):
+            raise error
+
+    assert raised.value.args == (LOCK_ERROR,)
+    _assert_clean_tree(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_deferred_exception_group_over_depth_budget_is_fixed_and_releases_once(
+    tmp_path: Path,
+):
+    api = FakeWindowsAPI()
+    transfer = asyncio.get_running_loop().create_future()
+
+    with lifecycle.product_database_lifecycle_lock(
+        tmp_path / "config.json",
+        platform_name="nt",
+        windows_api=api,
+    ) as lease:
+        completion = lease.defer_until(transfer)
+
+    error: BaseException = RuntimeError(SECRET)
+    for _ in range(sys.getrecursionlimit() + 100):
+        error = BaseExceptionGroup(SECRET, [error])
+    transfer.set_exception(error)
+
+    with pytest.raises(lifecycle.ProductDatabaseLifecycleError) as raised:
+        await completion
+
+    assert raised.value.args == (LOCK_ERROR,)
+    _assert_clean_tree(raised.value)
+    assert _event_names(api.events) == ["create", "wait", "release", "close"]
+
+
+def test_body_exception_group_over_occurrence_budget_collapses_shared_fanout(
+    tmp_path: Path,
+):
+    shared = BaseExceptionGroup(SECRET, [RuntimeError(SECRET)])
+    error = BaseExceptionGroup(SECRET, [shared] * 4096)
+
+    with pytest.raises(lifecycle.ProductDatabaseLifecycleError) as raised:
+        with lifecycle.product_database_lifecycle_lock(
+            tmp_path / "config.json",
+            platform_name="nt",
+            windows_api=FakeWindowsAPI(),
+        ):
+            raise error
+
+    assert raised.value.args == (LOCK_ERROR,)
+    _assert_clean_tree(raised.value)
+
+
+def test_exception_group_within_budget_rebuilds_without_recursion_headroom():
+    error: BaseException = RuntimeError(SECRET)
+    for _ in range(32):
+        error = BaseExceptionGroup(SECRET, [error])
+
+    frame = sys._getframe()
+    current_depth = 0
+    while frame is not None:
+        current_depth += 1
+        frame = frame.f_back
+    previous_limit = sys.getrecursionlimit()
+    try:
+        sys.setrecursionlimit(current_depth + 24)
+        rebuilt = lifecycle._sanitize(error, LOCK_ERROR)
+    finally:
+        sys.setrecursionlimit(previous_limit)
+
+    assert isinstance(rebuilt, BaseExceptionGroup)
+    assert len(_leaves(rebuilt)) == 1
+    _assert_clean_tree(rebuilt)
+
+
 def test_body_group_sanitizer_uses_builtin_children_without_dynamic_access(
     tmp_path: Path,
 ):
