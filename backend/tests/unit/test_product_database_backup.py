@@ -21,10 +21,7 @@ from backend.domain.product_database_readiness import (
     ReadinessState,
     inventory_hash,
 )
-from backend.security.private_files import (
-    _windows_current_process_sid,
-    apply_private_permissions,
-)
+from backend.security.private_files import apply_private_permissions
 from backend.services import product_database_backup as backup
 
 
@@ -456,7 +453,7 @@ def _set_windows_delete_child_deny(path: Path, sid: str, *, present: bool) -> No
     assert result.returncode == 0
 
 
-def _windows_acl_rules(path: Path) -> list[dict[str, object]]:
+def _windows_acl_observation(path: Path) -> dict[str, object]:
     script = """
 $ErrorActionPreference = 'Stop'
 $rules = @((Get-Acl -LiteralPath $env:PHASE7B_ACL_LITERAL_PATH).Access |
@@ -472,7 +469,11 @@ $rules = @((Get-Acl -LiteralPath $env:PHASE7B_ACL_LITERAL_PATH).Access |
         propagation_flags = [int]$_.PropagationFlags
     }
 })
-ConvertTo-Json -InputObject $rules -Compress
+$observation = [pscustomobject]@{
+    currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    rules = $rules
+}
+ConvertTo-Json -InputObject $observation -Compress -Depth 3
 """
     result = subprocess.run(
         [
@@ -492,7 +493,7 @@ ConvertTo-Json -InputObject $rules -Compress
     )
     assert result.returncode == 0
     observed = json.loads(result.stdout)
-    assert isinstance(observed, list)
+    assert isinstance(observed, dict)
     return observed
 
 
@@ -548,6 +549,35 @@ def test_restrict_phase7b_private_resource_rejects_reparse_before_permissions(
     assert calls == []
 
 
+def test_restrict_phase7b_private_resource_rejects_unsupported_kind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    resource = tmp_path / "private"
+    resource.write_bytes(b"")
+    real_lstat = Path.lstat
+    unsupported = SimpleNamespace(
+        st_mode=stat.S_IFIFO,
+        st_file_attributes=0,
+    )
+    calls: list[tuple[Path, bool]] = []
+
+    def unsupported_lstat(path: Path) -> object:
+        return unsupported if path == resource else real_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", unsupported_lstat)
+    monkeypatch.setattr(
+        backup,
+        "apply_private_permissions",
+        lambda path, *, is_directory: calls.append((path, is_directory)),
+    )
+
+    assert not backup._is_reparse(resource)
+    with pytest.raises(OSError):
+        backup._restrict_phase7b_private_resource(resource)
+
+    assert calls == []
+
+
 def test_restrict_phase7b_private_resource_preserves_windows_only_boundary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -563,12 +593,14 @@ def test_restrict_phase7b_private_resource_preserves_windows_only_boundary(
 def test_default_private_option_acl_is_private_and_deletable(tmp_path: Path):
     private = tmp_path / "private"
     private.mkdir()
-    sid = _windows_current_process_sid()
     apply_private_permissions(private, is_directory=True)
+    parent_acl = _windows_acl_observation(private)
+    sid = parent_acl["currentSid"]
+    assert isinstance(sid, str)
     # Force cleanup to rely on the child ACL's DELETE right, not parent DELETE_CHILD.
     _set_windows_delete_child_deny(private, sid, present=True)
     option: Path | None = None
-    acl_rules: list[dict[str, object]] = []
+    option_acl: dict[str, object] = {}
     failure: BaseException | None = None
     residue_lengths: list[int] = []
 
@@ -578,7 +610,7 @@ def test_default_private_option_acl_is_private_and_deletable(tmp_path: Path):
                 {"host": "h", "port": 3306, "user": "u", "password": "secret"},
                 private,
             ) as option:
-                acl_rules = _windows_acl_rules(option)
+                option_acl = _windows_acl_observation(option)
         except BaseException as error:
             failure = error
         residue_lengths = [path.stat().st_size for path in private.iterdir()]
@@ -590,16 +622,19 @@ def test_default_private_option_acl_is_private_and_deletable(tmp_path: Path):
             residue.unlink()
 
     assert failure is None, (failure, residue_lengths)
-    assert acl_rules == [
-        {
-            "sid": sid,
-            "rights": 0x001F01FF,
-            "access_type": 0,
-            "inherited": False,
-            "inheritance_flags": 0,
-            "propagation_flags": 0,
-        }
-    ]
+    assert option_acl == {
+        "currentSid": sid,
+        "rules": [
+            {
+                "sid": sid,
+                "rights": 0x001F01FF,
+                "access_type": 0,
+                "inherited": False,
+                "inheritance_flags": 0,
+                "propagation_flags": 0,
+            }
+        ],
+    }
     assert residue_lengths == []
     assert option is not None
     assert not option.exists()
