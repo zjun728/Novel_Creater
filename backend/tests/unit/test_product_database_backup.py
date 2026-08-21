@@ -6,6 +6,7 @@ import hashlib
 import os
 from pathlib import Path
 import stat
+import subprocess
 import traceback
 from types import SimpleNamespace
 
@@ -18,6 +19,11 @@ from backend.domain.product_database_readiness import (
     ProductDatabaseReadinessError,
     ReadinessState,
     inventory_hash,
+)
+from backend.security.private_files import (
+    _windows_current_process_sid,
+    _windows_private_acl_is_valid,
+    apply_private_permissions,
 )
 from backend.services import product_database_backup as backup
 
@@ -432,6 +438,106 @@ def test_private_option_owner_handle_blocks_replacement_for_entire_use(tmp_path:
         assert 'password="secret"' in option.read_text(encoding="utf-8")
         assert not moved.exists()
     assert not option.exists()
+
+
+def _set_windows_delete_child_deny(path: Path, sid: str, *, present: bool) -> None:
+    action = "/deny" if present else "/remove:d"
+    command = ["icacls", os.fspath(path), action, f"*{sid}:(DC)"]
+    if not present:
+        command[-1] = f"*{sid}"
+    result = subprocess.run(
+        command,
+        check=False,
+        shell=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+    )
+    assert result.returncode == 0
+
+
+@pytest.mark.parametrize(
+    ("resource_kind", "is_directory"),
+    (("file", False), ("directory", True)),
+)
+def test_restrict_phase7b_private_resource_classifies_regular_resource(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    resource_kind: str,
+    is_directory: bool,
+):
+    resource = tmp_path / resource_kind
+    if is_directory:
+        resource.mkdir()
+    else:
+        resource.write_bytes(b"")
+    calls: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(
+        backup,
+        "apply_private_permissions",
+        lambda path, *, is_directory: calls.append((path, is_directory)),
+        raising=False,
+    )
+
+    backup._restrict_phase7b_private_resource(resource)
+
+    assert calls == [(resource, is_directory)]
+
+
+def test_restrict_phase7b_private_resource_rejects_missing_path(tmp_path: Path):
+    with pytest.raises(OSError):
+        backup._restrict_phase7b_private_resource(tmp_path / "missing")
+
+
+def test_restrict_phase7b_private_resource_preserves_windows_only_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    resource = tmp_path / "private"
+    resource.mkdir()
+    monkeypatch.setattr(backup.os, "name", "posix")
+
+    with pytest.raises(OSError):
+        backup._restrict_phase7b_private_resource(resource)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows private option ACL")
+def test_default_private_option_acl_is_private_and_deletable(tmp_path: Path):
+    private = tmp_path / "private"
+    private.mkdir()
+    sid = _windows_current_process_sid()
+    apply_private_permissions(private, is_directory=True)
+    # Force cleanup to rely on the child ACL's DELETE right, not parent DELETE_CHILD.
+    _set_windows_delete_child_deny(private, sid, present=True)
+    option: Path | None = None
+    acl_valid = False
+    failure: BaseException | None = None
+    residue_lengths: list[int] = []
+
+    try:
+        try:
+            with backup.private_mysql_option_file(
+                {"host": "h", "port": 3306, "user": "u", "password": "secret"},
+                private,
+            ) as option:
+                acl_valid = _windows_private_acl_is_valid(
+                    option, sid, is_directory=False
+                )
+        except BaseException as error:
+            failure = error
+        residue_lengths = [path.stat().st_size for path in private.iterdir()]
+    finally:
+        _set_windows_delete_child_deny(private, sid, present=False)
+        apply_private_permissions(private, is_directory=True)
+        for residue in list(private.iterdir()):
+            apply_private_permissions(residue, is_directory=False)
+            residue.unlink()
+
+    assert failure is None, (failure, residue_lengths)
+    assert acl_valid
+    assert residue_lengths == []
+    assert option is not None
+    assert not option.exists()
+    assert list(private.iterdir()) == []
 
 
 def test_private_option_cleanup_race_leaves_only_zeroed_original_and_replacement(

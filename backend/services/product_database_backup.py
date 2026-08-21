@@ -36,7 +36,7 @@ from backend.domain.product_database_readiness import (
     validate_database_role,
     validate_restore_database,
 )
-from backend.scripts.configure_local_mysql import restrict_windows_acl
+from backend.security.private_files import apply_private_permissions
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -164,6 +164,21 @@ def _is_reparse(path: Path) -> bool:
         return True
     marker = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
     return bool(attributes & marker)
+
+
+def _restrict_phase7b_private_resource(path: Path) -> None:
+    if os.name != "nt":
+        raise OSError
+    metadata = path.lstat()
+    if _is_reparse(path):
+        raise OSError
+    if stat.S_ISDIR(metadata.st_mode):
+        is_directory = True
+    elif stat.S_ISREG(metadata.st_mode):
+        is_directory = False
+    else:
+        raise OSError
+    apply_private_permissions(path, is_directory=is_directory)
 
 
 def _has_reparse_component(path: Path) -> bool:
@@ -979,7 +994,7 @@ def _finish_with_cleanup(
 def private_mysql_option_file(
     config: Mapping[str, object],
     temp_root: Path,
-    acl_runner: Callable[[Path], None] = restrict_windows_acl,
+    acl_runner: Callable[[Path], None] = _restrict_phase7b_private_resource,
     *,
     repository_root: Path | None = None,
     owned_delete: Callable[[Path, _OwnedFileLease], bool] = _delete_owned_windows,
@@ -1060,7 +1075,7 @@ def private_mysql_option_file(
 def preflight_backup_directory(
     backup_dir: Path,
     repository_root: Path,
-    acl_runner: Callable[[Path], None] = restrict_windows_acl,
+    acl_runner: Callable[[Path], None] = _restrict_phase7b_private_resource,
 ) -> Path:
     """Validate and restrict an explicit repository-external backup directory."""
 
@@ -1137,7 +1152,7 @@ def create_logical_backup(
     backup_filename: str | None = None,
     previous_receipt_hash: str | None = None,
     runner: Callable[..., object] = subprocess.run,
-    acl_runner: Callable[[Path], None] = restrict_windows_acl,
+    acl_runner: Callable[[Path], None] = _restrict_phase7b_private_resource,
     *,
     source_inventory_hash: str | None = None,
     source_database: str = LEGACY_DATABASE,
