@@ -391,11 +391,11 @@ git commit -m "fix: serialize product database cutover"
 **Files:**
 - Modify after success: `docs/superpowers/plans/2026-08-19-phase7b-cutover-lifecycle-lock.md`
 
-- [ ] **Step 1: Run the complete Phase 7B focused Python gate**
+- [x] **Step 1: Run the complete Phase 7B focused Python gate**
 
 Use a unique worktree-owned basetemp and include Tasks 1–7, the new lock suite, main lifespan, cutover, and browser-owner command tests. Expected: all pass, zero skips except explicitly platform-inapplicable lock implementation cases.
 
-- [ ] **Step 2: Run repository unit and static gates once**
+- [x] **Step 2: Run repository unit and static gates once**
 
 ```powershell
 npm test
@@ -408,22 +408,22 @@ git diff --check
 
 Expected: Python, scripts Node, frontend Node, build, compilation, and diff checks all exit zero. Run sequentially; do not overlap runners that share `.codex-test-artifacts`.
 
-- [ ] **Step 3: Run the existing real MySQL 8.4 focused gate once**
+- [x] **Step 3: Run the existing real MySQL 8.4 focused gate once**
 
 Set the already approved explicit `TEST_MYSQL_*` values for `127.0.0.1:3307` and exact 8.4 client paths, then run only `backend/tests/integration/test_product_database_readiness_mysql.py`. Expected: 7 passed, 0 skipped; disposable database ledger created equals cleaned and remaining is zero. Never enumerate, read, write, or drop an existing database.
 
-- [ ] **Step 4: Obtain independent specification and quality reviews**
+- [x] **Step 4: Obtain independent specification and quality reviews**
 
 The specification review must trace every new design paragraph to code and non-fake tests. The quality review must actively probe approval-before-I/O, receipt length spoofing, relative-command backend contention, lock gap races, abandoned mutex/POSIX contention, and primary/cleanup flow ordering. Active Critical/Important/Minor findings must be `0/0/0` before proceeding.
 
-- [ ] **Step 5: Update evidence only after all gates pass**
+- [x] **Step 5: Update evidence only after all gates pass**
 
 Record exact counts and resource ledgers in this amendment plan. Do not create the final acceptance
 document or mark Stage A, Stage B, cutover, or legacy retirement complete; this implementation
 performs no real backup, product-database write, browser formal, config write, Provider call, or
-network action.
+external network action. The approved disposable verification uses only loopback MySQL authority.
 
-- [ ] **Step 6: Commit documentation closure**
+- [x] **Step 6: Commit documentation closure**
 
 ```powershell
 git add docs/superpowers/plans/2026-08-19-phase7b-cutover-lifecycle-lock.md
@@ -431,3 +431,21 @@ git commit -m "docs: record phase7b lifecycle verification"
 ```
 
 Verify the final worktree is clean and report any externally owned test temp that policy prevented removing.
+
+#### Task 6 evidence — 2026-08-21
+
+- Implementation HEAD: `239cf5f`; focused Phase 7B Python gate: `1024 passed, 1 skipped` under
+  `-W error`.
+- Static/browser contracts: both Phase 7B runner syntax checks exited `0`; Node contract
+  `39 passed`.
+- Repository gate: Python `5116 passed, 9 skipped`; scripts Node `430 passed`; frontend Node
+  `783 passed`; frontend warning audit found 10 existing Vue mount-warning headers and zero Node
+  warning headers. Build exited `0` after transforming `2978` modules.
+- Explicit MySQL 8.4 disposable gate on `127.0.0.1:3307`: `7 passed`; all exact random database
+  ownership ledgers ended with created equal to cleaned and remaining zero.
+- Final independent specification and quality reviews both reported active
+  Critical/Important/Minor `0/0/0`.
+- Resource ledger before documentation closure: tracked/index clean; 75 preserved untracked
+  Phase 7B `tmp/` roots (744 items) and ignored `frontend/dist/`. No broad cleanup was performed.
+- This evidence does not include the formal browser, real Stage A preparation, Stage B config
+  write, Provider call, or legacy-database retirement.

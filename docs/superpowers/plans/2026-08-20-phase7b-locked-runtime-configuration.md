@@ -29,7 +29,7 @@
 - Modify: `backend/config.py`
 - Modify: `backend/tests/unit/test_config.py`
 
-- [ ] **Step 1: Write import and authority RED tests**
+- [x] **Step 1: Write import and authority RED tests**
 
 Add tests that start a clean Python subprocess, replace `Path.read_text` with a forbidden callback,
 and import `backend.config`; the import must perform zero reads. Add exact-type tests for a frozen
@@ -47,7 +47,7 @@ def test_runtime_configuration_registry_is_identity_bound(runtime_configuration)
     config.clear_runtime_configuration(runtime_configuration)
 ```
 
-- [ ] **Step 2: Run the RED tests**
+- [x] **Step 2: Run the RED tests**
 
 Run:
 
@@ -57,7 +57,7 @@ python -m pytest backend/tests/unit/test_config.py -q -p no:cacheprovider --base
 
 Expected: failures show import-time reads and missing runtime snapshot APIs.
 
-- [ ] **Step 3: Implement the frozen snapshot and I/O-free import**
+- [x] **Step 3: Implement the frozen snapshot and I/O-free import**
 
 Use exact built-in containers so callers cannot mutate captured authority:
 
@@ -112,7 +112,7 @@ document-to-value helpers. `load_runtime_configuration` calls `_read_local_docum
 all four eager bottom-of-module assignments. Explicit command helpers load when invoked, never at
 import.
 
-- [ ] **Step 4: Run GREEN and compatibility tests**
+- [x] **Step 4: Run GREEN and compatibility tests**
 
 Run the Task 1 command again, then:
 
@@ -122,7 +122,7 @@ python -m pytest backend/tests/unit/test_initialize_database.py backend/tests/un
 
 Expected: all pass; subprocess import reports zero reads.
 
-- [ ] **Step 5: Commit Task 1**
+- [x] **Step 5: Commit Task 1**
 
 ```powershell
 git add backend/config.py backend/tests/unit/test_config.py backend/tests/unit/test_initialize_database.py backend/tests/unit/test_database_transaction.py
@@ -141,7 +141,7 @@ Only add test files if they required compatibility changes.
 - Modify: `backend/scripts/verify_corpus_import.py`
 - Modify: corresponding focused unit tests
 
-- [ ] **Step 1: Write consumer RED tests**
+- [x] **Step 1: Write consumer RED tests**
 
 Prohibit the removed configuration constants and assert each consumer sees the same installed
 snapshot. The database test must mutate the file/environment after installation and prove
@@ -158,7 +158,7 @@ async def test_pool_uses_installed_snapshot_not_later_environment(monkeypatch, r
     assert create_pool_calls == [runtime_configuration.mysql_pool_options()]
 ```
 
-- [ ] **Step 2: Run the RED consumer set**
+- [x] **Step 2: Run the RED consumer set**
 
 Run:
 
@@ -168,7 +168,7 @@ python -m pytest backend/tests/unit/test_database_transaction.py backend/tests/u
 
 Expected: failures identify imported globals or absent explicit runtime authority.
 
-- [ ] **Step 3: Implement explicit snapshot consumption**
+- [x] **Step 3: Implement explicit snapshot consumption**
 
 Use these boundaries:
 
@@ -200,7 +200,7 @@ managed_root = snapshot.managed_corpus_root
 
 Do not add a lazy proxy, per-request file read, launcher override, or fallback to a removed global.
 
-- [ ] **Step 4: Run GREEN and literal-boundary checks**
+- [x] **Step 4: Run GREEN and literal-boundary checks**
 
 Run the Task 2 command again, including project-import, project-package, and corpus route tests. The
 isolated Task 2 commit may explicitly deselect only tests that import the still-unmigrated
@@ -208,7 +208,7 @@ isolated Task 2 commit may explicitly deselect only tests that import the still-
 production Python files and require zero imports of `MYSQL_CONFIG`, `CORPUS_ROOT`,
 `MANAGED_CORPUS_ROOT`, or `MARKET_SCHEDULER_ENABLED` as values.
 
-- [ ] **Step 5: Commit Task 2**
+- [x] **Step 5: Commit Task 2**
 
 ```powershell
 git add backend/database.py backend/runtime/market_scheduler.py backend/domain/routers/application_settings.py backend/services/creative_assets.py backend/scripts/verify_corpus_import.py backend/tests/unit/test_database_transaction.py backend/tests/unit/test_market_scheduler.py backend/tests/unit/test_verify_corpus_import.py backend/tests/api/test_application_settings_routes.py backend/tests/api/test_asset_routes.py backend/tests/api/test_corpus_routes.py
@@ -223,7 +223,7 @@ Before committing, inspect `git diff --cached --name-only` and unstage every unr
 - Modify: `backend/main.py`
 - Modify: `backend/tests/unit/test_main_lifespan.py`
 
-- [ ] **Step 1: Write lifecycle and race RED tests**
+- [x] **Step 1: Write lifecycle and race RED tests**
 
 Add exact event-ledger tests for:
 
@@ -242,7 +242,7 @@ Add a deterministic import/cutover race: module import executes while a fake cut
 and records zero configuration reads; after the cutover publishes and releases, lifespan acquisition
 loads only the new database name.
 
-- [ ] **Step 2: Run the RED lifespan set**
+- [x] **Step 2: Run the RED lifespan set**
 
 ```powershell
 python -m pytest backend/tests/unit/test_main_lifespan.py -q -W error -p no:cacheprovider --basetemp=tmp/pytest-phase7b-runtime-lifespan-red
@@ -250,7 +250,7 @@ python -m pytest backend/tests/unit/test_main_lifespan.py -q -W error -p no:cach
 
 Expected: load occurs before lock or no snapshot lifetime API is called.
 
-- [ ] **Step 3: Implement lock-owned snapshot lifetime**
+- [x] **Step 3: Implement lock-owned snapshot lifetime**
 
 Immediately after `lock_context.__enter__()`:
 
@@ -284,7 +284,7 @@ once. Only a failure before successful deferral remains eligible for synchronous
 Preserve application-primary-before-config-clear-before-lock-cleanup ordering. Never read
 `error.__traceback__`, dynamic `__class__`, or arbitrary group descriptors.
 
-- [ ] **Step 4: Run GREEN and downstream lifecycle tests**
+- [x] **Step 4: Run GREEN and downstream lifecycle tests**
 
 ```powershell
 python -m pytest backend/tests/unit/test_main_lifespan.py backend/tests/unit/test_product_database_lifecycle_lock.py backend/tests/unit/test_cutover_product_database_command.py -q -W error -p no:cacheprovider --basetemp=tmp/pytest-phase7b-runtime-lifespan-green
@@ -292,7 +292,7 @@ python -m pytest backend/tests/unit/test_main_lifespan.py backend/tests/unit/tes
 
 Expected: all pass, one host-only POSIX symlink test may skip on Windows, no warnings.
 
-- [ ] **Step 5: Commit Task 3**
+- [x] **Step 5: Commit Task 3**
 
 ```powershell
 git add backend/main.py backend/tests/unit/test_main_lifespan.py
@@ -305,14 +305,14 @@ git commit -m "fix: load backend configuration under lifecycle lock"
 - Modify: `backend/tests/unit/test_prepare_product_database_command.py`
 - Modify: `backend/tests/unit/test_cutover_product_database_command.py`
 
-- [ ] **Step 1: Preserve the two-test RED reproducer**
+- [x] **Step 1: Preserve the two-test RED reproducer**
 
 Run the exact async flow-matrix case immediately before
 `test_main_prints_only_fixed_failure`, with a call-phase `gc.collect()` plugin and `-W error`.
 Expected before the fix: one `PytestUnraisableExceptionWarning` whose tracemalloc allocation points
 to `pytest_asyncio.plugin._provide_clean_event_loop`.
 
-- [ ] **Step 2: Add a local ownership fixture**
+- [x] **Step 2: Add a local ownership fixture**
 
 Apply it only to synchronous tests that call either command's `main()`:
 
@@ -341,13 +341,13 @@ Fresh-policy normal and exceptional exits, an unrelated borrowed loop, and expli
 must all be regression tested. Do not change production `main`, install an autouse/global fixture,
 or close a loop used by an async test.
 
-- [ ] **Step 3: Run the minimal reproducer and focused command suite**
+- [x] **Step 3: Run the minimal reproducer and focused command suite**
 
 Expected: the reproducer passes with no ResourceWarning; both complete command-test files pass with
 `-W error`; the combined main-lifespan, lifecycle-lock, and cutover command gate has no unraisable
 socket warning.
 
-- [ ] **Step 4: Commit Task 4**
+- [x] **Step 4: Commit Task 4**
 
 ```powershell
 git add backend/tests/unit/test_prepare_product_database_command.py backend/tests/unit/test_cutover_product_database_command.py
@@ -359,33 +359,55 @@ git commit -m "test: close displaced pytest event loop"
 **Files:**
 - Modify only if a fresh review identifies a concrete defect in the approved scope.
 
-- [ ] **Step 1: Run the focused Python and Node gates**
+- [x] **Step 1: Run the focused Python and Node gates**
 
 Run one sequential Python invocation covering the eight Phase 7B lifecycle files with `-W error`,
 then `node --check` for both Phase 7B runner files and the 39-test Node contract. Expected: zero
 failures/errors/warnings; only the documented host-only POSIX skip is allowed.
 
-- [ ] **Step 2: Run the full unit/API gate and build**
+- [x] **Step 2: Run the full unit/API gate and build**
 
 Run `npm test` and `npm run build` sequentially. Record Python, scripts Node, frontend Node, skipped,
 module, warning, and exit counts exactly. Do not run the formal browser yet.
 
-- [ ] **Step 3: Run the disposable MySQL 8.4 gate**
+- [x] **Step 3: Run the disposable MySQL 8.4 gate**
 
 Use only the already verified client paths under `D:\Software\MySQL Server 8.4\bin` and explicit
 `TEST_MYSQL_*` authority for `127.0.0.1:3307`. Run the seven-test Phase 7B disposable suite once.
 Require created/cleaned equality and remaining zero. Never enumerate, read, write, or drop an
 existing database.
 
-- [ ] **Step 4: Review and resource ledger**
+- [x] **Step 4: Review and resource ledger**
 
 Run independent spec and quality reviews. Require active Critical/Important/Minor `0/0/0`. Classify
 the exact known `tmp/` test roots by owner and delete only exact validated task-owned roots when the
 execution policy permits; otherwise report them without bypassing policy. Require tracked/index
 clean and disclose any remaining untracked resources.
 
-- [ ] **Step 5: Update the parent Phase 7B plan evidence**
+- [x] **Step 5: Update the parent Phase 7B plan evidence**
 
 Mark only gates actually proven by the final tree. Do not claim the formal browser, Stage A real
 preparation, Stage B config write, Provider call, or old-database retirement unless separately
 authorized and executed.
+
+## Implementation evidence — 2026-08-21
+
+- Final implementation HEAD before documentation closure: `239cf5f`.
+- Focused eight-file Python gate: `1024 passed, 1 skipped`, `-W error`; the skip is the
+  Windows-host POSIX symlink case.
+- Phase 7B Node contract: `39 passed`; `node --check` passed for
+  `frontend/e2e/run-phase7b.mjs` and `scripts/run-tests.mjs`.
+- Repository unit gate: Python `5116 passed, 9 skipped`; scripts Node `430 passed`; frontend
+  Node `783 passed`. A separate frontend count recorded 10 existing Vue mount-warning headers,
+  zero Node warning headers, and exit `0`.
+- Production build: exit `0`, `2978` modules transformed.
+- MySQL 8.4 disposable gate: `7 passed` against explicit `127.0.0.1:3307` authority and the
+  approved 8.4 client pair; every test-owned database ledger proved created equals cleaned and
+  remaining zero.
+- Independent specification and quality reviews: active Critical/Important/Minor `0/0/0` and
+  `0/0/0`.
+- Tracked/index state was clean before this evidence update. The preserved untracked ledger was
+  75 Phase 7B `tmp/` roots containing 744 items, plus ignored `frontend/dist/`; none was committed
+  or deleted.
+- Formal browser, real Stage A preparation, Stage B configuration cutover, Provider calls, and
+  old-database retirement were not run or claimed.
