@@ -21,6 +21,7 @@
 - Modify `backend/scripts/verify_corpus_import.py`: replace the removed imported snapshot with an explicit command-time load.
 - Modify focused tests under `backend/tests/unit/` for configuration, database, scheduler, application settings, creative assets, lifespan, and the verification script.
 - Modify `backend/tests/unit/test_prepare_product_database_command.py`: locally close only the pytest-asyncio clean loop displaced by synchronous `main()` tests.
+- Modify `backend/tests/unit/test_cutover_product_database_command.py`: apply the same local loop-ownership boundary to synchronous cutover `main()` tests.
 
 ### Task 1: Add the closed runtime-configuration authority
 
@@ -201,8 +202,11 @@ Do not add a lazy proxy, per-request file read, launcher override, or fallback t
 
 - [ ] **Step 4: Run GREEN and literal-boundary checks**
 
-Run the Task 2 command again. Then search production Python files and require zero imports of
-`MYSQL_CONFIG`, `CORPUS_ROOT`, `MANAGED_CORPUS_ROOT`, or `MARKET_SCHEDULER_ENABLED` as values.
+Run the Task 2 command again, including project-import, project-package, and corpus route tests. The
+isolated Task 2 commit may explicitly deselect only tests that import the still-unmigrated
+`backend.main`; Task 3 must rerun the complete consumer command with zero deselection. Then search
+production Python files and require zero imports of `MYSQL_CONFIG`, `CORPUS_ROOT`,
+`MANAGED_CORPUS_ROOT`, or `MARKET_SCHEDULER_ENABLED` as values.
 
 - [ ] **Step 5: Commit Task 2**
 
@@ -265,14 +269,20 @@ only the lease completion already required by the lifecycle design, never the pr
 ```python
 async def _complete_runtime_configuration(transfer, snapshot):
     try:
-        return await transfer
+        return await asyncio.shield(transfer)
     finally:
         clear_runtime_configuration(snapshot)
 ```
 
-If wrapper-task creation or publication fails, synchronously clear the snapshot and let the existing
-lock boundary release/close. Preserve application-primary-before-config-clear-before-lock-cleanup
-ordering. Never read `error.__traceback__`, dynamic `__class__`, or arbitrary group descriptors.
+Immediately after creating the private task, call `lock_lease.defer_until(runtime_transfer)`
+synchronously, before any `await` or externally cancellable handshake. Once deferral succeeds, lock
+and snapshot ownership have transferred to that private task. Failure to publish the returned public
+completion into `app.state` must not cancel or await the private task and must not clear the snapshot:
+the immediate publication error is reported while the already-registered deferral continues to wait
+for the real shutdown transfer, then clears the snapshot and physically releases the lock exactly
+once. Only a failure before successful deferral remains eligible for synchronous snapshot cleanup.
+Preserve application-primary-before-config-clear-before-lock-cleanup ordering. Never read
+`error.__traceback__`, dynamic `__class__`, or arbitrary group descriptors.
 
 - [ ] **Step 4: Run GREEN and downstream lifecycle tests**
 
@@ -293,6 +303,7 @@ git commit -m "fix: load backend configuration under lifecycle lock"
 
 **Files:**
 - Modify: `backend/tests/unit/test_prepare_product_database_command.py`
+- Modify: `backend/tests/unit/test_cutover_product_database_command.py`
 
 - [ ] **Step 1: Preserve the two-test RED reproducer**
 
@@ -303,32 +314,43 @@ to `pytest_asyncio.plugin._provide_clean_event_loop`.
 
 - [ ] **Step 2: Add a local ownership fixture**
 
-Apply it only to synchronous tests that call the command's `main()`:
+Apply it only to synchronous tests that call either command's `main()`:
 
 ```python
-@pytest.fixture
-def close_displaced_pytest_asyncio_loop():
+@contextmanager
+def _owned_sync_main_event_loop():
     policy = asyncio.get_event_loop_policy()
-    loop = policy.get_event_loop()
+    local = getattr(policy, "_local")
+    borrowed = getattr(local, "_loop", None)
+    owned = policy.new_event_loop()
+    policy.set_event_loop(owned)
     try:
         yield
     finally:
-        if not loop.is_closed():
-            loop.close()
+        if not owned.is_closed():
+            owned.close()
+        policy.set_event_loop(
+            borrowed if borrowed is not None and not borrowed.is_closed() else None
+        )
 ```
 
-The fixture owns only the loop captured before `asyncio.run` displaces it. Do not change production
-`main`, install an autouse/global fixture, or close a loop used by an async test.
+The helper borrows any loop that was already installed without acquiring close authority, creates
+and installs its own loop for the synchronous `main()` call, closes only that owned loop after
+`asyncio.run` displaces it, and restores the still-open borrowed identity or exact no-loop state.
+Fresh-policy normal and exceptional exits, an unrelated borrowed loop, and explicit no-loop state
+must all be regression tested. Do not change production `main`, install an autouse/global fixture,
+or close a loop used by an async test.
 
 - [ ] **Step 3: Run the minimal reproducer and focused command suite**
 
-Expected: the two-test reproducer passes with no ResourceWarning; the full preparation-command file
-passes with `-W error`.
+Expected: the reproducer passes with no ResourceWarning; both complete command-test files pass with
+`-W error`; the combined main-lifespan, lifecycle-lock, and cutover command gate has no unraisable
+socket warning.
 
 - [ ] **Step 4: Commit Task 4**
 
 ```powershell
-git add backend/tests/unit/test_prepare_product_database_command.py
+git add backend/tests/unit/test_prepare_product_database_command.py backend/tests/unit/test_cutover_product_database_command.py
 git commit -m "test: close displaced pytest event loop"
 ```
 
