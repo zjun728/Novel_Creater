@@ -5,7 +5,7 @@
 Correct the Windows-only lifecycle defect that lets the Phase 7B MySQL option
 file be written and scrubbed but prevents its deletion. Prove the fix with a
 real Windows ACL regression test and then use only a disposable
-`novel_creator_test_<32 lowercase hex>` database to diagnose the remaining
+`novel_creator_phase7b_restore_<32 lowercase hex>` database to diagnose the remaining
 restore boundary. A real Stage A retry remains a separate approval gate.
 
 ## Observed failure and root cause
@@ -104,7 +104,7 @@ After the minimal ACL dependency change:
 ### Disposable restore diagnosis
 
 Run one controlled restore diagnostic using the already published backup and an
-exact run-owned `novel_creator_test_<32 lowercase hex>` database. The diagnostic
+exact run-owned `novel_creator_phase7b_restore_<32 lowercase hex>` database. The diagnostic
 must:
 
 - use the approved MySQL 8.4 client pair and configured `127.0.0.1:3307`
