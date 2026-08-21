@@ -22,6 +22,7 @@ from backend.domain.product_database_readiness import (
     LEGACY_DATABASE,
     NEW_DATABASE,
     PreparationReceipt,
+    ProductDatabaseReadinessError,
     ReadinessState,
     StateReceipt,
     advance_receipt,
@@ -57,6 +58,7 @@ from backend.scripts.prepare_product_database import (
 from backend.scripts.initialize_database import InitializationResult
 from backend.services.assets import AssetSeedReport
 from backend.services.market_sources import MarketSourceSeedReport
+from backend.services.product_database_backup import ProductDatabaseBackupError
 from backend.services.product_database_inventory import TableStorage
 from backend.services.product_database_readiness import (
     CurrentSchemaProof,
@@ -2452,7 +2454,11 @@ async def test_malformed_browser_smoke_rolls_back_task4_and_never_publishes_rece
         isinstance(event, tuple) and event[0] == "publish"
         for event in world.events
     )
-    assert output == []
+    assert output == [
+        "outcome=failed",
+        "stage=browser-smoke",
+        "cleanup=no-failure-reported",
+    ]
 
 
 def _windows_acl_observation(
@@ -3777,23 +3783,26 @@ async def test_execute_body_flow_control_is_cloned_after_boundary_cleanup(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("flow_case", FLOW_MATRIX_CASES)
 @pytest.mark.parametrize(
-    "stage",
+    ("injected_stage", "public_stage"),
     (
-        "client-preflight",
-        "connection",
-        "inventory",
-        "backup",
-        "restore",
-        "proof",
-        "seed-assets",
-        "seed-market",
-        "audit",
-        "smoke",
-        "publication",
+        ("client-preflight", "preflight"),
+        ("connection", "preflight"),
+        ("inventory", "legacy-inventory-before"),
+        ("backup", "backup"),
+        ("restore", "restore-drill"),
+        ("proof", "schema-proof"),
+        ("seed-assets", "asset-seed"),
+        ("seed-market", "market-seed"),
+        ("audit", "readiness-audit"),
+        ("smoke", "browser-smoke"),
+        ("publication", "receipt-publish"),
     ),
 )
 async def test_execute_all_stage_flow_matrix_uses_real_task4_and_closes_resources(
-    tmp_path: Path, flow_case: str, stage: str
+    tmp_path: Path,
+    flow_case: str,
+    injected_stage: str,
+    public_stage: str,
 ) -> None:
     class World(RealTask4ExecuteWorld):
         def __init__(self) -> None:
@@ -3813,7 +3822,7 @@ async def test_execute_all_stage_flow_matrix_uses_real_task4_and_closes_resource
             finally:
                 self.option_open = False
                 self.events.append("option-exit")
-                if stage not in ("client-preflight", "publication"):
+                if injected_stage not in ("client-preflight", "publication"):
                     raise RuntimeError("secret-option-cleanup")
 
         def create_backup(self, *args: object) -> BackupReceipt:
@@ -3857,7 +3866,7 @@ async def test_execute_all_stage_flow_matrix_uses_real_task4_and_closes_resource
 
     def injected(name: str, operation: object):
         def wrapper(*args: object, **kwargs: object) -> object:
-            if stage == name:
+            if injected_stage == name:
                 raise _matrix_flow(flow_case)
             return operation(*args, **kwargs)  # type: ignore[operator]
 
@@ -3904,24 +3913,216 @@ async def test_execute_all_stage_flow_matrix_uses_real_task4_and_closes_resource
     _assert_matrix_flow(outgoing, flow_case)
     assert "secret" not in repr(raised.value)
     assert world.option_open is False
-    backup_expected = stage not in (
+    backup_expected = injected_stage not in (
         "client-preflight",
         "connection",
         "inventory",
         "backup",
     )
     assert world.backup_retained is backup_expected
-    if stage in ("seed-assets", "seed-market", "audit", "smoke"):
+    if injected_stage in ("seed-assets", "seed-market", "audit", "smoke"):
         assert world.target_active is False
         assert world.target_retained is False
-    elif stage == "publication":
+    elif injected_stage == "publication":
         assert world.target_active is True
         assert world.target_retained is True
     else:
         assert world.target_active is False
         assert world.target_retained is False
     assert world.receipt_published is False
-    assert output == []
+    assert output == [
+        "outcome=failed",
+        f"stage={public_stage}",
+        "cleanup=no-failure-reported",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("injected_stage", "public_stage", "cleanup"),
+    (
+        ("legacy-after", "legacy-inventory-after", "no-failure-reported"),
+        ("boundary-enter", "new-database-init", "no-failure-reported"),
+        ("storage", "readiness-audit", "no-failure-reported"),
+        ("boundary-commit", "boundary-commit", "failed"),
+    ),
+)
+async def test_execute_reports_missing_fixed_stages(
+    tmp_path: Path,
+    injected_stage: str,
+    public_stage: str,
+    cleanup: str,
+) -> None:
+    class StageWorld(RealTask4ExecuteWorld):
+        def __init__(self) -> None:
+            super().__init__()
+            self.legacy_inventory_count = 0
+            self.receipt_published = False
+
+        async def inventory_database(
+            self, config: object, database: str
+        ) -> DatabaseInventory:
+            if database == LEGACY_DATABASE:
+                self.legacy_inventory_count += 1
+                if (
+                    injected_stage == "legacy-after"
+                    and self.legacy_inventory_count == 2
+                ):
+                    raise RuntimeError("password=secret-legacy-after")
+            return await super().inventory_database(config, database)
+
+        async def read_storage(self, config: object, database: str) -> object:
+            if injected_stage == "storage":
+                raise RuntimeError("dsn=mysql://secret-storage")
+            return await super().read_storage(config, database)
+
+        def database_boundary(self, config: object, database: str) -> object:
+            inner = super().database_boundary(config, database)
+
+            class Boundary:
+                async def __aenter__(self) -> NewDatabaseBoundaryState:
+                    if injected_stage == "boundary-enter":
+                        raise RuntimeError("password=secret-boundary-enter")
+                    return await inner.__aenter__()  # type: ignore[attr-defined]
+
+                async def __aexit__(
+                    self,
+                    exc_type: object,
+                    exc: BaseException | None,
+                    traceback: object,
+                ) -> bool:
+                    result = await inner.__aexit__(  # type: ignore[attr-defined]
+                        exc_type, exc, traceback
+                    )
+                    if injected_stage == "boundary-commit" and exc is None:
+                        raise ProductDatabaseReadinessError(
+                            "product database cleanup failed"
+                        )
+                    return result
+
+            return Boundary()
+
+        def publish(self, receipt: PreparationReceipt, backup: Path) -> Path:
+            self.receipt_published = True
+            return super().publish(receipt, backup)
+
+    world = StageWorld()
+    dependencies = PreparationCommandDependencies(
+        preflight_clients=world.preflight_clients,
+        read_config=world.read_config,
+        option_file=world.option_file,
+        preflight_connection=world.preflight_connection,
+        inventory_database=world.inventory_database,
+        create_backup=world.create_backup,
+        restore_drill=world.restore_drill,
+        current_schema_proof=world.current_schema_proof,
+        database_boundary=world.database_boundary,
+        seed_assets=world.seed_assets,
+        seed_market=world.seed_market,
+        read_storage=world.read_storage,
+        audit_official_data=world.audit_official_data,
+        smoke=world.smoke,
+        browser_smoke_runner=lambda **_kwargs: pytest.fail("unused fake runner"),
+        prepare_service=prepare_product_database,
+        publish_receipt=world.publish,
+        id_factory=lambda: "1" * 32,
+    )
+    output: list[str] = []
+
+    with pytest.raises(ProductDatabasePreparationCommandError) as raised:
+        await run_cli(
+            [
+                *_arguments(tmp_path),
+                "--execute",
+                "--confirm-legacy",
+                LEGACY_DATABASE,
+                "--confirm-new",
+                NEW_DATABASE,
+                "--confirm-prepare",
+                "PREPARE-PHASE7B",
+            ],
+            dependencies=dependencies,
+            output=output.append,
+        )
+
+    assert "secret" not in repr(raised.value)
+    assert world.receipt_published is False
+    assert output == [
+        "outcome=failed",
+        f"stage={public_stage}",
+        f"cleanup={cleanup}",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_execute_reports_primary_stage_and_fixed_cleanup_failure(
+    tmp_path: Path,
+) -> None:
+    world = ExecuteWorld(_preparation_receipt())
+
+    class FailingOptionContext:
+        def __enter__(self) -> Path:
+            world.events.append("option-enter")
+            return world.option
+
+        def __exit__(self, *_args: object) -> bool:
+            world.events.append("option-exit")
+            raise ProductDatabaseBackupError(
+                "private mysql option file cleanup failed"
+            )
+
+    async def fail_seed_assets(*_args: object) -> object:
+        raise RuntimeError("password=secret-seed-assets")
+
+    dependencies = PreparationCommandDependencies(
+        preflight_clients=world.preflight_clients,
+        read_config=world.read_config,
+        option_file=lambda *_args: FailingOptionContext(),
+        preflight_connection=world.preflight_connection,
+        inventory_database=world.inventory_database,
+        create_backup=world.create_backup,
+        restore_drill=world.restore_drill,
+        current_schema_proof=world.current_schema_proof,
+        database_boundary=world.database_boundary,
+        seed_assets=fail_seed_assets,
+        seed_market=world.seed_market,
+        read_storage=world.read_storage,
+        audit_official_data=world.audit_official_data,
+        smoke=world.smoke,
+        browser_smoke_runner=lambda **_kwargs: pytest.fail("unused fake runner"),
+        prepare_service=world.prepare,
+        publish_receipt=world.publish,
+        id_factory=lambda: "1" * 32,
+    )
+    output: list[str] = []
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await run_cli(
+            [
+                *_arguments(tmp_path),
+                "--execute",
+                "--confirm-legacy",
+                LEGACY_DATABASE,
+                "--confirm-new",
+                NEW_DATABASE,
+                "--confirm-prepare",
+                "PREPARE-PHASE7B",
+            ],
+            dependencies=dependencies,
+            output=output.append,
+        )
+
+    assert len(raised.value.exceptions) == 2
+    assert all(
+        str(error) == "product database preparation execution failed"
+        for error in raised.value.exceptions
+    )
+    assert "secret" not in repr(raised.value)
+    assert output == [
+        "outcome=failed",
+        "stage=asset-seed",
+        "cleanup=failed",
+    ]
 
 
 def test_main_prints_only_fixed_failure(

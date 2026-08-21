@@ -27,6 +27,7 @@ from backend.domain.product_database_readiness import (
     LEGACY_DATABASE,
     NEW_DATABASE,
     PreparationReceipt,
+    ProductDatabaseReadinessError,
     ReadinessState,
     StateReceipt,
     advance_receipt,
@@ -35,6 +36,7 @@ from backend.domain.product_database_readiness import (
     validate_database_role,
     validate_restore_database,
 )
+from backend.services.product_database_backup import ProductDatabaseBackupError
 from backend.services.product_database_readiness import (
     CurrentSchemaProof,
     NewDatabaseBoundaryEnterFailure,
@@ -102,6 +104,20 @@ _REFRESH_AUDIT_COLUMNS = (
 
 class ProductDatabasePreparationCommandError(RuntimeError):
     """A fixed, public-safe command failure."""
+
+
+_FIXED_CLEANUP_MESSAGES = frozenset(
+    {
+        "private mysql option file cleanup failed",
+        "logical backup cleanup failed",
+        "logical restore cleanup failed",
+        "product database cleanup failed",
+        _BOUNDARY_CLEANUP_ERROR,
+        _PROOF_CLEANUP_ERROR,
+        _RECEIPT_CLEANUP_ERROR,
+        _RESTORE_DRILL_CLEANUP_ERROR,
+    }
+)
 
 
 class _HelpRequested(BaseException):
@@ -459,6 +475,36 @@ def _sanitized(error: BaseException, message: str) -> BaseException:
     if isinstance(error, SystemExit):
         return SystemExit(error.code) if type(error.code) is int else SystemExit()
     return ProductDatabasePreparationCommandError(message)
+
+
+def _fixed_failure_messages(error: BaseException) -> tuple[str, ...]:
+    if isinstance(error, BaseExceptionGroup):
+        return tuple(
+            message
+            for child in error.exceptions
+            for message in _fixed_failure_messages(child)
+        )
+    if type(error) in (
+        ProductDatabasePreparationCommandError,
+        ProductDatabaseReadinessError,
+        ProductDatabaseBackupError,
+    ):
+        return (str(error),)
+    return ()
+
+
+def _safe_failure_fields(stage: str, error: BaseException) -> tuple[str, str]:
+    messages = _fixed_failure_messages(error)
+    cleanup_failed = any(
+        message in _FIXED_CLEANUP_MESSAGES for message in messages
+    )
+    if (
+        stage == "browser-smoke"
+        and messages
+        and all(message in _FIXED_CLEANUP_MESSAGES for message in messages)
+    ):
+        stage = "boundary-commit"
+    return stage, "failed" if cleanup_failed else "no-failure-reported"
 
 
 def _combined(
@@ -2065,6 +2111,7 @@ async def run_cli(
         return 0
 
     _validate_approval(args)
+    stage = "preflight"
     selected = dependencies or _default_dependencies()
     try:
         pair = await _invoke(
@@ -2083,11 +2130,12 @@ async def run_cli(
         backup_result: BackupReceipt | None = None
 
         async def inventory(role: str) -> object:
+            nonlocal stage
             try:
-                database = {
-                    "legacy-before": LEGACY_DATABASE,
-                    "legacy-after": LEGACY_DATABASE,
-                    "new": NEW_DATABASE,
+                stage, database = {
+                    "legacy-before": ("legacy-inventory-before", LEGACY_DATABASE),
+                    "legacy-after": ("legacy-inventory-after", LEGACY_DATABASE),
+                    "new": ("readiness-audit", NEW_DATABASE),
                 }[role]
             except (KeyError, TypeError):
                 raise ProductDatabasePreparationCommandError(
@@ -2100,7 +2148,8 @@ async def run_cli(
         async def create_backup(
             authority: DatabaseInventory, directory: Path
         ) -> object:
-            nonlocal backup_result
+            nonlocal backup_result, stage
+            stage = "backup"
             random_id = selected.id_factory()  # type: ignore[attr-defined]
             if type(random_id) is not str or _HEX_ID.fullmatch(random_id) is None:
                 raise ValueError
@@ -2124,6 +2173,8 @@ async def run_cli(
             return value
 
         async def restore_drill(backup: object, authority: object) -> object:
+            nonlocal stage
+            stage = "restore-drill"
             return await _invoke(
                 selected.restore_drill,  # type: ignore[attr-defined]
                 config,
@@ -2135,34 +2186,48 @@ async def run_cli(
             )
 
         async def current_schema_proof() -> object:
+            nonlocal stage
+            stage = "schema-proof"
             return await _invoke(
                 selected.current_schema_proof, config  # type: ignore[attr-defined]
             )
 
         def boundary(database: str) -> object:
+            nonlocal stage
+            stage = "new-database-init"
             return selected.database_boundary(config, database)  # type: ignore[attr-defined]
 
         async def seed_assets(database: str) -> object:
+            nonlocal stage
+            stage = "asset-seed"
             return await _invoke(
                 selected.seed_assets, config, database  # type: ignore[attr-defined]
             )
 
         async def seed_market(database: str) -> object:
+            nonlocal stage
+            stage = "market-seed"
             return await _invoke(
                 selected.seed_market, config, database  # type: ignore[attr-defined]
             )
 
         async def read_storage(database: str) -> object:
+            nonlocal stage
+            stage = "readiness-audit"
             return await _invoke(
                 selected.read_storage, config, database  # type: ignore[attr-defined]
             )
 
         async def audit_official_data(database: str) -> object:
+            nonlocal stage
+            stage = "readiness-audit"
             return await _invoke(
                 selected.audit_official_data, config, database  # type: ignore[attr-defined]
             )
 
         async def smoke(database: str) -> object:
+            nonlocal stage
+            stage = "browser-smoke"
             return await _invoke(
                 selected.smoke,  # type: ignore[attr-defined]
                 config,
@@ -2172,6 +2237,7 @@ async def run_cli(
 
         option_context = selected.option_file(config, backup_dir)  # type: ignore[attr-defined]
         with _primary_first_context(option_context) as option:
+            stage = "preflight"
             await _invoke(
                 selected.preflight_connection, pair, option  # type: ignore[attr-defined]
             )
@@ -2191,6 +2257,8 @@ async def run_cli(
                 audit_official_data=audit_official_data,
                 smoke=smoke,
             )
+            stage = "boundary-commit"
+        stage = "receipt-publish"
         if type(receipt_value) is not PreparationReceipt or backup_result is None:
             raise ValueError
         await _invoke(
@@ -2199,6 +2267,13 @@ async def run_cli(
             backup_dir / backup_result.backup_filename,
         )
     except BaseException as error:
+        public_stage, cleanup = _safe_failure_fields(stage, error)
+        for line in (
+            "outcome=failed",
+            f"stage={public_stage}",
+            f"cleanup={cleanup}",
+        ):
+            output(line)
         _raise_public(_sanitized(error, _EXECUTION_ERROR))
 
     for line in (
