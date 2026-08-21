@@ -106,6 +106,10 @@ def _owned_sync_main_event_loop() -> Iterator[asyncio.AbstractEventLoop]:
 
 
 def test_sync_main_loop_owner_restores_unrelated_loop_without_closing_it() -> None:
+    policy = asyncio.get_event_loop_policy()
+    policy_local = getattr(policy, "_local", None)
+    assert policy_local is not None
+    preexisting = getattr(policy_local, "_loop", None)
     unrelated = asyncio.new_event_loop()
     asyncio.set_event_loop(unrelated)
     try:
@@ -118,19 +122,32 @@ def test_sync_main_loop_owner_restores_unrelated_loop_without_closing_it() -> No
         assert asyncio.get_event_loop() is unrelated
     finally:
         unrelated.close()
-        asyncio.set_event_loop(None)
+        if preexisting is not None and not preexisting.is_closed():
+            asyncio.set_event_loop(preexisting)
+        else:
+            asyncio.set_event_loop(None)
 
 
 def test_sync_main_loop_owner_restores_no_current_loop() -> None:
-    asyncio.set_event_loop(None)
+    policy = asyncio.get_event_loop_policy()
+    policy_local = getattr(policy, "_local", None)
+    assert policy_local is not None
+    preexisting = getattr(policy_local, "_loop", None)
+    try:
+        asyncio.set_event_loop(None)
 
-    with _owned_sync_main_event_loop() as owned:
-        assert asyncio.get_event_loop() is owned
-        asyncio.run(asyncio.sleep(0))
+        with _owned_sync_main_event_loop() as owned:
+            assert asyncio.get_event_loop() is owned
+            asyncio.run(asyncio.sleep(0))
 
-    assert owned.is_closed()
-    with pytest.raises(RuntimeError, match="There is no current event loop"):
-        asyncio.get_event_loop()
+        assert owned.is_closed()
+        with pytest.raises(RuntimeError, match="There is no current event loop"):
+            asyncio.get_event_loop()
+    finally:
+        if preexisting is not None and not preexisting.is_closed():
+            asyncio.set_event_loop(preexisting)
+        else:
+            asyncio.set_event_loop(None)
 
 
 @pytest.mark.parametrize("exceptional_exit", (False, True))
