@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import traceback
@@ -453,7 +454,9 @@ def _set_windows_delete_child_deny(path: Path, sid: str, *, present: bool) -> No
     assert result.returncode == 0
 
 
-def _windows_acl_observation(path: Path) -> dict[str, object]:
+def _windows_acl_observation(
+    path: Path, powershell_executable: str
+) -> dict[str, object]:
     script = """
 $ErrorActionPreference = 'Stop'
 $rules = @((Get-Acl -LiteralPath $env:PHASE7B_ACL_LITERAL_PATH).Access |
@@ -477,7 +480,7 @@ ConvertTo-Json -InputObject $observation -Compress -Depth 3
 """
     result = subprocess.run(
         [
-            "pwsh.exe",
+            powershell_executable,
             "-NoProfile",
             "-NonInteractive",
             "-Command",
@@ -591,37 +594,65 @@ def test_restrict_phase7b_private_resource_preserves_windows_only_boundary(
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows private option ACL")
 def test_default_private_option_acl_is_private_and_deletable(tmp_path: Path):
+    powershell = shutil.which("pwsh.exe") or shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("PowerShell ACL observation is unavailable")
     private = tmp_path / "private"
     private.mkdir()
-    apply_private_permissions(private, is_directory=True)
-    parent_acl = _windows_acl_observation(private)
-    sid = parent_acl["currentSid"]
-    assert isinstance(sid, str)
-    # Force cleanup to rely on the child ACL's DELETE right, not parent DELETE_CHILD.
-    _set_windows_delete_child_deny(private, sid, present=True)
+    sid: str | None = None
     option: Path | None = None
     option_acl: dict[str, object] = {}
     failure: BaseException | None = None
     residue_lengths: list[int] = []
+    cleanup_failures: list[str] = []
 
     try:
-        try:
-            with backup.private_mysql_option_file(
-                {"host": "h", "port": 3306, "user": "u", "password": "secret"},
-                private,
-            ) as option:
-                option_acl = _windows_acl_observation(option)
-        except BaseException as error:
-            failure = error
-        residue_lengths = [path.stat().st_size for path in private.iterdir()]
-    finally:
-        _set_windows_delete_child_deny(private, sid, present=False)
         apply_private_permissions(private, is_directory=True)
-        for residue in list(private.iterdir()):
-            apply_private_permissions(residue, is_directory=False)
-            residue.unlink()
+        parent_acl = _windows_acl_observation(private, powershell)
+        observed_sid = parent_acl["currentSid"]
+        assert isinstance(observed_sid, str)
+        sid = observed_sid
+        # Force cleanup to rely on the child ACL's DELETE right, not parent DELETE_CHILD.
+        _set_windows_delete_child_deny(private, sid, present=True)
+        with backup.private_mysql_option_file(
+            {"host": "h", "port": 3306, "user": "u", "password": "secret"},
+            private,
+        ) as option:
+            option_acl = _windows_acl_observation(option, powershell)
+    except BaseException as error:
+        failure = error
+    finally:
+        try:
+            residue_lengths = [path.stat().st_size for path in private.iterdir()]
+        except BaseException:
+            cleanup_failures.append("residue observation failed")
+        if sid is not None:
+            try:
+                _set_windows_delete_child_deny(private, sid, present=False)
+            except BaseException:
+                cleanup_failures.append("parent deny removal failed")
+        try:
+            apply_private_permissions(private, is_directory=True)
+        except BaseException:
+            cleanup_failures.append("parent permission reset failed")
+        try:
+            residues = list(private.iterdir())
+        except BaseException:
+            cleanup_failures.append("residue enumeration failed")
+            residues = []
+        for residue in residues:
+            try:
+                apply_private_permissions(residue, is_directory=False)
+            except BaseException:
+                cleanup_failures.append("child permission reset failed")
+            try:
+                residue.unlink()
+            except BaseException:
+                cleanup_failures.append("child unlink failed")
 
-    assert failure is None, (failure, residue_lengths)
+    assert cleanup_failures == []
+    assert failure is None, type(failure).__name__ if failure is not None else None
+    assert sid is not None
     assert option_acl == {
         "currentSid": sid,
         "rules": [
@@ -638,7 +669,7 @@ def test_default_private_option_acl_is_private_and_deletable(tmp_path: Path):
     assert residue_lengths == []
     assert option is not None
     assert not option.exists()
-    assert list(private.iterdir()) == []
+    assert sum(1 for _ in private.iterdir()) == 0
 
 
 def test_private_option_cleanup_race_leaves_only_zeroed_original_and_replacement(

@@ -2456,7 +2456,6 @@ def test_default_dependencies_wire_public_resources_with_exact_arguments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import backend.config as config_module
-    import backend.scripts.configure_local_mysql as mysql_script
     import backend.services.product_database_backup as backup_module
 
     calls: list[object] = []
@@ -2495,7 +2494,6 @@ def test_default_dependencies_wire_public_resources_with_exact_arguments(
         calls.append(("backup", args, kwargs))
         return backup_value
 
-    acl = lambda path: calls.append(("acl", path))
     monkeypatch.setattr(command_module.subprocess, "run", runner)
     monkeypatch.setattr(backup_module, "preflight_client_pair", pair_factory)
     monkeypatch.setattr(backup_module, "private_mysql_option_file", option_factory)
@@ -2504,7 +2502,6 @@ def test_default_dependencies_wire_public_resources_with_exact_arguments(
     )
     monkeypatch.setattr(backup_module, "create_logical_backup", backup_factory)
     monkeypatch.setattr(config_module, "require_mysql_config", lambda: config)
-    monkeypatch.setattr(mysql_script, "restrict_windows_acl", acl)
 
     dependencies = _default_dependencies()
     dump = Path("D:/mysql/mysqldump.exe")
@@ -2568,7 +2565,6 @@ def test_default_dependencies_wire_public_resources_with_exact_arguments(
                     "password": "injected-only",
                 },
                 backup_dir,
-                acl,
             ),
             {"repository_root": command_module.REPOSITORY_ROOT},
         ),
@@ -2582,10 +2578,11 @@ def test_default_dependencies_wire_public_resources_with_exact_arguments(
                 backup_dir,
                 "approved.sql",
                 "a" * 64,
-                runner,
-                acl,
             ),
-            {"repository_root": command_module.REPOSITORY_ROOT},
+            {
+                "runner": runner,
+                "repository_root": command_module.REPOSITORY_ROOT,
+            },
         ),
     ]
 

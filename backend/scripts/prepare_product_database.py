@@ -1914,7 +1914,6 @@ async def _default_smoke(
 
 
 def _default_dependencies() -> PreparationCommandDependencies:
-    from backend.scripts.configure_local_mysql import restrict_windows_acl
     from backend.services.product_database_backup import (
         create_logical_backup,
         preflight_client_connection,
@@ -1949,7 +1948,6 @@ def _default_dependencies() -> PreparationCommandDependencies:
                 for name in ("host", "port", "user", "password")
             },
             root,
-            restrict_windows_acl,
             repository_root=REPOSITORY_ROOT,
         )
 
@@ -1968,8 +1966,7 @@ def _default_dependencies() -> PreparationCommandDependencies:
             directory,
             filename,
             previous_hash,
-            subprocess.run,
-            restrict_windows_acl,
+            runner=subprocess.run,
             repository_root=REPOSITORY_ROOT,
         )
 
