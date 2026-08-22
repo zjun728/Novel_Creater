@@ -19,6 +19,7 @@ const TASK_ROOT_KEY = 'PHASE7B_BROWSER_TASK_ROOT'
 const TASK_NONCE_KEY = 'PHASE7B_BROWSER_TASK_NONCE'
 const INTERNAL_EVIDENCE_MARKER = 'PHASE7B_BROWSER_INTERNAL_EVIDENCE='
 const SAFE_FAILURE_LINE = 'phase7b browser lifecycle failed'
+const FAILURE_STAGE_MARKER = 'PHASE7B_BROWSER_FAILURE_STAGE='
 const PROVIDER_MARKER = 'PHASE7B_PROVIDER_CALL'
 const OUTBOUND_MARKER = 'PHASE7B_OUTBOUND_REQUEST'
 const WRITE_MARKER = 'PHASE7B_WRITE_REQUEST'
@@ -174,8 +175,23 @@ export function renderInternalEvidence(evidence) {
 }
 
 export function renderSafeFailure(error) {
-  void error
-  return SAFE_FAILURE_LINE
+  const stageFrom = value => {
+    try {
+      if (!value || typeof value !== 'object') return null
+      if (SAFE_STAGES.has(value.phase7bStage)) return value.phase7bStage
+      if (value instanceof AggregateError) {
+        for (const child of value.errors) {
+          const stage = stageFrom(child)
+          if (stage) return stage
+        }
+      }
+    } catch {
+      return null
+    }
+    return null
+  }
+  const stage = stageFrom(error) || 'contract'
+  return `${SAFE_FAILURE_LINE}\n${FAILURE_STAGE_MARKER}${stage}`
 }
 
 export function createBackendLaunch({ ownerNonce, port }) {

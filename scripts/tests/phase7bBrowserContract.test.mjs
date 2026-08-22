@@ -90,7 +90,8 @@ test('Phase 7B runner borrows its sandbox and emits only private internal eviden
     'reserveLocalPort', 'startOwnedServer', 'stopOwnedServer', 'waitForPortRelease',
     'PHASE7B_BROWSER_TASK_ROOT', 'PHASE7B_BROWSER_TASK_NONCE', 'artifactRoot',
     'resultPath', 'vite-cache', 'providerCalls', 'outboundRequests', 'writeRequests',
-    'PHASE7B_BROWSER_INTERNAL_EVIDENCE=', 'MYSQL_DB', 'novel_creator_v113',
+    'PHASE7B_BROWSER_INTERNAL_EVIDENCE=', 'PHASE7B_BROWSER_FAILURE_STAGE=',
+    'MYSQL_DB', 'novel_creator_v113',
     'MARKET_SCHEDULER_ENABLED', 'false',
   ]) assert.equal(runnerSource.includes(marker), true, marker)
   for (const forbidden of [
@@ -433,7 +434,10 @@ test('Phase 7B AbortError stays primary, cleans all possible resources, and expo
     assert.equal(error.errors[0].cause.name, 'AbortError')
     assert.equal(error.errors[0].cause.message, secret)
     const safe = runner.renderSafeFailure(error)
-    assert.equal(safe, 'phase7b browser lifecycle failed')
+    assert.equal(safe, [
+      'phase7b browser lifecycle failed',
+      'PHASE7B_BROWSER_FAILURE_STAGE=browser-test',
+    ].join('\n'))
     assert.equal(safe.includes(secret), false)
     assert.equal(safe.includes('AbortError'), false)
     return true
@@ -444,6 +448,20 @@ test('Phase 7B AbortError stays primary, cleans all possible resources, and expo
   ]) assert.equal(harness.events.includes(required), true, required)
   assertFinalResources(harness, { ports: 0, servers: 1, artifacts: 0 })
   assert.deepEqual(harness.logs, [])
+})
+
+test('Phase 7B safe failure stage falls back to the fixed contract stage', async () => {
+  const runner = await import('../../frontend/e2e/run-phase7b.mjs')
+  const error = new Error('secret must not leak')
+  Object.defineProperty(error, 'phase7bStage', {
+    get() { throw new Error('secret stage getter must not leak') },
+  })
+  const safe = runner.renderSafeFailure(error)
+  assert.equal(safe, [
+    'phase7b browser lifecycle failed',
+    'PHASE7B_BROWSER_FAILURE_STAGE=contract',
+  ].join('\n'))
+  assert.equal(safe.includes('secret'), false)
 })
 
 test('Phase 7B emits no evidence after any lifecycle failure', async () => {

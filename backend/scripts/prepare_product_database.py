@@ -68,6 +68,21 @@ _HEX_ID = re.compile(r"^[0-9a-f]{32}$", re.ASCII)
 _MAX_RECEIPT_BYTES = 1_000_000
 _BROWSER_SMOKE_PREFIX = "PHASE7B_BROWSER_SMOKE_SUMMARY="
 _BROWSER_INTERNAL_EVIDENCE_PREFIX = "PHASE7B_BROWSER_INTERNAL_EVIDENCE="
+_BROWSER_FAILURE_STAGE_PREFIX = "PHASE7B_BROWSER_FAILURE_STAGE="
+_BROWSER_FAILURE_STAGES = frozenset(
+    {
+        "contract",
+        "root-setup",
+        "port-reservation",
+        "backend-start",
+        "vite-start",
+        "browser-test",
+        "runtime-audit",
+        "server-cleanup",
+        "port-cleanup",
+        "artifact-cleanup",
+    }
+)
 _BROWSER_INTERNAL_EVIDENCE_EXPECTED = {
     "firstStage": None,
     "firstCause": None,
@@ -1924,6 +1939,21 @@ def run_owned_phase7b_browser(
         _raise_public(_sanitized(error, _SMOKE_ERROR))
 
 
+def _browser_failure_stage(completed: object) -> str | None:
+    returncode = getattr(completed, "returncode", None)
+    stderr = getattr(completed, "stderr", None)
+    if type(returncode) is not int or returncode == 0 or type(stderr) is not str:
+        return None
+    stages = [
+        line[len(_BROWSER_FAILURE_STAGE_PREFIX) :]
+        for line in stderr.splitlines()
+        if line.startswith(_BROWSER_FAILURE_STAGE_PREFIX)
+    ]
+    if len(stages) != 1 or stages[0] not in _BROWSER_FAILURE_STAGES:
+        return None
+    return stages[0]
+
+
 async def _default_smoke(
     config: Mapping[str, object],
     database: str,
@@ -2114,6 +2144,7 @@ async def run_cli(
 
     _validate_approval(args)
     stage = "preflight"
+    browser_stage = "unavailable"
     selected = dependencies or _default_dependencies()
     try:
         pair = await _invoke(
@@ -2228,13 +2259,22 @@ async def run_cli(
             )
 
         async def smoke(database: str) -> object:
-            nonlocal stage
+            nonlocal browser_stage, stage
             stage = "browser-smoke"
+
+            def browser_runner(**kwargs: object) -> object:
+                nonlocal browser_stage
+                completed = selected.browser_smoke_runner(  # type: ignore[attr-defined]
+                    **kwargs
+                )
+                browser_stage = _browser_failure_stage(completed) or "unavailable"
+                return completed
+
             return await _invoke(
                 selected.smoke,  # type: ignore[attr-defined]
                 config,
                 database,
-                selected.browser_smoke_runner,  # type: ignore[attr-defined]
+                browser_runner,
             )
 
         option_context = selected.option_file(config, backup_dir)  # type: ignore[attr-defined]
@@ -2270,11 +2310,14 @@ async def run_cli(
         )
     except BaseException as error:
         public_stage, cleanup = _safe_failure_fields(stage, error)
-        for line in (
+        lines = [
             "outcome=failed",
             f"stage={public_stage}",
             f"cleanup={cleanup}",
-        ):
+        ]
+        if public_stage == "browser-smoke":
+            lines.append(f"browser_stage={browser_stage}")
+        for line in lines:
             output(line)
         _raise_public(_sanitized(error, _EXECUTION_ERROR))
 

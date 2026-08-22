@@ -2397,8 +2397,23 @@ async def test_execute_wires_preflight_inventory_task4_and_publication_in_order(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("browser_stderr", "expected_browser_stage"),
+    (
+        (
+            "phase7b browser lifecycle failed\n"
+            "PHASE7B_BROWSER_FAILURE_STAGE=backend-start\n"
+            "password=secret",
+            "backend-start",
+        ),
+        (
+            "PHASE7B_BROWSER_FAILURE_STAGE=secret-stage\npassword=secret",
+            "unavailable",
+        ),
+    ),
+)
 async def test_malformed_browser_smoke_rolls_back_task4_and_never_publishes_receipt(
-    tmp_path: Path,
+    tmp_path: Path, browser_stderr: str, expected_browser_stage: str
 ) -> None:
     world = RealTask4ExecuteWorld()
     browser_calls: list[object] = []
@@ -2406,9 +2421,9 @@ async def test_malformed_browser_smoke_rolls_back_task4_and_never_publishes_rece
     def malformed_browser(**kwargs: object) -> object:
         browser_calls.append(kwargs)
         return SimpleNamespace(
-            returncode=0,
+            returncode=1,
             stdout="PHASE7B_BROWSER_SMOKE_SUMMARY={\"scenario\":1}",
-            stderr="secret-browser-stderr",
+            stderr=browser_stderr,
         )
 
     dependencies = PreparationCommandDependencies(
@@ -2458,6 +2473,7 @@ async def test_malformed_browser_smoke_rolls_back_task4_and_never_publishes_rece
         "outcome=failed",
         "stage=browser-smoke",
         "cleanup=no-failure-reported",
+        f"browser_stage={expected_browser_stage}",
     ]
 
 
@@ -2778,6 +2794,29 @@ def _browser_internal_evidence(**changes: object) -> str:
     value = json.loads(_browser_summary(**changes).split("=", 1)[1])
     value.pop("rootCount")
     return "PHASE7B_BROWSER_INTERNAL_EVIDENCE=" + canonical_json(value)
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stderr", "expected"),
+    (
+        (1, "PHASE7B_BROWSER_FAILURE_STAGE=vite-start", "vite-start"),
+        (1, "PHASE7B_BROWSER_FAILURE_STAGE=secret-stage", None),
+        (
+            1,
+            "PHASE7B_BROWSER_FAILURE_STAGE=vite-start\n"
+            "PHASE7B_BROWSER_FAILURE_STAGE=backend-start",
+            None,
+        ),
+        (1, "password=secret", None),
+        (0, "PHASE7B_BROWSER_FAILURE_STAGE=vite-start", None),
+    ),
+)
+def test_browser_failure_stage_accepts_one_allowlisted_nonzero_exit_marker(
+    returncode: int, stderr: str, expected: str | None
+) -> None:
+    completed = SimpleNamespace(returncode=returncode, stdout="", stderr=stderr)
+
+    assert command_module._browser_failure_stage(completed) == expected
 
 
 @pytest.mark.asyncio
@@ -3930,11 +3969,14 @@ async def test_execute_all_stage_flow_matrix_uses_real_task4_and_closes_resource
         assert world.target_active is False
         assert world.target_retained is False
     assert world.receipt_published is False
-    assert output == [
+    expected_output = [
         "outcome=failed",
         f"stage={public_stage}",
         "cleanup=no-failure-reported",
     ]
+    if public_stage == "browser-smoke":
+        expected_output.append("browser_stage=unavailable")
+    assert output == expected_output
 
 
 @pytest.mark.asyncio
