@@ -3551,9 +3551,9 @@ async def _run_default_official_audit_with_refresh(
     class Session:
         async def fetchall(
             self, sql: str, params: tuple[object, ...] = ()
-        ) -> tuple[dict, ...]:
+        ) -> list[dict]:
             calls.append(("fetchall", sql, params))
-            return tuple(refresh_rows)
+            return list(refresh_rows)
 
     @asynccontextmanager
     async def connection_scope(_config: object, database: str):  # type: ignore[no-untyped-def]

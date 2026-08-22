@@ -1418,13 +1418,15 @@ async def _default_official_audit(
     market_repository = MarketRepository()
     async with _default_connection_scope(config, database) as session:
         market_rows = await market_repository.list_seed_inventory(session)
-        refresh_rows = await session.fetchall(  # type: ignore[attr-defined]
-            """SELECT source_id,last_snapshot_id,refresh_status,lease_owner,
-                      lease_expires_at,last_attempted_at,last_succeeded_at,
-                      next_run_at,public_error_code
-               FROM market_source_refresh_states
-               ORDER BY source_id""",
-            (),
+        refresh_rows = tuple(
+            await session.fetchall(  # type: ignore[attr-defined]
+                """SELECT source_id,last_snapshot_id,refresh_status,lease_owner,
+                          lease_expires_at,last_attempted_at,last_succeeded_at,
+                          next_run_at,public_error_code
+                   FROM market_source_refresh_states
+                   ORDER BY source_id""",
+                (),
+            )
         )
     by_key = {row.get("stable_key"): row for row in market_rows}
     expected_keys = {source.stable_key for source in market.sources}
