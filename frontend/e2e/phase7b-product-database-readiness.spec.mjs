@@ -2,9 +2,9 @@ import { test, expect } from '@playwright/test'
 
 import {
   assertRuntimeEvidenceHealthy,
-  installHttpOriginBoundary,
   observeRuntime,
 } from './runtime-observer.mjs'
+import { installHttpOriginBoundary } from './phase7b-network-boundary.mjs'
 
 test('new product database exposes only approved empty/static state', async ({ page }) => {
   const allowedOrigins = JSON.parse(process.env.BROWSER_ALLOWED_ORIGINS)

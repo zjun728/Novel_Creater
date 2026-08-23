@@ -23,6 +23,7 @@ test('Phase 7B registers one exact formal read-only browser target', async () =>
 
   for (const relative of [
     'frontend/e2e/phase7b-product-database-readiness.spec.mjs',
+    'frontend/e2e/phase7b-network-boundary.mjs',
     'frontend/e2e/playwright.phase7b.config.mjs',
     'frontend/e2e/run-phase7b.mjs',
   ]) assert.equal(existsSync(path.join(root, relative)), true, relative)
@@ -452,7 +453,7 @@ test('Phase 7B AbortError stays primary, cleans all possible resources, and expo
 })
 
 test('Phase 7B browser boundary continues only exact owned HTTP origins', async () => {
-  const { installHttpOriginBoundary } = await import('../../frontend/e2e/runtime-observer.mjs')
+  const { installHttpOriginBoundary } = await import('../../frontend/e2e/phase7b-network-boundary.mjs')
   let handler = null
   const context = {
     async route(pattern, candidate) {

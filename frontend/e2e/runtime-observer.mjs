@@ -162,21 +162,6 @@ function httpOrigin(value) {
 }
 
 
-export async function installHttpOriginBoundary(context, allowedOrigins) {
-  const originAllowlist = allowedHttpOrigins(allowedOrigins)
-  if (originAllowlist === null || typeof context?.route !== 'function') {
-    throw new TypeError('Runtime HTTP origin boundary is invalid')
-  }
-  await context.route('**/*', async route => {
-    const origin = httpOrigin(route.request().url())
-    if (origin !== null && originAllowlist.has(origin)) {
-      await route.continue()
-      return
-    }
-    await route.abort('blockedbyclient')
-  })
-}
-
 function isLoopbackHttpUrl(value) {
   try {
     const parsed = new URL(String(value))
