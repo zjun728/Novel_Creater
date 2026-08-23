@@ -987,6 +987,73 @@ test('failed expired unknown and known rejection never replace local text', asyn
   }
 })
 
+test('failed full-draft generation exposes its partial output for one explicit recovery', async () => {
+  const state = autosave({ text: '作者原稿', revision: 4, hash: HASH })
+  const partial = '服务端已经生成的部分正文。'
+  const controller = operationController({
+    autosave: state,
+    createDraftOperation: async () => operation({
+      status: 'failed',
+      partialOutput: partial,
+      partialOutputHash: textHash(partial),
+      failureCode: 'DraftProviderFailed',
+    }),
+  })
+
+  await controller.generateWorkingDraft()
+
+  assert.deepEqual(controller.recoverablePartialDraft.value, {
+    operationId: OPERATION_ID,
+    content: partial,
+    scalarCount: Array.from(partial).length,
+  })
+  assert.equal(state.text.value, '作者原稿')
+
+  state.flushCalls = 0
+  assert.equal(await controller.recoverPartialDraft(), true)
+  assert.equal(state.text.value, partial)
+  assert.equal(state.flushCalls, 2)
+  assert.equal(controller.recoverablePartialDraft.value, null)
+  assert.equal(await controller.recoverPartialDraft(), false)
+})
+
+test('partial recovery is unavailable for empty, local, or reset failed operations', async () => {
+  const empty = operationController({
+    createDraftOperation: async () => operation({
+      status: 'failed',
+      failureCode: 'DraftProviderFailed',
+    }),
+  })
+  await empty.generateWorkingDraft()
+  assert.equal(empty.recoverablePartialDraft.value, null)
+
+  const local = operationController({
+    createDraftOperation: async () => operation({
+      operationType: 'rewrite_selection',
+      status: 'failed',
+      partialOutput: '局部替换残稿',
+      partialOutputHash: textHash('局部替换残稿'),
+      failureCode: 'DraftProviderFailed',
+    }),
+  })
+  local.setSelection({ startOffset: 0, endOffset: 1, selectedText: '正' })
+  await local.runSelectionOperation('rewrite_selection')
+  assert.equal(local.recoverablePartialDraft.value, null)
+
+  const reset = operationController({
+    createDraftOperation: async () => operation({
+      status: 'failed',
+      partialOutput: '可恢复正文',
+      partialOutputHash: textHash('可恢复正文'),
+      failureCode: 'DraftProviderFailed',
+    }),
+  })
+  await reset.generateWorkingDraft()
+  assert.ok(reset.recoverablePartialDraft.value)
+  reset.resetContext()
+  assert.equal(reset.recoverablePartialDraft.value, null)
+})
+
 test('one busy action blocks edit candidate navigation and exposes fixed safe operation statuses', async () => {
   const state = autosave({ text: '发起时正文', revision: 4, hash: HASH })
   const pending = deferred()

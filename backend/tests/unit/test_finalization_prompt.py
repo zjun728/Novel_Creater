@@ -70,12 +70,61 @@ def test_quality_and_extraction_messages_keep_roles_separate_and_json_only():
     extraction_user = json.loads(extraction[1]["content"])
     assert quality_system["task"] == "quality_audit"
     assert quality_system["mayCreateCanonFacts"] is False
+    assert quality_system["outputShape"] == {
+        "findings": [{
+            "id": "unique finding id",
+            "dimension": (
+                "plot_effectiveness|content_richness|character_vitality|"
+                "dialogue_credibility|emotional_naturalness|continuity|"
+                "pacing|style_stability|ai_flavor|reading_motivation"
+            ),
+            "reason": "specific reason",
+            "suggestedAction": "specific action",
+            "evidence": {
+                "startScalar": "integer >= 0",
+                "endScalar": "integer > startScalar and <= Candidate length",
+                "confidence": "number from 0 to 1",
+                "rationale": "brief reason",
+            },
+        }],
+    }
     assert extraction_system["task"] == "finalization_extraction"
     assert extraction_system["singleExtraction"] is True
     assert quality_user == extraction_user
     assert quality_user["candidateProse"] == "沈砚走进山门。"
     assert "candidateProse" not in quality_system
     assert "candidateProse" not in extraction_system
+
+
+def test_extraction_prompt_declares_the_exact_closed_changeset_shape():
+    system = json.loads(build_extraction_messages(manifest=_manifest())[0]["content"])
+
+    shape = system["outputShape"]
+    assert set(shape) == {
+        "schemaVersion", "title", "summary", "existingEntityIds",
+        "entities", "aliases", "canonEvents", "storyProgressEvents",
+        "planningPatches", "planningSuggestions",
+    }
+    assert shape["schemaVersion"] == "finalization-changeset-v1"
+    assert "existingEntityIds" in system["requiredCollections"]
+    assert shape["entities"][0] == {
+        "id": "unique change id",
+        "entityType": "person|organization|place|item",
+        "canonicalName": "name",
+    }
+    assert shape["storyProgressEvents"][0]["targetType"] == (
+        "story_block|stage|scene_task"
+    )
+    assert shape["planningPatches"][0]["expectedHash"] == (
+        "exact target hash from planningContext"
+    )
+    assert shape["planningSuggestions"][0]["targetId"] == (
+        "exact planning id or null"
+    )
+    assert system["forbiddenOutput"] == [
+        "changeset wrapper", "top-level evidence", "excerptHash",
+        "unknown fields", "markdown", "commentary",
+    ]
 
 
 def test_prompt_bytes_are_bounded_before_provider_call():

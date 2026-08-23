@@ -39,6 +39,7 @@ class FakeFinalizationService:
         self.prepared = []
         self.corrected = []
         self.confirmed = []
+        self.cancelled = []
         self.error = None
         self.review = {
             "attemptId": "attempt-1", "status": "awaiting_author",
@@ -88,6 +89,15 @@ class FakeFinalizationService:
             confirmed_revision=1, confirmed_revision_hash=HASH_A,
         )
 
+    async def cancel(self, command):
+        if self.error:
+            raise self.error
+        self.cancelled.append(command)
+        return ReviewedFinalization(
+            attempt_id="attempt-1", status="cancelled",
+            current_revision=1, current_revision_hash=HASH_A,
+        )
+
 
 class FakeAtomicFinalizationService:
     def __init__(self):
@@ -113,7 +123,7 @@ def _client():
     return TestClient(app, raise_server_exceptions=False), service, atomic
 
 
-def test_prepare_get_correct_and_confirm_use_narrow_closed_contracts():
+def test_prepare_get_correct_confirm_cancel_and_commit_use_narrow_closed_contracts():
     client, service, atomic = _client()
     base = "/api/projects/p1/chapter-sessions/session-1"
 
@@ -137,6 +147,10 @@ def test_prepare_get_correct_and_confirm_use_narrow_closed_contracts():
         "expectedRevision": 1,
         "expectedRevisionHash": HASH_A,
     })
+    cancelled = client.post(f"{base}/finalization/cancel", json={
+        "expectedRevision": 1,
+        "expectedRevisionHash": HASH_A,
+    })
     committed = client.post(f"{base}/finalization/commit", json={
         "idempotencyKey": HASH_C,
         "expectedRevision": 1,
@@ -146,7 +160,8 @@ def test_prepare_get_correct_and_confirm_use_narrow_closed_contracts():
     assert [
         prepared.status_code, viewed.status_code,
         corrected.status_code, confirmed.status_code, committed.status_code,
-    ] == [201, 200, 201, 200, 200]
+        cancelled.status_code,
+    ] == [201, 200, 201, 200, 200, 200]
     assert prepared.json()["currentRevision"] == 1
     assert viewed.json()["changeSet"]["payload"] == _change_set()
     assert corrected.json()["currentRevision"] == 2
@@ -154,6 +169,7 @@ def test_prepare_get_correct_and_confirm_use_narrow_closed_contracts():
     assert service.prepared[0].candidate_id == "candidate-1"
     assert isinstance(service.corrected[0].change_set, FinalizationChangeSet)
     assert service.confirmed[0].expected_revision_hash == HASH_A
+    assert service.cancelled[0].expected_revision_hash == HASH_A
     assert committed.json()["finalChapterId"] == "chapter-1"
     assert atomic.committed[0].idempotency_key == HASH_C
 

@@ -155,6 +155,7 @@ class ChapterDraftProviderGateway:
             "messages": list(messages),
             "temperature": generation_config["temperature"],
             "max_tokens": generation_config["maxOutputTokens"],
+            "thinking": {"type": "disabled"},
             "stream": False,
         }
         headers = {
@@ -247,6 +248,7 @@ class ChapterDraftProviderGateway:
             "messages": list(messages),
             "temperature": generation_config["temperature"],
             "max_tokens": generation_config["maxOutputTokens"],
+            "thinking": {"type": "disabled"},
             "stream": True,
         }
         headers = {
@@ -347,10 +349,11 @@ class ChapterDraftProviderGateway:
     @staticmethod
     def _validate_stream_headers(response: httpx.Response) -> None:
         media_types = response.headers.get_list("content-type")
+        media_type = media_types[0].strip().lower() if len(media_types) == 1 else ""
         if (
             len(media_types) != 1
-            or media_types[0].strip().lower() != "text/event-stream"
-            or "," in media_types[0]
+            or media_type.split(";", 1)[0].strip() != "text/event-stream"
+            or "," in media_type
         ):
             raise ChapterDraftProviderResponseError("provider response was invalid")
         content_encodings = response.headers.get_list("content-encoding")

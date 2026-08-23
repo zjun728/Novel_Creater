@@ -170,6 +170,16 @@ test('local generation rejection shows one fixed safe fallback only without an o
   assert.equal(actionError.value, '')
 })
 
+test('failed full generation offers one explicit partial-draft recovery action', async () => {
+  const view = await source('views/ChapterWriterView.vue')
+
+  assert.match(view, /controller\.recoverablePartialDraft\.value/)
+  assert.match(view, /已保留[^<]*部分正文/)
+  assert.match(view, /@click="recoverPartialDraft"[^>]*>载入部分稿<\/n-button>/)
+  assert.match(view, /controller\.recoverPartialDraft\(\)/)
+  assert.match(view, /将替换当前工作稿/)
+})
+
 test('author instruction input enforces a Unicode-scalar limit with an accessible count', async () => {
   const view = await source('views/ChapterWriterView.vue')
   const input = view.match(/<n-input id="author-instruction"[^>]*\/>/)?.[0]

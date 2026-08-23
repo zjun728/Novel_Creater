@@ -33,6 +33,9 @@ const batch = computed(() => store.engineBatch)
 const options = computed(() => Array.isArray(batch.value?.options) ? batch.value.options : [])
 const selectedOption = computed(() => options.value.find(option => option.id === selectedOptionId.value) || null)
 const currentDraft = computed(() => store.draft?.draft || null)
+const selectedSeedPayload = computed(() => (
+  props.selectedSeed?.payload ?? props.selectedSeed ?? {}
+))
 const channelProfileKey = ref(String(
   currentDraft.value?.channelProfileKey
   || props.project?.channelProfileKey
@@ -41,7 +44,7 @@ const channelProfileKey = ref(String(
 const genreProfileKey = ref(String(
   currentDraft.value?.genreProfileKey
   || props.project?.genreProfileKey
-  || props.selectedSeed?.genre
+  || selectedSeedPayload.value.genre
   || props.project?.genre
   || '',
 ))
@@ -55,7 +58,10 @@ function idempotencyKey(prefix) {
 async function showError(message) {
   errorMessage.value = String(message || '故事发动机操作失败')
   await nextTick()
-  errorRegion.value?.focus({ preventScroll: false })
+  const target = typeof errorRegion.value?.focus === 'function'
+    ? errorRegion.value
+    : errorRegion.value?.$el
+  target?.focus?.({ preventScroll: false })
 }
 
 function markDirty() {
@@ -346,7 +352,7 @@ watch(options, rows => {
       <div v-else class="empty-engine"><i aria-hidden="true">三</i><h3>尚未形成可比较的三案</h3><p>显式调用已绑定的 Provider，或用命名字段一次建立三套手动方案。</p></div>
     </n-spin>
 
-    <footer class="step-actions"><span><n-tag :bordered="false">所选种子只读</n-tag> {{ props.selectedSeed?.title }}</span><n-button type="primary" size="large" :loading="store.saving" :disabled="store.saving || store.engineLoading || store.requiresReload || !selectedOption" @click="saveAndContinue">保存草稿并继续</n-button></footer>
+    <footer class="step-actions"><span><n-tag :bordered="false">所选种子只读</n-tag> {{ selectedSeedPayload.title }}</span><n-button type="primary" size="large" :loading="store.saving" :disabled="store.saving || store.engineLoading || store.requiresReload || !selectedOption" @click="saveAndContinue">保存草稿并继续</n-button></footer>
   </section>
 </template>
 

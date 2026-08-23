@@ -732,6 +732,10 @@ class OpenAIJSONTransport:
                 "response_format": {"type": "json_object"},
                 "stream": False,
             }
+            if provider.get("thinking") is not None:
+                if not isinstance(provider["thinking"], Mapping):
+                    raise ValueError("invalid runtime")
+                request_body["thinking"] = dict(provider["thinking"])
             rendered_request_body = json.dumps(
                 request_body,
                 ensure_ascii=False,
@@ -983,6 +987,10 @@ async def request_openai_json(
             "response_format": {"type": "json_object"},
             "stream": False,
         }
+        if provider.get("thinking") is not None:
+            if not isinstance(provider["thinking"], Mapping):
+                raise ValueError("invalid runtime")
+            request_body["thinking"] = dict(provider["thinking"])
         rendered_request_body = json.dumps(
             request_body,
             ensure_ascii=False,

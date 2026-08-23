@@ -197,6 +197,22 @@ class ContractRepository:
              row["updated_at"], row["project_id"], row["base_revision"]),
         ) == 1
 
+    async def sync_project_contract_targets(
+        self,
+        session,
+        *,
+        project_id: str,
+        target_words: int,
+        target_chapters: int,
+        updated_at: int,
+    ) -> bool:
+        return await session.execute(
+            """UPDATE projects
+                  SET target_words=%s,target_chapters=%s,updated_at=%s
+                WHERE id=%s AND archived_at IS NULL""",
+            (target_words, target_chapters, updated_at, project_id),
+        ) == 1
+
     async def delete_draft_cas(
         self, session, project_id: str, version: int, content_hash: str
     ) -> bool:

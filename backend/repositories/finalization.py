@@ -44,6 +44,15 @@ def _decoded_array(value: object, field_name: str) -> list[object]:
     return list(decoded)
 
 
+def _decoded_json_value(value: object, field_name: str) -> object:
+    try:
+        return json.loads(value) if isinstance(value, str) else value
+    except (TypeError, ValueError):
+        raise FinalizationDataCorruption(
+            f"persisted {field_name} is invalid"
+        ) from None
+
+
 def _canonical_json_value(value: object) -> str:
     return json.dumps(
         value,
@@ -220,7 +229,7 @@ class FinalizationRepository:
         current_state = []
         for row in state_rows:
             item = dict(row)
-            item["payload"] = _decoded_object(
+            item["payload"] = _decoded_json_value(
                 item.pop("payload_json", None), "Canon projection payload",
             )
             current_state.append(item)
@@ -488,6 +497,32 @@ class FinalizationRepository:
             (
                 revision, revision_hash, confirmed_at, confirmed_at,
                 project_id, session_id, change_set_id, revision, revision_hash,
+            ),
+        )
+        return affected == 1
+
+    async def cancel_awaiting_author(
+        self,
+        session,
+        *,
+        project_id: str,
+        session_id: str,
+        change_set_id: str,
+        expected_revision: int,
+        expected_revision_hash: str,
+        updated_at: int,
+    ) -> bool:
+        affected = await session.execute(
+            """UPDATE finalization_change_sets
+                  SET status='cancelled',active_slot=NULL,updated_at=%s
+                WHERE project_id=%s AND chapter_session_id=%s AND id=%s
+                  AND status='awaiting_author' AND active_slot=1
+                  AND current_revision=%s AND current_revision_hash=%s
+                  AND confirmed_revision IS NULL
+                  AND confirmed_revision_hash IS NULL""",
+            (
+                updated_at, project_id, session_id, change_set_id,
+                expected_revision, expected_revision_hash,
             ),
         )
         return affected == 1
@@ -786,6 +821,23 @@ class FinalizationRepository:
                 WHERE project_id=%s AND id=%s AND status='drafting'
                   AND active_draft_operation_id IS NULL""",
             (finalized_at, project_id, session_id),
+        )
+        return affected == 1
+
+    async def advance_project_chapter(
+        self,
+        session,
+        *,
+        project_id: str,
+        chapter_number: int,
+        updated_at: int,
+    ) -> bool:
+        affected = await session.execute(
+            """UPDATE projects
+                  SET current_chapter=GREATEST(current_chapter,%s),
+                      status='drafting',updated_at=%s
+                WHERE id=%s AND archived_at IS NULL""",
+            (chapter_number, updated_at, project_id),
         )
         return affected == 1
 

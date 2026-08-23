@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 from hashlib import sha256
+import math
 from typing import Protocol, runtime_checkable
 
 import httpx
@@ -106,6 +107,52 @@ def _hydrate_nested(value: object, prose: str) -> object:
     return value
 
 
+def _drop_items_with_unusable_evidence(
+    value: object,
+    prose: str,
+) -> object:
+    if type(value) is not dict:
+        return value
+    result = dict(value)
+    for collection in (
+        "canonEvents",
+        "storyProgressEvents",
+        "planningPatches",
+        "planningSuggestions",
+    ):
+        items = value.get(collection)
+        if type(items) is not list:
+            continue
+        kept = []
+        for item in items:
+            evidence = item.get("evidence") if type(item) is dict else None
+            if (
+                type(evidence) is not dict
+                or frozenset(evidence.keys()) != _EVIDENCE_FIELDS
+            ):
+                kept.append(item)
+                continue
+            start = evidence["startScalar"]
+            end = evidence["endScalar"]
+            confidence = evidence["confidence"]
+            rationale = evidence["rationale"]
+            usable = (
+                type(start) is int
+                and type(end) is int
+                and 0 <= start < end <= len(prose)
+                and type(confidence) in (int, float)
+                and type(confidence) is not bool
+                and math.isfinite(float(confidence))
+                and 0 <= float(confidence) <= 1
+                and isinstance(rationale, str)
+                and bool(rationale.strip())
+            )
+            if usable:
+                kept.append(item)
+        result[collection] = kept
+    return result
+
+
 def _parse_quality(value: object, prose: str) -> tuple[QualityFinding, ...] | None:
     try:
         if type(value) is not dict or frozenset(value.keys()) != {"findings"}:
@@ -125,7 +172,8 @@ def _parse_quality(value: object, prose: str) -> tuple[QualityFinding, ...] | No
 
 def _parse_extraction(value: object, prose: str) -> FinalizationChangeSet | None:
     try:
-        hydrated = _hydrate_nested(value, prose)
+        filtered = _drop_items_with_unusable_evidence(value, prose)
+        hydrated = _hydrate_nested(filtered, prose)
         return FinalizationChangeSet.model_validate(hydrated)
     except (ValidationError, ValueError, TypeError, KeyError, UnicodeError):
         return None
@@ -176,9 +224,16 @@ class _FinalizationGateway:
         failed = False
         cancelled = False
         result = None
+        runtime_provider = dict(provider)
+        runtime_provider["temperature"] = 0.0
         try:
+            base_url = provider.get("base_url")
+            if isinstance(base_url, str):
+                host = (httpx.URL(base_url).host or "").casefold()
+                if host == "deepseek.com" or host.endswith(".deepseek.com"):
+                    runtime_provider["thinking"] = {"type": "disabled"}
             result = await self._resource.request(
-                provider=provider,
+                provider=runtime_provider,
                 model_name=model_name,
                 messages=messages,
             )
@@ -192,16 +247,19 @@ class _FinalizationGateway:
             failed = True
         if cancelled:
             provider = None
+            runtime_provider = None
             model_name = None
             messages = None
             result = None
             _raise_cancelled()
         if failed:
             provider = None
+            runtime_provider = None
             model_name = None
             messages = None
             result = None
             _raise_safe_error()
+        runtime_provider = None
         return result.value
 
 

@@ -160,7 +160,6 @@ def test_parser_handles_a_long_line_split_into_single_byte_chunks():
         ({"created": "1"}, {}, {}),
         ({"system_fingerprint": 1}, {}, {}),
         ({"service_tier": []}, {}, {}),
-        ({"usage": {}}, {}, {}),
     ),
 )
 def test_parser_type_closes_every_admitted_json_sibling(
@@ -202,6 +201,32 @@ def test_parser_accepts_closed_compatible_metadata_shapes(finish_reason):
     assert parser.feed(_frame(payload)) == ()
     assert parser.feed(b"data: [DONE]\n\n") == ()
     parser.finish()
+
+
+def test_parser_accepts_and_discards_bounded_numeric_usage_metadata():
+    payload = _choice(None)
+    payload["usage"] = {
+        "prompt_tokens": 120,
+        "completion_tokens": 300,
+        "total_tokens": 420,
+        "prompt_tokens_details": {"cached_tokens": 80},
+    }
+    payload["choices"][0]["finish_reason"] = "stop"
+    parser = OpenAITextSSEParser()
+
+    assert parser.feed(_frame(payload)) == ()
+    assert parser.feed(b"data: [DONE]\n\n") == ()
+    parser.finish()
+
+
+@pytest.mark.parametrize("invalid_usage", ({"secret": "value"}, [1], -1, True))
+def test_parser_rejects_non_numeric_or_negative_usage_metadata(invalid_usage):
+    payload = _choice(None)
+    payload["usage"] = invalid_usage
+    parser = OpenAITextSSEParser()
+
+    with pytest.raises(ChapterDraftProviderResponseError):
+        parser.feed(_frame(payload))
 
 
 @pytest.mark.parametrize(

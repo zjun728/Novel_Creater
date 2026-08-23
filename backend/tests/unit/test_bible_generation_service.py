@@ -456,9 +456,11 @@ class FakeGateway:
         self.result = result or _bible()
         self.calls = 0
         self.on_call = None
+        self.last_values = None
 
-    async def generate(self, **_values):
+    async def generate(self, **values):
         self.calls += 1
+        self.last_values = values
         if self.transactions.active:
             self.transactions.gateway_observed_transaction = True
         if self.on_call:
@@ -527,6 +529,17 @@ async def test_success_is_one_call_outside_transaction_and_replays_atomically():
     assert repository.draft["binding_hash"] == "b" * 64
     assert repository.draft["draft_json"] == canonical_json(_bible())
     assert repository.attempts[first.attempt_id]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_bible_generation_uses_a_larger_bounded_output_budget_when_available():
+    service, repository, _, _, gateway, _ = _harness()
+    repository.binding["max_output_tokens"] = 20_000
+
+    await service.generate(_command(idempotency_key="larger-output-budget"))
+
+    assert gateway.last_values["generation_config"]["maxOutputTokens"] == 16_384
+    assert gateway.last_values["generation_config"]["temperature"] == 0.4
 
 
 @pytest.mark.asyncio

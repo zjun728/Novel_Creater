@@ -286,6 +286,19 @@ class MemoryContractRepository:
         }
         return True
 
+    async def sync_project_contract_targets(
+        self, session, *, project_id, target_words, target_chapters, updated_at,
+    ):
+        project = self.projects.get(project_id)
+        if project is None:
+            return False
+        project.update({
+            "target_words": target_words,
+            "target_chapters": target_chapters,
+            "updated_at": updated_at,
+        })
+        return True
+
     async def delete_draft_cas(self, session, project_id, version, content_hash):
         row = self.drafts.get(project_id)
         if row is None or row["draft_version"] != version or row["content_hash"] != content_hash:

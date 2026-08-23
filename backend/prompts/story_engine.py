@@ -8,7 +8,10 @@ from collections.abc import Mapping
 from backend.domain.story_engines import StoryEngineOption
 
 
-_SYSTEM_MESSAGE = "故事具体、人物有欲望和代价、冲突能够长期变化。"
+_SYSTEM_MESSAGE = (
+    "故事具体、人物有欲望和代价、冲突能够长期变化。"
+    "只返回符合 outputContract 的 json 对象。"
+)
 
 
 def build_story_engine_messages(

@@ -36,7 +36,8 @@ from backend.services.bibles import BIBLE_POLICY_VERSION, BibleAlreadyConfirmed
 
 BIBLE_GENERATION_POLICY_VERSION = "creation-bible-generation-v1"
 BIBLE_GENERATION_LEASE_MS = 240_000
-BIBLE_MAX_OUTPUT_TOKENS = 8_192
+BIBLE_MAX_OUTPUT_TOKENS = 16_384
+BIBLE_TEMPERATURE_CAP = 0.4
 BIBLE_AUTHOR_INSTRUCTIONS_MAX_LENGTH = 4_000
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 _TERMINAL = frozenset({"succeeded", "failed", "outcome_unknown"})
@@ -583,7 +584,10 @@ class BibleGenerationService:
                 raise BibleGenerationNotReady() from None
 
         try:
-            temperature = float(binding["temperature"])
+            temperature = min(
+                float(binding["temperature"]),
+                BIBLE_TEMPERATURE_CAP,
+            )
             max_output_tokens = min(
                 int(binding["max_output_tokens"]),
                 BIBLE_MAX_OUTPUT_TOKENS,

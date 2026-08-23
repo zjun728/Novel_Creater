@@ -25,6 +25,44 @@ def test_generate_new_prompt_uses_outline_but_not_existing_prose_as_rewrite_inpu
     assert "多一点人物试探" in rendered
     assert "这段旧正文绝不能成为重写输入" not in rendered
     assert "从当前工作稿" not in rendered
+    assert "作者临时要求是本次生成的硬约束" in messages[0]["content"]
+    assert "不要输出 Markdown 标题" in messages[0]["content"]
+    assert "不得扩写到小纲未选择的后续阶段" in messages[0]["content"]
+
+
+def test_generate_new_receives_authoritative_long_form_story_context():
+    messages = build_chapter_draft_messages(
+        operation_type="generate_new",
+        chapter_session={
+            "chapter_num": 2,
+            "chapter_outline": {"chapterGoal": "完成第一次织机试验"},
+        },
+        working_draft={"content": ""},
+        story_context={
+            "seed": {"openingHook": "压胜钱是系统宿主，只提供有限提示"},
+            "creationContract": {"targetLength": "至少二百万字"},
+            "styleContract": {"prose": "白话、克制、具体"},
+            "creationBible": {"hardRules": ["残页必须由主角主动收集"]},
+            "canon": {"currentState": [{"name": "阿芸", "status": "仍被扣押"}]},
+            "previousFinalChapter": {
+                "chapterNumber": 1,
+                "title": "泔水醒来，三日织机赌局",
+                "content": "王老大摔门而去，阿芸仍在门外等候。",
+            },
+        },
+    )
+
+    rendered = "\n".join(item["content"] for item in messages)
+    assert "压胜钱是系统宿主" in rendered
+    assert "残页必须由主角主动收集" in rendered
+    assert "阿芸" in rendered
+    assert "王老大摔门而去" in rendered
+    assert "上一章已定稿正文是本章开篇的直接连续性依据" in rendered
+    assert "不得擅自改写" in messages[0]["content"]
+    assert "贡献归属" in messages[0]["content"]
+    assert "不得遗漏" in messages[0]["content"]
+    assert "同类操作—解释循环" in messages[0]["content"]
+    assert "第几章" in messages[0]["content"]
 
 
 def test_rewrite_prompt_keeps_existing_prose_available_for_later_operation_types():

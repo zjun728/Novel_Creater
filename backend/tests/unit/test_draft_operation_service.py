@@ -255,6 +255,18 @@ class FakeRepository:
             "stream": False,
             "supports_streaming": True,
         }
+        self.story_context = {
+            "seed": {"openingHook": "压胜钱只提供有限提示"},
+            "creationContract": {"targetLength": "至少二百万字"},
+            "styleContract": {"prose": "白话、克制"},
+            "creationBible": {"hardRules": ["残页必须主动收集"]},
+            "canon": {"currentState": [{"name": "阿芸", "status": "仍被扣押"}]},
+            "previousFinalChapter": {
+                "chapterNumber": 6,
+                "title": "上一章",
+                "content": "阿芸在门外等候。",
+            },
+        }
         self.operations = {}
         self.events = []
         self.revisions = []
@@ -321,6 +333,11 @@ class FakeRepository:
 
     async def resolve_writing_provider(self, session, project_id):
         return dict(self.provider) if project_id == PROJECT_ID else None
+
+    async def read_draft_prompt_context(self, session, project_id, chapter_number):
+        if project_id == PROJECT_ID and chapter_number == 7:
+            return copy.deepcopy(self.story_context)
+        return None
 
     async def read_draft_operation_by_key(self, session, chapter_session_id, key):
         return next((_stored_attempt(row) for row in self.operations.values()
@@ -629,6 +646,8 @@ async def test_generate_new_reserves_calls_outside_transaction_and_atomically_co
     assert repo.provider["base_url"] not in serialized_manifest
     rendered = "\n".join(item["content"] for item in gateway.calls[0]["messages"])
     assert "逼主角公开选择阵营" in rendered
+    assert "压胜钱只提供有限提示" in rendered
+    assert "阿芸在门外等候" in rendered
     assert "当前工作稿" not in rendered
 
 

@@ -43,6 +43,18 @@ def test_editable_chapter_outline_is_closed_and_contains_only_author_fields():
         )
 
 
+def test_final_outline_projection_keeps_unaliased_continuation_and_scenes():
+    service, *_ = _outline_state_service()
+    value = _active_session_row()["chapter_outline"]
+    value["continuation"] = ["承接上一章赌约"]
+    value["scenes"] = ["废料堆找材料", "第一次试机失败"]
+
+    editable = service._editable_from_outline(value)
+
+    assert editable.continuation == ("承接上一章赌约",)
+    assert editable.scenes == ("废料堆找材料", "第一次试机失败")
+
+
 @pytest.mark.parametrize(
     ("active_session", "max_final", "expected"),
     (

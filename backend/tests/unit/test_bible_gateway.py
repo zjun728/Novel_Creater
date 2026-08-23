@@ -87,6 +87,7 @@ async def test_gateway_makes_exactly_one_json_mode_non_streaming_call():
         "temperature": 0.5,
         "max_tokens": 8192,
         "response_format": {"type": "json_object"},
+        "thinking": {"type": "disabled"},
         "stream": False,
     }
 

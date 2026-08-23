@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
 
 from backend.gateways.chapter_draft_provider import ChapterDraftProviderResponseError
@@ -66,6 +67,26 @@ def _bounded_json(value: object) -> None:
                 pending.append((nested, depth + 1))
         elif isinstance(item, list):
             pending.extend((nested, depth + 1) for nested in item)
+
+
+def _validate_usage(value: object) -> None:
+    if value is None:
+        return
+    if not isinstance(value, Mapping):
+        raise _invalid() from None
+    pending = list(value.values())
+    while pending:
+        item = pending.pop()
+        if isinstance(item, Mapping):
+            pending.extend(item.values())
+        elif type(item) is int:
+            if item < 0:
+                raise _invalid() from None
+        elif type(item) is float:
+            if not math.isfinite(item) or item < 0:
+                raise _invalid() from None
+        else:
+            raise _invalid() from None
 
 
 class OpenAITextSSEParser:
@@ -208,5 +229,4 @@ class OpenAITextSSEParser:
             value = payload.get(field)
             if field in payload and value is not None and not isinstance(value, str):
                 raise _invalid() from None
-        if payload.get("usage") is not None:
-            raise _invalid() from None
+        _validate_usage(payload.get("usage"))

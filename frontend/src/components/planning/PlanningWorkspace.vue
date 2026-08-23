@@ -109,6 +109,28 @@ const activeStoryBlock = computed(() => (
   )) || null
 ))
 
+const nodeId = node => String(node?.id || node?.clientNodeKey || '')
+function relationTitle(items, targetId, kind) {
+  const normalized = String(targetId || '')
+  if (!normalized) return '未关联'
+  const target = (items || []).find(item => nodeId(item) === normalized)
+  return target?.title || `未找到${kind}`
+}
+const volumeTitle = targetId => relationTitle(
+  planningContent.value?.volumes,
+  targetId,
+  '分卷',
+)
+const plotTitles = targetIds => (
+  Array.isArray(targetIds) && targetIds.length
+    ? targetIds.map(targetId => relationTitle(
+      planningContent.value?.plots,
+      targetId,
+      '情节线',
+    )).join('、')
+    : '未关联'
+)
+
 function run(action) {
   Promise.resolve(action()).catch(() => {})
 }
@@ -322,8 +344,8 @@ onBeforeUnmount(() => {
               >
                 <strong>{{ block.title || '未命名故事块' }}</strong>
                 <span>
-                  分卷 {{ block.volumeRef || '未关联' }} ·
-                  情节线 {{ block.plotRefs?.join('、') || '未关联' }}
+                  分卷 {{ volumeTitle(block.volumeRef) }} ·
+                  情节线 {{ plotTitles(block.plotRefs) }}
                 </span>
                 <ol>
                   <li

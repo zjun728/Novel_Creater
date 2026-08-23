@@ -39,6 +39,7 @@ export function createFinalizationController({
   prepare = unavailable('prepare'),
   correct = unavailable('correct'),
   confirm = unavailable('confirm'),
+  cancel = unavailable('cancel'),
   commit = unavailable('commit'),
   onCommitted = async () => {},
   idFactory = generateId,
@@ -166,6 +167,21 @@ export function createFinalizationController({
     }, '确认未完成，请刷新后重试。')
   }
 
+  async function cancelReview() {
+    return run(async active => {
+      if (primaryAction.value !== 'confirm') {
+        throw new TypeError('finalization cancellation is unavailable')
+      }
+      await cancel(currentRevision(review.value))
+      if (!active()) return null
+      const value = await getReview()
+      if (!active()) return null
+      review.value = value
+      result.value = null
+      return value
+    }, '放弃审查未完成，请刷新后重试。')
+  }
+
   async function commitChapter() {
     return run(async active => {
       if (primaryAction.value !== 'commit') {
@@ -223,6 +239,7 @@ export function createFinalizationController({
     prepareCandidate,
     correctChangeSet,
     confirmChangeSet,
+    cancelReview,
     commitChapter,
     reset,
     dispose,

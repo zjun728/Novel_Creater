@@ -97,6 +97,30 @@ test('prepare, correct, confirm and commit expose one fenced primary action', as
 })
 
 
+test('an unconfirmed review can be abandoned before returning to drafting', async () => {
+  const calls = []
+  let current = structuredClone(review)
+  const controller = createFinalizationController({
+    getReview: async () => structuredClone(current),
+    cancel: async command => {
+      calls.push(command)
+      current = { ...current, status: 'cancelled' }
+      return { status: 'cancelled' }
+    },
+  })
+  await controller.load()
+
+  await controller.cancelReview()
+
+  assert.equal(controller.primaryAction.value, 'blocked')
+  assert.equal(controller.review.value.status, 'cancelled')
+  assert.deepEqual(calls, [{
+    expectedRevision: 1,
+    expectedRevisionHash: HASH_A,
+  }])
+})
+
+
 test('hard blocks and stale candidates cannot cross the author confirmation boundary', async () => {
   let calls = 0
   const controller = createFinalizationController({

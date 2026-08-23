@@ -6,6 +6,7 @@ import { NAlert, NButton, NCard, NInput, NTag } from 'naive-ui'
 const props = defineProps({
   controller: { type: Object, required: true },
   candidates: { type: Array, default: () => [] },
+  planningContent: { type: Object, default: null },
   disabled: { type: Boolean, default: false },
 })
 
@@ -37,11 +38,17 @@ const changed = computed(() => {
 })
 const findings = computed(() => review.value?.qualityReport?.findings || [])
 const hardBlocks = computed(() => props.controller.hardBlocks.value)
+let previousCandidateIds = new Set()
 
 watch(currentCandidates, values => {
-  if (!values.some(item => item.id === selectedCandidateId.value)) {
+  const ids = new Set(values.map(item => item.id))
+  const added = values.filter(item => !previousCandidateIds.has(item.id))
+  if (added.length) {
+    selectedCandidateId.value = added.at(-1).id
+  } else if (!ids.has(selectedCandidateId.value)) {
     selectedCandidateId.value = values.at(-1)?.id || ''
   }
+  previousCandidateIds = ids
 }, { immediate: true, flush: 'sync' })
 
 watch(() => review.value?.changeSet, value => {
@@ -54,9 +61,59 @@ function evidenceText(evidence) {
 }
 
 function displayValue(value) {
+  const labels = {
+    loom_modified_with_scrap: '已用废料完成织机改造',
+    first_trial_failed: '首次试机失败',
+    adjusted_guide_angle: '已调整经线导向角',
+    became_collaborator: '已成为协作伙伴',
+    at_risk_of_impressment: '面临被征役风险',
+    identified_loom_faults: '已定位织机故障',
+    bet_with_wang_laoda: '已与王老大立下赌约',
+  }
+  if (typeof value === 'string' && Object.hasOwn(labels, value)) return labels[value]
   if (typeof value === 'string') return value
   return JSON.stringify(value, null, 2)
 }
+
+const nodeId = node => String(node?.id || node?.clientNodeKey || '')
+const targetTypeLabel = value => ({
+  volume: '分卷',
+  plot: '情节线',
+  story_block: '故事块',
+  stage: '阶段',
+  scene_task: '场景任务',
+})[value] || '规划项'
+
+function planningNodes() {
+  const content = props.planningContent || {}
+  const blocks = Array.isArray(content.storyBlocks) ? content.storyBlocks : []
+  const stages = blocks.flatMap(block => Array.isArray(block.stages) ? block.stages : [])
+  const tasks = stages.flatMap(stage => (
+    Array.isArray(stage.sceneTasks) ? stage.sceneTasks : []
+  ))
+  return {
+    volume: content.volumes || [],
+    plot: content.plots || [],
+    story_block: blocks,
+    stage: stages,
+    scene_task: tasks,
+  }
+}
+
+function targetLabel(item) {
+  const kind = targetTypeLabel(item?.targetType)
+  const target = (planningNodes()[item?.targetType] || []).find(
+    node => nodeId(node) === String(item?.targetId || ''),
+  )
+  const title = target?.title || target?.task
+  return title ? `${kind} · ${title}` : `${kind} · 当前规划项`
+}
+
+const fieldLabel = value => ({
+  status: '状态',
+  skills: '技能',
+  debts: '债务',
+})[value] || value
 
 async function prepareSelected() {
   if (!selectedCandidate.value) return
@@ -90,6 +147,14 @@ async function commitChapter() {
     // The controller owns the fixed public error.
   }
 }
+
+async function cancelReview() {
+  try {
+    await props.controller.cancelReview()
+  } catch {
+    // The controller owns the fixed public error.
+  }
+}
 </script>
 
 <template>
@@ -102,6 +167,13 @@ async function commitChapter() {
       title="定稿操作未完成"
       class="panel-alert"
     >{{ controller.error.value }}</n-alert>
+
+    <n-alert
+      v-if="review?.status === 'failed' && !hardBlocks.length"
+      type="warning"
+      title="本次审查未完成"
+      class="panel-alert"
+    >审查未完成，正文和候选稿未受影响。可稍后重新点击“审查并定稿”。</n-alert>
 
     <n-alert
       v-if="controller.finalized.value"
@@ -181,7 +253,7 @@ async function commitChapter() {
         <div v-if="changeSetDraft.canonEvents.length" class="change-group">
           <h4>Canon 事实</h4>
           <article v-for="item in changeSetDraft.canonEvents" :key="item.id" class="change-item">
-            <strong>{{ item.fieldPath }}</strong>
+            <strong>{{ fieldLabel(item.fieldPath) }}</strong>
             <pre>{{ displayValue(item.value) }}</pre>
             <small>{{ evidenceText(item.evidence) }}</small>
           </article>
@@ -190,7 +262,7 @@ async function commitChapter() {
         <div v-if="changeSetDraft.storyProgressEvents.length" class="change-group">
           <h4>故事进度</h4>
           <label v-for="item in changeSetDraft.storyProgressEvents" :key="item.id">
-            <span>{{ item.targetType }} · {{ item.targetId }}</span>
+            <span>{{ targetLabel(item) }}</span>
             <select v-model="item.status" :disabled="!editable">
               <option value="started">开始</option>
               <option value="advanced">推进</option>
@@ -202,7 +274,7 @@ async function commitChapter() {
         <div v-if="changeSetDraft.planningPatches.length" class="change-group">
           <h4>未来规划调整</h4>
           <article v-for="item in changeSetDraft.planningPatches" :key="item.id" class="change-item">
-            <strong>{{ item.targetType }} · {{ item.fieldPath }}</strong>
+            <strong>{{ targetLabel(item) }} · {{ fieldLabel(item.fieldPath) }}</strong>
             <n-input
               v-if="typeof item.replacement === 'string'"
               v-model:value="item.replacement"
@@ -228,7 +300,14 @@ async function commitChapter() {
         @click="saveCorrection"
       >保存修正</n-button>
       <n-button
-        v-else-if="controller.primaryAction.value === 'confirm'"
+        v-if="controller.primaryAction.value === 'confirm'"
+        block
+        secondary
+        :disabled="busy"
+        @click="cancelReview"
+      >放弃审查并返回修改</n-button>
+      <n-button
+        v-if="controller.primaryAction.value === 'confirm'"
         type="primary"
         block
         :loading="controller.busy.value"

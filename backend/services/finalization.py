@@ -134,6 +134,22 @@ class ConfirmFinalization:
 
 
 @dataclass(frozen=True, slots=True)
+class CancelFinalization:
+    project_id: str
+    chapter_session_id: str
+    expected_revision: int
+    expected_revision_hash: str
+
+    def __post_init__(self) -> None:
+        _validate_review_identity(
+            self.project_id,
+            self.chapter_session_id,
+            self.expected_revision,
+            self.expected_revision_hash,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class PreparedFinalization:
     attempt_id: str
     status: str
@@ -616,6 +632,40 @@ class FinalizationService:
             confirmed_revision_hash=command.expected_revision_hash,
         )
 
+    async def cancel(self, command: CancelFinalization) -> ReviewedFinalization:
+        if type(command) is not CancelFinalization:
+            raise TypeError("command must be CancelFinalization")
+        async with self.transaction_factory() as session:
+            if await self.repository.lock_project(
+                session, command.project_id,
+            ) is None:
+                raise FinalizationConflict("FINALIZATION_NOT_FOUND")
+            attempt = await self.repository.lock_current_attempt(
+                session, command.project_id, command.chapter_session_id,
+            )
+            self._require_review_state(
+                attempt,
+                revision=command.expected_revision,
+                revision_hash=command.expected_revision_hash,
+            )
+            cancelled = await self.repository.cancel_awaiting_author(
+                session,
+                project_id=command.project_id,
+                session_id=command.chapter_session_id,
+                change_set_id=attempt["id"],
+                expected_revision=command.expected_revision,
+                expected_revision_hash=command.expected_revision_hash,
+                updated_at=self._clock(),
+            )
+            if not cancelled:
+                raise FinalizationConflict("FINALIZATION_STATE_CONFLICT")
+        return ReviewedFinalization(
+            attempt_id=attempt["id"],
+            status="cancelled",
+            current_revision=command.expected_revision,
+            current_revision_hash=command.expected_revision_hash,
+        )
+
     async def prepare(self, command: PrepareFinalization) -> PreparedFinalization:
         if type(command) is not PrepareFinalization:
             raise TypeError("command must be PrepareFinalization")
@@ -872,6 +922,7 @@ class FinalizationService:
 
 
 __all__ = [
+    "CancelFinalization",
     "ConfirmFinalization",
     "CorrectFinalization",
     "FinalizationConflict",

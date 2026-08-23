@@ -357,6 +357,8 @@ async def test_manual_confirmation_without_binding_is_atomic_and_replayable():
     assert creation["binding_revision_id"] is None
     assert creation["binding_hash"] is None
     assert harness.repository.heads["p1"]["revision"] == 1
+    assert harness.repository.projects["p1"]["target_words"] == 1_000_000
+    assert harness.repository.projects["p1"]["target_chapters"] == 400
     assert "p1" not in harness.repository.drafts
 
 

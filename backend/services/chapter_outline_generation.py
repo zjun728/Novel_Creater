@@ -962,15 +962,50 @@ class ChapterOutlineGenerationService:
             plots = tuple(plots_by_id[item] for item in block.plot_ids)
             if any(item.lifecycle != "active" for item in plots):
                 raise ValueError("inactive Plot")
-            stages = tuple(
+            active_stages = tuple(
                 item for item in block.stages if item.lifecycle == "active"
             )
-            tasks = tuple(
+            draft_content = EditableChapterOutlineContent.model_validate(
+                authority["draft"]["content"],
+                strict=True,
+            )
+            stages_by_id = {item.id: item for item in active_stages}
+            if draft_content.stage_refs:
+                stages = tuple(
+                    stages_by_id[ref.id] for ref in draft_content.stage_refs
+                )
+                if any(
+                    stage.revision != ref.revision
+                    or stage.content_hash != ref.content_hash
+                    for stage, ref in zip(
+                        stages, draft_content.stage_refs, strict=True
+                    )
+                ):
+                    raise ValueError("stale selected Stage")
+            else:
+                stages = active_stages
+            active_tasks = tuple(
                 task
                 for stage in stages
                 for task in stage.scene_tasks
                 if task.lifecycle == "active"
             )
+            tasks_by_id = {item.id: item for item in active_tasks}
+            if draft_content.scene_task_refs:
+                tasks = tuple(
+                    tasks_by_id[ref.id]
+                    for ref in draft_content.scene_task_refs
+                )
+                if any(
+                    task.revision != ref.revision
+                    or task.content_hash != ref.content_hash
+                    for task, ref in zip(
+                        tasks, draft_content.scene_task_refs, strict=True
+                    )
+                ):
+                    raise ValueError("stale selected SceneTask")
+            else:
+                tasks = active_tasks
             capacity = cls._capacity_policy(
                 authority["authorities"]["chapter_capacity_policy"]
             )

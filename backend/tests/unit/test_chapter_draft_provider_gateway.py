@@ -102,7 +102,9 @@ async def test_stream_sends_exact_sse_request_and_yields_text_from_raw_bytes():
 
     gateway = ChapterDraftProviderGateway(transport=httpx.MockTransport(handler))
     assert await _stream(gateway) == ["one", " two"]
-    assert json.loads(requests[0].content)["stream"] is True
+    request_body = json.loads(requests[0].content)
+    assert request_body["stream"] is True
+    assert request_body["thinking"] == {"type": "disabled"}
     assert requests[0].headers["accept"] == "text/event-stream"
     assert requests[0].headers["accept-encoding"] == "identity"
     assert stream.iterated is True
@@ -115,7 +117,6 @@ async def test_stream_sends_exact_sse_request_and_yields_text_from_raw_bytes():
     (
         {},
         {"content-type": "application/json"},
-        {"content-type": "text/event-stream; charset=utf-8"},
         [(b"content-type", b"text/event-stream"), (b"content-type", b"text/event-stream")],
         {"content-type": "text/event-stream, application/json"},
         {"content-type": "text/event-stream", "content-encoding": "gzip"},
@@ -138,6 +139,29 @@ async def test_stream_rejects_invalid_representation_before_iterating_body(heade
     assert stream.close_calls == 1
     assert caught.value.__cause__ is None
     assert "REMOTE-BODY-MUST-NOT-BE-READ" not in repr(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_stream_accepts_standard_sse_content_type_with_utf8_charset():
+    stream = ChunkStream(
+        [
+            b'data: {"choices":[{"index":0,"delta":{"content":"text"}}]}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+    )
+    gateway = ChapterDraftProviderGateway(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream; charset=utf-8"},
+                stream=stream,
+            )
+        )
+    )
+
+    assert await _stream(gateway) == ["text"]
+    assert stream.iterated is True
+    assert stream.close_calls == 1
 
 
 @pytest.mark.asyncio

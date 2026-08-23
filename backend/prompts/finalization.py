@@ -130,6 +130,12 @@ def build_quality_messages(
     manifest: FinalizationProviderManifest,
 ) -> tuple[dict[str, str], ...]:
     value = FinalizationProviderManifest.model_validate(manifest, strict=True)
+    evidence_shape = {
+        "startScalar": "integer >= 0",
+        "endScalar": "integer > startScalar and <= Candidate length",
+        "confidence": "number from 0 to 1",
+        "rationale": "brief reason",
+    }
     return _messages(value, {
         "task": "quality_audit",
         "language": "zh-CN",
@@ -148,7 +154,22 @@ def build_quality_messages(
             "dialogue_credibility", "emotional_naturalness", "continuity",
             "pacing", "style_stability", "ai_flavor", "reading_motivation",
         ],
+        "outputShape": {
+            "findings": [{
+                "id": "unique finding id",
+                "dimension": (
+                    "plot_effectiveness|content_richness|character_vitality|"
+                    "dialogue_credibility|emotional_naturalness|continuity|"
+                    "pacing|style_stability|ai_flavor|reading_motivation"
+                ),
+                "reason": "specific reason",
+                "suggestedAction": "specific action",
+                "evidence": evidence_shape,
+            }],
+        },
         "rules": [
+            "Return outputShape directly as the top-level object; never wrap it.",
+            "Return an empty findings array when there is no supported finding.",
             "Return concrete paragraph locations, reasons, and actions.",
             "Return advisory findings only; do not decide finalization.",
             "Do not quote or return the Candidate prose.",
@@ -161,6 +182,12 @@ def build_extraction_messages(
     manifest: FinalizationProviderManifest,
 ) -> tuple[dict[str, str], ...]:
     value = FinalizationProviderManifest.model_validate(manifest, strict=True)
+    evidence_shape = {
+        "startScalar": "integer >= 0",
+        "endScalar": "integer > startScalar and <= Candidate length",
+        "confidence": "number from 0 to 1",
+        "rationale": "brief reason",
+    }
     return _messages(value, {
         "task": "finalization_extraction",
         "language": "zh-CN",
@@ -171,11 +198,69 @@ def build_extraction_messages(
             "startScalar", "endScalar", "confidence", "rationale",
         ],
         "requiredCollections": [
-            "entities", "aliases", "canonEvents", "storyProgressEvents",
-            "planningPatches", "planningSuggestions",
+            "existingEntityIds", "entities", "aliases", "canonEvents",
+            "storyProgressEvents", "planningPatches", "planningSuggestions",
+        ],
+        "outputShape": {
+            "schemaVersion": "finalization-changeset-v1",
+            "title": "chapter title",
+            "summary": "chapter summary",
+            "existingEntityIds": ["exact existing Canon entity id"],
+            "entities": [{
+                "id": "unique change id",
+                "entityType": "person|organization|place|item",
+                "canonicalName": "name",
+            }],
+            "aliases": [{
+                "id": "unique change id",
+                "entityId": "declared existing or new entity id",
+                "alias": "alias",
+            }],
+            "canonEvents": [{
+                "id": "unique change id",
+                "entityId": "declared entity id or null",
+                "factKind": "stable_definition|dynamic_event|claim",
+                "fieldPath": "fact field path",
+                "value": "strict JSON value",
+                "evidence": evidence_shape,
+                "effectiveStartChapter": "integer >= 1 or null",
+                "effectiveEndChapter": "integer >= start or null",
+                "assertionOperator": "equals|not_equals",
+                "valueCardinality": "single|multi",
+            }],
+            "storyProgressEvents": [{
+                "id": "unique change id",
+                "targetType": "story_block|stage|scene_task",
+                "targetId": "exact target id from planningContext",
+                "status": "started|advanced|completed",
+                "evidence": evidence_shape,
+            }],
+            "planningPatches": [{
+                "id": "unique change id",
+                "targetType": "volume|plot|story_block|stage|scene_task",
+                "targetId": "exact target id from planningContext",
+                "expectedRevision": "exact target revision from planningContext",
+                "expectedHash": "exact target hash from planningContext",
+                "fieldPath": "allowed field for the target type",
+                "replacement": "strict JSON replacement",
+                "evidence": evidence_shape,
+            }],
+            "planningSuggestions": [{
+                "id": "unique change id",
+                "targetId": "exact planning id or null",
+                "message": "non-authoritative suggestion",
+                "evidence": evidence_shape,
+            }],
+        },
+        "forbiddenOutput": [
+            "changeset wrapper", "top-level evidence", "excerptHash",
+            "unknown fields", "markdown", "commentary",
         ],
         "rules": [
             "Return one complete closed ChangeSet.",
+            "Return outputShape directly as the top-level object; never wrap it.",
+            "Every collection is required but may be empty when no supported change exists.",
+            "Every id field must be unique within the complete ChangeSet.",
             "Use only supplied existing entity and Planning identities.",
             "Do not mutate confirmed or implemented Planning.",
             "Do not return Candidate prose or commentary.",

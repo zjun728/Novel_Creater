@@ -149,6 +149,8 @@ def test_prompt_is_deterministic_bounded_and_requests_one_complete_editable_outl
     assert [message["role"] for message in first] == ["system", "user"]
     assert system["task"] == "Generate one complete EditableChapterOutlineContent"
     assert any("Do not invent IDs" in rule for rule in system["rules"])
+    assert any("scenes" in rule and "at least one" in rule for rule in system["rules"])
+    assert any("every outputContract field" in rule for rule in system["rules"])
     assert user["manifest"]["schema_version"] == "chapter-outline-generation-v1"
     assert user["outputContract"]["title"] == "EditableChapterOutlineContent"
     for node in (

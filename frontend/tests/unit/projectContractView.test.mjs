@@ -463,6 +463,12 @@ test('manual story engines use named fields without JSON or channel and genre as
   assert.match(engine, /保存草稿并继续/)
 })
 
+test('story engine error focus safely targets the Naive UI component root', async () => {
+  const engine = await source('src/components/project/contract/StoryEngineStep.vue')
+  assert.match(engine, /errorRegion\.value\?\.\$el/)
+  assert.match(engine, /target\?\.focus\?\./)
+})
+
 test('style trial panel is temporary, shows safe provider identity, and never selects a style', async () => {
   const [style, trial] = await Promise.all([
     source('src/components/project/contract/StyleSelectionStep.vue'),
@@ -650,10 +656,12 @@ test('wizard treats a revisioned contract head as a permanent baseline despite s
         id: 'seed-a',
         revisionId: 'seed-revision-a',
         contentHash: HASH_A,
-        title: '雾港错钟',
-        logline: '回到雾港的守钟人必须阻止一场被时间掩埋的灾难。',
         revision: 1,
-        genre: '历史悬疑',
+        payload: {
+          title: '雾港错钟',
+          logline: '回到雾港的守钟人必须阻止一场被时间掩埋的灾难。',
+          genre: '历史悬疑',
+        },
       },
     }
     seedStore.refresh = async () => ({
@@ -777,7 +785,7 @@ test('story engine trims and saves custom profile identifiers without mapping or
   const mounted = mountWithPinia(StoryEngineStep, {
     projectId: 'project-1',
     project: { channelProfileKey: 'initial-channel' },
-    selectedSeed: { title: '种子', genre: 'initial-genre' },
+    selectedSeed: { payload: { title: '种子', genre: 'initial-genre' } },
   }, store => {
     store.saveDraft = async (projectId, payload) => {
       calls.push({ projectId, payload: structuredClone(payload) })

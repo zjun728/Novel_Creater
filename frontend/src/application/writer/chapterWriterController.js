@@ -116,6 +116,7 @@ export function createChapterWriterController({
   const selectionState = ref(null)
   const undoEligibilityState = ref(null)
   const restoredSelectionState = ref(null)
+  const recoveredPartialOperationId = ref(null)
   const authorInstruction = computed(() => authorInstructionState.value)
   const selection = computed(() => selectionState.value)
   const streamingPreview = computed(() => {
@@ -154,6 +155,22 @@ export function createChapterWriterController({
   const operationRetryAvailable = computed(() => {
     coordinatorRevision.value
     return coordinator.retryAvailable && !actionLock.value
+  })
+  const recoverablePartialDraft = computed(() => {
+    coordinatorRevision.value
+    const operation = coordinator.operation
+    if (
+      operation?.status !== 'failed'
+      || operation.operationType !== 'generate_new'
+      || operation.id === recoveredPartialOperationId.value
+      || typeof operation.partialOutput !== 'string'
+      || operation.partialOutput.trim() === ''
+    ) return null
+    return Object.freeze({
+      operationId: operation.id,
+      content: operation.partialOutput,
+      scalarCount: operation.partialOutputScalars,
+    })
   })
   const operationStatusText = computed(() => {
     coordinatorRevision.value
@@ -271,6 +288,7 @@ export function createChapterWriterController({
     selectionState.value = null
     undoEligibilityState.value = null
     restoredSelectionState.value = null
+    recoveredPartialOperationId.value = null
   }
 
   function dispose() {
@@ -285,6 +303,7 @@ export function createChapterWriterController({
     selectionState.value = null
     undoEligibilityState.value = null
     restoredSelectionState.value = null
+    recoveredPartialOperationId.value = null
   }
 
   function claimAction(kind) {
@@ -495,6 +514,25 @@ export function createChapterWriterController({
     }
   }
 
+  async function recoverPartialDraft() {
+    const partial = recoverablePartialDraft.value
+    if (!partial) return false
+    const token = claimAction('recover-partial')
+    if (token === null) return false
+    undoEligibilityState.value = null
+    restoredSelectionState.value = null
+    try {
+      if (!await flushPersistedDraft() || !isActionCurrent(token)) return false
+      const changed = autosave.edit(partial.content)
+      if (changed) editGeneration += 1
+      if (!await flushPersistedDraft() || !isActionCurrent(token)) return false
+      recoveredPartialOperationId.value = partial.operationId
+      return true
+    } finally {
+      releaseAction(token)
+    }
+  }
+
   async function canNavigate() {
     const token = claimAction('navigate')
     if (token === null) return false
@@ -635,6 +673,7 @@ export function createChapterWriterController({
     retryUnknown,
     resumeDraftOperation,
     cancelGeneration,
+    recoverPartialDraft,
     runSelectionOperation,
     undoLastLocal,
     canNavigate,
@@ -651,6 +690,7 @@ export function createChapterWriterController({
     operationStatus,
     operationStatusText,
     operationRetryAvailable,
+    recoverablePartialDraft,
     authorInstruction,
     selection,
     undoAvailable,

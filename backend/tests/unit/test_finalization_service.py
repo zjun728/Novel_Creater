@@ -10,6 +10,7 @@ from backend.domain.finalization import FinalizationChangeSet, QualityFinding
 from backend.domain.json_contracts import canonical_hash
 from backend.gateways.finalization_provider import FinalizationProviderError
 from backend.services.finalization import (
+    CancelFinalization,
     ConfirmFinalization,
     CorrectFinalization,
     FinalizationConflict,
@@ -151,6 +152,7 @@ class FakeRepository:
         self.current_revision = None
         self.advanced = []
         self.confirmed = []
+        self.cancelled = []
         self.view = None
         self.session = _session()
 
@@ -209,6 +211,10 @@ class FakeRepository:
 
     async def confirm_current_revision(self, session, **row):
         self.confirmed.append(row)
+        return True
+
+    async def cancel_awaiting_author(self, session, **row):
+        self.cancelled.append(row)
         return True
 
     async def read_current_view(self, session, project_id, session_id):
@@ -318,6 +324,34 @@ async def test_prepare_uses_two_short_transactions_and_publishes_revision_one():
     assert len(repository.inserted_revisions) == 1
     assert repository.published[0]["revision"] == 1
     assert "candidateProse" not in str(repository.inserted_attempts[0]["context_manifest"])
+
+
+@pytest.mark.asyncio
+async def test_author_can_cancel_an_unconfirmed_review_and_release_active_slot():
+    repository = FakeRepository()
+    repository.current_attempt = {
+        "id": "attempt-1", "status": "awaiting_author",
+        "current_revision": 1, "current_revision_hash": HASH_A,
+        "confirmed_revision": None, "confirmed_revision_hash": None,
+    }
+    service, _, _, _ = _service(repository)
+
+    result = await service.cancel(CancelFinalization(
+        project_id="project-1",
+        chapter_session_id="session-1",
+        expected_revision=1,
+        expected_revision_hash=HASH_A,
+    ))
+
+    assert result.status == "cancelled"
+    assert repository.cancelled == [{
+        "project_id": "project-1",
+        "session_id": "session-1",
+        "change_set_id": "attempt-1",
+        "expected_revision": 1,
+        "expected_revision_hash": HASH_A,
+        "updated_at": NOW,
+    }]
 
 
 @pytest.mark.asyncio

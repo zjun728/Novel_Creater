@@ -609,6 +609,13 @@ class AtomicFinalizationService:
                 session_id=command.chapter_session_id, finalized_at=now,
             ):
                 raise FinalizationCommitInvalid("chapter session changed")
+            if not await self.repository.advance_project_chapter(
+                session,
+                project_id=command.project_id,
+                chapter_number=chapter_number,
+                updated_at=now,
+            ):
+                raise FinalizationCommitInvalid("project progress changed")
             if not await self.repository.mark_committed(
                 session, project_id=command.project_id,
                 session_id=command.chapter_session_id,

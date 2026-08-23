@@ -452,8 +452,13 @@ def build_planning_messages(
                 "Return exactly one JSON object matching outputContract.",
                 "Create or revise Volume narrative direction and continuing "
                 "Plot lines.",
+                "For every new Volume or Plot, set one non-empty clientNodeKey "
+                "and omit id, revision, and contentHash.",
                 "Copy supplied StoryBlock, Stage, and SceneTask identities, "
                 "order, references, and content unchanged.",
+                "Copy activeStoryBlockRef and storyBlocks as an exact deep copy. "
+                "When they are null and empty, return null and [] exactly.",
+                "Never create a StoryBlock, Stage, or SceneTask in this call.",
                 "Do not add, remove, summarize, or rewrite supplied preserved content.",
                 "Keep every relation inside the returned Planning draft.",
                 "Do not return commentary, markdown, prompt text, or evidence.",

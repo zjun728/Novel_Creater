@@ -22,6 +22,7 @@ from backend.prompts.planning import (
 
 PROVIDER_TIMEOUT_SECONDS = 180
 MAX_PROVIDER_RESPONSE_BYTES = 128 * 1024
+PLANNING_TEMPERATURE_CAP = 0.4
 _SAFE_ERROR = "Planning provider failed"
 
 # Retain the repository's Mapping-based Provider runtime convention instead of
@@ -51,6 +52,31 @@ def _raise_safe_provider_error() -> None:
 
 def _raise_clean_cancelled_error() -> None:
     raise asyncio.CancelledError()
+
+
+def _assign_missing_editable_node_identities(value: object) -> object:
+    if not isinstance(value, dict):
+        return value
+    normalized = dict(value)
+    for section, prefix in (("volumes", "volume"), ("plots", "plot")):
+        nodes = value.get(section)
+        if not isinstance(nodes, list):
+            continue
+        normalized_nodes = []
+        for index, node in enumerate(nodes, start=1):
+            if not isinstance(node, dict) or any(
+                node.get(key) is not None
+                for key in ("clientNodeKey", "id", "revision", "contentHash")
+            ):
+                normalized_nodes.append(node)
+                continue
+            normalized_node = dict(node)
+            for key in ("clientNodeKey", "id", "revision", "contentHash"):
+                normalized_node.pop(key, None)
+            normalized_node["clientNodeKey"] = f"generated-{prefix}-{index:03d}"
+            normalized_nodes.append(normalized_node)
+        normalized[section] = normalized_nodes
+    return normalized
 
 
 class PlanningProviderGateway:
@@ -94,6 +120,7 @@ class PlanningProviderGateway:
         frozen_draft = None
         messages = None
         transport_result = None
+        runtime_provider = None
         value = None
         draft = None
         result = None
@@ -120,8 +147,14 @@ class PlanningProviderGateway:
 
         if not failed:
             try:
+                runtime_provider = dict(provider)
+                runtime_provider["temperature"] = min(
+                    float(provider["temperature"]),
+                    PLANNING_TEMPERATURE_CAP,
+                )
+                runtime_provider["thinking"] = {"type": "disabled"}
                 transport_result = await self._resource.request(
-                    provider=provider,
+                    provider=runtime_provider,
                     model_name=model_name,
                     messages=messages,
                 )
@@ -130,7 +163,9 @@ class PlanningProviderGateway:
                 elif not transport_result.succeeded:
                     failed = True
                 else:
-                    value = transport_result.value
+                    value = _assign_missing_editable_node_identities(
+                        transport_result.value
+                    )
             except asyncio.CancelledError:
                 cancelled = True
             except Exception:
@@ -171,6 +206,7 @@ class PlanningProviderGateway:
 
         if failed or cancelled:
             provider = None
+            runtime_provider = None
             model_name = None
             manifest = None
             author_instructions = None

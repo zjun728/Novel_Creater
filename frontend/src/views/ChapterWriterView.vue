@@ -57,6 +57,9 @@ const confirmedOutline = computed(
   () => outlineAuthority.value?.confirmedOutline || null,
 )
 const outlineContent = computed(() => confirmedOutline.value?.content || null)
+const planningContent = computed(
+  () => outlineAuthority.value?.planningAuthority?.content || null,
+)
 const chapterConflict = computed(() => (
   outlineAuthority.value !== null
   && outlineAuthority.value.authoritativeChapterNumber !== chapterNumber.value
@@ -87,6 +90,11 @@ const finalization = createFinalizationController({
     command,
   ),
   confirm: command => api.chapterSessions.confirmFinalization(
+    projectId.value,
+    session.value.id,
+    command,
+  ),
+  cancel: command => api.chapterSessions.cancelFinalization(
     projectId.value,
     session.value.id,
     command,
@@ -299,6 +307,16 @@ async function generateWorkingDraft() {
     if (!controller.operationStatusText.value) {
       actionError.value = '当前工作稿未能完成生成，请检查作者要求后重试。'
     }
+  }
+}
+
+async function recoverPartialDraft() {
+  actionError.value = ''
+  try {
+    const recovered = await controller.recoverPartialDraft()
+    if (!recovered) actionError.value = '部分正文未能安全载入，请先确认当前工作稿已暂存。'
+  } catch {
+    actionError.value = '部分正文未能安全载入，请稍后重试。'
   }
 }
 
@@ -525,6 +543,18 @@ onBeforeUnmount(() => {
           </div>
           <p v-else class="draft-empty">完成并确认本章小纲后，即可开始撰写正文。</p>
 
+          <n-alert
+            v-if="controller.recoverablePartialDraft.value"
+            type="warning"
+            class="partial-draft-recovery"
+            title="生成中断，部分正文仍可恢复"
+          >
+            已保留 {{ controller.recoverablePartialDraft.value.scalarCount }} 字部分正文。载入后可继续编辑；将替换当前工作稿。
+            <template #action>
+              <n-button secondary :disabled="commandDisabled" @click="recoverPartialDraft">载入部分稿</n-button>
+            </template>
+          </n-alert>
+
           <div class="generation-box">
             <label for="author-instruction">作者临时要求</label>
             <n-input id="author-instruction" :value="controller.authorInstruction.value" type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" aria-describedby="author-instruction-count" placeholder="可选：例如“多一点市井对话”“情绪更压迫”“不要写成设定说明”。" :disabled="commandDisabled" @update:value="updateAuthorInstruction" />
@@ -548,6 +578,7 @@ onBeforeUnmount(() => {
             v-if="session"
             :controller="finalization"
             :candidates="candidates"
+            :planning-content="planningContent"
             :disabled="controller.actionBusy.value || chapterSessionStore.commandBusy"
           />
           <n-card v-if="outlineContent" title="已确认小纲（只读）" :bordered="false">
@@ -638,6 +669,7 @@ h1 { margin: 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: clamp(3
 .replacement-preview strong { color: #76552f; font-size: 12px; letter-spacing: .08em; }
 .replacement-preview pre { overflow: auto; max-height: 220px; margin: 8px 0 0; color: #40372d; white-space: pre-wrap; overflow-wrap: anywhere; font: 14px/1.8 Georgia, 'Noto Serif SC', serif; }
 .draft-empty { min-height: 440px; display: grid; place-items: center; margin: 0; color: #81776a; border: 1px dashed #d7cbb8; border-radius: 10px; background: #fffefb; }
+.partial-draft-recovery { margin-top: 14px; }
 .generation-box { display: grid; gap: 8px; margin-top: 14px; }
 .generation-box label { color: #70675c; font-size: 12px; font-weight: 700; }
 .author-instruction-count { margin: 0; color: #81776a; font-size: 12px; text-align: right; }

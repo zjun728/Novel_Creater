@@ -1502,8 +1502,8 @@ class ChapterOutlineService:
                 )
             raw = dict(value)
         aliases = {
-            field.alias
-            for field in EditableChapterOutlineContent.model_fields.values()
+            field.alias or name
+            for name, field in EditableChapterOutlineContent.model_fields.items()
         }
         editable = {
             key: raw[key]

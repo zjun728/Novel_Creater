@@ -3,6 +3,13 @@ import test from 'node:test'
 
 
 const HASH = 'a'.repeat(64)
+const EVIDENCE = {
+  startScalar: 0,
+  endScalar: 1,
+  excerptHash: HASH,
+  confidence: 0.8,
+  rationale: '正文依据',
+}
 const jsonResponse = body => ({
   ok: true,
   status: 200,
@@ -11,7 +18,7 @@ const jsonResponse = body => ({
 const bodyOf = call => JSON.parse(call.options.body)
 
 
-test('finalization client uses only the five closed session endpoints', async () => {
+test('finalization client uses only the six closed session endpoints', async () => {
   const originalFetch = global.fetch
   const calls = []
   const review = {
@@ -26,7 +33,10 @@ test('finalization client uses only the five closed session endpoints', async ()
       payload: {
         schemaVersion: 'finalization-changeset-v1', title: '第一章', summary: '摘要',
         existingEntityIds: [], entities: [], aliases: [], canonEvents: [],
-        storyProgressEvents: [], planningPatches: [], planningSuggestions: [],
+        storyProgressEvents: [], planningPatches: [], planningSuggestions: [{
+          id: 'suggestion-1', targetId: null, message: '下一章建议',
+          evidence: EVIDENCE,
+        }],
       },
     },
     confirmation: null,
@@ -37,6 +47,7 @@ test('finalization client uses only the five closed session endpoints', async ()
     { attemptId: 'attempt-1', status: 'awaiting_author' },
     { currentRevision: 2, currentRevisionHash: HASH },
     { confirmedRevision: 2, confirmedRevisionHash: HASH },
+    { attemptId: 'attempt-1', status: 'cancelled' },
     {
       recordId: 'record-1', finalChapterId: 'chapter-1', canonRevision: 1,
       projectionHash: HASH, planningRevisionId: 'planning-2',
@@ -64,6 +75,9 @@ test('finalization client uses only the five closed session endpoints', async ()
     await api.chapterSessions.confirmFinalization(...base, {
       expectedRevision: 2, expectedRevisionHash: HASH,
     })
+    await api.chapterSessions.cancelFinalization(...base, {
+      expectedRevision: 2, expectedRevisionHash: HASH,
+    })
     const committed = await api.chapterSessions.commitFinalization(...base, {
       expectedRevision: 2, expectedRevisionHash: HASH, idempotencyKey: HASH,
     })
@@ -75,6 +89,7 @@ test('finalization client uses only the five closed session endpoints', async ()
       ['POST', '/api/projects/project%2F1/chapter-sessions/session%2F1/candidates/candidate%2F1/finalization/prepare'],
       ['POST', '/api/projects/project%2F1/chapter-sessions/session%2F1/finalization/revisions'],
       ['POST', '/api/projects/project%2F1/chapter-sessions/session%2F1/finalization/confirm'],
+      ['POST', '/api/projects/project%2F1/chapter-sessions/session%2F1/finalization/cancel'],
       ['POST', '/api/projects/project%2F1/chapter-sessions/session%2F1/finalization/commit'],
     ])
     assert.deepEqual(bodyOf(calls[2]), {

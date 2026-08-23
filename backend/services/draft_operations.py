@@ -726,6 +726,7 @@ class DraftOperationService:
                 chapter_session=prompt_session,
                 working_draft=draft,
                 author_instruction=command.author_instruction,
+                story_context=authority["story_context"],
                 selection_context=(
                     selection_context(selection) if selection is not None else None
                 ),
@@ -1405,12 +1406,18 @@ class DraftOperationService:
             provider = await self.repository.resolve_writing_provider(
                 session, authoritative_session["project_id"]
             )
+            story_context = await self.repository.read_draft_prompt_context(
+                session,
+                authoritative_session["project_id"],
+                int(authoritative_session["chapter_num"]),
+            )
             provider_row = dict(provider)
             authority = {
                 "session": dict(authoritative_session),
                 "outline": self._outline_snapshot(outline),
                 "projection": self._projection_snapshot(projection),
                 "draft": self._draft_snapshot(draft),
+                "story_context": dict(story_context),
                 "provider": provider_row,
                 "provider_authority": self._normalize_provider_authority(
                     provider_row
@@ -1429,6 +1436,8 @@ class DraftOperationService:
         outline = authority["outline"]
         projection = authority["projection"]
         provider = authority["provider_authority"]
+        if not isinstance(authority["story_context"], dict):
+            raise ValueError
         if session["status"] != "drafting":
             raise ValueError
         if (

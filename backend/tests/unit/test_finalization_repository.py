@@ -291,6 +291,9 @@ async def test_load_preparation_context_decodes_closed_heads_canon_references_an
     states = [{
         "entity_id": "entity-1", "field_path": "location",
         "payload_json": '{"value":"城门"}', "content_hash": HASH_A,
+    }, {
+        "entity_id": "entity-1", "field_path": "status",
+        "payload_json": '"守城"', "content_hash": HASH_A,
     }]
     references = [{
         "id": "fragment-1", "content": "参考文本", "content_hash": HASH_B,
@@ -314,6 +317,7 @@ async def test_load_preparation_context_decodes_closed_heads_canon_references_an
     assert result["canon_context"]["currentState"][0]["payload"] == {
         "value": "城门",
     }
+    assert result["canon_context"]["currentState"][1]["payload"] == "守城"
     assert result["planning_context"]["content"] == {"volumes": []}
     assert result["outline_context"]["content"]["chapterGoal"] == "进入城中"
     assert result["contract_context"]["style"] == {"tone": "克制"}
@@ -342,6 +346,23 @@ async def test_load_preparation_context_rejects_corrupt_persisted_json_without_r
         )
 
     assert sentinel not in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_advance_project_chapter_updates_public_progress_atomically():
+    session = CapturingSession(execute_results=[1])
+
+    assert await FinalizationRepository().advance_project_chapter(
+        session,
+        project_id="project-1",
+        chapter_number=3,
+        updated_at=9,
+    )
+
+    sql, args = session.calls[0]
+    assert "current_chapter=GREATEST(current_chapter,%s)" in _compact(sql)
+    assert "status='drafting'" in _compact(sql)
+    assert args == (3, 9, "project-1")
 
 
 @pytest.mark.asyncio

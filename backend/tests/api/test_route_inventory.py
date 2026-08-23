@@ -156,6 +156,11 @@ APPROVED_FORMAL_ROUTES = {
     (
         "POST",
         "/api/projects/{project_id}/chapter-sessions/{session_id}/finalization/"
+        "cancel",
+    ),
+    (
+        "POST",
+        "/api/projects/{project_id}/chapter-sessions/{session_id}/finalization/"
         "commit",
     ),
     ("POST", "/api/projects/{pid}/chapter-sessions/{session_id}/draft-operations"),

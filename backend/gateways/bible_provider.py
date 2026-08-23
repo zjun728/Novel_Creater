@@ -77,6 +77,7 @@ class BibleProviderGateway:
                 "temperature": generation_config["temperature"],
                 "max_tokens": generation_config["maxOutputTokens"],
                 "response_format": {"type": "json_object"},
+                "thinking": {"type": "disabled"},
                 "stream": False,
             }
             endpoint = self._endpoint(str(provider["base_url"]))

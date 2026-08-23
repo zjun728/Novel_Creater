@@ -311,6 +311,44 @@ test('bindings and story-engine methods send only explicit revision and idempote
   assert.equal(bodyOf(calls[7]), undefined)
 })
 
+test('story-engine provider generation allows the same long-running window as other AI generations', async () => {
+  const originalSetTimeout = global.setTimeout
+  const delays = []
+  global.setTimeout = (callback, delay, ...args) => {
+    delays.push(delay)
+    return originalSetTimeout(callback, delay, ...args)
+  }
+
+  try {
+    await captureRequests(api => api.storyEngines.generate('project-1', {
+      idempotencyKey: 'engine-provider-timeout',
+    }))
+  } finally {
+    global.setTimeout = originalSetTimeout
+  }
+
+  assert.deepEqual(delays, [210_000])
+})
+
+test('asset recommendation generation allows a model-length request window', async () => {
+  const originalSetTimeout = global.setTimeout
+  const delays = []
+  global.setTimeout = (callback, delay, ...args) => {
+    delays.push(delay)
+    return originalSetTimeout(callback, delay, ...args)
+  }
+
+  try {
+    await captureRequests(api => api.assets.recommendations('project-1', {
+      idempotencyKey: 'asset-recommendation-timeout',
+    }))
+  } finally {
+    global.setTimeout = originalSetTimeout
+  }
+
+  assert.deepEqual(delays, [210_000])
+})
+
 test('asset catalog reads and recommendation writes use the formal narrow contract', async () => {
   const calls = await captureRequests(async api => {
     await api.assets.styleTemplates.list()

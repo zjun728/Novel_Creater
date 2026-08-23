@@ -215,6 +215,93 @@ class ChapterSessionRepository:
             (project_id,),
         )
 
+    async def read_draft_prompt_context(
+        self,
+        session,
+        project_id: str,
+        chapter_number: int,
+    ):
+        head = await session.fetchone(
+            """SELECT seed.payload_json AS seed_json,
+                      creation.content_json AS creation_json,
+                      style.merged_style_json AS style_json,
+                      bible.content_json AS bible_json
+                 FROM project_selected_seeds selected
+                 JOIN creative_seed_revisions seed
+                   ON seed.project_id=selected.project_id
+                  AND seed.seed_id=selected.seed_id
+                  AND seed.id=selected.seed_revision_id
+                  AND seed.content_hash=selected.seed_hash
+                 JOIN project_contract_heads contract_head
+                   ON contract_head.project_id=selected.project_id
+                  AND contract_head.revision>0
+                 JOIN creation_contracts creation
+                   ON creation.project_id=contract_head.project_id
+                  AND creation.id=contract_head.creation_contract_id
+                  AND creation.revision=contract_head.revision
+                  AND creation.content_hash=contract_head.creation_hash
+                 JOIN style_contracts style
+                   ON style.project_id=contract_head.project_id
+                  AND style.id=contract_head.style_contract_id
+                  AND style.revision=contract_head.revision
+                  AND style.content_hash=contract_head.style_hash
+                 JOIN project_bible_heads bible_head
+                   ON bible_head.project_id=selected.project_id
+                  AND bible_head.revision>0
+                 JOIN creation_bible_revisions bible
+                   ON bible.project_id=bible_head.project_id
+                  AND bible.id=bible_head.bible_revision_id
+                  AND bible.revision=bible_head.revision
+                  AND bible.content_hash=bible_head.content_hash
+                WHERE selected.project_id=%s""",
+            (project_id,),
+        )
+        if head is None:
+            return None
+        canon_rows = await session.fetchall(
+            """SELECT entity.id,entity.entity_type,entity.canonical_name,
+                      state.field_path,state.payload_json
+                 FROM projection_heads projection
+                 JOIN canon_entities entity
+                   ON entity.project_id=projection.project_id
+                  AND entity.created_revision<=projection.canon_revision_number
+                 LEFT JOIN current_state_projections state
+                   ON state.project_id=entity.project_id
+                  AND state.entity_id=entity.id
+                  AND state.revision_number=projection.canon_revision_number
+                WHERE projection.project_id=%s
+                ORDER BY entity.entity_type,entity.canonical_name,state.field_path""",
+            (project_id,),
+        )
+        previous = await session.fetchone(
+            """SELECT chapter_num,title,content
+                 FROM final_chapters
+                WHERE project_id=%s AND chapter_num<%s
+                ORDER BY chapter_num DESC,id DESC LIMIT 1""",
+            (project_id, chapter_number),
+        )
+        canon = []
+        for row in canon_rows:
+            item = dict(row)
+            payload = item.pop("payload_json", None)
+            item["payload"] = self._json(payload) if payload is not None else None
+            canon.append(item)
+        previous_chapter = None
+        if previous is not None:
+            previous_chapter = {
+                "chapterNumber": int(previous["chapter_num"]),
+                "title": str(previous["title"]),
+                "content": str(previous["content"]),
+            }
+        return {
+            "seed": self._json(head["seed_json"]),
+            "creationContract": self._json(head["creation_json"]),
+            "styleContract": self._json(head["style_json"]),
+            "creationBible": self._json(head["bible_json"]),
+            "canon": {"currentState": canon},
+            "previousFinalChapter": previous_chapter,
+        }
+
     async def read_chapter_session(
         self,
         session,

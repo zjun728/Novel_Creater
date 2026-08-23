@@ -162,6 +162,11 @@ def test_prompt_requests_exact_closed_draft_shape_and_preserves_frozen_structure
         "storyBlocks[].stages",
         "storyBlocks[].stages[].sceneTasks",
     ]
+    rendered_rules = "\n".join(system["rules"])
+    assert "clientNodeKey" in rendered_rules
+    assert "omit id, revision, and contentHash" in rendered_rules
+    assert "return null and [] exactly" in rendered_rules
+    assert "Never create a StoryBlock" in rendered_rules
     assert user == {
         "manifest": _manifest(),
         "authorInstructions": "扩展为三卷，并让两条长期线逐步交叉。",

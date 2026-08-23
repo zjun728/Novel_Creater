@@ -20,6 +20,7 @@ from backend.repositories.canon import CanonRepository
 from backend.repositories.planning import PlanningRepository
 from backend.services.canon import CanonService
 from backend.services.finalization import (
+    CancelFinalization,
     ConfirmFinalization,
     CorrectFinalization,
     FinalizationConflict,
@@ -224,6 +225,27 @@ async def confirm_finalization(
 ):
     try:
         value = await service.confirm(ConfirmFinalization(
+            project_id=project_id,
+            chapter_session_id=session_id,
+            expected_revision=body.expectedRevision,
+            expected_revision_hash=body.expectedRevisionHash,
+        ))
+    except (FinalizationConflict, FinalizationDataCorruption, TypeError, ValueError) as error:
+        _raise_public(error)
+    return _reviewed(value)
+
+
+@router.post(
+    "/projects/{project_id}/chapter-sessions/{session_id}/finalization/cancel",
+)
+async def cancel_finalization(
+    project_id: str,
+    session_id: str,
+    body: ConfirmFinalizationBody,
+    service: FinalizationService = Depends(get_finalization_service),
+):
+    try:
+        value = await service.cancel(CancelFinalization(
             project_id=project_id,
             chapter_session_id=session_id,
             expected_revision=body.expectedRevision,

@@ -89,6 +89,19 @@ def test_prompt_is_one_bounded_json_request_for_future_design_only():
     assert evidence["experienceCards"][0]["payload"]["method"].startswith("每次")
     assert evidence["corpusFragments"][0]["text"].startswith("困境")
     assert evidence["authorInstructions"] == "强调群像分工与长期关系代价。"
+    assert any("整个 JSON 不超过 5000 个汉字" in rule for rule in system["rules"])
+    scalar_schema = evidence["outputSchema"]["properties"]["premiseAndPromise"]
+    assert scalar_schema == {"type": "string", "minLength": 120, "maxLength": 300}
+    list_schema = evidence["outputSchema"]["properties"]["worldRules"]
+    assert list_schema["type"] == "array"
+    assert list_schema["minItems"] == 3
+    assert list_schema["maxItems"] == 6
+    assert list_schema["items"]["required"] == ["id", "text"]
+    assert list_schema["items"]["properties"]["text"] == {
+        "type": "string",
+        "minLength": 40,
+        "maxLength": 160,
+    }
     assert set(evidence["outputSchema"]["required"]) == {
         "premiseAndPromise",
         "worldRules",

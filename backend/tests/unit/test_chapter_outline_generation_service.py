@@ -85,7 +85,38 @@ def _assert_no_sensitive_error_graph(
     assert all(sentinel not in joined for sentinel in sentinels)
 
 
-def _planning():
+def _planning(*, include_second_stage=False):
+    stages = [
+        {
+            "clientNodeKey": "stage",
+            "order": 1,
+            "title": "寻找缺口",
+            "purpose": "确认封锁薄弱处。",
+            "dramaticQuestion": "能否在暴露前找到缺口？",
+            "sceneTasks": [
+                {
+                    "clientNodeKey": "task",
+                    "order": 1,
+                    "task": "观察换岗。",
+                    "completionEvidence": "取得换岗间隔。",
+                }
+            ],
+        }
+    ]
+    if include_second_stage:
+        stages.append({
+            "clientNodeKey": "stage-2",
+            "order": 2,
+            "title": "穿过封锁",
+            "purpose": "执行已经确认的路线。",
+            "dramaticQuestion": "能否不惊动追兵？",
+            "sceneTasks": [{
+                "clientNodeKey": "task-2",
+                "order": 1,
+                "task": "趁换岗穿过缺口。",
+                "completionEvidence": "抵达封锁线外。",
+            }],
+        })
     draft = DraftPlanningAggregate.model_validate(
         {
             "activeStoryBlockRef": "block",
@@ -125,29 +156,16 @@ def _planning():
                     "expectedChange": "二人建立信任。",
                     "openQuestions": ["内应是谁"],
                     "involvedCharacters": ["主角", "同伴"],
-                    "stages": [
-                        {
-                            "clientNodeKey": "stage",
-                            "order": 1,
-                            "title": "寻找缺口",
-                            "purpose": "确认封锁薄弱处。",
-                            "dramaticQuestion": "能否在暴露前找到缺口？",
-                            "sceneTasks": [
-                                {
-                                    "clientNodeKey": "task",
-                                    "order": 1,
-                                    "task": "观察换岗。",
-                                    "completionEvidence": "取得换岗间隔。",
-                                }
-                            ],
-                        }
-                    ],
+                    "stages": stages,
                 }
             ],
         },
         strict=True,
     )
-    identifiers = iter(("volume-1", "plot-1", "block-1", "stage-1", "task-1"))
+    identifiers = iter((
+        "volume-1", "plot-1", "block-1", "stage-1", "task-1",
+        "stage-2-id", "task-2-id",
+    ))
     return normalize_planning_aggregate(
         draft,
         previous_confirmed=None,
@@ -594,12 +612,12 @@ class BlockingGateway(FakeGateway):
         return self.output
 
 
-def _service(*, gateway=None, clock=lambda: NOW):
+def _service(*, gateway=None, clock=lambda: NOW, planning=None):
     from backend.services.chapter_outline_generation import (
         ChapterOutlineGenerationService,
     )
 
-    planning = _planning()
+    planning = planning or _planning()
     outline = FakeOutlineRepository(planning)
     chapter = FakeChapterRepository()
     planning_repository = FakePlanningRepository(planning)
@@ -652,6 +670,26 @@ async def test_success_reserves_calls_outside_transaction_and_join_loads_exact_d
     assert result.model.model_name == "test-model"
     assert tracker.entries == 2
     assert tracker.active == 0
+
+
+@pytest.mark.asyncio
+async def test_generation_manifest_preserves_author_selected_stage_boundary():
+    planning = _planning(include_second_stage=True)
+    selected = _generated(planning)
+    service, repository, _chapter, _planning_repo, gateway, _tracker = _service(
+        gateway=FakeGateway(selected),
+        planning=planning,
+    )
+    payload = selected.model_dump(mode="json", by_alias=True)
+    repository.draft["content"] = payload
+    repository.draft["content_hash"] = canonical_hash(payload)
+
+    result = await service.generate(_command(draft_hash=canonical_hash(payload)))
+
+    assert result.status == "succeeded"
+    manifest = gateway.calls[0]["manifest"]
+    assert [item.id for item in manifest.allowed_stages] == ["stage-1"]
+    assert [item.id for item in manifest.allowed_scene_tasks] == ["task-1"]
     assert repository.load_calls == 1
     assert len(gateway.calls) == 1
     assert repository.lock_order[:12] == [

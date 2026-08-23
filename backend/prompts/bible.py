@@ -22,6 +22,15 @@ _REQUIRED_FIELDS = (
     "continuityGuardrails",
     "openDesignQuestions",
 )
+_SCALAR_FIELDS = (
+    "premiseAndPromise",
+    "powerOrProgressionSystem",
+    "protagonist",
+    "toneAndNarrativeBoundaries",
+)
+_LIST_FIELDS = tuple(
+    field for field in _REQUIRED_FIELDS if field not in _SCALAR_FIELDS
+)
 
 
 def build_bible_messages(
@@ -45,6 +54,9 @@ def build_bible_messages(
             "保留可供后续创作选择的开放问题，不要预写章节、场景或结局事实。",
             "返回严格 JSON 对象，字段必须且只能符合 outputSchema。",
             "列表项使用稳定、简短、互不重复的 ASCII id，并提供具体中文 text。",
+            "直接输出 JSON，不要解释、复述输入或展示思考过程。",
+            "内容精炼但可执行：每个列表 3 至 6 项，每项 text 40 至 160 个汉字。",
+            "每个标量字段 120 至 300 个汉字，整个 JSON 不超过 5000 个汉字。",
         ],
     }
     evidence = {
@@ -58,25 +70,40 @@ def build_bible_messages(
             "type": "object",
             "required": list(_REQUIRED_FIELDS),
             "additionalProperties": False,
-            "scalarFields": [
-                "premiseAndPromise",
-                "powerOrProgressionSystem",
-                "protagonist",
-                "toneAndNarrativeBoundaries",
-            ],
-            "listFields": [
-                "worldRules",
-                "coreCast",
-                "factions",
-                "longTermConflicts",
-                "relationshipDynamics",
-                "continuityGuardrails",
-                "openDesignQuestions",
-            ],
-            "listItem": {
-                "type": "object",
-                "required": ["id", "text"],
-                "additionalProperties": False,
+            "properties": {
+                **{
+                    field: {
+                        "type": "string",
+                        "minLength": 120,
+                        "maxLength": 300,
+                    }
+                    for field in _SCALAR_FIELDS
+                },
+                **{
+                    field: {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 6,
+                        "items": {
+                            "type": "object",
+                            "required": ["id", "text"],
+                            "additionalProperties": False,
+                            "properties": {
+                                "id": {
+                                    "type": "string",
+                                    "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+                                    "maxLength": 64,
+                                },
+                                "text": {
+                                    "type": "string",
+                                    "minLength": 40,
+                                    "maxLength": 160,
+                                },
+                            },
+                        },
+                    }
+                    for field in _LIST_FIELDS
+                },
             },
         },
     }

@@ -290,7 +290,7 @@ async def test_gateway_makes_one_bounded_json_call_and_returns_only_closed_paylo
     )
     result = await _generate_once(
         gateway,
-        provider=_provider(),
+        provider={**_provider(), "temperature": 0.8},
         model_name="planning-model",
         manifest=_manifest(),
         author_instructions="扩展卷级变化。",
@@ -303,9 +303,10 @@ async def test_gateway_makes_one_bounded_json_call_and_returns_only_closed_paylo
     assert request.headers["Authorization"] == "Bearer PRIVATE_API_KEY_SENTINEL"
     body = json.loads(request.content)
     assert body["model"] == "planning-model"
-    assert body["temperature"] == 0.25
+    assert body["temperature"] == 0.4
     assert body["max_tokens"] == 8_192
     assert body["response_format"] == {"type": "json_object"}
+    assert body["thinking"] == {"type": "disabled"}
     assert body["stream"] is False
     assert [message["role"] for message in body["messages"]] == [
         "system",
@@ -315,6 +316,28 @@ async def test_gateway_makes_one_bounded_json_call_and_returns_only_closed_paylo
         result, ensure_ascii=False
     )
     assert caplog.text == ""
+
+
+@pytest.mark.asyncio
+async def test_gateway_assigns_internal_keys_when_generated_editable_nodes_omit_identity():
+    payload = _planning_payload_without_generated_identities()
+    gateway = PlanningProviderGateway(
+        transport=httpx.MockTransport(
+            lambda request: _response(payload, request=request)
+        )
+    )
+
+    result = await _generate_once(
+        gateway,
+        provider=_provider(),
+        model_name="planning-model",
+        manifest=_manifest(),
+        author_instructions="扩展卷级变化。",
+    )
+
+    assert result["volumes"][0]["clientNodeKey"] == "generated-volume-001"
+    assert result["plots"][0]["clientNodeKey"] == "generated-plot-001"
+    assert result["storyBlocks"] == _manifest()["draft"]["storyBlocks"]
 
 
 @pytest.mark.asyncio
@@ -812,7 +835,18 @@ async def test_planning_gateway_uses_the_shared_bounded_json_transport(
     assert resource.start_calls == 1
     assert resource.close_calls == 1
     assert len(resource.requests) == 2
-    assert resource.requests[0]["provider"] == _provider()
+    assert resource.requests[0]["provider"] == {
+        **_provider(),
+        "thinking": {"type": "disabled"},
+    }
+
+
+def _planning_payload_without_generated_identities() -> dict[str, object]:
+    payload = _planning_payload()
+    for section in ("volumes", "plots"):
+        for node in payload[section]:
+            node.pop("clientNodeKey")
+    return payload
     assert resource.requests[0]["model_name"] == "planning-model"
     assert [item["role"] for item in resource.requests[0]["messages"]] == [
         "system",

@@ -75,6 +75,40 @@ async def test_read_session_by_id_projects_active_draft_operation_id():
 
 
 @pytest.mark.asyncio
+async def test_read_draft_prompt_context_loads_authorities_canon_and_previous_final():
+    session = CapturingSession(
+        rows=[
+            {
+                "seed_json": canonical_json({"openingHook": "压胜钱只提供有限提示"}),
+                "creation_json": canonical_json({"targetLength": "至少二百万字"}),
+                "style_json": canonical_json({"prose": "白话、克制"}),
+                "bible_json": canonical_json({"hardRules": ["残页必须主动收集"]}),
+            },
+            {"chapter_num": 1, "title": "上一章", "content": "阿芸仍在门外。"},
+        ],
+        all_rows=[{
+            "id": "entity-1",
+            "entity_type": "character",
+            "canonical_name": "阿芸",
+            "field_path": "status",
+            "payload_json": canonical_json({"value": "仍被扣押"}),
+        }],
+    )
+
+    result = await ChapterSessionRepository().read_draft_prompt_context(
+        session, "project-1", 2,
+    )
+
+    assert result["seed"]["openingHook"] == "压胜钱只提供有限提示"
+    assert result["creationBible"]["hardRules"] == ["残页必须主动收集"]
+    assert result["canon"]["currentState"][0]["canonical_name"] == "阿芸"
+    assert result["previousFinalChapter"]["chapterNumber"] == 1
+    assert result["previousFinalChapter"]["content"] == "阿芸仍在门外。"
+    assert "chapter_num<%s" in " ".join(session.calls[2][0].split())
+    assert session.calls[2][1] == ("project-1", 2)
+
+
+@pytest.mark.asyncio
 async def test_upsert_working_draft_uses_revision_and_hash_cas():
     row = {
         "id": "draft-1",

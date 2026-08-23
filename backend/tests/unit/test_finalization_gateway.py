@@ -122,8 +122,32 @@ async def test_gateway_makes_one_bounded_call_and_returns_closed_domain_value(
     body = json.loads(requests[0].content)
     assert body["model"] == "finalization-model"
     assert body["response_format"] == {"type": "json_object"}
+    assert body["temperature"] == 0.0
+    assert "thinking" not in body
     assert str(requests[0].url) == "https://provider.example/v1/chat/completions"
     assert caplog.text == ""
+
+
+@pytest.mark.asyncio
+async def test_deepseek_finalization_explicitly_disables_reasoning_mode():
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return _response(_extraction_payload(), request)
+
+    provider = _provider()
+    provider["base_url"] = "https://api.deepseek.com/v1"
+    result = await _call(
+        FinalizationExtractionGateway(transport=httpx.MockTransport(handler)),
+        "extract",
+        provider=provider,
+        model_name="finalization-model",
+        manifest=_manifest(),
+    )
+
+    assert type(result) is FinalizationChangeSet
+    assert json.loads(requests[0].content)["thinking"] == {"type": "disabled"}
 
 
 @pytest.mark.asyncio
@@ -153,6 +177,45 @@ async def test_evidence_hash_is_computed_from_candidate_and_provider_cannot_supp
             bad_gateway, "audit", provider=_provider(),
             model_name="finalization-model", manifest=manifest,
         )
+
+
+@pytest.mark.asyncio
+async def test_extraction_drops_only_items_with_empty_evidence_ranges():
+    payload = _extraction_payload()
+    payload["canonEvents"] = [{
+        "id": "event-1",
+        "entityId": None,
+        "factKind": "dynamic_event",
+        "fieldPath": "chapter.event",
+        "value": "进入山门",
+        "evidence": _evidence(),
+        "effectiveStartChapter": 1,
+        "effectiveEndChapter": 1,
+        "assertionOperator": "equals",
+        "valueCardinality": "single",
+    }]
+    payload["planningSuggestions"].append({
+        "id": "suggestion-empty-evidence",
+        "targetId": None,
+        "message": "没有可定位证据的建议。",
+        "evidence": {
+            "startScalar": 2,
+            "endScalar": 2,
+            "confidence": 0.5,
+            "rationale": "空区间",
+        },
+    })
+    gateway = FinalizationExtractionGateway(transport=httpx.MockTransport(
+        lambda request: _response(payload, request)
+    ))
+
+    result = await _call(
+        gateway, "extract", provider=_provider(),
+        model_name="finalization-model", manifest=_manifest(),
+    )
+
+    assert [item.id for item in result.canon_events] == ["event-1"]
+    assert [item.id for item in result.planning_suggestions] == ["suggestion-1"]
 
 
 @pytest.mark.asyncio

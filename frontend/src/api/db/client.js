@@ -10,6 +10,8 @@ const DRAFT_OPERATION_TIMEOUT = 1_200_000
 const BIBLE_GENERATION_TIMEOUT = 210_000
 const PLANNING_GENERATION_TIMEOUT = 210_000
 const CHAPTER_OUTLINE_GENERATION_TIMEOUT = 210_000
+const STORY_ENGINE_GENERATION_TIMEOUT = 210_000
+const ASSET_RECOMMENDATION_TIMEOUT = 210_000
 const FINALIZATION_PREPARE_TIMEOUT = 1_210_000
 
 async function request(method, path, body, timeoutMs = DEFAULT_TIMEOUT) {
@@ -1962,8 +1964,8 @@ function finalizationChangeSet(value) {
       ]),
       replacement: finalizationJson(item.replacement),
     })),
-    planningSuggestions: (source.planningSuggestions || []).map(item => pickDefined(
-      finalizationObject(item, 'suggestion'), ['id', 'targetId', 'message'],
+    planningSuggestions: (source.planningSuggestions || []).map(item => (
+      evidenceItem(item, ['id', 'targetId', 'message'])
     )),
   }
 }
@@ -2261,6 +2263,7 @@ export const api = {
     generate: (projectId, data) => post(
       `/projects/${segment(projectId)}/story-engine-batches`,
       { idempotencyKey: data.idempotencyKey },
+      STORY_ENGINE_GENERATION_TIMEOUT,
     ),
     manual: (projectId, data) => post(
       `/projects/${segment(projectId)}/story-engine-batches/manual`,
@@ -2311,6 +2314,7 @@ export const api = {
     recommendations: (projectId, data) => post(
       `/projects/${segment(projectId)}/asset-recommendations`,
       pickDefined(data, ASSET_RECOMMENDATION_FIELDS),
+      ASSET_RECOMMENDATION_TIMEOUT,
     ),
   },
 
@@ -2707,6 +2711,12 @@ export const api = {
     confirmFinalization: async (projectId, sessionId, data) => (
       finalizationReviewed(await post(
         `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/finalization/confirm`,
+        pickDefined(data, ['expectedRevision', 'expectedRevisionHash']),
+      ))
+    ),
+    cancelFinalization: async (projectId, sessionId, data) => (
+      finalizationReviewed(await post(
+        `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/finalization/cancel`,
         pickDefined(data, ['expectedRevision', 'expectedRevisionHash']),
       ))
     ),

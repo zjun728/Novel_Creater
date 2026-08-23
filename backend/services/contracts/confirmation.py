@@ -244,6 +244,14 @@ class ContractService(ContractHistoryService):
             }):
                 raise ContractConflict()
             self.failpoint("after_head_cas")
+            if not await self.repository.sync_project_contract_targets(
+                session,
+                project_id=command.project_id,
+                target_words=saved.draft.targetTotalWords,
+                target_chapters=saved.draft.expectedChapterCount,
+                updated_at=now,
+            ):
+                raise ContractConflict()
             if not await self.repository.delete_draft_cas(
                 session, command.project_id, saved.draft_version,
                 saved.content_hash,

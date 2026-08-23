@@ -185,6 +185,8 @@ def build_chapter_outline_messages(
             "task": "Generate one complete EditableChapterOutlineContent",
             "rules": [
                 "Return exactly one JSON object matching outputContract.",
+                "Return every outputContract field even when an array is empty; "
+                "scenes must contain at least one concrete chapter scene.",
                 "Copy volumeRef and storyBlockRef exactly from the manifest.",
                 "Copy every allowed Stage and SceneTask reference exactly, "
                 "in manifest order.",

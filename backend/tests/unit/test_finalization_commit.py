@@ -187,6 +187,7 @@ class _FinalizationRepository:
         self.records = []
         self.chapters = []
         self.states = []
+        self.project_chapters = []
         self.record_by_key = None
         self.record_by_session = None
         candidate_content = "正文证据。" * 20
@@ -298,6 +299,9 @@ class _FinalizationRepository:
     async def mark_committing(self, session, **row): self.states.append((session, "committing")); return True
     async def mark_committed(self, session, **row): self.states.append((session, "committed")); return True
     async def finalize_session(self, session, **row): self.states.append((session, "final")); return True
+    async def advance_project_chapter(self, session, **row):
+        self.project_chapters.append((session, row))
+        return True
 
 
 class _PlanningRepository:
@@ -371,6 +375,10 @@ async def test_atomic_commit_uses_one_transaction_and_persists_exact_candidate()
     assert result.planning_revision == 2
     assert repository.chapters[0][1]["content"] == repository.candidate["content"]
     assert repository.chapters[0][1]["planning_revision"] == 1
+    assert repository.project_chapters == [(
+        transactions.sessions[0],
+        {"project_id": "project-1", "chapter_number": 1, "updated_at": 123},
+    )]
     assert planning_repository.rows[0][1]["content_hash"] != planning.content_hash
     assert {item[0] for item in repository.records + repository.chapters + repository.states} == {transactions.sessions[0]}
     assert canon.requests[0][0] is transactions.sessions[0]

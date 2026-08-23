@@ -42,6 +42,9 @@ const steps = Object.freeze([
 ])
 
 const selectedSeed = computed(() => seedStore.selectedSeed)
+const selectedSeedPayload = computed(() => (
+  selectedSeed.value?.payload ?? selectedSeed.value ?? {}
+))
 const baselineLocked = computed(() => Number(contractStore.head?.revision || 0) > 0)
 const hasCurrentContract = computed(() => baselineLocked.value && !props.readOnly)
 const hasArchivedSignedContract = computed(() => props.readOnly && baselineLocked.value)
@@ -230,12 +233,12 @@ onBeforeUnmount(() => {
       <aside v-if="selectedSeed" class="seed-slip" aria-label="已选创作种子，只读">
         <div>
           <span>已选创作种子 · 只读</span>
-          <strong>{{ selectedSeed.title }}</strong>
-          <p>{{ selectedSeed.logline }}</p>
+          <strong>{{ selectedSeedPayload.title }}</strong>
+          <p>{{ selectedSeedPayload.logline }}</p>
         </div>
         <dl>
           <div><dt>修订</dt><dd>{{ selectedSeed.revision ?? '—' }}</dd></div>
-          <div><dt>题材</dt><dd>{{ selectedSeed.genre || '未标注' }}</dd></div>
+          <div><dt>题材</dt><dd>{{ selectedSeedPayload.genre || '未标注' }}</dd></div>
           <div><dt>选择代次</dt><dd>R{{ seedStore.selectionRevision || '—' }}</dd></div>
         </dl>
       </aside>

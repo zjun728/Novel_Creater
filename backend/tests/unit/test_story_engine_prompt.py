@@ -30,7 +30,7 @@ def test_prompt_contains_only_frozen_inputs_and_exact_output_contract():
 
     assert messages[0] == {
         "role": "system",
-        "content": "故事具体、人物有欲望和代价、冲突能够长期变化。",
+        "content": "故事具体、人物有欲望和代价、冲突能够长期变化。只返回符合 outputContract 的 json 对象。",
     }
     assert messages[1]["role"] == "user"
     user = json.loads(messages[1]["content"])
