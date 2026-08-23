@@ -924,25 +924,51 @@ def _open_receipt_temporary(directory: Path) -> tuple[Path, object, object]:
     return path, handle, lease
 
 
+def _receipt_identity_from_path(path: Path) -> object:
+    import ctypes
+    from ctypes import wintypes
+
+    from backend.services import product_database_backup as backup_safety
+
+    creator = backup_safety._kernel32().CreateFileW
+    creator.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    creator.restype = wintypes.HANDLE
+    opened = creator(
+        str(path),
+        0x00000080,
+        0x00000001 | 0x00000002 | 0x00000004,
+        None,
+        3,
+        0x00200000,
+        None,
+    )
+    if opened == ctypes.c_void_p(-1).value:
+        raise OSError
+    handle = int(opened)
+    try:
+        return backup_safety._identity_from_handle(handle)
+    finally:
+        backup_safety._close_windows_handle(handle)
+
+
 def _same_receipt_owner(path: Path, identity: object) -> bool:
     from backend.services.product_database_backup import (
         _OwnedFileLease,
-        _identity_from_fd,
     )
 
     if type(identity) is _OwnedFileLease:
-        descriptor: int | None = None
         try:
-            descriptor = os.open(
-                path,
-                os.O_RDONLY | getattr(os, "O_BINARY", 0),
-            )
-            return _identity_from_fd(descriptor) == identity.identity
+            return _receipt_identity_from_path(path) == identity.identity
         except OSError:
             return False
-        finally:
-            if descriptor is not None:
-                os.close(descriptor)
     if type(identity) is not tuple or len(identity) != 2:
         return False
     try:

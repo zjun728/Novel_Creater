@@ -1279,6 +1279,47 @@ async def test_current_schema_proof_initialization_failure_drops_only_created_pr
     assert all(NEW_DATABASE not in repr(call) for call in calls)
 
 
+def test_receipt_owner_reopens_delete_capable_path_with_shared_delete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import backend.services.product_database_backup as backup_module
+
+    path = tmp_path / "owned.tmp"
+    path.write_bytes(b"")
+    expected = backup_module._OwnedFileIdentity(1, 2, 3)
+    lease = backup_module._OwnedFileLease(expected, 51, delete_through_handle=True)
+    calls: list[object] = []
+
+    class Creator:
+        def __call__(self, *args: object) -> int:
+            calls.append(("open", args))
+            return 71
+
+    monkeypatch.setattr(
+        backup_module, "_kernel32", lambda: SimpleNamespace(CreateFileW=Creator())
+    )
+    monkeypatch.setattr(
+        backup_module,
+        "_identity_from_handle",
+        lambda handle: calls.append(("identity", handle)) or expected,
+    )
+    monkeypatch.setattr(
+        backup_module,
+        "_close_windows_handle",
+        lambda handle: calls.append(("close", handle)),
+    )
+
+    assert command_module._same_receipt_owner(path, lease) is True
+    assert calls == [
+        (
+            "open",
+            (str(path), 0x00000080, 0x00000007, None, 3, 0x00200000, None),
+        ),
+        ("identity", 71),
+        ("close", 71),
+    ]
+
+
 def _preparation_receipt() -> PreparationReceipt:
     previous = None
     receipts = []
