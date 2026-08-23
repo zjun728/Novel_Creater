@@ -224,6 +224,11 @@ def test_wrapper_owner_launches_node_runner_directly_without_routing_recursion(
         captured.update(kwargs)
         return dict(preparation._BROWSER_SMOKE_EXPECTED)
 
+    monkeypatch.setattr(
+        command,
+        "read_local_document",
+        lambda _path: {"MYSQL_DB": "novel_creator"},
+    )
     monkeypatch.setattr(command, "run_owned_phase7b_browser", run_owned)
 
     assert command._run() == preparation._BROWSER_SMOKE_EXPECTED
@@ -235,6 +240,47 @@ def test_wrapper_owner_launches_node_runner_directly_without_routing_recursion(
     environment = captured["environment"]
     assert type(environment) is dict
     assert environment["MYSQL_DB"] == "novel_creator_v113"
+    assert environment["MARKET_SCHEDULER_ENABLED"] == "false"
+    assert environment["PHASE7B_UNRELATED"] == "preserved"
+
+
+def test_wrapper_post_cutover_uses_normal_config_without_mysql_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    for name, value in {
+        "MYSQL_HOST": "unexpected-host",
+        "MYSQL_PORT": "3306",
+        "MYSQL_USER": "unexpected-user",
+        "MYSQL_PASSWORD": "unexpected-password",
+        "MYSQL_DB": "unexpected-database",
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("MARKET_SCHEDULER_ENABLED", "true")
+    monkeypatch.setenv("PHASE7B_UNRELATED", "preserved")
+
+    monkeypatch.setattr(
+        command,
+        "read_local_document",
+        lambda _path: {"MYSQL_DB": "novel_creator_v113"},
+    )
+
+    def run_owned(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return dict(preparation._BROWSER_SMOKE_EXPECTED)
+
+    monkeypatch.setattr(command, "run_owned_phase7b_browser", run_owned)
+
+    assert command._run() == preparation._BROWSER_SMOKE_EXPECTED
+    environment = captured["environment"]
+    assert type(environment) is dict
+    assert not any(name in environment for name in (
+        "MYSQL_HOST",
+        "MYSQL_PORT",
+        "MYSQL_USER",
+        "MYSQL_PASSWORD",
+        "MYSQL_DB",
+    ))
     assert environment["MARKET_SCHEDULER_ENABLED"] == "false"
     assert environment["PHASE7B_UNRELATED"] == "preserved"
 

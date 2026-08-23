@@ -6,7 +6,9 @@ import os
 import sys
 
 from backend.domain.json_contracts import canonical_json
-from backend.domain.product_database_readiness import NEW_DATABASE
+from backend.domain.product_database_readiness import LEGACY_DATABASE, NEW_DATABASE
+from backend.scripts.configure_local_mysql import LOCAL_CONFIG_PATH
+from backend.scripts.cutover_product_database import read_local_document
 from backend.scripts.prepare_product_database import (
     _BROWSER_NODE_COMMAND,
     _BROWSER_SMOKE_EXPECTED,
@@ -21,16 +23,26 @@ from backend.scripts.prepare_product_database import (
 
 
 _FAILURE_LINE = "phase7b browser smoke failed"
+_MYSQL_KEYS = (
+    "MYSQL_HOST",
+    "MYSQL_PORT",
+    "MYSQL_USER",
+    "MYSQL_PASSWORD",
+    "MYSQL_DB",
+)
 
 
 def _run() -> dict[str, object]:
     environment = dict(os.environ)
-    environment.update(
-        {
-            "MYSQL_DB": NEW_DATABASE,
-            "MARKET_SCHEDULER_ENABLED": "false",
-        }
-    )
+    configured_database = read_local_document(LOCAL_CONFIG_PATH).get("MYSQL_DB")
+    if configured_database == LEGACY_DATABASE:
+        environment["MYSQL_DB"] = NEW_DATABASE
+    elif configured_database == NEW_DATABASE:
+        for name in _MYSQL_KEYS:
+            environment.pop(name, None)
+    else:
+        raise ValueError
+    environment["MARKET_SCHEDULER_ENABLED"] = "false"
     return run_owned_phase7b_browser(
         node_command=_BROWSER_NODE_COMMAND,
         cwd=REPOSITORY_ROOT,

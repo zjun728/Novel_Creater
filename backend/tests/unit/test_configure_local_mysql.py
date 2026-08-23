@@ -1,5 +1,7 @@
 import asyncio
+import getpass
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -960,6 +962,35 @@ def test_windows_acl_runner_rejects_nonzero_exit(workspace_tmp_path):
             runner=runner,
             username="writer",
         )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows ACL semantics")
+def test_real_windows_acl_allows_atomic_replace_and_owned_cleanup(
+    workspace_tmp_path,
+):
+    target = workspace_tmp_path / "private.json"
+    target.write_text("old", encoding="utf-8")
+
+    setup.atomic_write_local_document(
+        target,
+        _required_document("novel_creator_v113"),
+        setup.restrict_windows_acl,
+    )
+
+    acl = subprocess.run(
+        ["icacls", str(target)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    normalized_acl = acl.stdout.casefold().replace(" ", "")
+    assert acl.returncode == 0
+    assert getpass.getuser().casefold() in normalized_acl
+    assert "(r,w,d)" in normalized_acl
+    assert "everyone" not in normalized_acl
+    assert "authenticatedusers" not in normalized_acl
+    target.unlink()
+    assert target.exists() is False
 
 
 def test_cli_help_exits_zero_without_prompt_or_failure_banner():

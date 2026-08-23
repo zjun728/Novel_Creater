@@ -1,10 +1,16 @@
 import { test, expect } from '@playwright/test'
 
-import { observeRuntime, assertRuntimeEvidenceHealthy } from './runtime-observer.mjs'
+import {
+  assertRuntimeEvidenceHealthy,
+  installHttpOriginBoundary,
+  observeRuntime,
+} from './runtime-observer.mjs'
 
 test('new product database exposes only approved empty/static state', async ({ page }) => {
+  const allowedOrigins = JSON.parse(process.env.BROWSER_ALLOWED_ORIGINS)
+  await installHttpOriginBoundary(page.context(), allowedOrigins)
   const runtime = observeRuntime(page, {
-    allowedOrigins: JSON.parse(process.env.BROWSER_ALLOWED_ORIGINS),
+    allowedOrigins,
   })
   let response = await page.goto('/api/health')
   expect(response.status()).toBe(200)

@@ -79,6 +79,7 @@ test('Phase 7B spec proves only the exact approved read-only product state', () 
     "getByText('APPROVED CARDS')", "toContainText('64')", "page.goto('/api/market-sources')",
     'toHaveLength(2)', "page.goto('/settings/providers')", "name: 'Provider 与模型'",
     "getByText('还没有 Provider 配置')", 'assertRuntimeEvidenceHealthy',
+    'installHttpOriginBoundary',
   ]) assert.equal(spec.includes(marker), true, marker)
   assert.doesNotMatch(spec, /page\.(?:request|route|evaluate)|route\.fulfill|\bfetch\s*\(|\baxios\b/iu)
   assert.doesNotMatch(spec, /\b(?:POST|PUT|PATCH|DELETE)\b|writeAllowlist|SQL|bootstrap|fixture|seed/iu)
@@ -448,6 +449,40 @@ test('Phase 7B AbortError stays primary, cleans all possible resources, and expo
   ]) assert.equal(harness.events.includes(required), true, required)
   assertFinalResources(harness, { ports: 0, servers: 1, artifacts: 0 })
   assert.deepEqual(harness.logs, [])
+})
+
+test('Phase 7B browser boundary continues only exact owned HTTP origins', async () => {
+  const { installHttpOriginBoundary } = await import('../../frontend/e2e/runtime-observer.mjs')
+  let handler = null
+  const context = {
+    async route(pattern, candidate) {
+      assert.equal(pattern, '**/*')
+      handler = candidate
+    },
+  }
+  await installHttpOriginBoundary(context, [
+    'http://127.0.0.1:41001',
+    'http://127.0.0.1:41002',
+  ])
+  assert.equal(typeof handler, 'function')
+
+  const decisions = []
+  const route = url => ({
+    request: () => ({ url: () => url }),
+    continue: async () => decisions.push(['continue', url]),
+    abort: async code => decisions.push(['abort', url, code]),
+  })
+  await handler(route('http://127.0.0.1:41001/assets/app.js'))
+  await handler(route('http://127.0.0.1:41002/api/health'))
+  await handler(route('https://example.invalid/escape'))
+  await handler(route('data:text/plain,escape'))
+
+  assert.deepEqual(decisions, [
+    ['continue', 'http://127.0.0.1:41001/assets/app.js'],
+    ['continue', 'http://127.0.0.1:41002/api/health'],
+    ['abort', 'https://example.invalid/escape', 'blockedbyclient'],
+    ['abort', 'data:text/plain,escape', 'blockedbyclient'],
+  ])
 })
 
 test('Phase 7B safe failure stage falls back to the fixed contract stage', async () => {
