@@ -31,6 +31,10 @@ body {
   height: 100vh;
 }
 
+#app > .n-config-provider {
+  height: 100%;
+}
+
 .app-interaction-boundary {
   height: 100%;
 }

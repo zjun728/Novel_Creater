@@ -393,3 +393,15 @@ test('reduced-motion users do not receive infinite operation or skeleton animati
   assert.match(globalCss, /prefers-reduced-motion:\s*reduce[\s\S]*app-operation-overlay__progress[\s\S]*animation:\s*none/)
   assert.match(libraryCss, /prefers-reduced-motion:\s*reduce[\s\S]*(project-library-skeleton|archived-projects-skeleton)[\s\S]*animation:\s*none/)
 })
+
+test('root Naive UI provider preserves the fixed-height product shell', async () => {
+  const globalCss = await readFile(
+    new URL('../../src/style.css', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(
+    globalCss,
+    /#app\s*>\s*\.n-config-provider\s*\{[^}]*height:\s*100%/s,
+  )
+})
