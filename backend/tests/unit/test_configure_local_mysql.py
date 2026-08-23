@@ -942,7 +942,7 @@ def test_windows_acl_runner_captures_output_and_fails_closed(workspace_tmp_path)
         str(workspace_tmp_path / "private.json"),
         "/inheritance:r",
         "/grant:r",
-        "DOMAIN\\writer:(R,W)",
+        "DOMAIN\\writer:(R,W,D)",
     ], {
         "capture_output": True,
         "text": True,

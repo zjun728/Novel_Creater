@@ -369,7 +369,7 @@ def restrict_windows_acl(
     runner: Callable[..., object] = subprocess.run,
     username: str | None = None,
 ) -> None:
-    """Remove inherited access and grant only the current user read/write access."""
+    """Grant only the current user access required to publish and remove the file."""
     if os.name != "nt":
         raise LocalMySQLSetupError("Windows file permissions are required")
     account = username or getpass.getuser()
@@ -381,7 +381,7 @@ def restrict_windows_acl(
             str(path),
             "/inheritance:r",
             "/grant:r",
-            f"{account}:(R,W)",
+            f"{account}:(R,W,D)",
         ],
         capture_output=True,
         text=True,
