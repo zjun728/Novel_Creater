@@ -1559,6 +1559,47 @@ def test_receipt_parser_and_loader_are_strict_and_hash_preserving() -> None:
     assert canonical_receipt_hash(loaded) == canonical_receipt_hash(receipt)
 
 
+def test_receipt_loader_uses_birthtime_for_windows_path_and_handle() -> None:
+    receipt = _preparation_receipt()
+    payload = canonical_json(asdict(receipt)).encode("utf-8")
+
+    class Handle:
+        def __enter__(self) -> Handle:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def fileno(self) -> int:
+            return 41
+
+        def read(self, limit: int) -> bytes:
+            assert limit == len(payload) + 1
+            return payload
+
+    common = {
+        "st_file_attributes": 0,
+        "st_mode": stat.S_IFREG,
+        "st_dev": 1,
+        "st_ino": 2,
+        "st_size": len(payload),
+        "st_mtime_ns": 3,
+        "st_birthtime_ns": 4,
+    }
+    path_info = SimpleNamespace(**common, st_ctime_ns=5)
+    handle_info = SimpleNamespace(**common, st_ctime_ns=6)
+
+    loaded = load_preparation_receipt(
+        Path("D:/external/approved-backup.readiness.json"),
+        opener=lambda _path: Handle(),
+        resolver=lambda value: value,
+        lstat_reader=lambda _path: path_info,
+        fstat_reader=lambda _descriptor: handle_info,
+    )
+
+    assert loaded == receipt
+
+
 @pytest.mark.parametrize(
     ("path", "size"),
     [

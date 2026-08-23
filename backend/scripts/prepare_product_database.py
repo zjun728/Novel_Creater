@@ -390,7 +390,7 @@ def _receipt_file_identity(value: object) -> tuple[int, int, int, int, int]:
         getattr(value, "st_ino", None),
         getattr(value, "st_size", None),
         getattr(value, "st_mtime_ns", None),
-        getattr(value, "st_ctime_ns", None),
+        getattr(value, "st_birthtime_ns", getattr(value, "st_ctime_ns", None)),
     )
     if (
         type(attributes) is not int
