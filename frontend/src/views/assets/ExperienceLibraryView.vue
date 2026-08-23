@@ -12,6 +12,10 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import AssetDetailDrawer from '@/components/assets/AssetDetailDrawer.vue'
 import { useCreationAssetStore } from '@/stores/creationAssetStore'
+import {
+  creationStageLabel,
+  genreLabel,
+} from '@/utils/assetTaxonomyLabels.js'
 
 const store = useCreationAssetStore()
 const search = ref('')
@@ -33,11 +37,11 @@ const categoryOptions = computed(() => (inventory.value.categories || []).map(va
   value,
 })))
 const genreOptions = computed(() => (inventory.value.genres || []).map(value => ({
-  label: value === 'general' ? '通用题材' : value,
+  label: genreLabel(value),
   value,
 })))
 const stageOptions = computed(() => (inventory.value.creationStages || []).map(value => ({
-  label: value,
+  label: creationStageLabel(value),
   value,
 })))
 const statusOptions = computed(() => (inventory.value.statuses || []).map(value => ({
@@ -177,8 +181,8 @@ onBeforeUnmount(() => {
           <dd>{{ item.applicability.join('；') }}</dd>
         </dl>
         <div class="typed-tags">
-          <span v-for="tag in item.eligibility?.genres || []" :key="tag">{{ tag }}</span>
-          <span v-for="tag in item.eligibility?.creationStages || []" :key="tag">{{ tag }}</span>
+          <span v-for="tag in item.eligibility?.genres || []" :key="`genre:${tag}`">{{ genreLabel(tag) }}</span>
+          <span v-for="tag in item.eligibility?.creationStages || []" :key="`stage:${tag}`">{{ creationStageLabel(tag) }}</span>
         </div>
         <n-button quaternary @click="openDetail(item)">展开方法与示例 →</n-button>
       </article>

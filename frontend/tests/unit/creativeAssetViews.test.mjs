@@ -117,6 +117,18 @@ const inventory = {
   statuses: ['active', 'archived'],
 }
 
+const allTaxonomyEligibility = {
+  genres: [
+    'general', 'fantasy', 'xianxia', 'wuxia', 'historical',
+    'horror', 'mystery', 'romance', 'science_fiction', 'urban',
+    'new_genre',
+  ],
+  creationStages: [
+    'contract', 'planning', 'chapter_outline',
+    'drafting', 'revision', 'quality_audit', 'new_stage',
+  ],
+}
+
 test('style library renders backend inventory, filters, and a read-only result', async () => {
   const html = await renderView(StyleLibraryView, {
     inventory,
@@ -173,6 +185,57 @@ test('experience library renders backend count and explicit empty/error recovery
   assert.match(empty, /没有匹配的经验卡/)
   assert.match(failed, /目录暂时不可用/)
   assert.match(failed, /重试/)
+})
+
+test('asset libraries render Chinese genre and stage labels with safe fallback', async () => {
+  const state = {
+    inventory,
+    styleTemplates: [{
+      id: 'style-localized',
+      stableKey: 'localized-style',
+      revision: 1,
+      contentHash: 'e'.repeat(64),
+      name: '本地化风格',
+      readingExperience: '本地化标签验证',
+      applicability: ['标签验证'],
+      eligibility: allTaxonomyEligibility,
+    }],
+    experienceCards: [{
+      id: 'card-localized',
+      stableKey: 'localized-card',
+      revision: 1,
+      contentHash: 'f'.repeat(64),
+      title: '本地化经验卡',
+      category: 'dialogue',
+      method: '本地化标签验证',
+      applicability: ['标签验证'],
+      eligibility: allTaxonomyEligibility,
+    }],
+    loadingStyles: false,
+    loadingCards: false,
+    styleError: '',
+    cardError: '',
+    inventoryError: '',
+  }
+  const [styleHtml, experienceHtml] = await Promise.all([
+    renderView(StyleLibraryView, state),
+    renderView(ExperienceLibraryView, state),
+  ])
+
+  for (const html of [styleHtml, experienceHtml]) {
+    for (const label of [
+      '通用题材', '玄幻', '仙侠', '武侠', '历史',
+      '恐怖', '悬疑', '言情', '科幻', '都市',
+      '创作契约', '故事规划', '章节小纲',
+      '正文写作', '修订', '质量审核',
+    ]) assert.match(html, new RegExp(`>${label}<`))
+    assert.match(html, />new_genre</)
+    assert.match(html, />new_stage</)
+    assert.doesNotMatch(
+      html,
+      />(general|fantasy|xianxia|wuxia|historical|horror|mystery|romance|science_fiction|urban|contract|planning|chapter_outline|drafting|revision|quality_audit)</,
+    )
+  }
 })
 
 test('bounded detail drawer names the approved style and experience boundaries', async () => {
