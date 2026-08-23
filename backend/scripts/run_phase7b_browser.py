@@ -6,6 +6,7 @@ import os
 import sys
 
 from backend.domain.json_contracts import canonical_json
+from backend.domain.product_database_readiness import NEW_DATABASE
 from backend.scripts.prepare_product_database import (
     _BROWSER_NODE_COMMAND,
     _BROWSER_SMOKE_EXPECTED,
@@ -23,10 +24,17 @@ _FAILURE_LINE = "phase7b browser smoke failed"
 
 
 def _run() -> dict[str, object]:
+    environment = dict(os.environ)
+    environment.update(
+        {
+            "MYSQL_DB": NEW_DATABASE,
+            "MARKET_SCHEDULER_ENABLED": "false",
+        }
+    )
     return run_owned_phase7b_browser(
         node_command=_BROWSER_NODE_COMMAND,
         cwd=REPOSITORY_ROOT,
-        environment=dict(os.environ),
+        environment=environment,
         timeout_seconds=_BROWSER_SMOKE_TIMEOUT_SECONDS,
         runner=_default_browser_smoke_runner,
         root_factory=_open_browser_root_lease,

@@ -216,6 +216,9 @@ def test_wrapper_owner_launches_node_runner_directly_without_routing_recursion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
+    monkeypatch.setenv("MYSQL_DB", "unexpected_database")
+    monkeypatch.setenv("MARKET_SCHEDULER_ENABLED", "true")
+    monkeypatch.setenv("PHASE7B_UNRELATED", "preserved")
 
     def run_owned(**kwargs: object) -> dict[str, object]:
         captured.update(kwargs)
@@ -229,6 +232,11 @@ def test_wrapper_owner_launches_node_runner_directly_without_routing_recursion(
         "frontend/e2e/run-phase7b.mjs",
     )
     assert "scripts/run-tests.mjs" not in captured["node_command"]
+    environment = captured["environment"]
+    assert type(environment) is dict
+    assert environment["MYSQL_DB"] == "novel_creator_v113"
+    assert environment["MARKET_SCHEDULER_ENABLED"] == "false"
+    assert environment["PHASE7B_UNRELATED"] == "preserved"
 
 
 def test_wrapper_rejects_every_argument_without_starting_owner(
