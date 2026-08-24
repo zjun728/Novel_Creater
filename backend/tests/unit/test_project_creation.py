@@ -128,8 +128,8 @@ def test_title_only_create_uses_internal_product_defaults():
         "title": "新项目",
         "genre": "",
         "description": "",
-        "target_words": 100_000,
-        "target_chapters": 100,
+        "target_words": 2_400_000,
+        "target_chapters": 720,
     }
 
 
@@ -159,7 +159,8 @@ async def test_create_builds_foundations_and_binding_in_one_transaction():
     empty_hash = build_projection_bundle(0, ()).content_hash
     assert repository.calls == list(FakeProjectRepository.STEPS)
     assert repository.inserted_command.genre == ""
-    assert repository.inserted_command.target_words == 100_000
+    assert repository.inserted_command.target_words == 2_400_000
+    assert repository.inserted_command.target_chapters == 720
     assert repository.revision == {
         "project_id": "p1",
         "content_hash": empty_hash,
@@ -188,8 +189,8 @@ async def test_create_builds_foundations_and_binding_in_one_transaction():
         "title": "新项目",
         "genre": "",
         "description": "",
-        "target_words": 100_000,
-        "target_chapters": 100,
+        "target_words": 2_400_000,
+        "target_chapters": 720,
         "current_chapter": 0,
         "status": "drafting",
         "archived_at": None,

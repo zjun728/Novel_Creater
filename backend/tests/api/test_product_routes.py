@@ -298,7 +298,8 @@ def test_project_routes_delegate_explicit_lifecycle_contract(monkeypatch):
     assert archived.json()[0]["archivedAt"] == 123
     assert created.status_code == 200
     assert created.json()["title"] == "New"
-    assert created.json()["targetWords"] == 100_000
+    assert created.json()["targetWords"] == 2_400_000
+    assert created.json()["targetChapters"] == 720
     assert direct_archived.status_code == 200
     assert preparation.status_code == 200
     assert preparation.json() == {
@@ -358,8 +359,8 @@ def test_project_routes_delegate_explicit_lifecycle_contract(monkeypatch):
         "title": "New",
         "genre": "",
         "description": "",
-        "target_words": 100_000,
-        "target_chapters": 100,
+        "target_words": 2_400_000,
+        "target_chapters": 720,
     }
 
 

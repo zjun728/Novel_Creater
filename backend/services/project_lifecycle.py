@@ -27,8 +27,8 @@ class CreateProject(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     genre: str = ""
     description: str = ""
-    target_words: int = 100_000
-    target_chapters: int = 100
+    target_words: int = 2_400_000
+    target_chapters: int = 720
 
 
 class ProjectResult(BaseModel):

@@ -197,7 +197,7 @@ function provisionalCapacity() {
   const existing = currentDraft.value
   const projectWords = Number(props.project?.targetWords)
   const target = Number(existing?.targetTotalWords)
-    || (Number.isInteger(projectWords) && projectWords > 0 ? projectWords : 100_000)
+    || (Number.isInteger(projectWords) && projectWords > 0 ? projectWords : 2_400_000)
   const projectChapters = Number(props.project?.targetChapters)
   const chapters = Number(existing?.expectedChapterCount)
     || (Number.isInteger(projectChapters) && projectChapters > 0

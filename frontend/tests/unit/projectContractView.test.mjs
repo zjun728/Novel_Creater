@@ -535,6 +535,12 @@ test('capacity step captures all formal length and author-direction fields', asy
   assert.match(preview, /返回容量约定/)
 })
 
+test('story engine missing-project capacity fallback uses the long-form default', async () => {
+  const component = await source('src/components/project/contract/StoryEngineStep.vue')
+  assert.match(component, /projectWords[\s\S]*?2_400_000/u)
+  assert.doesNotMatch(component, /projectWords[\s\S]*?:\s*100_000/u)
+})
+
 test('workspace guards unsaved edits, scopes its overlay, and focuses live errors', async () => {
   const files = await Promise.all([
     source('src/components/project/CreationContractWizard.vue'),
