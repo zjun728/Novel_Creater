@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from backend.domain.finalization import (
     FinalizationChangeSet,
+    PlanningPatch,
     QualityFinding,
     QualityReportPayload,
 )
@@ -153,6 +154,35 @@ def _drop_items_with_unusable_evidence(
     return result
 
 
+def _drop_planning_patches_with_disallowed_fields(value: object) -> object:
+    if type(value) is not dict or type(value.get("planningPatches")) is not list:
+        return value
+    result = dict(value)
+    kept = []
+    for item in value["planningPatches"]:
+        try:
+            PlanningPatch.model_validate(item)
+        except ValidationError as error:
+            issues = error.errors(
+                include_url=False,
+                include_context=False,
+                include_input=False,
+            )
+            if (
+                len(issues) == 1
+                and issues[0].get("loc") == ()
+                and issues[0].get("type") == "value_error"
+                and issues[0].get("msg") == (
+                    "Value error, planning fieldPath is not allowed "
+                    "for targetType"
+                )
+            ):
+                continue
+        kept.append(item)
+    result["planningPatches"] = kept
+    return result
+
+
 def _parse_quality(value: object, prose: str) -> tuple[QualityFinding, ...] | None:
     try:
         if type(value) is not dict or frozenset(value.keys()) != {"findings"}:
@@ -174,6 +204,7 @@ def _parse_extraction(value: object, prose: str) -> FinalizationChangeSet | None
     try:
         filtered = _drop_items_with_unusable_evidence(value, prose)
         hydrated = _hydrate_nested(filtered, prose)
+        hydrated = _drop_planning_patches_with_disallowed_fields(hydrated)
         return FinalizationChangeSet.model_validate(hydrated)
     except (ValidationError, ValueError, TypeError, KeyError, UnicodeError):
         return None

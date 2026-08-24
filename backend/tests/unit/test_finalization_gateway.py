@@ -219,6 +219,43 @@ async def test_extraction_drops_only_items_with_empty_evidence_ranges():
 
 
 @pytest.mark.asyncio
+async def test_extraction_drops_planning_patches_with_disallowed_fields():
+    payload = _extraction_payload()
+    payload["planningPatches"] = [
+        {
+            "id": "patch-valid",
+            "targetType": "volume",
+            "targetId": "volume-1",
+            "expectedRevision": 1,
+            "expectedHash": "a" * 64,
+            "fieldPath": "title",
+            "replacement": "新卷名",
+            "evidence": _evidence(),
+        },
+        {
+            "id": "patch-invalid",
+            "targetType": "volume",
+            "targetId": "volume-1",
+            "expectedRevision": 1,
+            "expectedHash": "a" * 64,
+            "fieldPath": "purpose",
+            "replacement": "不属于卷的字段",
+            "evidence": _evidence(),
+        },
+    ]
+    gateway = FinalizationExtractionGateway(transport=httpx.MockTransport(
+        lambda request: _response(payload, request)
+    ))
+
+    result = await _call(
+        gateway, "extract", provider=_provider(),
+        model_name="finalization-model", manifest=_manifest(),
+    )
+
+    assert [item.id for item in result.planning_patches] == ["patch-valid"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("drift", ("provider", "model"))
 async def test_binding_drift_is_rejected_before_network(drift):
     requests = []
