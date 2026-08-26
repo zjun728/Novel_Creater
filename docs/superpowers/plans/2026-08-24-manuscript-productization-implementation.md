@@ -93,8 +93,9 @@ return selected
 ```
 
 - [ ] Add failing repository and service tests proving the validated `NovelDownloadSelector` reaches the repository before any final prose is read. Reject an invalid selector without opening a transaction.
-- [ ] Change `NovelDownloadRepository.load_finalized_snapshot` to require a `selector` argument and add parameterized SQL predicates for chapter or volume scope. Book scope remains project-wide. Preserve explicit columns and deterministic `chapter_num, id` ordering.
-- [ ] Keep structural validation fail-closed: duplicate chapters, inconsistent volume identity/order/title, and an unsafe selector still fail before rendering. Only out-of-scope prose and prose hash are excluded from the selected query.
+- [ ] Change `NovelDownloadRepository.load_finalized_snapshot` to require a `selector` argument and use two parameterized read phases inside the same read-only transaction. Phase A reads every finalized chapter’s authority/volume metadata but never `final.content`; it validates the complete project structure and resolves the exact selected final IDs. Phase B reads `final.content` and `final.content_hash` only for those selected IDs, preserving explicit columns and deterministic `chapter_num, id` ordering.
+- [ ] Keep structural validation fail-closed across the complete directory: duplicate chapters, inconsistent volume identity/order/title, non-contiguous volume runs, and an unsafe selector fail before selected prose loading. Only out-of-scope prose and prose hash are excluded from Phase B.
+- [ ] Make download options consume the Phase-A metadata projection so a corrupt prose body does not hide otherwise valid chapter/volume/format choices. Options still fail closed on structural or pinned-authority corruption.
 - [ ] Add a disposable-MySQL regression with three final chapters and a corrupted third body/hash pair. Assert chapter 1 download succeeds, chapter 3/volume/book downloads fail, and no project row is changed.
 - [ ] Run:
 
