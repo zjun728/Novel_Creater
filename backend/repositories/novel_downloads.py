@@ -379,6 +379,9 @@ class NovelDownloadRepository:
     ) -> NovelDownloadSnapshot | None:
         if not isinstance(selector, NovelDownloadSelector):
             raise TypeError("selector must be a NovelDownloadSelector")
+        selector = NovelDownloadSelector.model_validate(
+            selector.model_dump(mode="python"),
+        )
         loaded = await self._load_metadata_and_authorities(session, project_id)
         if loaded is None:
             return None

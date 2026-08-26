@@ -119,6 +119,9 @@ class NovelDownloadService:
     ) -> NovelDownloadResult:
         if not isinstance(selector, NovelDownloadSelector):
             raise TypeError("selector must be a NovelDownloadSelector")
+        selector = NovelDownloadSelector.model_validate(
+            selector.model_dump(mode="python"),
+        )
         snapshot = await self._snapshot(project_id, selector)
         if not snapshot.chapters:
             raise NovelDownloadUnavailable()

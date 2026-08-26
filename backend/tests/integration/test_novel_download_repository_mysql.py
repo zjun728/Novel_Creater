@@ -299,6 +299,19 @@ async def test_download_integrity_is_limited_to_selected_prose_after_global_stru
             await downloads.download(PROJECT_ID, selector)
 
     async with transaction_factory() as session:
+        await session.execute(
+            """UPDATE chapter_sessions
+                  SET story_block_hash=%s
+                WHERE project_id=%s AND chapter_num=3""",
+            ("0" * 64, PROJECT_ID),
+        )
+    with pytest.raises(NovelDownloadIntegrityError):
+        await downloads.download(
+            PROJECT_ID,
+            _selector(DownloadScope.CHAPTER, chapter_number=1),
+        )
+
+    async with transaction_factory() as session:
         project_after = await session.fetchone(
             """SELECT id,title,genre,description,target_words,target_chapters,
                       status,current_chapter,archived_at,lifecycle_revision,

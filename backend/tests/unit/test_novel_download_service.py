@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from hashlib import sha256
 
 import pytest
+from pydantic import ValidationError
 
 from backend.domain.novel_downloads import (
     DownloadFormat,
@@ -136,6 +137,24 @@ async def test_download_rejects_an_unvalidated_selector_before_opening_transacti
 
     with pytest.raises(TypeError, match="selector must be a NovelDownloadSelector"):
         await service.download("project-1", object())
+
+    assert transactions.entered == transactions.exited == 0
+    assert repository.snapshot_calls == []
+
+
+@pytest.mark.asyncio
+async def test_download_revalidates_same_type_selector_before_opening_transaction():
+    service, transactions, repository = _selector_service(_snapshot())
+    invalid_selector = NovelDownloadSelector(
+        scope=DownloadScope.BOOK,
+        format=DownloadFormat.TXT,
+    ).model_copy(update={"volume_id": "v1"})
+
+    with pytest.raises(
+        ValidationError,
+        match="book scope must not include volume_id or chapter_number",
+    ):
+        await service.download("project-1", invalid_selector)
 
     assert transactions.entered == transactions.exited == 0
     assert repository.snapshot_calls == []
