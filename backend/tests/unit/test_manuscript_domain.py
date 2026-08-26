@@ -3,7 +3,7 @@ from __future__ import annotations
 from importlib.util import find_spec
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from backend.domain import manuscripts as domain
 
@@ -28,11 +28,56 @@ def _volume(**overrides: object):
         "id": "volume-1",
         "order": 1,
         "title": "山雨欲来",
-        "lifecycle": "active",
         "chapters": (_chapter(),),
     }
     values.update(overrides)
     return domain.ManuscriptVolume.model_validate(values)
+
+
+def test_volume_contract_has_exactly_four_fields_and_rejects_lifecycle() -> None:
+    payload = {
+        "id": "volume-1",
+        "order": 1,
+        "title": "山雨欲来",
+        "chapters": (_chapter(),),
+    }
+
+    volume = domain.ManuscriptVolume.model_validate(payload)
+
+    assert set(domain.ManuscriptVolume.model_fields) == {
+        "id",
+        "order",
+        "title",
+        "chapters",
+    }
+    assert volume.id == payload["id"]
+    assert volume.order == payload["order"]
+    assert volume.title == payload["title"]
+    assert volume.chapters == payload["chapters"]
+    with pytest.raises(ValidationError):
+        domain.ManuscriptVolume.model_validate(
+            {**payload, "lifecycle": "active"}
+        )
+
+
+@pytest.mark.parametrize(
+    "volume_id",
+    (
+        "   ",
+        "\n",
+        "a\nb",
+        "\x00",
+        "a\x1fb",
+        "a\x85b",
+        "a\u200bb",
+        "a\ud800b",
+    ),
+)
+def test_volume_id_rejects_blank_or_unicode_category_c_text(
+    volume_id: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        _volume(id=volume_id)
 
 
 def test_manuscript_values_are_strict_frozen_and_forbid_extra_fields() -> None:
@@ -103,15 +148,23 @@ def test_volume_order_is_a_strict_positive_integer(order: object) -> None:
         ("title", "  "),
         ("title", " 前后空白 "),
         ("title", "卷名\u0000"),
-        ("lifecycle", "retired"),
     ),
 )
-def test_volume_identity_title_and_lifecycle_are_closed(
+def test_volume_identity_and_title_are_closed(
     field: str,
     value: object,
 ) -> None:
     with pytest.raises(ValidationError):
         _volume(**{field: value})
+
+
+def test_project_lifecycle_type_is_closed_to_active_and_archived() -> None:
+    adapter = TypeAdapter(domain.ManuscriptLifecycle)
+
+    assert adapter.validate_python("active") == "active"
+    assert adapter.validate_python("archived") == "archived"
+    with pytest.raises(ValidationError):
+        adapter.validate_python("retired")
 
 
 def test_outline_projection_is_strict_frozen_and_nested_immutable() -> None:
@@ -166,7 +219,6 @@ def test_canonicalizes_by_actual_final_chapter_number_and_allows_gaps() -> None:
         id="volume-2",
         order=2,
         title="暗潮汹涌",
-        lifecycle="archived",
         chapters=(_chapter(number=8), _chapter(number=5)),
     )
     earlier = _volume(
@@ -184,7 +236,6 @@ def test_canonicalizes_by_actual_final_chapter_number_and_allows_gaps() -> None:
         for volume in canonical
         for chapter in volume.chapters
     ] == [1, 3, 5, 8]
-    assert canonical[1].lifecycle == "archived"
     assert [chapter.number for chapter in later.chapters] == [8, 5]
 
 

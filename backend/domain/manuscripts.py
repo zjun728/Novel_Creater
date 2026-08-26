@@ -49,6 +49,14 @@ def _validate_safe_title(value: str) -> str:
     return value
 
 
+def _validate_safe_id(value: str) -> str:
+    if not value.strip() or value != value.strip():
+        raise ValueError("id must be trimmed non-empty text")
+    if any(unicodedata.category(character).startswith("C") for character in value):
+        raise ValueError("id must not contain unsafe characters")
+    return value
+
+
 class ManuscriptChapterMeta(_StrictManuscriptValue):
     number: int = Field(ge=1)
     title: str = Field(min_length=1)
@@ -62,9 +70,9 @@ class ManuscriptVolume(_StrictManuscriptValue):
     id: str = Field(min_length=1)
     order: int = Field(ge=1)
     title: str = Field(min_length=1)
-    lifecycle: ManuscriptLifecycle
     chapters: tuple[ManuscriptChapterMeta, ...]
 
+    _id_is_safe = field_validator("id")(_validate_safe_id)
     _title_is_safe = field_validator("title")(_validate_safe_title)
 
 
