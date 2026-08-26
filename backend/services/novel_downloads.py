@@ -62,16 +62,31 @@ class NovelDownloadService:
         self._transaction_factory = transaction_factory
         self._repository = repository
 
-    async def _snapshot(self, project_id: str):
+    async def _metadata(self, project_id: str):
         async with self._transaction_factory() as session:
-            snapshot = await self._repository.load_finalized_snapshot(session, project_id)
+            metadata = await self._repository.load_finalized_metadata(session, project_id)
+        if metadata is None:
+            raise NovelDownloadProjectNotFound()
+        return metadata
+
+    async def _snapshot(
+        self,
+        project_id: str,
+        selector: NovelDownloadSelector,
+    ):
+        async with self._transaction_factory() as session:
+            snapshot = await self._repository.load_finalized_snapshot(
+                session,
+                project_id,
+                selector,
+            )
         if snapshot is None:
             raise NovelDownloadProjectNotFound()
         return snapshot
 
     async def options(self, project_id: str) -> NovelDownloadOptions:
-        snapshot = await self._snapshot(project_id)
-        chapters = tuple(sorted(snapshot.chapters, key=lambda chapter: chapter.chapter_number))
+        metadata = await self._metadata(project_id)
+        chapters = tuple(sorted(metadata.chapters, key=lambda chapter: chapter.chapter_number))
         volumes_by_id = {
             chapter.volume_id: NovelDownloadVolume(
                 id=chapter.volume_id,
@@ -102,7 +117,9 @@ class NovelDownloadService:
         project_id: str,
         selector: NovelDownloadSelector,
     ) -> NovelDownloadResult:
-        snapshot = await self._snapshot(project_id)
+        if not isinstance(selector, NovelDownloadSelector):
+            raise TypeError("selector must be a NovelDownloadSelector")
+        snapshot = await self._snapshot(project_id, selector)
         if not snapshot.chapters:
             raise NovelDownloadUnavailable()
         return NovelDownloadResult(

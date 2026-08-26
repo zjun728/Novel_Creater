@@ -67,14 +67,27 @@ class NovelDownloadSelector(_FrozenDownloadValue):
         return self
 
 
-class FinalizedChapterSnapshot(_FrozenDownloadValue):
+class FinalizedChapterMetadata(_FrozenDownloadValue):
     chapter_number: int = Field(ge=1)
     chapter_title: str = Field(min_length=1)
     volume_id: str = Field(min_length=1)
     volume_order: int = Field(ge=1)
     volume_title: str = Field(min_length=1)
+
+
+class FinalizedChapterSnapshot(FinalizedChapterMetadata):
     content: str
     content_hash: str = Field(pattern=_HASH_PATTERN)
+
+
+class NovelDownloadMetadata(_FrozenDownloadValue):
+    book_title: str = Field(min_length=1)
+    chapters: tuple[FinalizedChapterMetadata, ...]
+
+    @model_validator(mode="after")
+    def chapter_links_are_closed(self) -> Self:
+        _validate_chapter_links(self.chapters, error_type=ValueError)
+        return self
 
 
 class NovelDownloadSnapshot(_FrozenDownloadValue):
@@ -104,7 +117,8 @@ class SafeAttachmentNames(_FrozenDownloadValue):
 
 
 def _validate_chapter_links(
-    chapters: tuple[FinalizedChapterSnapshot, ...],
+    chapters: tuple[FinalizedChapterMetadata, ...]
+    | tuple[FinalizedChapterSnapshot, ...],
     *,
     error_type: type[Exception],
 ) -> None:
@@ -123,6 +137,20 @@ def _validate_chapter_links(
         )
         if previous_order != order_details:
             raise error_type("finalized chapter volume order is inconsistent")
+    seen_volume_ids: set[str] = set()
+    current_volume_id: str | None = None
+    current_volume_order = 0
+    for chapter in sorted(chapters, key=lambda item: item.chapter_number):
+        if chapter.volume_id == current_volume_id:
+            continue
+        if (
+            chapter.volume_id in seen_volume_ids
+            or chapter.volume_order <= current_volume_order
+        ):
+            raise error_type("finalized chapter volume run is inconsistent")
+        seen_volume_ids.add(chapter.volume_id)
+        current_volume_id = chapter.volume_id
+        current_volume_order = chapter.volume_order
 
 
 def _verify_final_prose(chapters: tuple[FinalizedChapterSnapshot, ...]) -> None:
@@ -152,17 +180,18 @@ def select_chapters(
 ) -> tuple[FinalizedChapterSnapshot, ...]:
     """Return the exact selected finalized chapters in global chapter order."""
 
-    _verify_final_prose(snapshot.chapters)
-    selected = tuple(
+    matching = tuple(
         chapter
         for chapter in snapshot.chapters
         if _matches_selector(chapter, selector)
     )
-    if not selected:
+    if not matching:
         raise NovelDownloadScopeNotFoundError(
             "requested download scope has no finalized chapters"
         )
-    return tuple(sorted(selected, key=lambda chapter: chapter.chapter_number))
+    selected = tuple(sorted(matching, key=lambda chapter: chapter.chapter_number))
+    _verify_final_prose(selected)
+    return selected
 
 
 def _flatten_title(value: str, *, markdown: bool) -> str:
@@ -270,10 +299,12 @@ def safe_attachment_names(
 __all__ = (
     "DownloadFormat",
     "DownloadScope",
+    "FinalizedChapterMetadata",
     "FinalizedChapterSnapshot",
     "MAX_DOWNLOAD_BYTES",
     "NovelDownloadDomainError",
     "NovelDownloadIntegrityError",
+    "NovelDownloadMetadata",
     "NovelDownloadScopeNotFoundError",
     "NovelDownloadSelector",
     "NovelDownloadSnapshot",

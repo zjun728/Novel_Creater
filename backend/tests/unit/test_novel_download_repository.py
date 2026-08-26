@@ -11,6 +11,11 @@ from backend.domain.chapter_outlines import (
     OutlineCapacityPolicy,
     normalize_chapter_outline,
 )
+from backend.domain.novel_downloads import (
+    DownloadFormat,
+    DownloadScope,
+    NovelDownloadSelector,
+)
 from backend.domain.planning import (
     DraftPlanningAggregate,
     normalize_planning_aggregate,
@@ -22,12 +27,15 @@ from backend.repositories.novel_downloads import (
 
 
 class CapturingSession:
-    def __init__(self, rows=()):
+    def __init__(self, rows=(), *, responses=None):
         self.rows = list(rows)
+        self.responses = None if responses is None else [list(items) for items in responses]
         self.calls = []
 
     async def fetchall(self, sql, args=None):
         self.calls.append((sql, args))
+        if self.responses is not None:
+            return self.responses.pop(0)
         return self.rows
 
 
@@ -75,14 +83,14 @@ def _ref(value):
     return {"id": value.id, "revision": value.revision, "contentHash": value.content_hash}
 
 
-def _outline(planning):
+def _outline(planning, *, chapter_number=1):
     block = planning.story_blocks[0]
     policy = OutlineCapacityPolicy.model_validate({
         "targetMin": 1, "targetMax": 2, "softCeiling": 3,
     })
     return normalize_chapter_outline(
         DraftChapterOutline.model_validate({
-            "schemaVersion": "chapter-outline-v1", "chapterNumber": 1,
+            "schemaVersion": "chapter-outline-v1", "chapterNumber": chapter_number,
             "planningRevisionId": "planning-id", "planningRevision": 1,
             "planningHash": planning.content_hash,
             "volumeRef": _ref(planning.volumes[0]), "storyBlockRef": _ref(block),
@@ -93,34 +101,44 @@ def _outline(planning):
             "forbiddenEarlyEvents": [],
             "capacityPolicy": policy.model_dump(by_alias=True, mode="json"),
         }),
-        planning=planning, authoritative_chapter_number=1,
+        planning=planning, authoritative_chapter_number=chapter_number,
         planning_revision_id="planning-id", planning_revision=1,
         capacity_policy=policy, canon_revision=0, projection_revision=0,
         projection_hash="c" * 64,
     )
 
 
-def _row(*, title="章节标题", prose="最终正文", planning_json=True, outline_json=True):
+def _row(
+    *,
+    title="章节标题",
+    prose="最终正文",
+    planning_json=True,
+    outline_json=True,
+    final_id="final-id",
+    chapter_number=1,
+):
     planning = _planning()
-    outline = _outline(planning)
+    outline = _outline(planning, chapter_number=chapter_number)
+    session_id = f"session-{chapter_number}"
+    outline_id = f"outline-{chapter_number}"
     return {
-        "book_title": "书名", "final_id": "final-id", "final_project_id": "project-id",
-        "final_session_id": "session-id", "final_chapter_num": 1,
+        "book_title": "书名", "final_id": final_id, "final_project_id": "project-id",
+        "final_session_id": session_id, "final_chapter_num": chapter_number,
         "final_title": title, "final_content": prose,
         "final_content_hash": sha256(prose.encode()).hexdigest(),
         "final_planning_id": "planning-id", "final_planning_revision": 1,
-        "final_planning_hash": planning.content_hash, "final_outline_id": "outline-id",
+        "final_planning_hash": planning.content_hash, "final_outline_id": outline_id,
         "final_outline_revision": 1, "final_outline_hash": outline.content_hash,
-        "session_id": "session-id", "session_project_id": "project-id",
-        "session_chapter_num": 1, "session_planning_id": "planning-id",
+        "session_id": session_id, "session_project_id": "project-id",
+        "session_chapter_num": chapter_number, "session_planning_id": "planning-id",
         "session_planning_revision": 1, "session_planning_hash": planning.content_hash,
         "session_story_block_id": planning.story_blocks[0].id,
         "session_story_block_revision": planning.story_blocks[0].revision,
         "session_story_block_hash": planning.story_blocks[0].content_hash,
-        "session_outline_id": "outline-id", "session_outline_revision": 1,
+        "session_outline_id": outline_id, "session_outline_revision": 1,
         "session_outline_hash": outline.content_hash,
-        "outline_id": "outline-id", "outline_project_id": "project-id",
-        "outline_chapter_num": 1, "outline_revision": 1,
+        "outline_id": outline_id, "outline_project_id": "project-id",
+        "outline_chapter_num": chapter_number, "outline_revision": 1,
         "outline_planning_id": "planning-id", "outline_planning_revision": 1,
         "outline_planning_hash": planning.content_hash,
         "outline_content_hash": outline.content_hash,
@@ -137,11 +155,110 @@ def _row(*, title="章节标题", prose="最终正文", planning_json=True, outl
     }
 
 
+def _selector(scope=DownloadScope.BOOK, **kwargs):
+    return NovelDownloadSelector(
+        scope=scope,
+        format=DownloadFormat.TXT,
+        **kwargs,
+    )
+
+
+def _prose_row(row):
+    return {
+        "final_id": row["final_id"],
+        "final_chapter_num": row["final_chapter_num"],
+        "final_content": row["final_content"],
+        "final_content_hash": row["final_content_hash"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_load_snapshot_reads_selected_prose_only_after_complete_metadata_validation():
+    chapter_1 = _row(final_id="final-1", chapter_number=1, prose="第一章正文")
+    chapter_3 = _row(final_id="final-3", chapter_number=3, prose="第三章正文")
+    session = CapturingSession(
+        responses=([chapter_1, chapter_3], [_prose_row(chapter_1)]),
+    )
+
+    snapshot = await NovelDownloadRepository().load_finalized_snapshot(
+        session,
+        "project-id",
+        _selector(DownloadScope.CHAPTER, chapter_number=1),
+    )
+
+    assert [chapter.chapter_number for chapter in snapshot.chapters] == [1]
+    assert len(session.calls) == 2
+    metadata_sql, metadata_args = session.calls[0]
+    prose_sql, prose_args = session.calls[1]
+    assert "final.content AS final_content" not in metadata_sql
+    assert "final.content_hash AS final_content_hash" not in metadata_sql
+    assert metadata_args == ("project-id",)
+    assert "final.content AS final_content" in prose_sql
+    assert "final.content_hash AS final_content_hash" in prose_sql
+    assert prose_args == ("project-id", "final-1")
+
+
+@pytest.mark.asyncio
+async def test_load_snapshot_rejects_complete_directory_corruption_before_prose_query():
+    chapter_1 = _row(final_id="final-1", chapter_number=1)
+    duplicate_chapter_1 = _row(final_id="final-duplicate", chapter_number=1)
+    session = CapturingSession(responses=([chapter_1, duplicate_chapter_1],))
+
+    with pytest.raises(NovelDownloadDataCorruption):
+        await NovelDownloadRepository().load_finalized_snapshot(
+            session,
+            "project-id",
+            _selector(DownloadScope.CHAPTER, chapter_number=1),
+        )
+
+    assert len(session.calls) == 1
+    assert "final.content AS final_content" not in session.calls[0][0]
+
+
+@pytest.mark.asyncio
+async def test_load_metadata_never_reads_final_prose_or_hash() -> None:
+    row = _row(final_id="final-1", chapter_number=1)
+    row["final_content"] = "CORRUPT_PROSE_SENTINEL"
+    row["final_content_hash"] = "0" * 64
+    session = CapturingSession([row])
+
+    metadata = await NovelDownloadRepository().load_finalized_metadata(
+        session,
+        "project-id",
+    )
+
+    assert metadata.book_title == "书名"
+    assert [chapter.chapter_number for chapter in metadata.chapters] == [1]
+    assert len(session.calls) == 1
+    sql, args = session.calls[0]
+    assert "final.content AS final_content" not in sql
+    assert "final.content_hash AS final_content_hash" not in sql
+    assert args == ("project-id",)
+
+
+@pytest.mark.asyncio
+async def test_load_metadata_fails_closed_on_pinned_authority_corruption() -> None:
+    row = _row(final_id="final-1", chapter_number=1)
+    row["session_story_block_hash"] = "0" * 64
+    session = CapturingSession([row])
+
+    with pytest.raises(NovelDownloadDataCorruption):
+        await NovelDownloadRepository().load_finalized_metadata(
+            session,
+            "project-id",
+        )
+
+    assert len(session.calls) == 1
+    assert "final.content AS final_content" not in session.calls[0][0]
+
+
 @pytest.mark.asyncio
 async def test_load_snapshot_selects_only_pinned_authorities_and_accepts_active_or_archived():
     session = CapturingSession([_row()])
 
-    snapshot = await NovelDownloadRepository().load_finalized_snapshot(session, "project-id")
+    snapshot = await NovelDownloadRepository().load_finalized_snapshot(
+        session, "project-id", _selector(),
+    )
 
     assert snapshot.book_title == "书名"
     assert snapshot.chapters[0].volume_title == "第一卷"
@@ -160,9 +277,13 @@ async def test_load_snapshot_selects_only_pinned_authorities_and_accepts_active_
 async def test_load_snapshot_distinguishes_unknown_project_from_empty_project():
     repository = NovelDownloadRepository()
 
-    assert await repository.load_finalized_snapshot(CapturingSession([]), "project-id") is None
+    assert await repository.load_finalized_snapshot(
+        CapturingSession([]), "project-id", _selector(),
+    ) is None
     empty = await repository.load_finalized_snapshot(
-        CapturingSession([{"book_title": "书名", "final_id": None}]), "project-id",
+        CapturingSession([{"book_title": "书名", "final_id": None}]),
+        "project-id",
+        _selector(),
     )
     assert empty.book_title == "书名" and empty.chapters == ()
 
@@ -170,7 +291,9 @@ async def test_load_snapshot_distinguishes_unknown_project_from_empty_project():
 @pytest.mark.asyncio
 async def test_load_snapshot_accepts_dict_json_and_rejects_unclosed_persisted_rows():
     snapshot = await NovelDownloadRepository().load_finalized_snapshot(
-        CapturingSession([_row(planning_json=False, outline_json=False)]), "project-id",
+        CapturingSession([_row(planning_json=False, outline_json=False)]),
+        "project-id",
+        _selector(),
     )
     assert snapshot.chapters[0].chapter_title == "章节标题"
 
@@ -186,7 +309,7 @@ async def test_load_snapshot_accepts_dict_json_and_rejects_unclosed_persisted_ro
         row[key] = value
         with pytest.raises(NovelDownloadDataCorruption) as raised:
             await NovelDownloadRepository().load_finalized_snapshot(
-                CapturingSession([row]), "project-id",
+                CapturingSession([row]), "project-id", _selector(),
             )
         assert "RAW_JSON_SENTINEL" not in str(raised.value)
 
@@ -196,7 +319,9 @@ async def test_load_snapshot_rejects_domain_decode_and_outline_volume_story_bloc
     invalid = _row()
     invalid["planning_content_json"] = {"schemaVersion": "planning-v1"}
     with pytest.raises(NovelDownloadDataCorruption):
-        await NovelDownloadRepository().load_finalized_snapshot(CapturingSession([invalid]), "project-id")
+        await NovelDownloadRepository().load_finalized_snapshot(
+            CapturingSession([invalid]), "project-id", _selector(),
+        )
 
     for field, replacement in (("volumeRef", {"id": "missing", "revision": 1, "contentHash": "a" * 64}),
                                ("storyBlockRef", {"id": "missing", "revision": 1, "contentHash": "a" * 64})):
@@ -205,7 +330,9 @@ async def test_load_snapshot_rejects_domain_decode_and_outline_volume_story_bloc
         payload[field] = replacement
         row["outline_content_json"] = payload
         with pytest.raises(NovelDownloadDataCorruption):
-            await NovelDownloadRepository().load_finalized_snapshot(CapturingSession([row]), "project-id")
+            await NovelDownloadRepository().load_finalized_snapshot(
+                CapturingSession([row]), "project-id", _selector(),
+            )
 
 
 @pytest.mark.asyncio
@@ -226,7 +353,9 @@ async def test_load_snapshot_rejects_tampered_canonical_planning_or_outline_payl
         target[path[-1]] = "TAMPERED_CONTENT_SENTINEL"
         row["planning_content_json"] = payload
         with pytest.raises(NovelDownloadDataCorruption) as raised:
-            await NovelDownloadRepository().load_finalized_snapshot(CapturingSession([row]), "project-id")
+            await NovelDownloadRepository().load_finalized_snapshot(
+                CapturingSession([row]), "project-id", _selector(),
+            )
         assert "TAMPERED_CONTENT_SENTINEL" not in str(raised.value)
 
     for field in ("chapterGoal", "scenes"):
@@ -235,7 +364,9 @@ async def test_load_snapshot_rejects_tampered_canonical_planning_or_outline_payl
         payload[field] = "TAMPERED_CONTENT_SENTINEL" if field == "chapterGoal" else ["TAMPERED_CONTENT_SENTINEL"]
         row["outline_content_json"] = payload
         with pytest.raises(NovelDownloadDataCorruption) as raised:
-            await NovelDownloadRepository().load_finalized_snapshot(CapturingSession([row]), "project-id")
+            await NovelDownloadRepository().load_finalized_snapshot(
+                CapturingSession([row]), "project-id", _selector(),
+            )
         assert "TAMPERED_CONTENT_SENTINEL" not in str(raised.value)
 
 
@@ -249,7 +380,9 @@ async def test_load_snapshot_requires_session_story_block_pin_to_match_outline_a
         row = _row()
         row[key] = value
         with pytest.raises(NovelDownloadDataCorruption):
-            await NovelDownloadRepository().load_finalized_snapshot(CapturingSession([row]), "project-id")
+            await NovelDownloadRepository().load_finalized_snapshot(
+                CapturingSession([row]), "project-id", _selector(),
+            )
 
 
 @pytest.mark.asyncio
@@ -272,7 +405,7 @@ async def test_load_snapshot_suppresses_sensitive_exception_causes_and_traceback
     for row, sentinel in cases:
         with pytest.raises(NovelDownloadDataCorruption) as raised:
             await NovelDownloadRepository().load_finalized_snapshot(
-                CapturingSession([row]), "INTERNAL_ID_SENTINEL",
+                CapturingSession([row]), "INTERNAL_ID_SENTINEL", _selector(),
             )
         error = raised.value
         rendered = "".join(traceback.format_exception(error))

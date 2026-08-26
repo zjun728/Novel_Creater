@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from hashlib import sha256
 from typing import Mapping
 
@@ -11,8 +12,13 @@ from pydantic import ValidationError
 from backend.domain.chapter_outlines import ChapterOutline
 from backend.domain.json_contracts import canonical_hash
 from backend.domain.novel_downloads import (
+    DownloadScope,
+    FinalizedChapterMetadata,
     FinalizedChapterSnapshot,
     NovelDownloadIntegrityError,
+    NovelDownloadMetadata,
+    NovelDownloadScopeNotFoundError,
+    NovelDownloadSelector,
     NovelDownloadSnapshot,
 )
 from backend.domain.planning import (
@@ -30,12 +36,11 @@ class NovelDownloadDataCorruption(NovelDownloadIntegrityError):
     """The immutable finalized chain cannot be reconstructed safely."""
 
 
-_FINALIZED_SNAPSHOT_SELECT = """
+_FINALIZED_METADATA_SELECT = """
 SELECT project.title AS book_title,
        final.id AS final_id, final.project_id AS final_project_id,
        final.chapter_session_id AS final_session_id,
        final.chapter_num AS final_chapter_num, final.title AS final_title,
-       final.content AS final_content, final.content_hash AS final_content_hash,
        final.planning_revision_id AS final_planning_id,
        final.planning_revision AS final_planning_revision,
        final.planning_hash AS final_planning_hash,
@@ -78,6 +83,17 @@ SELECT project.title AS book_title,
     ON planning.project_id=final.project_id
    AND planning.id=final.planning_revision_id
  WHERE project.id=%s
+ ORDER BY final.chapter_num ASC, final.id ASC
+"""
+
+_SELECTED_PROSE_SELECT = """
+SELECT final.id AS final_id,
+       final.chapter_num AS final_chapter_num,
+       final.content AS final_content,
+       final.content_hash AS final_content_hash
+  FROM final_chapters final
+ WHERE final.project_id=%s
+   AND final.id IN ({placeholders})
  ORDER BY final.chapter_num ASC, final.id ASC
 """
 
@@ -183,7 +199,13 @@ def _node_hash_is_closed(node: Volume | Plot | StoryBlock | Stage | SceneTask) -
     return canonical_hash(_node_payload(node)) == node.content_hash
 
 
-def _chapter_from_row(row: Mapping[str, object]) -> FinalizedChapterSnapshot:
+@dataclass(frozen=True, slots=True)
+class _FinalizedAuthority:
+    final_id: str
+    chapter: FinalizedChapterMetadata
+
+
+def _authority_from_row(row: Mapping[str, object]) -> _FinalizedAuthority:
     _same(row, "final_project_id", "session_project_id", "outline_project_id", "planning_project_id")
     chapter_number = _same(row, "final_chapter_num", "session_chapter_num", "outline_chapter_num")
     planning_id = _same(row, "final_planning_id", "session_planning_id", "outline_planning_id", "planning_id")
@@ -229,20 +251,107 @@ def _chapter_from_row(row: Mapping[str, object]) -> FinalizedChapterSnapshot:
     ):
         raise _corruption()
 
-    prose = row.get("final_content")
-    prose_hash = row.get("final_content_hash")
-    if not isinstance(prose, str) or not isinstance(prose_hash, str) or sha256(prose.encode("utf-8")).hexdigest() != prose_hash:
+    final_id = row.get("final_id")
+    if not isinstance(final_id, str) or not final_id:
         raise _corruption()
     try:
-        return FinalizedChapterSnapshot(
-            chapter_number=chapter_number,
-            chapter_title=row.get("final_title"),
-            volume_id=volume.id,
-            volume_order=volume.order,
-            volume_title=volume.title,
-            content=prose,
-            content_hash=prose_hash,
+        return _FinalizedAuthority(
+            final_id=final_id,
+            chapter=FinalizedChapterMetadata(
+                chapter_number=chapter_number,
+                chapter_title=row.get("final_title"),
+                volume_id=volume.id,
+                volume_order=volume.order,
+                volume_title=volume.title,
+            ),
         )
+    except (ValidationError, ValueError, TypeError) as error:
+        raise _corruption() from None
+
+
+def _metadata_from_rows(
+    rows: list[Mapping[str, object]],
+) -> tuple[NovelDownloadMetadata, tuple[_FinalizedAuthority, ...]] | None:
+    if not rows:
+        return None
+    book_title = rows[0].get("book_title")
+    if not isinstance(book_title, str) or not book_title:
+        raise _corruption()
+    authorities = tuple(
+        _authority_from_row(row)
+        for row in rows
+        if row.get("final_id") is not None
+    )
+    try:
+        metadata = NovelDownloadMetadata(
+            book_title=book_title,
+            chapters=tuple(authority.chapter for authority in authorities),
+        )
+    except (ValidationError, ValueError, TypeError) as error:
+        raise _corruption() from None
+    return metadata, authorities
+
+
+def _matches_selector(
+    authority: _FinalizedAuthority,
+    selector: NovelDownloadSelector,
+) -> bool:
+    if selector.scope is DownloadScope.BOOK:
+        return True
+    if selector.scope is DownloadScope.VOLUME:
+        return authority.chapter.volume_id == selector.volume_id
+    return authority.chapter.chapter_number == selector.chapter_number
+
+
+def _selected_authorities(
+    authorities: tuple[_FinalizedAuthority, ...],
+    selector: NovelDownloadSelector,
+) -> tuple[_FinalizedAuthority, ...]:
+    selected = tuple(
+        authority for authority in authorities
+        if _matches_selector(authority, selector)
+    )
+    if not selected:
+        raise NovelDownloadScopeNotFoundError(
+            "requested download scope has no finalized chapters"
+        )
+    return selected
+
+
+def _snapshot_from_prose_rows(
+    metadata: NovelDownloadMetadata,
+    selected: tuple[_FinalizedAuthority, ...],
+    prose_rows: list[Mapping[str, object]],
+) -> NovelDownloadSnapshot:
+    selected_by_id = {authority.final_id: authority for authority in selected}
+    prose_by_id: dict[str, tuple[str, str]] = {}
+    for row in prose_rows:
+        final_id = row.get("final_id")
+        authority = selected_by_id.get(final_id) if isinstance(final_id, str) else None
+        prose = row.get("final_content")
+        prose_hash = row.get("final_content_hash")
+        if (
+            authority is None
+            or final_id in prose_by_id
+            or row.get("final_chapter_num") != authority.chapter.chapter_number
+            or not isinstance(prose, str)
+            or not isinstance(prose_hash, str)
+            or sha256(prose.encode("utf-8")).hexdigest() != prose_hash
+        ):
+            raise _corruption()
+        prose_by_id[final_id] = (prose, prose_hash)
+    if set(prose_by_id) != set(selected_by_id):
+        raise _corruption()
+    try:
+        chapters = tuple(
+            FinalizedChapterSnapshot(
+                **authority.chapter.model_dump(),
+                content=prose_by_id[authority.final_id][0],
+                content_hash=prose_by_id[authority.final_id][1],
+            )
+            for authority in selected
+        )
+        return NovelDownloadSnapshot(book_title=metadata.book_title, chapters=chapters)
     except (ValidationError, ValueError, TypeError) as error:
         raise _corruption() from None
 
@@ -250,27 +359,39 @@ def _chapter_from_row(row: Mapping[str, object]) -> FinalizedChapterSnapshot:
 class NovelDownloadRepository:
     """Load a finalized snapshot using only the rows pinned by final chapters."""
 
+    async def _load_metadata_and_authorities(self, session, project_id: str):
+        rows = await session.fetchall(_FINALIZED_METADATA_SELECT, (project_id,))
+        return _metadata_from_rows(rows)
+
+    async def load_finalized_metadata(
+        self,
+        session,
+        project_id: str,
+    ) -> NovelDownloadMetadata | None:
+        loaded = await self._load_metadata_and_authorities(session, project_id)
+        return None if loaded is None else loaded[0]
+
     async def load_finalized_snapshot(
         self,
         session,
         project_id: str,
+        selector: NovelDownloadSelector,
     ) -> NovelDownloadSnapshot | None:
-        rows = await session.fetchall(_FINALIZED_SNAPSHOT_SELECT, (project_id,))
-        if not rows:
+        if not isinstance(selector, NovelDownloadSelector):
+            raise TypeError("selector must be a NovelDownloadSelector")
+        loaded = await self._load_metadata_and_authorities(session, project_id)
+        if loaded is None:
             return None
-        first = rows[0]
-        book_title = first.get("book_title")
-        if not isinstance(book_title, str) or not book_title:
-            raise _corruption()
-        chapters = tuple(
-            _chapter_from_row(row)
-            for row in rows
-            if row.get("final_id") is not None
+        metadata, authorities = loaded
+        if not authorities:
+            return NovelDownloadSnapshot(book_title=metadata.book_title, chapters=())
+        selected = _selected_authorities(authorities, selector)
+        placeholders = ", ".join("%s" for _ in selected)
+        prose_rows = await session.fetchall(
+            _SELECTED_PROSE_SELECT.format(placeholders=placeholders),
+            (project_id, *(authority.final_id for authority in selected)),
         )
-        try:
-            return NovelDownloadSnapshot(book_title=book_title, chapters=chapters)
-        except (ValidationError, ValueError, TypeError) as error:
-            raise _corruption() from None
+        return _snapshot_from_prose_rows(metadata, selected, prose_rows)
 
 
 __all__ = ["NovelDownloadDataCorruption", "NovelDownloadRepository"]
