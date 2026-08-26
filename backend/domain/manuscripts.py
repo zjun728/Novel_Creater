@@ -98,12 +98,15 @@ def canonicalize_manuscript_volumes(
     Chapter numbers are returned in global ascending order. Across that order,
     volume order must increase strictly whenever the volume changes, every
     volume must occupy one continuous run, and the id/order/title mappings must
-    agree in both directions.
+    agree in both directions. Every supplied volume must contain at least one
+    finalized chapter; the empty tuple remains the valid empty-book shape.
     """
 
     if type(volumes) is not tuple or any(
         type(volume) is not ManuscriptVolume for volume in volumes
     ):
+        raise ManuscriptCorrupt()
+    if any(not volume.chapters for volume in volumes):
         raise ManuscriptCorrupt()
 
     linked_chapters: list[tuple[ManuscriptChapterMeta, ManuscriptVolume]] = []

@@ -291,6 +291,40 @@ def test_canonicalizes_by_actual_final_chapter_number_and_allows_gaps() -> None:
     assert [chapter.number for chapter in later.chapters] == [8, 5]
 
 
+def test_canonicalization_keeps_an_empty_book_valid() -> None:
+    assert domain.canonicalize_manuscript_volumes(()) == ()
+
+
+def test_canonicalization_rejects_a_single_empty_volume() -> None:
+    with pytest.raises(domain.ManuscriptCorrupt):
+        domain.canonicalize_manuscript_volumes((_volume(chapters=()),))
+
+
+def test_canonicalization_rejects_conflicting_empty_fragment_for_volume_id() -> None:
+    finalized = _volume(chapters=(_chapter(number=1),))
+    conflicting_empty = _volume(order=2, title="冲突卷名", chapters=())
+
+    with pytest.raises(domain.ManuscriptCorrupt):
+        domain.canonicalize_manuscript_volumes(
+            (finalized, conflicting_empty)
+        )
+
+
+def test_canonicalization_rejects_empty_volume_reusing_another_volume_order() -> None:
+    finalized = _volume(chapters=(_chapter(number=1),))
+    conflicting_empty = _volume(
+        id="volume-other",
+        order=1,
+        title="另一卷",
+        chapters=(),
+    )
+
+    with pytest.raises(domain.ManuscriptCorrupt):
+        domain.canonicalize_manuscript_volumes(
+            (finalized, conflicting_empty)
+        )
+
+
 def test_canonicalization_merges_consistent_fragments_of_one_volume() -> None:
     first_fragment = _volume(chapters=(_chapter(number=1),))
     second_fragment = _volume(chapters=(_chapter(number=4),))
