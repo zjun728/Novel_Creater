@@ -90,6 +90,56 @@ class FinalOutlineProjection(_StrictManuscriptValue):
     forbidden_early_events: tuple[str, ...]
 
 
+class ManuscriptDirectoryRecord(_StrictManuscriptValue):
+    project_id: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    lifecycle: ManuscriptLifecycle
+    volumes: tuple[ManuscriptVolume, ...]
+    total_scalar_count: int = Field(ge=0)
+
+    _project_id_is_safe = field_validator("project_id")(_validate_safe_id)
+    _title_is_safe = field_validator("title")(_validate_safe_title)
+
+
+class FinalChapterRecord(_StrictManuscriptValue):
+    project_id: str = Field(min_length=1)
+    book_title: str = Field(min_length=1)
+    lifecycle: ManuscriptLifecycle
+    number: int = Field(ge=1)
+    title: str = Field(min_length=1)
+    content: str
+    scalar_count: int = Field(ge=0)
+    finalized_at_ms: int = Field(ge=0)
+    volume_id: str = Field(min_length=1)
+    volume_order: int = Field(ge=1)
+    volume_title: str = Field(min_length=1)
+    previous_number: int | None = Field(default=None, ge=1)
+    next_number: int | None = Field(default=None, ge=1)
+    outline: FinalOutlineProjection
+
+    _project_id_is_safe = field_validator("project_id")(_validate_safe_id)
+    _book_title_is_safe = field_validator("book_title")(_validate_safe_title)
+    _title_is_safe = field_validator("title")(_validate_safe_title)
+    _volume_id_is_safe = field_validator("volume_id")(_validate_safe_id)
+    _volume_title_is_safe = field_validator("volume_title")(_validate_safe_title)
+
+
+class ManuscriptChapterLookup(_StrictManuscriptValue):
+    project_exists: bool
+    chapter: FinalChapterRecord | None
+
+    @field_validator("chapter")
+    @classmethod
+    def chapter_requires_project(
+        cls,
+        value: FinalChapterRecord | None,
+        info,
+    ) -> FinalChapterRecord | None:
+        if value is not None and info.data.get("project_exists") is not True:
+            raise ValueError("chapter requires an existing project")
+        return value
+
+
 def canonicalize_manuscript_volumes(
     volumes: tuple[ManuscriptVolume, ...],
 ) -> tuple[ManuscriptVolume, ...]:
@@ -184,10 +234,13 @@ def project_final_outline(outline: ChapterOutline) -> FinalOutlineProjection:
 __all__ = (
     "canonicalize_manuscript_volumes",
     "FinalChapterMissing",
+    "FinalChapterRecord",
     "FinalOutlineProjection",
+    "ManuscriptChapterLookup",
     "ManuscriptChapterMeta",
     "ManuscriptCorrupt",
     "ManuscriptDomainError",
+    "ManuscriptDirectoryRecord",
     "ManuscriptLifecycle",
     "ManuscriptProjectMissing",
     "ManuscriptUnavailable",
