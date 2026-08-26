@@ -10,6 +10,12 @@ import unicodedata
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from backend.domain.finalized_chapter_structure import (
+    FinalizedChapterLink,
+    FinalizedChapterStructureError,
+    validate_and_sort_finalized_chapter_links,
+)
+
 
 MAX_DOWNLOAD_BYTES = 128 * 1024 * 1024
 _HASH_PATTERN = r"^[0-9a-f]{64}$"
@@ -122,35 +128,20 @@ def _validate_chapter_links(
     *,
     error_type: type[Exception],
 ) -> None:
-    if len({chapter.chapter_number for chapter in chapters}) != len(chapters):
-        raise error_type("duplicate finalized chapter number")
-    volume_details: dict[str, tuple[int, str]] = {}
-    volume_order_details: dict[int, tuple[str, str]] = {}
-    for chapter in chapters:
-        details = (chapter.volume_order, chapter.volume_title)
-        previous = volume_details.setdefault(chapter.volume_id, details)
-        if previous != details:
-            raise error_type("finalized chapter volume link is inconsistent")
-        order_details = (chapter.volume_id, chapter.volume_title)
-        previous_order = volume_order_details.setdefault(
-            chapter.volume_order, order_details,
+    try:
+        validate_and_sort_finalized_chapter_links(
+            tuple(
+                FinalizedChapterLink(
+                    chapter_number=chapter.chapter_number,
+                    volume_id=chapter.volume_id,
+                    volume_order=chapter.volume_order,
+                    volume_title=chapter.volume_title,
+                )
+                for chapter in chapters
+            )
         )
-        if previous_order != order_details:
-            raise error_type("finalized chapter volume order is inconsistent")
-    seen_volume_ids: set[str] = set()
-    current_volume_id: str | None = None
-    current_volume_order = 0
-    for chapter in sorted(chapters, key=lambda item: item.chapter_number):
-        if chapter.volume_id == current_volume_id:
-            continue
-        if (
-            chapter.volume_id in seen_volume_ids
-            or chapter.volume_order <= current_volume_order
-        ):
-            raise error_type("finalized chapter volume run is inconsistent")
-        seen_volume_ids.add(chapter.volume_id)
-        current_volume_id = chapter.volume_id
-        current_volume_order = chapter.volume_order
+    except FinalizedChapterStructureError as exc:
+        raise error_type(str(exc)) from None
 
 
 def _verify_final_prose(chapters: tuple[FinalizedChapterSnapshot, ...]) -> None:

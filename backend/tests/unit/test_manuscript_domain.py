@@ -6,6 +6,7 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from backend.domain import manuscripts as domain
+from backend.domain.chapter_outlines import ChapterOutline
 
 
 def test_manuscript_domain_module_exists() -> None:
@@ -32,6 +33,57 @@ def _volume(**overrides: object):
     }
     values.update(overrides)
     return domain.ManuscriptVolume.model_validate(values)
+
+
+def _chapter_outline() -> ChapterOutline:
+    return ChapterOutline.model_validate(
+        {
+            "schemaVersion": "chapter-outline-v1",
+            "chapterNumber": 1,
+            "planningRevisionId": "planning-revision-1",
+            "planningRevision": 1,
+            "planningHash": "a" * 64,
+            "volumeRef": {
+                "id": "volume-1",
+                "revision": 1,
+                "contentHash": "b" * 64,
+            },
+            "storyBlockRef": {
+                "id": "story-block-1",
+                "revision": 1,
+                "contentHash": "c" * 64,
+            },
+            "stageRefs": (
+                {
+                    "id": "stage-1",
+                    "revision": 1,
+                    "contentHash": "d" * 64,
+                },
+            ),
+            "sceneTaskRefs": (
+                {
+                    "id": "scene-task-1",
+                    "revision": 1,
+                    "contentHash": "e" * 64,
+                },
+            ),
+            "chapterGoal": "找到穿越封锁线的可行缺口。",
+            "expectedCharacters": ("沈砚", "陆昭"),
+            "continuation": ("承接二人被困封锁区的局面",),
+            "plannedTasks": ("观察换岗", "试探暗渠"),
+            "scenes": ("废弃驿站的夜间侦察", "暗渠入口的试探"),
+            "forbiddenEarlyEvents": ("不可提前揭示内应",),
+            "capacityPolicy": {
+                "targetMin": 2_500,
+                "targetMax": 3_200,
+                "softCeiling": 3_800,
+            },
+            "canonRevision": 0,
+            "projectionRevision": 0,
+            "projectionHash": "f" * 64,
+            "contentHash": "0" * 64,
+        }
+    )
 
 
 def test_volume_contract_has_exactly_four_fields_and_rejects_lifecycle() -> None:
@@ -362,10 +414,7 @@ def test_database_scalar_count_maps_invalid_storage_values_to_corruption(
 
 
 def test_projects_exact_author_fields_from_a_real_chapter_outline() -> None:
-    from backend.domain.chapter_outlines import ChapterOutline
-    from backend.tests.unit.test_chapter_outline_domain import _normalize_outline
-
-    outline = _normalize_outline()
+    outline = _chapter_outline()
     assert isinstance(outline, ChapterOutline)
 
     projection = domain.project_final_outline(outline)

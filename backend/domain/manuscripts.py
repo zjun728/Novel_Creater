@@ -8,6 +8,11 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.domain.chapter_outlines import ChapterOutline
+from backend.domain.finalized_chapter_structure import (
+    FinalizedChapterLink,
+    FinalizedChapterStructureError,
+    validate_and_sort_finalized_chapter_links,
+)
 
 
 ManuscriptLifecycle = Literal["active", "archived"]
@@ -88,44 +93,48 @@ class FinalOutlineProjection(_StrictManuscriptValue):
 def canonicalize_manuscript_volumes(
     volumes: tuple[ManuscriptVolume, ...],
 ) -> tuple[ManuscriptVolume, ...]:
-    """Return finalized chapters in global numeric order after link validation."""
+    """Validate and canonicalize the finalized-chapter volume structure.
+
+    Chapter numbers are returned in global ascending order. Across that order,
+    volume order must increase strictly whenever the volume changes, every
+    volume must occupy one continuous run, and the id/order/title mappings must
+    agree in both directions.
+    """
 
     if type(volumes) is not tuple or any(
         type(volume) is not ManuscriptVolume for volume in volumes
     ):
         raise ManuscriptCorrupt()
 
-    by_volume_id: dict[str, tuple[int, str]] = {}
-    by_volume_order: dict[int, tuple[str, str]] = {}
-    chapter_numbers: set[int] = set()
     linked_chapters: list[tuple[ManuscriptChapterMeta, ManuscriptVolume]] = []
-
     for volume in volumes:
-        details = (volume.order, volume.title)
-        if by_volume_id.setdefault(volume.id, details) != details:
-            raise ManuscriptCorrupt()
-        order_details = (volume.id, volume.title)
-        if by_volume_order.setdefault(volume.order, order_details) != order_details:
-            raise ManuscriptCorrupt()
         for chapter in volume.chapters:
-            if chapter.number in chapter_numbers:
-                raise ManuscriptCorrupt()
-            chapter_numbers.add(chapter.number)
             linked_chapters.append((chapter, volume))
 
-    linked_chapters.sort(key=lambda item: item[0].number)
-    runs: list[tuple[ManuscriptVolume, list[ManuscriptChapterMeta]]] = []
-    completed_volume_ids: set[str] = set()
-    current_volume: ManuscriptVolume | None = None
+    try:
+        ordered_links = validate_and_sort_finalized_chapter_links(
+            tuple(
+                FinalizedChapterLink(
+                    chapter_number=chapter.number,
+                    volume_id=volume.id,
+                    volume_order=volume.order,
+                    volume_title=volume.title,
+                )
+                for chapter, volume in linked_chapters
+            )
+        )
+    except FinalizedChapterStructureError:
+        raise ManuscriptCorrupt() from None
 
-    for chapter, volume in linked_chapters:
+    chapters_by_number = {
+        chapter.number: (chapter, volume)
+        for chapter, volume in linked_chapters
+    }
+    runs: list[tuple[ManuscriptVolume, list[ManuscriptChapterMeta]]] = []
+    current_volume: ManuscriptVolume | None = None
+    for link in ordered_links:
+        chapter, volume = chapters_by_number[link.chapter_number]
         if current_volume is None or volume.id != current_volume.id:
-            if current_volume is not None:
-                completed_volume_ids.add(current_volume.id)
-                if volume.order < current_volume.order:
-                    raise ManuscriptCorrupt()
-            if volume.id in completed_volume_ids:
-                raise ManuscriptCorrupt()
             current_volume = volume
             runs.append((volume, []))
         runs[-1][1].append(chapter)
