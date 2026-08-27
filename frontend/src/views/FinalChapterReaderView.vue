@@ -6,28 +6,42 @@ import FinalChapterArticle from '../components/manuscript/FinalChapterArticle.vu
 import FinalOutlinePanel from '../components/manuscript/FinalOutlinePanel.vue'
 import { api } from '../api/db/client.js'
 import { createManuscriptController } from '../application/manuscript/manuscriptController.js'
+import { createNovelDownloadController } from '../application/downloads/novelDownloadController.js'
+import { useOperationStore } from '../stores/operationStore.js'
 import { finalChapterPath, manuscriptPath, parsePositiveChapterNumber } from '../router/projectRoutes.js'
 
 const route = useRoute(); const router = useRouter(); const manuscript = createManuscriptController({ api })
+const download = createNovelDownloadController({ api, operationStore: useOperationStore(), createObjectURL: blob => URL.createObjectURL(blob), revokeObjectURL: value => URL.revokeObjectURL(value), saveBlob: (url, filename) => { const link = document.createElement('a'); link.href = url; link.download = filename; link.click() } })
 const projectId = computed(() => String(route.params.projectId || ''))
 const chapterNumber = computed(() => { try { return parsePositiveChapterNumber(route.params.chapterNumber) } catch { return null } })
 const view = computed(() => route.query.view === 'outline' ? 'outline' : 'text')
 const data = computed(() => manuscript.content.value.data)
 const status = computed(() => manuscript.content.value.status)
+const preparation = computed(() => manuscript.preparation.value)
+const chapterCanDownload = computed(() => data.value && download.options.value?.available && download.options.value.chapters.some(item => item.number === data.value.chapter.number))
 function setView(next) { router.push({ query: next === 'text' ? {} : { view: next } }) }
 function retry() { if (chapterNumber.value) return manuscript.loadContent(projectId.value, chapterNumber.value, { force: true }) }
-watch([projectId, chapterNumber], ([id, number]) => { if (number) void manuscript.loadContent(id, number); else void retry() }, { immediate: true })
+async function loadReader(id, number) {
+  download.selectProject(id)
+  if (!number) return
+  await manuscript.loadContent(id, number)
+  if (id !== projectId.value || number !== chapterNumber.value) return
+  void manuscript.loadPreparation(id)
+  if (data.value) { try { await download.loadOptions(id) } catch {} }
+}
+async function downloadChapter(format) { if (data.value) { try { await download.download(projectId.value, { scope: 'chapter', chapterNumber: data.value.chapter.number, format }) } catch {} } }
+watch([projectId, chapterNumber], ([id, number]) => { void loadReader(id, number) }, { immediate: true })
 watch(() => route.query.view, value => { if (value !== undefined && value !== 'text' && value !== 'outline') router.replace({ query: {} }) }, { immediate: true })
-onBeforeUnmount(() => manuscript.dispose())
+onBeforeUnmount(() => { manuscript.dispose(); download.dispose() })
 </script>
 <template>
   <section class="final-reader" aria-labelledby="final-reader-title" :aria-busy="status === 'loading'">
     <router-link :to="manuscriptPath(projectId)">返回作品目录</router-link>
     <header><p>FINAL MANUSCRIPT</p><h1 id="final-reader-title">{{ data ? `第 ${data.chapter.number} 章 · ${data.chapter.title}` : '章节定稿' }}</h1></header>
     <section v-if="status === 'loading' && !data"><n-skeleton text :repeat="5" /></section>
-    <section v-else-if="status === 'missing-chapter'" class="final-reader__notice"><p>该章节不属于作品稿件。</p><router-link :to="manuscriptPath(projectId)">返回作品目录</router-link></section>
+    <section v-else-if="status === 'missing-chapter'" class="final-reader__notice"><p>该章节不属于作品稿件。</p><router-link :to="manuscriptPath(projectId)">返回作品目录</router-link><router-link v-if="preparation.status === 'ready'" :to="preparation.nextAction.targetPath">{{ preparation.nextAction.label }}</router-link></section>
     <n-result v-else-if="['integrity-failure', 'invalid-address'].includes(status)" status="error" title="章节定稿暂时不可用" description="为保护定稿内容，当前无法展示正文或小纲。"><template #footer><n-button @click="retry">重新读取</n-button></template></n-result>
-    <section v-else-if="data" class="final-reader__sheet"><p>第{{ data.volume.order }}卷 · {{ data.volume.title }} · {{ data.chapter.scalarCount }} 字 · <time :datetime="data.chapter.finalizedAt">{{ new Date(data.chapter.finalizedAt).toLocaleDateString('zh-CN') }}</time></p><div class="final-reader__tabs"><button type="button" :aria-pressed="view === 'text'" @click="setView('text')">正文</button><button type="button" :aria-pressed="view === 'outline'" @click="setView('outline')">本章小纲</button></div><final-chapter-article v-if="view === 'text'" :content="data.chapter.content" /><final-outline-panel v-else :outline="data.outline" /><nav aria-label="章节导航"><router-link v-if="data.navigation.previousChapterNumber" :to="finalChapterPath(projectId, data.navigation.previousChapterNumber)">上一篇</router-link><router-link :to="manuscriptPath(projectId)">目录</router-link><router-link v-if="data.navigation.nextChapterNumber" :to="finalChapterPath(projectId, data.navigation.nextChapterNumber)">下一篇</router-link></nav></section>
+    <section v-else-if="data" class="final-reader__sheet"><p>第{{ data.volume.order }}卷 · {{ data.volume.title }} · {{ data.chapter.scalarCount }} 字 · <time :datetime="data.chapter.finalizedAt">{{ new Date(data.chapter.finalizedAt).toLocaleDateString('zh-CN') }}</time></p><router-link v-if="preparation.status === 'ready' && data.lifecycle === 'active'" class="final-reader__action" :to="preparation.nextAction.targetPath">{{ preparation.nextAction.label }}</router-link><div class="final-reader__tabs"><button type="button" :aria-pressed="view === 'text'" @click="setView('text')">正文</button><button type="button" :aria-pressed="view === 'outline'" @click="setView('outline')">本章小纲</button></div><details v-if="chapterCanDownload" class="final-reader__download"><summary>下载本章定稿</summary><button v-for="format in download.options.value.formats" :key="format" type="button" :disabled="download.busy.value" @click="downloadChapter(format)">下载 {{ format === 'markdown' ? 'Markdown' : 'TXT' }}</button></details><p v-if="download.error.value" role="alert">{{ download.error.value }}</p><final-chapter-article v-if="view === 'text'" :content="data.chapter.content" /><final-outline-panel v-else :outline="data.outline" /><nav aria-label="章节导航"><router-link v-if="data.navigation.previousChapterNumber" :to="finalChapterPath(projectId, data.navigation.previousChapterNumber)">上一篇</router-link><router-link :to="manuscriptPath(projectId)">目录</router-link><router-link v-if="data.navigation.nextChapterNumber" :to="finalChapterPath(projectId, data.navigation.nextChapterNumber)">下一篇</router-link></nav></section>
     <section v-else class="final-reader__notice"><p>正文暂时无法读取。</p><button type="button" @click="retry">重新读取</button></section>
   </section>
 </template>
