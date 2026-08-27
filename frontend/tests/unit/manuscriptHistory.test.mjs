@@ -49,8 +49,9 @@ function fakeEnvironment(initialRoute) {
   }
   async function navigate(next, kind = 'push', duringTransition) {
     const from = currentRoute.value
-    if (kind === 'popstate' || kind === 'popstate-late') {
-      index -= 1
+    const isPopNavigation = ['popstate', 'popstate-late', 'popstate-after', 'popstate-forward-after'].includes(kind)
+    if (isPopNavigation) {
+      index += kind === 'popstate-forward-after' ? 1 : -1
       if (kind === 'popstate') listeners.get('popstate')?.({ state: entries[index].state })
     }
     await duringTransition?.()
@@ -61,6 +62,9 @@ function fakeEnvironment(initialRoute) {
     currentRoute.value = next
     entries[index].route = next
     for (const handler of [...after]) await handler(next, from)
+    if (kind === 'popstate-after' || kind === 'popstate-forward-after') {
+      listeners.get('popstate')?.({ state: entries[index].state })
+    }
   }
   return { router, windowRef, entries, navigate, get index() { return index } }
 }
@@ -727,5 +731,93 @@ test('a DOM-transition event before the restore baseline exists does not cancel 
 
   assert.equal(scroller.scrollTop, 210)
   assert.equal(documentRef.activeElement, target)
+  manager.dispose()
+})
+
+test('an empty first-visit chapter entry resets and settles when browser Forward returns to it', async () => {
+  const { createManuscriptHistory } = await loadHistoryModule()
+  const first = route('/projects/p/manuscript/chapters/1', { chapterNumber: 1 })
+  const fresh = route('/projects/p/manuscript/chapters/2', { chapterNumber: 2 })
+  const env = fakeEnvironment(first)
+  const firstTitle = { id: 'chapter-1-title', isConnected: true, focus() { documentRef.activeElement = this } }
+  const freshTitle = { id: 'chapter-2-title', isConnected: true, focus() { documentRef.activeElement = this } }
+  const documentRef = {
+    activeElement: null,
+    getElementById: id => [firstTitle, freshTitle].find(target => target.id === id) || null,
+  }
+  const scroller = {
+    scrollTop: 0, scrollHeight: 1000, clientHeight: 500,
+    contains: value => [firstTitle, freshTitle].includes(value),
+    querySelector: () => env.router.currentRoute.value.params.chapterNumber === '2' ? freshTitle : firstTitle,
+    addEventListener() {}, removeEventListener() {}, scrollTo({ top }) { this.scrollTop = top },
+  }
+  const manager = createManuscriptHistory({ router: env.router, windowRef: env.windowRef, documentRef, getScroller: () => scroller, schedule: callback => Promise.resolve().then(callback) })
+  await manager.mount()
+  await manager.viewRendered(first)
+  scroller.scrollTop = 180
+  manager.recordCurrent()
+
+  await env.navigate(fresh, 'push')
+  assert.equal(env.entries[1].state.manuscriptView, undefined, 'the new chapter has not rendered yet')
+  await env.navigate(first, 'popstate-after')
+  assert.equal(await manager.viewRendered(first), true)
+  assert.equal(scroller.scrollTop, 180)
+
+  scroller.scrollTop = 310
+  documentRef.activeElement = firstTitle
+  await env.navigate(fresh, 'popstate-forward-after')
+  assert.equal(await manager.viewRendered(fresh, { settled: true }), true)
+  assert.equal(scroller.scrollTop, 0)
+  assert.equal(documentRef.activeElement, freshTitle)
+  assert.deepEqual(env.entries[1].state.manuscriptView, {
+    routeKey: fresh.fullPath,
+    scrollTop: 0,
+    focusId: 'chapter-2-title',
+  })
+  manager.dispose()
+})
+
+test('consecutive real-order Back navigations use each destination entry instead of the prior late pop', async () => {
+  const { createManuscriptHistory } = await loadHistoryModule()
+  const first = route('/projects/p/manuscript/chapters/1', { chapterNumber: 1, view: 'outline' })
+  const second = route('/projects/p/manuscript/chapters/2', { chapterNumber: 2 })
+  const directory = route('/projects/p/manuscript')
+  const env = fakeEnvironment(first)
+  const targets = new Map()
+  const next = { id: 'final-reader-next', isConnected: true, focus() { documentRef.activeElement = this } }
+  const back = { id: 'final-reader-directory', isConnected: true, focus() { documentRef.activeElement = this } }
+  const titles = {
+    first: { id: 'chapter-1-title', isConnected: true, focus() { documentRef.activeElement = this } },
+    second: { id: 'chapter-2-title', isConnected: true, focus() { documentRef.activeElement = this } },
+    directory: { id: 'manuscript-index-title', isConnected: true, focus() { documentRef.activeElement = this } },
+  }
+  for (const target of [next, back, ...Object.values(titles)]) targets.set(target.id, target)
+  const documentRef = { activeElement: null, getElementById: id => targets.get(id) || null }
+  const scroller = {
+    scrollTop: 0, scrollHeight: 1800, clientHeight: 600,
+    contains: value => targets.get(value?.id) === value,
+    querySelector: () => env.router.currentRoute.value.name === 'ProjectManuscript'
+      ? titles.directory
+      : env.router.currentRoute.value.params.chapterNumber === '2' ? titles.second : titles.first,
+    addEventListener() {}, removeEventListener() {}, scrollTo({ top }) { this.scrollTop = top },
+  }
+  const manager = createManuscriptHistory({ router: env.router, windowRef: env.windowRef, documentRef, getScroller: () => scroller, schedule: callback => Promise.resolve().then(callback) })
+  await manager.mount()
+  await manager.viewRendered(first)
+  scroller.scrollTop = 222; documentRef.activeElement = next; manager.recordCurrent()
+
+  await env.navigate(second, 'push'); await manager.viewRendered(second)
+  scroller.scrollTop = 333; documentRef.activeElement = back; manager.recordCurrent()
+  await env.navigate(directory, 'push'); await manager.viewRendered(directory, { settled: true })
+
+  await env.navigate(second, 'popstate-after')
+  assert.equal(await manager.viewRendered(second, { settled: true }), true)
+  assert.equal(scroller.scrollTop, 333)
+  assert.equal(documentRef.activeElement, back)
+
+  await env.navigate(first, 'popstate-after')
+  assert.equal(await manager.viewRendered(first, { settled: true }), true)
+  assert.equal(scroller.scrollTop, 222)
+  assert.equal(documentRef.activeElement, next)
   manager.dispose()
 })

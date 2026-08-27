@@ -79,6 +79,12 @@ export function createManuscriptHistory({
   }
 
   function handlePopState(event) {
+    const eventPosition = event?.state?.position
+    if (
+      eventPosition != null
+      && historyPosition != null
+      && eventPosition === historyPosition
+    ) return
     pendingPopState = event?.state?.[STATE_KEY] || {}
   }
 
@@ -178,6 +184,9 @@ export function createManuscriptHistory({
     const priorRestoreBaseline = restoreBaseline
     const popRecord = pendingPopState
     const isPop = pendingPopState !== null
+    const canRestorePop = isPop
+      && popRecord
+      && String(popRecord.routeKey || '') === routeKey(to)
     pendingPopState = null
     currentRoute = to
     historyPosition = windowRef?.history?.state?.position
@@ -201,7 +210,7 @@ export function createManuscriptHistory({
       : {
           routeKey: routeKey(to),
           type: isPop
-            ? 'restore'
+            ? (canRestorePop ? 'restore' : 'reset')
             : (!isManuscriptRoute(from) || routeIdentity(to) !== routeIdentity(from) ? 'reset' : 'preserve'),
           record: popRecord,
         }
@@ -248,7 +257,7 @@ export function createManuscriptHistory({
         && String(destinationState.routeKey || '') === routeKey(to)
         && routeKey(to) !== routeKey(from),
       )
-      if (pendingPopState === null && (browserAlreadyMoved || historyAlreadyEnteredDestination)) {
+      if (browserAlreadyMoved || historyAlreadyEnteredDestination) {
         pendingPopState = destinationState || {}
       } else if (pendingPopState === null) {
         currentRoute = from
