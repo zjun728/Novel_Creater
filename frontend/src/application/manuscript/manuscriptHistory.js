@@ -138,10 +138,11 @@ export function createManuscriptHistory({
 
   async function viewRendered(route = currentRoute) {
     if (!mounted || !isManuscriptRoute(route)) return false
+    const renderedRouteKey = routeKey(route)
     const action = renderAction
     await schedule(() => {})
-    if (action !== renderAction) return false
-    const applied = applyRenderAction(action, route, getScroller?.())
+    if (action !== renderAction || renderedRouteKey !== routeKey(currentRoute)) return false
+    const applied = applyRenderAction(action, { fullPath: renderedRouteKey }, getScroller?.())
     if (applied) renderAction = null
     return applied
   }

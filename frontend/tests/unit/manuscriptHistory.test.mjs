@@ -355,3 +355,50 @@ test('invalid view normalization preserves a pending new-chapter reset', async (
   assert.equal(documentRef.activeElement, nextTitle)
   manager.dispose()
 })
+
+test('a reactive old render notification cannot mutate into and consume the current entry action', async () => {
+  const { createManuscriptHistory } = await loadHistoryModule()
+  const first = route('/projects/p/manuscript/chapters/1', { chapterNumber: 1 })
+  const second = route('/projects/p/manuscript/chapters/2', { chapterNumber: 2 })
+  const env = fakeEnvironment(first)
+  let holdSchedule = false
+  const scheduled = []
+  const firstTitle = { id: 'chapter-1-title', focus() {} }
+  const secondTitle = { id: 'chapter-2-title', focus() {} }
+  const scroller = {
+    scrollTop: 0,
+    contains: () => true,
+    querySelector: () => env.router.currentRoute.value.params.chapterNumber === '2' ? secondTitle : firstTitle,
+    addEventListener() {}, removeEventListener() {},
+    scrollTo({ top }) { this.scrollTop = top },
+  }
+  const manager = createManuscriptHistory({
+    router: env.router,
+    windowRef: env.windowRef,
+    documentRef: { activeElement: null, getElementById: () => null },
+    getScroller: () => scroller,
+    schedule: callback => holdSchedule
+      ? new Promise(resolve => { scheduled.push(() => { callback(); resolve() }) })
+      : Promise.resolve().then(callback),
+  })
+  await manager.mount()
+  await manager.viewRendered(first)
+  scroller.scrollTop = 444
+  await env.navigate(second, 'push')
+
+  const reactiveOldRoute = { ...first, params: { ...first.params }, query: { ...first.query } }
+  holdSchedule = true
+  const staleNotification = manager.viewRendered(reactiveOldRoute)
+  assert.equal(scheduled.length, 1)
+  Object.assign(reactiveOldRoute, second)
+  reactiveOldRoute.params = { ...second.params }
+  reactiveOldRoute.query = { ...second.query }
+  scheduled.shift()()
+
+  assert.equal(await staleNotification, false)
+  assert.equal(scroller.scrollTop, 444)
+  holdSchedule = false
+  assert.equal(await manager.viewRendered(second), true)
+  assert.equal(scroller.scrollTop, 0)
+  manager.dispose()
+})

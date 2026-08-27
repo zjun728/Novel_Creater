@@ -221,6 +221,111 @@ test('cross-chapter query change waits for matching chapter data before consumin
   } finally { late.resolve(response(chapter('p', 5))); item.dispose() }
 })
 
+test('late chapter retry cannot consume a new chapter history action', async () => {
+  const retry = deferred()
+  let chapterTwoAttempts = 0
+  const historyState = { pending: false, calls: [] }
+  const historyOverride = {
+    viewRendered(currentRoute) {
+      historyState.calls.push(currentRoute.fullPath)
+      if (historyState.pending) historyState.pending = false
+    },
+  }
+  const item = await mount('/projects/p/manuscript/chapters/2', {
+    historyOverride,
+    fetchOverride(value) {
+      if (value.endsWith('/projects/p/manuscript/chapters/2')) {
+        chapterTwoAttempts += 1
+        return chapterTwoAttempts === 1
+          ? errorResponse('ManuscriptTemporarilyUnavailable', 503)
+          : retry.promise
+      }
+      return undefined
+    },
+  })
+  try {
+    const retryButton = find(item.target, n => n.props.id === 'final-reader-fallback-retry')
+    assert.ok(retryButton)
+    const oldRetry = retryButton.props.onClick()
+    await flush()
+    await item.router.push('/projects/p/manuscript/chapters/5')
+    await flush(); await flush()
+    historyState.calls.length = 0
+    historyState.pending = true
+
+    retry.resolve(response(chapter('p', 2)))
+    await oldRetry
+    await flush()
+
+    assert.equal(historyState.pending, true)
+    assert.deepEqual(historyState.calls, [])
+    assert.match(textOf(item.target), /第 5 章 · 5章名/)
+  } finally { retry.resolve(response(chapter('p', 2))); item.dispose() }
+})
+
+test('unmounted reader retry never publishes a history render notification', async () => {
+  const retry = deferred()
+  let chapterTwoAttempts = 0
+  const calls = []
+  const item = await mount('/projects/p/manuscript/chapters/2', {
+    historyOverride: { viewRendered: currentRoute => { calls.push(currentRoute.fullPath) } },
+    fetchOverride(value) {
+      if (value.endsWith('/projects/p/manuscript/chapters/2')) {
+        chapterTwoAttempts += 1
+        return chapterTwoAttempts === 1
+          ? errorResponse('ManuscriptTemporarilyUnavailable', 503)
+          : retry.promise
+      }
+      return undefined
+    },
+  })
+  try {
+    calls.length = 0
+    const retryButton = find(item.target, n => n.props.id === 'final-reader-fallback-retry')
+    const oldRetry = retryButton.props.onClick()
+    await flush()
+    await item.router.push('/projects/p/manuscript')
+    await flush()
+    calls.length = 0
+
+    retry.resolve(response(chapter('p', 2)))
+    await oldRetry
+    await flush()
+
+    assert.deepEqual(calls, [])
+  } finally { retry.resolve(response(chapter('p', 2))); item.dispose() }
+})
+
+test('stable same-chapter retry publishes exactly one history render notification', async () => {
+  const retry = deferred()
+  let chapterTwoAttempts = 0
+  const calls = []
+  const item = await mount('/projects/p/manuscript/chapters/2', {
+    historyOverride: { viewRendered: currentRoute => { calls.push(currentRoute.fullPath) } },
+    fetchOverride(value) {
+      if (value.endsWith('/projects/p/manuscript/chapters/2')) {
+        chapterTwoAttempts += 1
+        return chapterTwoAttempts === 1
+          ? errorResponse('ManuscriptTemporarilyUnavailable', 503)
+          : retry.promise
+      }
+      return undefined
+    },
+  })
+  try {
+    calls.length = 0
+    const retryButton = find(item.target, n => n.props.id === 'final-reader-fallback-retry')
+    const stableRetry = retryButton.props.onClick()
+    await flush()
+    retry.resolve(response(chapter('p', 2)))
+    await stableRetry
+    await flush()
+
+    assert.deepEqual(calls, ['/projects/p/manuscript/chapters/2'])
+    assert.match(textOf(item.target), /第 2 章 · 2章名/)
+  } finally { retry.resolve(response(chapter('p', 2))); item.dispose() }
+})
+
 test('missing chapter keeps an independently loaded action while archived prose has no creation action', async () => {
   const missing = await mount('/projects/p/manuscript/chapters/9', { fetchOverride(value) {
     if (value.endsWith('/manuscript/chapters/9')) return errorResponse('FinalChapterNotFound', 404)

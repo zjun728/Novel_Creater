@@ -31,18 +31,45 @@ const status = computed(() => manuscript.content.value.status)
 const preparation = computed(() => manuscript.preparation.value)
 const isArchived = computed(() => data.value?.lifecycle === 'archived' || preparation.value.status === 'archived')
 const chapterCanDownload = computed(() => data.value && download.options.value?.available && download.options.value.chapters.some(item => item.number === data.value.chapter.number))
+let routeGeneration = 0
+let closed = false
+
+function isActiveRoute(generation, id, number) {
+  return !closed
+    && generation === routeGeneration
+    && id === projectId.value
+    && number === chapterNumber.value
+}
+
+function routeSnapshot() {
+  return {
+    fullPath: String(route.fullPath || ''),
+    path: String(route.path || ''),
+    name: route.name,
+    params: { ...route.params },
+    query: { ...route.query },
+  }
+}
+
 function setView(next) { return router.push({ query: { ...route.query, view: next } }) }
 async function retryContent() {
-  if (!chapterNumber.value) return false
-  await manuscript.loadContent(projectId.value, chapterNumber.value, { force: true })
+  const id = projectId.value
+  const number = chapterNumber.value
+  const generation = routeGeneration
+  if (!number || !isActiveRoute(generation, id, number)) return false
+  await manuscript.loadContent(id, number, { force: true })
+  if (!isActiveRoute(generation, id, number) || !chapterDataMatchesRoute(data.value, id, number)) return false
   await nextTick()
-  await manuscriptHistory?.viewRendered(route)
+  if (!isActiveRoute(generation, id, number) || !chapterDataMatchesRoute(data.value, id, number)) return false
+  await manuscriptHistory?.viewRendered(routeSnapshot())
+  if (!isActiveRoute(generation, id, number) || !chapterDataMatchesRoute(data.value, id, number)) return false
   if (data.value && !download.options.value) await loadOptions()
-  return data.value !== null
+  return true
 }
 function retryPreparation() { return manuscript.loadPreparation(projectId.value) }
 function loadOptions() { return download.loadOptions(projectId.value).catch(() => false) }
 async function loadReader(id, number) {
+  const generation = ++routeGeneration
   download.selectProject(id)
   download.resetTransient()
   if (!number) {
@@ -52,11 +79,12 @@ async function loadReader(id, number) {
   const contentRequest = manuscript.loadContent(id, number)
   void manuscript.loadPreparation(id)
   await contentRequest
-  if (id !== projectId.value || number !== chapterNumber.value) return
+  if (!isActiveRoute(generation, id, number)) return
   await nextTick()
-  if (id !== projectId.value || number !== chapterNumber.value) return
+  if (!isActiveRoute(generation, id, number)) return
   const scroller = titleRef.value?.closest?.('.product-app-shell__content')
-  await manuscriptHistory?.viewRendered(route)
+  await manuscriptHistory?.viewRendered(routeSnapshot())
+  if (!isActiveRoute(generation, id, number)) return
   if (!manuscriptHistory) {
     titleRef.value?.focus?.({ preventScroll: true })
     if (scroller?.scrollTo) scroller.scrollTo({ top: 0, behavior: 'auto' })
@@ -71,11 +99,20 @@ watch(() => route.query.view, async value => {
     await router.replace({ query: { ...route.query, view: 'text' } })
     return
   }
-  if (!chapterDataMatchesRoute(data.value, projectId.value, chapterNumber.value)) return
+  const id = projectId.value
+  const number = chapterNumber.value
+  const generation = routeGeneration
+  if (!chapterDataMatchesRoute(data.value, id, number)) return
   await nextTick()
-  await manuscriptHistory?.viewRendered(route)
+  if (!isActiveRoute(generation, id, number) || !chapterDataMatchesRoute(data.value, id, number)) return
+  await manuscriptHistory?.viewRendered(routeSnapshot())
 }, { immediate: true })
-onBeforeUnmount(() => { manuscript.dispose(); download.dispose() })
+onBeforeUnmount(() => {
+  closed = true
+  routeGeneration += 1
+  manuscript.dispose()
+  download.dispose()
+})
 </script>
 <template>
   <section class="final-reader" aria-labelledby="final-reader-title" :aria-busy="status === 'loading'">
