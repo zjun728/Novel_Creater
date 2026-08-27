@@ -95,23 +95,36 @@ export function createNovelDownloadController({
   const loadingState = ref(false)
   const busyState = ref(false)
   const error = ref('')
+  const optionsProjectId = ref('')
   let loadGeneration = 0
   let downloadGeneration = 0
   let disposed = false
   let inFlight = null
+  let optionsAbort = null
 
   const loading = computed(() => loadingState.value)
   const busy = computed(() => busyState.value)
   const available = computed(() => options.value?.available === true)
 
   async function loadOptions(projectId) {
-    if (disposed || loadingState.value) return false
+    const key = typeof projectId === 'string' ? projectId.trim() : String(projectId ?? '').trim()
+    if (disposed || !key) return false
+    if (key !== optionsProjectId.value) {
+      loadGeneration += 1
+      optionsAbort?.abort()
+      optionsProjectId.value = key
+      options.value = null
+      error.value = ''
+      loadingState.value = false
+    }
+    if (loadingState.value) return false
     const token = ++loadGeneration
-    const active = () => !disposed && token === loadGeneration
+    const active = () => !disposed && token === loadGeneration && optionsProjectId.value === key
+    optionsAbort = abortControllerFactory()
     loadingState.value = true
     error.value = ''
     try {
-      const loaded = safeOptions(await api.novelDownloads.options(projectId))
+      const loaded = safeOptions(await api.novelDownloads.options(key, { signal: optionsAbort.signal }))
       if (!active()) return false
       options.value = loaded
       return loaded
@@ -203,11 +216,17 @@ export function createNovelDownloadController({
     loadGeneration += 1
     loadingState.value = false
     busyState.value = false
-    inFlight?.abortController.abort()
+    const optionAbort = optionsAbort
+    const downloadAbort = inFlight?.abortController
+    optionsAbort = null
+    inFlight = null
+    optionAbort?.abort()
+    downloadAbort?.abort()
   }
 
   return {
     options,
+    optionsProjectId,
     loading,
     busy,
     error,

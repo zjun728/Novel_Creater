@@ -177,6 +177,7 @@ const CANONICAL_ROUTE_VIEWS = [
   'views/ProjectBibleView.vue',
   'views/ProjectPlanningView.vue',
   'views/ManuscriptIndexView.vue',
+  'views/FinalChapterReaderPendingView.vue',
   'views/assets/StyleLibraryView.vue',
   'views/assets/ExperienceLibraryView.vue',
   'views/assets/CorpusLibraryView.vue',

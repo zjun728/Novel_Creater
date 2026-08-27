@@ -74,7 +74,7 @@ test('canonical path builders encode project IDs and require positive chapter nu
   assert.equal(chapterWriterPath('p 1', 3), '/projects/p%201/write/chapters/3')
   assert.equal(manuscriptPath('project 1'), '/projects/project%201/manuscript')
   assert.equal(finalChapterPath('project 1', 3), '/projects/project%201/manuscript/chapters/3')
-  for (const invalid of [0, -1, 1.5, '3.5', '', null]) {
+  for (const invalid of [0, -1, 1.5, '3.5', '', null, Number.MAX_SAFE_INTEGER + 1]) {
     assert.throws(() => chapterWriterPath('project-1', invalid), /positive chapter number/i)
     assert.throws(() => finalChapterPath('project-1', invalid), /positive chapter number/i)
   }
@@ -141,6 +141,13 @@ test('formal route registry names only canonical destinations and catches retire
     const resolved = router.resolve(path)
     assert.equal(resolved.meta.notFound, true, `${path} must select NotFound`)
   }
+})
+
+test('reader route lazy-loads the honest pending surface with params-only props', async () => {
+  const { projectRoutes } = await loadRouteModule()
+  const route = projectRoutes.find(item => item.name === 'FinalChapterReader')
+  assert.equal(route.props, true)
+  assert.match(String(route.component), /FinalChapterReaderPendingView/)
 })
 
 test('planning tabs share one view and survive direct navigation and browser history', async () => {

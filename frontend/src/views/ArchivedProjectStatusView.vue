@@ -3,10 +3,9 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { NAlert, NButton } from 'naive-ui'
 
-import NovelDownloadPanel from '../components/projects/NovelDownloadPanel.vue'
 import ProjectBackupPanel from '../components/projects/ProjectBackupPanel.vue'
 import { useProjectStore } from '../stores/projectStore.js'
-import { projectBiblePath, projectContractPath } from '../router/projectRoutes.js'
+import { manuscriptPath, projectBiblePath, projectContractPath } from '../router/projectRoutes.js'
 
 const props = defineProps({
   project: {
@@ -60,11 +59,9 @@ function returnToLibrary() {
         <n-button :loading="restoring" type="primary" @click="restoreProject">恢复项目</n-button>
         <n-button quaternary @click="returnToLibrary">返回项目库</n-button>
       </div>
-      <novel-download-panel
-        :key="String(project.id)"
-        :project-id="project.id"
-        :title="project.title"
-      />
+      <router-link class="readonly-contract-link" :to="manuscriptPath(project.id)">
+        作品稿件
+      </router-link>
       <project-backup-panel
         :key="`backup:${project.id}`"
         :project-id="project.id"

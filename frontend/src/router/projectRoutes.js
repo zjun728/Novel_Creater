@@ -10,9 +10,7 @@ const ExperienceLibraryView = () => import('../views/assets/ExperienceLibraryVie
 const CorpusLibraryView = () => import('../views/assets/CorpusLibraryView.vue')
 const ChapterWriterView = () => import('../views/ChapterWriterView.vue')
 const ManuscriptIndexView = () => import('../views/ManuscriptIndexView.vue')
-// Task 7 owns the reader surface.  Keep its URL available now without importing a
-// future file, so this phase remains buildable.
-const FinalChapterReaderView = () => import('../views/ManuscriptIndexView.vue')
+const FinalChapterReaderView = () => import('../views/FinalChapterReaderPendingView.vue')
 const ProviderSettingsView = () => import('../views/ProviderSettingsView.vue')
 const ApplicationSettingsView = () => import('../views/ApplicationSettingsView.vue')
 const ProjectModelSettingsView = () => import('../views/ProjectModelSettingsView.vue')
@@ -50,7 +48,7 @@ export function corpusLibraryPath() {
 
 function positiveChapterNumber(value) {
   const chapterNumber = Number(value)
-  if (!Number.isInteger(chapterNumber) || chapterNumber < 1) {
+  if (!Number.isSafeInteger(chapterNumber) || chapterNumber < 1) {
     throw new TypeError('Expected a positive chapter number')
   }
   return chapterNumber

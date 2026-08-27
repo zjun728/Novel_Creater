@@ -69,6 +69,19 @@ test('invalid option payloads become the same safe retryable loading failure', a
   assert.equal(controller.error.value, '下载选项加载失败，请重试。')
 })
 
+test('a new project aborts and replaces an older options request', async () => {
+  const first = deferred(); const signals = []
+  const { controller } = harness({ api: { novelDownloads: {
+    options: (projectId, { signal } = {}) => { signals.push(signal); return projectId === 'A' ? first.promise : Promise.resolve({ ...OPTIONS, chapters: [{ number: 2, title: 'B', volumeId: 'v' }] }) },
+    download: async () => { throw new Error('not used') },
+  } } })
+  const old = controller.loadOptions('A'); const next = controller.loadOptions('B')
+  await next; first.resolve(OPTIONS); await old
+  assert.equal(signals[0].aborted, true)
+  assert.equal(controller.optionsProjectId.value, 'B')
+  assert.equal(controller.options.value.chapters[0].number, 2)
+})
+
 test('only one available download starts, saves, finishes and always revokes', async () => {
   const pending = deferred()
   let downloads = 0
@@ -291,7 +304,7 @@ test('disposal aborts an internal request and fences its late result', async () 
   pending.resolve({ blob: new Blob(['book']), contentDisposition: 'attachment; filename="book.txt"' })
   assert.equal(await running, false)
   assert.equal(receivedSignal.aborted, true)
-  assert.equal(aborted, 1)
+  assert.equal(aborted, 2)
   assert.deepEqual(saved, [])
   assert.deepEqual(revoked, [])
 })

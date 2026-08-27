@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
+import { computed, onBeforeUnmount, watch } from 'vue'
 import { NButton, NResult, NSkeleton } from 'naive-ui'
 import { useRoute } from 'vue-router'
 
@@ -47,12 +47,11 @@ async function downloadChapter(chapterNumber) {
 }
 function retryContent() { void loadDirectory(true) }
 
-watch(projectId, () => {
-  void loadDirectory()
-  void loadPreparation()
+watch(projectId, async () => {
+  await loadDirectory()
+  if (directory.value?.lifecycle === 'active') await loadPreparation()
+  if (hasChapters.value) await loadOptions()
 }, { immediate: true })
-watch(hasChapters, value => { if (value) void loadOptions() }, { immediate: true })
-onMounted(() => { if (hasChapters.value) void loadOptions() })
 onBeforeUnmount(() => { manuscript.dispose(); download.dispose() })
 </script>
 
