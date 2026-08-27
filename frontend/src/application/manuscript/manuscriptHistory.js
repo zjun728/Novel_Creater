@@ -38,6 +38,7 @@ export function createManuscriptHistory({
   let pendingPopState = null
   let currentRoute = router?.currentRoute?.value || null
   let renderAction = null
+  let restoreBaseline = null
   let removeBefore = () => {}
   let removeAfter = () => {}
   let attachedScroller = null
@@ -81,6 +82,43 @@ export function createManuscriptHistory({
     pendingPopState = event?.state?.[STATE_KEY] || {}
   }
 
+  function captureRestoreBaseline(action, route, scroller) {
+    if (
+      restoreBaseline?.action === action
+      && restoreBaseline.routeKey === routeKey(route)
+    ) return
+    const active = documentRef?.activeElement || null
+    restoreBaseline = {
+      action,
+      routeKey: routeKey(route),
+      scrollTop: safeScrollTop(scroller?.scrollTop),
+      activeElement: active,
+      activeId: String(active?.id || ''),
+      activeWasInScroller: Boolean(
+        active
+        && active.isConnected !== false
+        && scroller?.contains?.(active),
+      ),
+    }
+  }
+
+  function restoreWasOverridden(action, route, scroller) {
+    const baseline = restoreBaseline
+    if (!baseline || baseline.action !== action || baseline.routeKey !== routeKey(route)) return false
+    if (safeScrollTop(scroller?.scrollTop) !== baseline.scrollTop) return true
+    const active = documentRef?.activeElement || null
+    const activeIsInScroller = Boolean(
+      active
+      && active.isConnected !== false
+      && scroller?.contains?.(active),
+    )
+    return activeIsInScroller && (
+      !baseline.activeWasInScroller
+      || active !== baseline.activeElement
+      || String(active.id || '') !== baseline.activeId
+    )
+  }
+
   function restoreRecorded(record, route, scroller, { settled = false } = {}) {
     if (!record || String(record.routeKey || '') !== routeKey(route)) return false
     const top = safeScrollTop(record.scrollTop)
@@ -121,9 +159,18 @@ export function createManuscriptHistory({
 
   function applyRenderAction(action, route, scroller, options) {
     if (!action || action.routeKey !== routeKey(route)) return false
-    if (action.type === 'restore' && !restoreRecorded(action.record, route, scroller, options)) return false
+    if (action.type === 'restore' && options?.settled && restoreWasOverridden(action, route, scroller)) {
+      replaceManuscriptState(stateFor(route, scroller))
+      restoreBaseline = null
+      return true
+    }
+    if (action.type === 'restore' && !restoreRecorded(action.record, route, scroller, options)) {
+      if (!options?.settled) captureRestoreBaseline(action, route, scroller)
+      return false
+    }
     else if (action.type === 'reset') resetForNewManuscriptRoute(scroller)
     replaceManuscriptState(stateFor(route, scroller))
+    restoreBaseline = null
     return true
   }
 
@@ -133,6 +180,7 @@ export function createManuscriptHistory({
     const isPop = pendingPopState !== null
     pendingPopState = null
     currentRoute = to
+    restoreBaseline = null
     historyPosition = windowRef?.history?.state?.position
     if (!isManuscriptRoute(to)) {
       renderAction = null
@@ -209,6 +257,7 @@ export function createManuscriptHistory({
         type: canRestore ? 'restore' : 'reset',
         record: canRestore ? { ...existing, routeKey: currentKey } : existing,
       }
+      restoreBaseline = null
       await schedule(() => {})
     }
   }
@@ -226,6 +275,7 @@ export function createManuscriptHistory({
     removeAfter = () => {}
     attachedScroller = null
     renderAction = null
+    restoreBaseline = null
   }
 
   return { mount, dispose, recordCurrent, viewRendered }
