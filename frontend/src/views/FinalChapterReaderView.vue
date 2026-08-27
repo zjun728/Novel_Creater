@@ -5,7 +5,7 @@ import { NButton, NResult, NSkeleton } from 'naive-ui'
 import FinalChapterArticle from '../components/manuscript/FinalChapterArticle.vue'
 import FinalOutlinePanel from '../components/manuscript/FinalOutlinePanel.vue'
 import { api } from '../api/db/client.js'
-import { createManuscriptController } from '../application/manuscript/manuscriptController.js'
+import { chapterDataMatchesRoute, createManuscriptController } from '../application/manuscript/manuscriptController.js'
 import { createNovelDownloadController } from '../application/downloads/novelDownloadController.js'
 import { useOperationStore } from '../stores/operationStore.js'
 import { finalChapterPath, manuscriptPath, parsePositiveChapterNumber } from '../router/projectRoutes.js'
@@ -71,7 +71,7 @@ watch(() => route.query.view, async value => {
     await router.replace({ query: { ...route.query, view: 'text' } })
     return
   }
-  if (!data.value) return
+  if (!chapterDataMatchesRoute(data.value, projectId.value, chapterNumber.value)) return
   await nextTick()
   await manuscriptHistory?.viewRendered(route)
 }, { immediate: true })

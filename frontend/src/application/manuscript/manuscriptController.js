@@ -13,6 +13,14 @@ const preparationState = (status, nextAction = null) => Object.freeze({ status, 
 const safeCorrelationId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/u.test(value) ? value : ''
 const correlation = error => ['ManuscriptIntegrityFailure', 'ManuscriptTemporarilyUnavailable'].includes(error?.code) ? safeCorrelationId(error?.correlationId) : ''
 
+export function chapterDataMatchesRoute(data, projectId, chapterNumber) {
+  return Boolean(
+    data
+    && data.projectId === projectId
+    && data.chapter?.number === chapterNumber,
+  )
+}
+
 export function createManuscriptController({ api, abortControllerFactory = () => new AbortController() } = {}) {
   if (!api?.manuscripts || !api?.projects || typeof abortControllerFactory !== 'function') throw new TypeError('manuscript API and abortControllerFactory are required')
   const content = shallowRef(contentState('idle')); const preparation = shallowRef(preparationState('idle'))

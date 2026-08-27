@@ -45,7 +45,7 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
-let vite; let Index
+let vite; let Index; let historyContext
 async function clientRender(path, id) {
   const source = await readFile(new URL(`../../src/${path}`, import.meta.url), 'utf8')
   const { descriptor } = parse(source, { filename: path })
@@ -54,6 +54,7 @@ async function clientRender(path, id) {
 test.before(async () => {
   vite = await createServer({ configFile: false, root, appType: 'custom', logLevel: 'error', server: { middlewareMode: true, hmr: false, ws: false }, plugins: [vuePlugin(), naiveStub], ssr: { noExternal: ['naive-ui'] }, optimizeDeps: { noDiscovery: true } })
   Index = (await vite.ssrLoadModule('/src/views/ManuscriptIndexView.vue')).default
+  historyContext = (await vite.ssrLoadModule('/src/application/manuscript/manuscriptHistory.js')).MANUSCRIPT_HISTORY_CONTEXT
   const source = await readFile(new URL('../../src/views/ManuscriptIndexView.vue', import.meta.url), 'utf8')
   const { descriptor } = parse(source, { filename: 'ManuscriptIndexView.vue' })
   Index.render = new Function('Vue', compile(descriptor.template.content, { mode: 'function', prefixIdentifiers: true, bindingMetadata: compileScript(descriptor, { id: 'manuscript-index' }).bindings }).code)(VueRuntime)
@@ -69,7 +70,7 @@ const response = body => new Response(JSON.stringify(body), { headers: { 'conten
 
 async function mount({
   lifecycle = 'active', chapters = true, unavailable = false,
-  directorySequence = [], preparationSequence = [], optionSequence = [], fetchOverride,
+  directorySequence = [], preparationSequence = [], optionSequence = [], fetchOverride, historyOverride,
 } = {}) {
   const originalFetch = global.fetch; const originalDocument = global.document; const calls = []
   let app
@@ -106,7 +107,7 @@ async function mount({
     await router.push('/projects/p/manuscript'); await router.isReady()
     const target = makeNode('root')
     app = renderer.createApp({ render: () => VueRuntime.h(RouterView) })
-    const pinia = createPinia(); setActivePinia(pinia); app.use(pinia); app.use(router); app.provide(ssrContextKey, { modules: new Set() }); app.mount(target); await flush(); await flush()
+    const pinia = createPinia(); setActivePinia(pinia); app.use(pinia); app.use(router); app.provide(ssrContextKey, { modules: new Set() }); if (historyOverride) app.provide(historyContext, historyOverride); app.mount(target); await flush(); await flush()
     return { target, calls, router, dispose() { app.unmount(); global.fetch = originalFetch; global.document = originalDocument } }
   } catch (error) {
     app?.unmount()
@@ -134,6 +135,34 @@ test('mounted active directory loads preparation, options, and exact download se
     query = new URL(item.calls.at(-1)[0]).searchParams
     assert.equal(query.get('scope'), 'chapter'); assert.equal(query.get('chapterNumber'), '2'); assert.equal(query.get('format'), 'markdown')
   } finally { item.dispose() }
+})
+
+test('stable mounted directory publishes exactly one history render notification', async () => {
+  const calls = []
+  const item = await mount({ historyOverride: { viewRendered: currentRoute => { calls.push(currentRoute.fullPath) } } })
+  try {
+    assert.deepEqual(calls, ['/projects/p/manuscript'])
+  } finally { item.dispose() }
+})
+
+test('unmounted directory cannot publish a late history render notification into its reader', async () => {
+  const pendingOptions = deferred()
+  const calls = []
+  const item = await mount({
+    historyOverride: { viewRendered: currentRoute => { calls.push(currentRoute.fullPath) } },
+    fetchOverride(value) {
+      if (value.endsWith('/projects/p/novel-download/options')) return pendingOptions.promise
+      return undefined
+    },
+  })
+  try {
+    assert.deepEqual(calls, [])
+    await item.router.push('/projects/p/manuscript/chapters/2')
+    await flush()
+    pendingOptions.resolve(response(options))
+    await flush(); await flush()
+    assert.deepEqual(calls, [])
+  } finally { pendingOptions.resolve(response(options)); item.dispose() }
 })
 
 test('mounted archived and empty directories keep lifecycle calls independent', async () => {

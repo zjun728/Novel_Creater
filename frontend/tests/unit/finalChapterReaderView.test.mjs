@@ -22,11 +22,12 @@ async function flush() { for (let i = 0; i < 8; i += 1) await Promise.resolve();
 async function waitFor(predicate, message) { for (let index = 0; index < 20; index += 1) { const value = predicate(); if (value) return value; await new Promise(resolve => setImmediate(resolve)); await flush() } assert.fail(message) }
 function deferred() { let resolve; let reject; const promise = new Promise((a, b) => { resolve = a; reject = b }); return { promise, resolve, reject } }
 
-let vite; let Reader
+let vite; let Reader; let historyContext
 test.before(async () => {
   const stubId = '\0reader-naive'
   vite = await createServer({ configFile: false, root, appType: 'custom', logLevel: 'error', server: { middlewareMode: true, hmr: false, ws: false }, plugins: [vuePlugin(), { name: 'reader-naive', enforce: 'pre', resolveId: id => id === 'naive-ui' ? stubId : undefined, load: id => id === stubId ? `import {defineComponent,h} from 'vue';const children=s=>Object.values(s).flatMap(x=>x?.()||[]);const c=n=>defineComponent({name:n,setup(_,x){return()=>h('div',x.attrs,children(x.slots))}});export const NButton=defineComponent({name:'NButton',setup(_,x){return()=>h('button',x.attrs,children(x.slots))}});export const NResult=defineComponent({name:'NResult',setup(_,x){return()=>h('div',x.attrs,[x.attrs.title,x.attrs.description,...children(x.slots)])}});export const NSkeleton=c('NSkeleton')` : undefined }], ssr: { noExternal: ['naive-ui'] }, optimizeDeps: { noDiscovery: true } })
   Reader = (await vite.ssrLoadModule('/src/views/FinalChapterReaderView.vue')).default
+  historyContext = (await vite.ssrLoadModule('/src/application/manuscript/manuscriptHistory.js')).MANUSCRIPT_HISTORY_CONTEXT
   const source = await readFile(new URL('../../src/views/FinalChapterReaderView.vue', import.meta.url), 'utf8'); const { descriptor } = parse(source); Reader.render = new Function('Vue', compile(descriptor.template.content, { mode: 'function', prefixIdentifiers: true, bindingMetadata: compileScript(descriptor, { id: 'reader' }).bindings }).code)(VueRuntime)
   for (const path of ['components/manuscript/FinalChapterArticle.vue', 'components/manuscript/FinalOutlinePanel.vue']) { const component = (await vite.ssrLoadModule(`/src/${path}`)).default; const value = await readFile(new URL(`../../src/${path}`, import.meta.url), 'utf8'); const parsed = parse(value).descriptor; component.render = new Function('Vue', compile(parsed.template.content, { mode: 'function', prefixIdentifiers: true, bindingMetadata: compileScript(parsed, { id: path }).bindings }).code)(VueRuntime) }
 })
@@ -36,7 +37,7 @@ const response = body => new Response(JSON.stringify(body), { headers: { 'conten
 const errorResponse = (code, status = 500) => new Response(JSON.stringify({ code, message: 'private transport detail', correlationId: 'safe_1' }), { status, headers: { 'content-type': 'application/json' } })
 const preparation = (lifecycle = 'active', id = 'p') => ({ lifecycle, activeSelection: 'current', contract: 'draft', bible: 'missing', planning: 'missing', outline: 'missing', authoritativeChapterNumber: 3, modelTasks: [], capabilities: {}, nextAction: lifecycle === 'archived' ? 'archived_read_only' : 'continue_contract', targetPath: lifecycle === 'archived' ? null : `/projects/${id}/contract`, reasons: [] })
 const options = number => ({ available: true, reason: null, formats: ['txt', 'markdown'], volumes: [], chapters: [{ number, title: '章名', volumeId: 'v' }] })
-async function mount(path = '/projects/p/manuscript/chapters/2', { fetchOverride, lifecycle = 'active' } = {}) {
+async function mount(path = '/projects/p/manuscript/chapters/2', { fetchOverride, historyOverride, lifecycle = 'active' } = {}) {
   const originalFetch = global.fetch; const originalDocument = global.document; const calls = []
   const anchors = []
   let app
@@ -53,7 +54,7 @@ async function mount(path = '/projects/p/manuscript/chapters/2', { fetchOverride
   try {
     const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/projects', component: { render: () => null } }, { path: '/projects/:projectId/manuscript/chapters/:chapterNumber', component: Reader }, { path: '/projects/:projectId/manuscript', component: { render: () => null } }, { path: '/projects/:projectId/contract', component: { render: () => null } }, { path: '/projects/:projectId/writer/:chapterNumber', component: { render: () => null } }] })
     await router.push(path); await router.isReady()
-    const target = node('root'); app = renderer.createApp({ render: () => VueRuntime.h(RouterView) }); const pinia = createPinia(); setActivePinia(pinia); app.use(pinia); app.use(router); app.provide(ssrContextKey, { modules: new Set() }); app.mount(target); await flush(); await flush()
+    const target = node('root'); app = renderer.createApp({ render: () => VueRuntime.h(RouterView) }); const pinia = createPinia(); setActivePinia(pinia); app.use(pinia); app.use(router); app.provide(ssrContextKey, { modules: new Set() }); if (historyOverride) app.provide(historyContext, historyOverride); app.mount(target); await flush(); await flush()
     return { target, router, calls, anchors, dispose() { app.unmount(); global.fetch = originalFetch; global.document = originalDocument } }
   } catch (error) {
     try { app?.unmount() } finally { global.fetch = originalFetch; global.document = originalDocument }
@@ -172,6 +173,52 @@ test('mounted reader fences a late chapter when project and chapter change', asy
     assert.match(textOf(item.target), /第 7 章 · 7章名/)
     assert.doesNotMatch(textOf(item.target), /3章名/)
   } finally { late.resolve(response(chapter('p', 3))); item.dispose() }
+})
+
+test('reader content identity rejects old chapter data for a new chapter route', async () => {
+  const controller = await import('../../src/application/manuscript/manuscriptController.js')
+  assert.equal(controller.chapterDataMatchesRoute?.(chapter('p', 2), 'p', 5), false)
+  assert.equal(controller.chapterDataMatchesRoute?.(chapter('q', 5), 'p', 5), false)
+  assert.equal(controller.chapterDataMatchesRoute?.(chapter('p', 5), 'p', 5), true)
+})
+
+test('cross-chapter query change waits for matching chapter data before consuming history restore', async () => {
+  const late = deferred()
+  const restore = { pending: false, calls: [], scrollTop: 0, focused: '' }
+  const historyOverride = {
+    async viewRendered(currentRoute) {
+      restore.calls.push(currentRoute.fullPath)
+      if (!restore.pending) return false
+      restore.pending = false
+      restore.scrollTop = 222
+      restore.focused = 'final-reader-view-outline'
+      return true
+    },
+  }
+  const item = await mount('/projects/p/manuscript/chapters/2?view=text', {
+    historyOverride,
+    fetchOverride(value) {
+      if (value.endsWith('/projects/p/manuscript/chapters/5')) return late.promise
+      return undefined
+    },
+  })
+  try {
+    restore.calls.length = 0
+    restore.pending = true
+    await item.router.push('/projects/p/manuscript/chapters/5?view=outline')
+    await flush()
+
+    assert.equal(restore.pending, true, 'old chapter data must not consume the new chapter restore')
+    assert.deepEqual(restore.calls, [])
+    assert.equal(restore.scrollTop, 0)
+
+    late.resolve(response(chapter('p', 5)))
+    await flush(); await flush()
+    assert.equal(restore.pending, false)
+    assert.deepEqual(restore.calls, ['/projects/p/manuscript/chapters/5?view=outline'])
+    assert.equal(restore.scrollTop, 222)
+    assert.equal(restore.focused, 'final-reader-view-outline')
+  } finally { late.resolve(response(chapter('p', 5))); item.dispose() }
 })
 
 test('missing chapter keeps an independently loaded action while archived prose has no creation action', async () => {

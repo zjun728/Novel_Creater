@@ -38,21 +38,27 @@ const isArchived = computed(() => directory.value?.lifecycle === 'archived' || p
 const hasChapters = computed(() => (directory.value?.summary?.finalChapterCount || 0) > 0)
 const downloadableChapters = computed(() => (download.options.value?.chapters || []).map(item => item.number))
 let routeGeneration = 0
+let closed = false
+
+function isActiveRoute(generation, id) {
+  return !closed && generation === routeGeneration && id === projectId.value
+}
 
 async function loadProjectFlow(id, { force = false, resetDownloads = false } = {}) {
   const generation = ++routeGeneration
   if (resetDownloads) download.selectProject(id)
   await manuscript.loadDirectory(id, { force })
-  if (generation !== routeGeneration || id !== projectId.value) return
+  if (!isActiveRoute(generation, id)) return
   if (directory.value?.lifecycle === 'active') {
     await manuscript.loadPreparation(id)
-    if (generation !== routeGeneration || id !== projectId.value) return
+    if (!isActiveRoute(generation, id)) return
   }
   if (hasChapters.value) {
     try { await download.loadOptions(id) } catch {}
   }
-  if (generation !== routeGeneration || id !== projectId.value) return
+  if (!isActiveRoute(generation, id)) return
   await nextTick()
+  if (!isActiveRoute(generation, id)) return
   await manuscriptHistory?.viewRendered(route)
 }
 function loadPreparation() { return manuscript.loadPreparation(projectId.value) }
@@ -63,7 +69,12 @@ async function downloadChapter(chapterNumber, format) { try { await download.dow
 function retryContent() { return loadProjectFlow(projectId.value, { force: true }) }
 
 watch(projectId, id => { void loadProjectFlow(id, { resetDownloads: true }) }, { immediate: true })
-onBeforeUnmount(() => { manuscript.dispose(); download.dispose() })
+onBeforeUnmount(() => {
+  closed = true
+  routeGeneration += 1
+  manuscript.dispose()
+  download.dispose()
+})
 </script>
 
 <template>
