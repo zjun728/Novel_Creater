@@ -92,3 +92,33 @@ test('preparation table is independent from content and honors archived, stale a
   const controller = createManuscriptController({ api: { manuscripts: { chapter: async () => { throw new ApiError({ code: 'unknown' }) }, index: async () => ({}) }, projects: { preparation: () => (++count === 1 ? first.promise : Promise.resolve({ ...preparation, lifecycle: 'archived', nextAction: 'archived_read_only', targetPath: null })) } } })
   const old = controller.loadPreparation('p'); await controller.loadPreparation('q'); first.resolve(preparation); await old; assert.equal(controller.preparation.value.status, 'archived'); await controller.loadContent('p', 2); assert.equal(controller.content.value.status, 'unavailable')
 })
+
+test('new target clears a ready response immediately while its deferred request is pending', async () => {
+  const pending = deferred()
+  const controller = createManuscriptController({ api: { manuscripts: { chapter: (_p, number) => number === 2 ? Promise.resolve(chapter(2)) : pending.promise, index: async () => ({}) }, projects: { preparation: async () => preparation } } })
+  await controller.loadContent('p', 2)
+  const next = controller.loadContent('p', 3)
+  assert.equal(controller.content.value.status, 'loading'); assert.equal(controller.content.value.data, null)
+  pending.resolve(chapter(3)); await next; assert.equal(controller.content.value.data.chapter.number, 3)
+})
+
+test('correlation IDs are retained only for the two approved codes and safe values', async () => {
+  for (const [code, id, expected] of [
+    ['ManuscriptIntegrityFailure', 'safe_1', 'safe_1'], ['ManuscriptTemporarilyUnavailable', 'safe_2', 'safe_2'],
+    ['ManuscriptIntegrityFailure', 'bad id', ''], ['ManuscriptTemporarilyUnavailable', 'bad\n', ''],
+    ['ManuscriptProjectNotFound', 'safe_3', ''], ['ManuscriptRequestInvalid', 'safe_4', ''], ['unknown', 'safe_5', ''],
+  ]) {
+    const controller = createManuscriptController({ api: { manuscripts: { chapter: async () => { throw new ApiError({ code, correlationId: id }) }, index: async () => ({}) }, projects: { preparation: async () => preparation } } })
+    await controller.loadContent('p', 2); assert.equal(controller.content.value.correlationId, expected, code)
+  }
+})
+
+test('disposed preparation ignores both late resolve and reject', async () => {
+  for (const outcome of ['resolve', 'reject']) {
+    const pending = deferred()
+    const controller = createManuscriptController({ api: { manuscripts: { chapter: async () => chapter(), index: async () => ({}) }, projects: { preparation: () => pending.promise } } })
+    const request = controller.loadPreparation('p'); assert.equal(controller.preparation.value.status, 'loading'); controller.dispose()
+    if (outcome === 'resolve') pending.resolve(preparation); else pending.reject(new Error('late'))
+    await request; assert.equal(controller.preparation.value.status, 'loading', outcome)
+  }
+})

@@ -78,3 +78,15 @@ test('chapterMutations reject every nested boundary and navigation contract', as
   ]
   for (const [name, mutate] of cases) { const value = structuredClone(chapter); mutate(value); await rejectsMutation(name, value, () => api.manuscripts.chapter('p', 2)) }
 })
+
+test('archived multi-volume directory and archived chapter parse as deeply frozen graphs', async () => {
+  const prior = global.fetch
+  const archivedDirectory = { projectId: 'p', title: 'T', lifecycle: 'archived', summary: { finalChapterCount: 3, totalScalarCount: 6 }, volumes: [
+    { id: 'v1', order: 1, title: 'One', chapters: [{ number: 1, title: 'A', scalarCount: 2, finalizedAt: '2025-01-01T00:00:00Z' }, { number: 3, title: 'B', scalarCount: 2, finalizedAt: '2025-01-02T00:00:00Z' }] },
+    { id: 'v2', order: 2, title: 'Two', chapters: [{ number: 7, title: 'C', scalarCount: 2, finalizedAt: '2025-01-03T00:00:00Z' }] },
+  ] }
+  const archivedChapter = { ...structuredClone(chapter), projectId: 'p', lifecycle: 'archived' }
+  global.fetch = async () => new Response(JSON.stringify(global.fetch.calls++ === 0 ? archivedDirectory : archivedChapter)); global.fetch.calls = 0
+  const walk = value => { if (value && typeof value === 'object') { assert.equal(Object.isFrozen(value), true); Object.values(value).forEach(walk) } }
+  try { const directoryResult = await api.manuscripts.index('p'); const chapterResult = await api.manuscripts.chapter('p', 2); assert.deepEqual(directoryResult.volumes.flatMap(volume => volume.chapters.map(item => item.number)), [1, 3, 7]); assert.equal(chapterResult.lifecycle, 'archived'); walk(directoryResult); walk(chapterResult) } finally { global.fetch = prior }
+})
