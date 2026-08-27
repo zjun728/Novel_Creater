@@ -296,8 +296,23 @@ test('shell CSS preserves touch size, wrapping, mobile layout, and reduced motio
   assert.match(style, /grid-template-columns:\s*minmax\(0, 1fr\)/)
   assert.match(style, /\.product-mobile-topbar button[\s\S]*?min-height:\s*44px/)
   assert.match(sidebar, /\.product-sidebar__nav-link,[\s\S]*?min-height:\s*44px/)
+  assert.match(sidebar, /\.product-sidebar__asset-subnav a[\s\S]*?min-height:\s*44px/)
+  const topbar = await readFile(new URL('../../src/components/layout/TopBar.vue', import.meta.url), 'utf8')
+  assert.match(topbar, /\.product-topbar__breadcrumbs a[\s\S]*?min-height:\s*44px/)
   for (const source of [style, sidebar, index, reader]) {
     assert.match(source, /@media \(prefers-reduced-motion: reduce\)/)
+  }
+  assert.match(index, /\.manuscript-index :is\(a,button,summary\)[^}]*min-height:\s*44px/)
+  assert.match(reader, /\.final-reader :is\(a, button, summary\)[^}]*min-height:\s*44px/)
+})
+
+test('route views never introduce a second main landmark inside the application shell', async () => {
+  const routes = await readFile(new URL('../../src/router/projectRoutes.js', import.meta.url), 'utf8')
+  const names = [...routes.matchAll(/const\s+(\w+View)\s*=\s*\(\)\s*=>\s*import\('\.\.\/views\/([^']+\.vue)'\)/g)]
+  assert.ok(names.length >= 15)
+  for (const [, component, filename] of names) {
+    const source = await readFile(new URL(`../../src/views/${filename}`, import.meta.url), 'utf8')
+    assert.doesNotMatch(source, /<\/?main\b/, `${component} must render inside App's one main landmark`)
   }
 })
 
@@ -377,7 +392,7 @@ test.after(async () => {
 
 const Page = defineComponent({
   name: 'TestRoutePage',
-  render: () => h('main', { 'data-route-page': '' }),
+  render: () => h('section', { 'data-route-page': '' }),
 })
 
 const shellRoutes = [

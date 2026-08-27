@@ -189,6 +189,10 @@ defineProps({
 }
 
 .product-sidebar__asset-subnav a {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
   padding: 5px 3px;
   border-bottom: 1px solid transparent;
   color: #85786a;

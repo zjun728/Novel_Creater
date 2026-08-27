@@ -203,3 +203,62 @@ test('a late pop listener cannot write manuscript state into a non-manuscript de
   assert.equal(env.entries[1].state.manuscriptView.scrollTop, 410)
   manager.dispose()
 })
+
+test('initial restore waits for the async manuscript content and focus target to render', async () => {
+  const { createManuscriptHistory } = await loadHistoryModule()
+  const initial = route('/projects/p/manuscript/chapters/3', { chapterNumber: 3, view: 'outline' })
+  const env = fakeEnvironment(initial)
+  env.entries[0].state.manuscriptView = {
+    routeKey: initial.fullPath,
+    scrollTop: 620,
+    focusId: 'final-reader-view-outline',
+  }
+  let ready = false
+  let scrollCalls = 0
+  const target = focusTarget('final-reader-view-outline', { activeElement: null })
+  const documentRef = {
+    activeElement: null,
+    getElementById: id => ready && id === target.id ? target : null,
+  }
+  target.focus = options => { target.focusOptions = options; documentRef.activeElement = target }
+  const scroller = {
+    scrollTop: 0,
+    contains: value => ready && value === target,
+    querySelector: () => ready ? target : null,
+    addEventListener() {}, removeEventListener() {},
+    scrollTo({ top }) { scrollCalls += 1; this.scrollTop = ready ? top : 0 },
+  }
+  const manager = createManuscriptHistory({ router: env.router, windowRef: env.windowRef, documentRef, getScroller: () => scroller, schedule: callback => Promise.resolve().then(callback) })
+
+  await manager.viewRendered(initial) // reproduces the old immediate query watcher
+  await manager.mount()
+  assert.equal(scrollCalls, 0)
+  assert.equal(documentRef.activeElement, null)
+
+  ready = true
+  await manager.viewRendered(initial)
+  assert.equal(scroller.scrollTop, 620)
+  assert.equal(documentRef.activeElement, target)
+  manager.dispose()
+})
+
+test('invalid view normalization preserves a pending pop restoration', async () => {
+  const { createManuscriptHistory } = await loadHistoryModule()
+  const bad = route('/projects/p/manuscript/chapters/3', { chapterNumber: 3, view: 'bad' })
+  const normalized = route('/projects/p/manuscript/chapters/3', { chapterNumber: 3, view: 'text' })
+  const env = fakeEnvironment(bad)
+  env.entries[0].state.manuscriptView = { routeKey: bad.fullPath, scrollTop: 480, focusId: 'final-reader-view-text' }
+  const target = { id: 'final-reader-view-text', isConnected: true, focus() { documentRef.activeElement = this } }
+  const documentRef = { activeElement: null, getElementById: id => id === target.id ? target : null }
+  const scroller = { scrollTop: 0, contains: value => value === target, querySelector: () => target, addEventListener() {}, removeEventListener() {}, scrollTo({ top }) { this.scrollTop = top } }
+  const manager = createManuscriptHistory({ router: env.router, windowRef: env.windowRef, documentRef, getScroller: () => scroller, schedule: callback => Promise.resolve().then(callback) })
+  await manager.mount()
+
+  await env.navigate(normalized, 'replace')
+  await manager.viewRendered(normalized)
+
+  assert.equal(scroller.scrollTop, 480)
+  assert.equal(documentRef.activeElement, target)
+  assert.equal(env.entries[0].state.manuscriptView.routeKey, normalized.fullPath)
+  manager.dispose()
+})

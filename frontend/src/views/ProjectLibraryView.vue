@@ -29,7 +29,7 @@ export default defineComponent({
 </script>
 
 <template>
-  <main class="project-library-page">
+  <section class="project-library-page">
     <header class="project-library-heading">
       <div>
         <p class="project-library-kicker">LONG-FORM FICTION DESK</p>
@@ -114,7 +114,7 @@ export default defineComponent({
       :on-cancel="closeRename"
       @submit="rename"
     />
-  </main>
+  </section>
 </template>
 
 <style src="../components/projects/projectLibrary.css"></style>

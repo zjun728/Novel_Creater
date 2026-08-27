@@ -29,6 +29,7 @@ test('chapter list renders semantic reader links and sibling controls without vo
     app.use(router)
     const html = await renderToString(app)
     assert.match(html, /href="\/projects\/p\/manuscript\/chapters\/2"/)
+    assert.match(html, /id="manuscript-chapter-2"/)
     assert.match(html, /<\/a>\s*<button/)
     assert.match(html, /datetime="2026-01-01T00:00:00Z"/)
     assert.doesNotMatch(html, /123e4567-e89b-12d3-a456-426614174000/)

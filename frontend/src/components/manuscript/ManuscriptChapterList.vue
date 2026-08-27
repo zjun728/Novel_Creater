@@ -26,17 +26,17 @@ function canDownload(chapterNumber) {
       <h2 :id="`volume-heading-${volumeIndex + 1}`">第{{ volume.order }}卷 · {{ volume.title }}</h2>
       <ol class="manuscript-chapter-list__chapters">
         <li v-for="chapter in volume.chapters" :key="chapter.number" class="manuscript-chapter-list__row">
-          <router-link class="manuscript-chapter-list__reader" :to="finalChapterPath(projectId, chapter.number)">
+          <router-link :id="`manuscript-chapter-${chapter.number}`" class="manuscript-chapter-list__reader" :to="finalChapterPath(projectId, chapter.number)">
             <span class="manuscript-chapter-list__number">第 {{ chapter.number }} 章</span>
             <strong>{{ chapter.title }}</strong>
             <span>{{ chapter.scalarCount }} 字</span>
             <time :datetime="chapter.finalizedAt">{{ dateLabel(chapter.finalizedAt) }}</time>
             <span>已定稿</span>
           </router-link>
-          <button v-if="canDownload(chapter.number) && formats.length === 1" type="button" class="manuscript-chapter-list__download" :disabled="busy" :aria-label="`下载第 ${chapter.number} 章定稿 ${formats[0] === 'markdown' ? 'Markdown' : 'TXT'}`" @click="downloadChapter(chapter.number, formats[0])">下载</button>
+          <button v-if="canDownload(chapter.number) && formats.length === 1" :id="`manuscript-chapter-${chapter.number}-download`" type="button" class="manuscript-chapter-list__download" :disabled="busy" :aria-label="`下载第 ${chapter.number} 章定稿 ${formats[0] === 'markdown' ? 'Markdown' : 'TXT'}`" @click="downloadChapter(chapter.number, formats[0])">下载</button>
           <details v-else-if="canDownload(chapter.number)" class="manuscript-chapter-list__download-menu">
-            <summary :aria-label="`下载第${chapter.number}章定稿`" :aria-disabled="busy" @click="busy && $event.preventDefault()">下载</summary>
-            <button v-for="format in formats" :key="format" type="button" :disabled="busy" :aria-label="`下载第 ${chapter.number} 章定稿 ${format === 'markdown' ? 'Markdown' : 'TXT'}`" @click="downloadChapter(chapter.number, format)">{{ format === 'markdown' ? 'Markdown' : 'TXT' }}</button>
+            <summary :id="`manuscript-chapter-${chapter.number}-download`" :aria-label="`下载第${chapter.number}章定稿`" :aria-disabled="busy" @click="busy && $event.preventDefault()">下载</summary>
+            <button v-for="format in formats" :id="`manuscript-chapter-${chapter.number}-download-${format}`" :key="format" type="button" :disabled="busy" :aria-label="`下载第 ${chapter.number} 章定稿 ${format === 'markdown' ? 'Markdown' : 'TXT'}`" @click="downloadChapter(chapter.number, format)">{{ format === 'markdown' ? 'Markdown' : 'TXT' }}</button>
           </details>
         </li>
       </ol>

@@ -27,7 +27,7 @@ export default defineComponent({
 </script>
 
 <template>
-  <main class="archived-projects-page">
+  <section class="archived-projects-page">
     <header class="archived-projects-heading">
       <div>
         <p>ARCHIVED WORKS</p>
@@ -81,7 +81,7 @@ export default defineComponent({
         </div>
       </template>
     </section>
-  </main>
+  </section>
 </template>
 
 <style src="../components/projects/projectLibrary.css"></style>

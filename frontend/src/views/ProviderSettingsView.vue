@@ -3,7 +3,7 @@ import ProviderSettings from '../components/settings/ProviderSettings.vue'
 </script>
 
 <template>
-  <main class="provider-route">
+  <section class="provider-route">
     <header class="route-heading">
       <p>LOCAL MODEL SETTINGS</p>
       <h1>Provider 与模型</h1>
@@ -16,7 +16,7 @@ import ProviderSettings from '../components/settings/ProviderSettings.vue'
     <section class="settings-sheet">
       <provider-settings />
     </section>
-  </main>
+  </section>
 </template>
 
 <style scoped>

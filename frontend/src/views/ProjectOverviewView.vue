@@ -105,12 +105,12 @@ watch(
 </script>
 
 <template>
-  <main v-if="routeProject.state.value === 'loading'" class="overview-page" aria-busy="true">
+  <section v-if="routeProject.state.value === 'loading'" class="overview-page" aria-busy="true">
     <section class="overview-sheet">
       <n-skeleton text width="28%" />
       <n-skeleton text :repeat="3" />
     </section>
-  </main>
+  </section>
 
   <archived-project-status-view
     v-else-if="routeProject.state.value === 'archived'"
@@ -124,7 +124,7 @@ watch(
     description="请返回项目库确认项目状态。系统不会打开其他项目作为替代。"
   />
 
-  <main v-else-if="routeProject.state.value === 'error'" class="overview-page">
+  <section v-else-if="routeProject.state.value === 'error'" class="overview-page">
     <n-result
       status="error"
       title="项目暂时无法加载"
@@ -134,9 +134,9 @@ watch(
         <n-button type="primary" @click="retryRouteProject">重试</n-button>
       </template>
     </n-result>
-  </main>
+  </section>
 
-  <main
+  <section
     v-else-if="preparation?.lifecycle === 'archived'"
     class="overview-page"
     aria-live="polite"
@@ -150,9 +150,9 @@ watch(
         <n-button type="primary" @click="retryRouteProject">重新同步</n-button>
       </template>
     </n-result>
-  </main>
+  </section>
 
-  <main v-else-if="routeProject.state.value === 'active'" class="overview-page">
+  <section v-else-if="routeProject.state.value === 'active'" class="overview-page">
     <section class="overview-sheet" aria-labelledby="project-overview-title">
       <p class="eyebrow">PROJECT OVERVIEW</p>
       <h1 id="project-overview-title">{{ routeProject.project.value.title }}</h1>
@@ -224,7 +224,7 @@ watch(
         />
       </template>
     </section>
-  </main>
+  </section>
 </template>
 
 <style scoped>

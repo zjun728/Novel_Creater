@@ -32,7 +32,7 @@ onBeforeRouteLeave(() => {
 </script>
 
 <template>
-  <main
+  <section
     v-if="routeProject.state.value === 'loading'"
     class="model-settings-page"
     aria-busy="true"
@@ -41,7 +41,7 @@ onBeforeRouteLeave(() => {
       <n-skeleton text width="32%" />
       <n-skeleton text :repeat="4" />
     </section>
-  </main>
+  </section>
 
   <not-found-view
     v-else-if="routeProject.state.value === 'missing'"
@@ -49,7 +49,7 @@ onBeforeRouteLeave(() => {
     description="请返回项目库确认项目状态。"
   />
 
-  <main
+  <section
     v-else-if="routeProject.state.value === 'error'"
     class="model-settings-page"
   >
@@ -62,9 +62,9 @@ onBeforeRouteLeave(() => {
         <n-button type="primary" @click="routeProject.reload">重试</n-button>
       </template>
     </n-result>
-  </main>
+  </section>
 
-  <main v-else class="model-settings-page">
+  <section v-else class="model-settings-page">
     <section class="model-settings-sheet">
       <p class="eyebrow">PROJECT SETTINGS · MODEL SNAPSHOT</p>
       <h1>{{ routeProject.project.value?.title || '项目模型绑定' }}</h1>
@@ -78,7 +78,7 @@ onBeforeRouteLeave(() => {
         @dirty-change="dirty = $event"
       />
     </section>
-  </main>
+  </section>
 </template>
 
 <style scoped>

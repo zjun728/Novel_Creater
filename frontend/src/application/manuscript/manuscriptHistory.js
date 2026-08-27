@@ -34,7 +34,6 @@ export function createManuscriptHistory({
   let pendingPopState = null
   let currentRoute = router?.currentRoute?.value || null
   let renderAction = null
-  let lastRenderedKey = ''
   let removeBefore = () => {}
   let removeAfter = () => {}
   let attachedScroller = null
@@ -101,29 +100,37 @@ export function createManuscriptHistory({
   }
 
   async function afterNavigation(to, from) {
+    const priorRenderAction = renderAction
     const popRecord = pendingPopState
     const isPop = pendingPopState !== null
     pendingPopState = null
     currentRoute = to
     historyPosition = windowRef?.history?.state?.position
-    lastRenderedKey = ''
     if (!isManuscriptRoute(to)) {
       renderAction = null
       return
     }
 
-    renderAction = {
-      routeKey: routeKey(to),
-      type: isPop
-        ? 'restore'
-        : (!isManuscriptRoute(from) || routeIdentity(to) !== routeIdentity(from) ? 'reset' : 'preserve'),
-      record: popRecord,
-    }
+    const carriesPendingRestore = !isPop
+      && priorRenderAction?.type === 'restore'
+      && routeIdentity(to) === routeIdentity(from)
+    renderAction = carriesPendingRestore
+      ? {
+          routeKey: routeKey(to),
+          type: 'restore',
+          record: { ...priorRenderAction.record, routeKey: routeKey(to) },
+        }
+      : {
+          routeKey: routeKey(to),
+          type: isPop
+            ? 'restore'
+            : (!isManuscriptRoute(from) || routeIdentity(to) !== routeIdentity(from) ? 'reset' : 'preserve'),
+          record: popRecord,
+        }
 
   }
 
   async function viewRendered(route = currentRoute) {
-    lastRenderedKey = routeKey(route)
     if (!mounted || !isManuscriptRoute(route)) return false
     const action = renderAction
     await schedule(() => {})
@@ -169,7 +176,6 @@ export function createManuscriptHistory({
         type: canRestore ? 'restore' : 'reset',
         record: existing,
       }
-      if (lastRenderedKey === routeKey(currentRoute)) await viewRendered(currentRoute)
     }
   }
 
@@ -186,7 +192,6 @@ export function createManuscriptHistory({
     removeAfter = () => {}
     attachedScroller = null
     renderAction = null
-    lastRenderedKey = ''
   }
 
   return { mount, dispose, recordCurrent, viewRendered }

@@ -10,13 +10,13 @@ const routeProject = useRouteProject()
 </script>
 
 <template>
-  <main v-if="routeProject.state.value === 'loading'" class="contract-page" aria-busy="true">
+  <section v-if="routeProject.state.value === 'loading'" class="contract-page" aria-busy="true">
     <section class="contract-page__loading">
       <n-skeleton text width="24%" />
       <n-skeleton text :repeat="4" />
       <n-skeleton height="320px" />
     </section>
-  </main>
+  </section>
 
   <not-found-view
     v-else-if="routeProject.state.value === 'missing'"
@@ -24,7 +24,7 @@ const routeProject = useRouteProject()
     description="请返回项目库确认项目状态。系统不会打开其他项目作为替代。"
   />
 
-  <main v-else-if="routeProject.state.value === 'error'" class="contract-page">
+  <section v-else-if="routeProject.state.value === 'error'" class="contract-page">
     <n-result
       status="error"
       title="创作契约暂时无法加载"
@@ -34,9 +34,9 @@ const routeProject = useRouteProject()
         <n-button type="primary" @click="routeProject.reload">重新加载</n-button>
       </template>
     </n-result>
-  </main>
+  </section>
 
-  <main
+  <section
     v-else-if="routeProject.state.value === 'archived'"
     class="contract-page contract-page--archived"
   >
@@ -52,14 +52,14 @@ const routeProject = useRouteProject()
       :project="routeProject.project.value"
       :read-only="true"
     />
-  </main>
+  </section>
 
-  <main v-else-if="routeProject.state.value === 'active'" class="contract-page">
+  <section v-else-if="routeProject.state.value === 'active'" class="contract-page">
     <creation-contract-wizard
       :project-id="String(routeProject.project.value.id)"
       :project="routeProject.project.value"
     />
-  </main>
+  </section>
 </template>
 
 <style scoped>

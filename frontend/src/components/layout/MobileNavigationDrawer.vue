@@ -88,6 +88,7 @@ const controller = createMobileNavigationController({
   schedule: nextTick,
   onRequestClose: () => emit('close'),
 })
+let activationGeneration = 0
 
 function close() {
   emit('close')
@@ -101,21 +102,27 @@ function navigate() {
 watch(
   () => props.open,
   async open => {
+    const generation = ++activationGeneration
     if (!open) {
       controller.deactivate()
       return
     }
     await nextTick()
+    if (generation !== activationGeneration || !props.open) return
     await controller.activate({
       drawer: drawerRef.value,
       applicationRegion: props.applicationRegion,
       trigger: props.trigger,
     })
+    if (generation !== activationGeneration || !props.open) controller.deactivate()
   },
   { immediate: true },
 )
 
-onBeforeUnmount(() => controller.deactivate())
+onBeforeUnmount(() => {
+  activationGeneration += 1
+  controller.deactivate()
+})
 </script>
 
 <template>

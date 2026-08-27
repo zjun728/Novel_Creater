@@ -67,6 +67,9 @@ defineProps({
 }
 
 .product-topbar__breadcrumbs a {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
   overflow: hidden;
   color: inherit;
   text-decoration: none;

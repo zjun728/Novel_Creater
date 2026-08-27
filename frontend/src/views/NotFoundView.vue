@@ -12,14 +12,14 @@ defineProps({
 </script>
 
 <template>
-  <main class="route-state-page">
+  <section class="route-state-page">
     <section class="state-sheet" aria-labelledby="not-found-title">
       <p class="eyebrow">ROUTE NOT FOUND</p>
       <h1 id="not-found-title">{{ title }}</h1>
       <p>{{ description }}</p>
       <router-link class="primary-link" to="/projects">返回项目库</router-link>
     </section>
-  </main>
+  </section>
 </template>
 
 <style scoped>

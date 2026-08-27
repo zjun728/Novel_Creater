@@ -8,6 +8,7 @@ import { compile } from '@vue/compiler-dom'
 import { compileScript, parse } from '@vue/compiler-sfc'
 import * as VueRuntime from '@vue/runtime-core'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
+import { createManuscriptHistory } from '../../src/application/manuscript/manuscriptHistory.js'
 import vuePlugin from '@vitejs/plugin-vue'
 import { createServer } from 'vite'
 
@@ -103,9 +104,53 @@ test('mounted reader uses response navigation and has no author write controls',
   const item = await mount()
   try {
     assert.ok(find(item.target, n => n.props.href === '/projects/p/manuscript/chapters/1')); assert.ok(find(item.target, n => n.props.href === '/projects/p/manuscript/chapters/5'))
+    for (const id of [
+      'final-reader-directory-back',
+      'final-reader-view-text',
+      'final-reader-view-outline',
+      'final-reader-previous',
+      'final-reader-directory',
+      'final-reader-next',
+      'final-reader-current-action',
+    ]) assert.ok(find(item.target, n => n.props.id === id), `missing stable focus id ${id}`)
     const rendered = textOf(item.target)
     assert.ok(rendered.indexOf('下一篇') < rendered.indexOf('继续创作契约'))
     assert.equal(find(item.target, n => n.type === 'textarea' || n.props.contenteditable), undefined); assert.doesNotMatch(rendered, /编辑本章|提交|生成/)
+  } finally { item.dispose() }
+})
+
+test('history records a stable focus id from the actually rendered reader controls', async () => {
+  const item = await mount()
+  try {
+    const outline = find(item.target, node => node.props.id === 'final-reader-view-outline')
+    assert.ok(outline)
+    outline.id = outline.props.id
+    const history = {
+      state: { position: 0 },
+      replaceState(state) { this.state = structuredClone(state) },
+    }
+    const scroller = {
+      scrollTop: 318,
+      contains: target => target === outline,
+      querySelector: () => find(item.target, node => node.type === 'h1'),
+      addEventListener() {}, removeEventListener() {}, scrollTo() {},
+    }
+    const documentRef = { activeElement: outline, getElementById: id => id === outline.props.id ? outline : null }
+    const manager = createManuscriptHistory({
+      router: item.router,
+      windowRef: { history, addEventListener() {}, removeEventListener() {} },
+      documentRef,
+      getScroller: () => scroller,
+      schedule: callback => Promise.resolve().then(callback),
+    })
+    await manager.mount()
+    manager.recordCurrent()
+    assert.deepEqual(history.state.manuscriptView, {
+      routeKey: '/projects/p/manuscript/chapters/2',
+      scrollTop: 318,
+      focusId: 'final-reader-view-outline',
+    })
+    manager.dispose()
   } finally { item.dispose() }
 })
 

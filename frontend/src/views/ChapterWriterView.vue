@@ -456,7 +456,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="writer-shell">
+  <section class="writer-shell">
     <nav class="writer-navigation" aria-label="章节工作台导航">
       <router-link
         :to="storyBlocksPath"
@@ -660,7 +660,7 @@ onBeforeUnmount(() => {
         </aside>
       </section>
     </template>
-  </main>
+  </section>
 </template>
 
 <style scoped>
