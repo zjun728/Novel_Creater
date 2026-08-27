@@ -120,7 +120,7 @@ def manuscript_corruption() -> ManuscriptCorrupt:
 def decode_json_object(value: object) -> dict[str, object]:
     try:
         decoded = json.loads(value) if isinstance(value, str) else value
-    except (TypeError, ValueError, json.JSONDecodeError):
+    except (ValueError, json.JSONDecodeError):
         raise manuscript_corruption() from None
     if not isinstance(decoded, dict):
         raise manuscript_corruption() from None
@@ -326,18 +326,32 @@ def _directory_from_rows(rows: list[Mapping[str, object]]) -> ManuscriptDirector
             for authority, row in zip(authorities, chapter_rows, strict=True)
         ]
         chapter_pairs.sort(key=lambda pair: pair[0].chapter_number)
-        volume_groups: dict[str, tuple[Volume, list[ManuscriptChapterMeta]]] = {}
+        volume_groups: dict[
+            str,
+            tuple[tuple[str, int, str], list[ManuscriptChapterMeta]],
+        ] = {}
         for authority, chapter in chapter_pairs:
-            stored = volume_groups.setdefault(authority.volume.id, (authority.volume, []))
-            if stored[0] != authority.volume:
+            volume_identity = (
+                authority.volume.id,
+                authority.volume.order,
+                authority.volume.title,
+            )
+            stored = volume_groups.setdefault(
+                authority.volume.id,
+                (volume_identity, []),
+            )
+            if stored[0] != volume_identity:
                 raise manuscript_corruption() from None
             stored[1].append(chapter)
         volumes = canonicalize_manuscript_volumes(tuple(
             ManuscriptVolume(
-                id=volume.id, order=volume.order, title=volume.title,
+                id=volume_id,
+                order=volume_order,
+                title=volume_title,
                 chapters=tuple(chapters),
             )
-            for volume, chapters in volume_groups.values()
+            for (volume_id, volume_order, volume_title), chapters
+            in volume_groups.values()
         ))
         return ManuscriptDirectoryRecord(
             project_id=project_id, title=title, lifecycle=lifecycle,

@@ -92,7 +92,13 @@ def _ref(value):
     return {"id": value.id, "revision": value.revision, "contentHash": value.content_hash}
 
 
-def _outline(planning, *, chapter_number=1, planning_id="planning-id"):
+def _outline(
+    planning,
+    *,
+    chapter_number=1,
+    planning_id="planning-id",
+    planning_revision=1,
+):
     block = planning.story_blocks[0]
     policy = OutlineCapacityPolicy.model_validate({
         "targetMin": 1, "targetMax": 2, "softCeiling": 3,
@@ -100,7 +106,8 @@ def _outline(planning, *, chapter_number=1, planning_id="planning-id"):
     return normalize_chapter_outline(
         DraftChapterOutline.model_validate({
             "schemaVersion": "chapter-outline-v1", "chapterNumber": chapter_number,
-            "planningRevisionId": planning_id, "planningRevision": 1,
+            "planningRevisionId": planning_id,
+            "planningRevision": planning_revision,
             "planningHash": planning.content_hash,
             "volumeRef": _ref(planning.volumes[0]), "storyBlockRef": _ref(block),
             "stageRefs": [_ref(block.stages[0])],
@@ -111,7 +118,7 @@ def _outline(planning, *, chapter_number=1, planning_id="planning-id"):
             "capacityPolicy": policy.model_dump(by_alias=True, mode="json"),
         }),
         planning=planning, authoritative_chapter_number=chapter_number,
-        planning_revision_id=planning_id, planning_revision=1,
+        planning_revision_id=planning_id, planning_revision=planning_revision,
         capacity_policy=policy, canon_revision=0, projection_revision=0,
         projection_hash="c" * 64,
     )
@@ -129,16 +136,20 @@ def _row(
     volume_title="第一卷",
     node_suffix="",
     planning_id="planning-id",
+    planning_revision=1,
+    planning=None,
 ):
-    planning = _planning(
-        volume_order=volume_order,
-        volume_title=volume_title,
-        node_suffix=node_suffix,
-    )
+    if planning is None:
+        planning = _planning(
+            volume_order=volume_order,
+            volume_title=volume_title,
+            node_suffix=node_suffix,
+        )
     outline = _outline(
         planning,
         chapter_number=chapter_number,
         planning_id=planning_id,
+        planning_revision=planning_revision,
     )
     session_id = f"session-{chapter_number}"
     outline_id = f"outline-{chapter_number}"
@@ -147,12 +158,14 @@ def _row(
         "final_session_id": session_id, "final_chapter_num": chapter_number,
         "final_title": title, "final_content": prose,
         "final_content_hash": sha256(prose.encode()).hexdigest(),
-        "final_planning_id": planning_id, "final_planning_revision": 1,
+        "final_planning_id": planning_id,
+        "final_planning_revision": planning_revision,
         "final_planning_hash": planning.content_hash, "final_outline_id": outline_id,
         "final_outline_revision": 1, "final_outline_hash": outline.content_hash,
         "session_id": session_id, "session_project_id": "project-id",
         "session_chapter_num": chapter_number, "session_planning_id": planning_id,
-        "session_planning_revision": 1, "session_planning_hash": planning.content_hash,
+        "session_planning_revision": planning_revision,
+        "session_planning_hash": planning.content_hash,
         "session_story_block_id": planning.story_blocks[0].id,
         "session_story_block_revision": planning.story_blocks[0].revision,
         "session_story_block_hash": planning.story_blocks[0].content_hash,
@@ -160,7 +173,8 @@ def _row(
         "session_outline_hash": outline.content_hash,
         "outline_id": outline_id, "outline_project_id": "project-id",
         "outline_chapter_num": chapter_number, "outline_revision": 1,
-        "outline_planning_id": planning_id, "outline_planning_revision": 1,
+        "outline_planning_id": planning_id,
+        "outline_planning_revision": planning_revision,
         "outline_planning_hash": planning.content_hash,
         "outline_content_hash": outline.content_hash,
         "outline_content_json": (
@@ -168,7 +182,8 @@ def _row(
             if outline_json else outline.model_dump(by_alias=True, mode="json")
         ),
         "planning_id": planning_id, "planning_project_id": "project-id",
-        "planning_revision": 1, "planning_content_hash": planning.content_hash,
+        "planning_revision": planning_revision,
+        "planning_content_hash": planning.content_hash,
         "planning_content_json": (
             json.dumps(planning.model_dump(by_alias=True, mode="json"))
             if planning_json else planning.model_dump(by_alias=True, mode="json")
@@ -575,3 +590,55 @@ async def test_malformed_persistent_authority_remains_a_safe_download_corruption
             CapturingSession([row]), "project-id",
         )
     assert caught.value.__cause__ is None
+
+
+@pytest.mark.asyncio
+async def test_download_metadata_constructor_programmer_type_error_is_not_reclassified(
+    monkeypatch,
+):
+    from backend.repositories import novel_downloads as novel_download_repository
+
+    row = _row()
+
+    def programmer_bug(*_args, **_kwargs):
+        raise TypeError("programmer bug")
+
+    monkeypatch.setattr(
+        novel_download_repository,
+        "NovelDownloadMetadata",
+        programmer_bug,
+    )
+    with pytest.raises(TypeError, match="programmer bug"):
+        await novel_download_repository.NovelDownloadRepository().load_finalized_metadata(
+            CapturingSession([row]), "project-id",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "constructor_name",
+    ("FinalizedChapterSnapshot", "NovelDownloadSnapshot"),
+)
+async def test_download_snapshot_constructor_programmer_type_error_is_not_reclassified(
+    monkeypatch,
+    constructor_name,
+):
+    from backend.repositories import novel_downloads as novel_download_repository
+
+    row = _row()
+    prose_row = _prose_row(row)
+
+    def programmer_bug(*_args, **_kwargs):
+        raise TypeError("programmer bug")
+
+    monkeypatch.setattr(
+        novel_download_repository,
+        constructor_name,
+        programmer_bug,
+    )
+    with pytest.raises(TypeError, match="programmer bug"):
+        await novel_download_repository.NovelDownloadRepository().load_finalized_snapshot(
+            CapturingSession(responses=([row], [prose_row])),
+            "project-id",
+            _selector(),
+        )

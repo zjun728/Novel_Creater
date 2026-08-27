@@ -134,7 +134,7 @@ def _metadata_from_rows(
             book_title=book_title,
             chapters=tuple(authority.chapter for authority in authorities),
         )
-    except (ValidationError, ValueError, TypeError) as error:
+    except (ValidationError, ValueError) as error:
         raise _corruption() from None
     return metadata, authorities
 
@@ -199,7 +199,7 @@ def _snapshot_from_prose_rows(
             for authority in selected
         )
         return NovelDownloadSnapshot(book_title=metadata.book_title, chapters=chapters)
-    except (ValidationError, ValueError, TypeError) as error:
+    except (ValidationError, ValueError) as error:
         raise _corruption() from None
 
 

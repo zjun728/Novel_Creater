@@ -6,7 +6,9 @@ import aiomysql
 import pytest
 
 from backend.domain.manuscripts import ManuscriptCorrupt, ManuscriptUnavailable
-from backend.tests.unit.test_novel_download_repository import _row
+from backend.domain.planning import DraftPlanningAggregate, normalize_planning_aggregate
+from backend.tests.unit.test_novel_download_repository import _planning, _row
+from backend.tests.unit.test_planning_domain import _as_draft_payload
 
 
 class CapturingSession:
@@ -95,6 +97,54 @@ async def test_directory_allows_global_chapter_gaps_and_sums_database_scalar_cou
     assert result is not None
     assert [chapter.number for volume in result.volumes for chapter in volume.chapters] == [1, 3]
     assert result.total_scalar_count == 18
+
+
+@pytest.mark.asyncio
+async def test_directory_allows_non_display_volume_fields_to_evolve_between_pinned_plans():
+    from backend.repositories.manuscripts import ManuscriptRepository
+
+    first_planning = _planning()
+    evolved_payload = _as_draft_payload(first_planning)
+    evolved_payload["volumes"][0]["coreChange"] = "合法演进后的卷内变化"
+    second_planning = normalize_planning_aggregate(
+        DraftPlanningAggregate.model_validate(evolved_payload),
+        previous_confirmed=first_planning,
+        previous_draft=None,
+        id_factory=lambda: (_ for _ in ()).throw(AssertionError("no new node expected")),
+    )
+    assert second_planning.volumes[0].revision == 2
+    assert second_planning.volumes[0].content_hash != first_planning.volumes[0].content_hash
+    assert (
+        second_planning.volumes[0].id,
+        second_planning.volumes[0].order,
+        second_planning.volumes[0].title,
+    ) == (
+        first_planning.volumes[0].id,
+        first_planning.volumes[0].order,
+        first_planning.volumes[0].title,
+    )
+
+    chapter_1 = _directory_row(
+        final_id="final-1",
+        chapter_number=1,
+        planning=first_planning,
+        planning_id="planning-v1",
+        planning_revision=1,
+    )
+    chapter_2 = _directory_row(
+        final_id="final-2",
+        chapter_number=2,
+        planning=second_planning,
+        planning_id="planning-v2",
+        planning_revision=2,
+    )
+    directory = await ManuscriptRepository().load_directory(
+        CapturingSession(([chapter_1, chapter_2],)), "project-id",
+    )
+
+    assert directory is not None
+    assert len(directory.volumes) == 1
+    assert [chapter.number for chapter in directory.volumes[0].chapters] == [1, 2]
 
 
 @pytest.mark.asyncio
@@ -267,3 +317,19 @@ async def test_malformed_persistent_authority_remains_a_safe_manuscript_corrupti
     rendered = "".join(traceback.format_exception(caught.value))
     assert caught.value.__cause__ is None
     assert "PERSISTED_JSON_SENTINEL" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_json_decoder_programmer_type_error_is_not_reclassified(monkeypatch):
+    from backend.repositories import manuscripts as manuscript_repository
+
+    row = _directory_row()
+
+    def programmer_bug(_value):
+        raise TypeError("programmer bug")
+
+    monkeypatch.setattr(manuscript_repository.json, "loads", programmer_bug)
+    with pytest.raises(TypeError, match="programmer bug"):
+        await manuscript_repository.ManuscriptRepository().load_directory(
+            CapturingSession(([row],)), "project-id",
+        )
