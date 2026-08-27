@@ -125,6 +125,7 @@ test('active and archived project contexts have different module surfaces', asyn
       ['创作契约', '/projects/project%201/contract', false],
       ['创作圣经', '/projects/project%201/bible', false],
       ['故事规划', '/projects/project%201/planning/volumes', false],
+      ['作品稿件', '/projects/project%201/manuscript', false],
       ['模型绑定', '/projects/project%201/settings/models', false],
     ],
   )
@@ -177,6 +178,7 @@ test('active and archived project contexts have different module surfaces', asyn
       ['创作契约', '/projects/archived-1/contract', false],
       ['创作圣经', '/projects/archived-1/bible', false],
       ['故事规划', '/projects/archived-1/planning/volumes', false],
+      ['作品稿件', '/projects/archived-1/manuscript', false],
     ],
   )
   assert.equal(archived.routeTitle, '已归档项目')

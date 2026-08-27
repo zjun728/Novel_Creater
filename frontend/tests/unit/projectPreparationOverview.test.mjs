@@ -402,7 +402,7 @@ test('outline and writer actions navigate only to the exact server targetPath', 
   }
 })
 
-test('overview keeps its one primary next action before both secondary download panels', async () => {
+test('overview keeps its one primary next action before the manuscript entry and backup', async () => {
   const html = await renderOverview(preparation({
     nextAction: 'continue_contract',
     targetPath: '/projects/project%20%2F%20%E4%B8%80/contract',
@@ -410,10 +410,10 @@ test('overview keeps its one primary next action before both secondary download 
     bible: 'missing',
   }))
   assert.equal((html.match(/class="overview-next-action"/g) || []).length, 1)
-  assert.match(html, /novel-download-panel/)
+  assert.match(html, /overview-manuscript-link/)
   assert.match(html, /project-backup-panel/)
-  assert.ok(html.indexOf('overview-next-action') < html.indexOf('novel-download-panel'))
-  assert.ok(html.indexOf('novel-download-panel') < html.indexOf('project-backup-panel'))
+  assert.ok(html.indexOf('overview-next-action') < html.indexOf('overview-manuscript-link'))
+  assert.ok(html.indexOf('overview-manuscript-link') < html.indexOf('project-backup-panel'))
 })
 
 test('active and archived views pass exact backup authority after the delivery desk', async () => {
@@ -430,7 +430,9 @@ test('active and archived views pass exact backup authority after the delivery d
     'utf8',
   )
   assert.match(overviewSource, /import ProjectBackupPanel/)
-  assert.match(overviewSource, /<novel-download-panel[\s\S]*<project-backup-panel/)
+  assert.match(overviewSource, /overview-manuscript-link[\s\S]*<project-backup-panel/)
+  assert.match(overviewSource, /api\.manuscripts\.index/)
+  assert.doesNotMatch(overviewSource, /NovelDownloadPanel|novel-download-panel/)
   assert.match(overviewSource, /<project-backup-panel[\s\S]*:project-id="routeProject\.project\.value\.id"/)
   assert.match(overviewSource, /:title="routeProject\.project\.value\.title"/)
   assert.match(overviewSource, /:lifecycle-revision="routeProject\.project\.value\.lifecycleRevision"/)
@@ -446,7 +448,7 @@ test('active and archived views pass exact backup authority after the delivery d
   assert.doesNotMatch(writerSource, /ProjectBackupPanel|project-backup-panel/)
 })
 
-test('overview depends only on projectStore authority and has no browser joins', async () => {
+test('overview uses the project store for preparation and the manuscript read model for its summary', async () => {
   const source = await readFile(
     new URL('../../src/views/ProjectOverviewView.vue', import.meta.url),
     'utf8',
@@ -454,6 +456,7 @@ test('overview depends only on projectStore authority and has no browser joins',
 
   assert.match(source, /useProjectStore/)
   assert.match(source, /currentPreparation/)
+  assert.match(source, /api\.manuscripts\.index/)
   assert.doesNotMatch(
     source,
     /seedStore|creationContractStore|bibleStore|loadSelected|loadContract|loadBible|current_chapter|currentChapter|\+\s*1/,

@@ -41,6 +41,8 @@ test('canonical path builders encode project IDs and require positive chapter nu
     applicationSettingsPath,
     experienceLibraryPath,
     chapterWriterPath,
+    finalChapterPath,
+    manuscriptPath,
     projectContractPath,
     projectBiblePath,
     projectModelSettingsPath,
@@ -70,8 +72,11 @@ test('canonical path builders encode project IDs and require positive chapter nu
   )
   assert.equal(applicationSettingsPath(), '/settings/application')
   assert.equal(chapterWriterPath('p 1', 3), '/projects/p%201/write/chapters/3')
+  assert.equal(manuscriptPath('project 1'), '/projects/project%201/manuscript')
+  assert.equal(finalChapterPath('project 1', 3), '/projects/project%201/manuscript/chapters/3')
   for (const invalid of [0, -1, 1.5, '3.5', '', null]) {
     assert.throws(() => chapterWriterPath('project-1', invalid), /positive chapter number/i)
+    assert.throws(() => finalChapterPath('project-1', invalid), /positive chapter number/i)
   }
 })
 
@@ -97,6 +102,8 @@ test('formal route registry names only canonical destinations and catches retire
     'ProjectContract',
   )
   assert.equal(router.resolve('/projects/project-1/bible').name, 'ProjectBible')
+  assert.equal(router.resolve('/projects/project-1/manuscript').name, 'ProjectManuscript')
+  assert.equal(router.resolve('/projects/project-1/manuscript/chapters/3').name, 'FinalChapterReader')
   assert.equal(
     router.resolve('/projects/project-1/planning/volumes').name,
     'ProjectPlanningVolumes',

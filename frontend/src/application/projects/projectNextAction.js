@@ -6,7 +6,7 @@ const COPY = Object.freeze({
   establish_planning: ['STORY PLANNING', '开始故事规划', '从空白工作稿建立分卷与情节线，再逐步形成可执行的完整规划。'],
   continue_planning: ['STORY PLANNING', '继续故事规划', '建立分卷、情节线与滚动故事块，让后续章节有方向也有调整余地。'],
   recover_chapter_outline_operation: ['CHAPTER OUTLINE', '核对第 {n} 章小纲生成结果', '读取本章小纲生成操作的权威结果，不会重复发起生成。'],
-  prepare_chapter_outline: ['CHAPTER OUTLINE', '准备第 {n} 章小纲', '基于当前规划、Canon 与 Projection 建立本章的写作边界。'],
+  prepare_chapter_outline: ['CHAPTER OUTLINE', '准备第 {n} 章小纲', '基于当前规划建立本章的写作边界。'],
   continue_chapter_outline: ['CHAPTER OUTLINE', '继续第 {n} 章小纲', '完善当前章节小纲并确认，随后即可进入正文工作台。'],
   start_chapter_session: ['WRITER', '进入第 {n} 章写作', '使用已确认的小纲与固定权威基线创建章节工作会话。'],
   continue_writing: ['WRITER', '继续创作第 {n} 章', '回到当前权威章节，继续已有写作。'],

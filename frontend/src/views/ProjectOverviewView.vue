@@ -1,11 +1,12 @@
 <script setup>
-import { computed, onMounted, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { NButton, NResult, NSkeleton } from 'naive-ui'
 
 import ArchivedProjectStatusView from './ArchivedProjectStatusView.vue'
 import NotFoundView from './NotFoundView.vue'
-import NovelDownloadPanel from '../components/projects/NovelDownloadPanel.vue'
 import ProjectBackupPanel from '../components/projects/ProjectBackupPanel.vue'
+import { manuscriptPath } from '../router/projectRoutes.js'
+import { api } from '../api/db/client.js'
 import { useRouteProject } from '../composables/useRouteProject.js'
 import { useProjectStore } from '../stores/projectStore.js'
 import { mapProjectNextAction } from '../application/projects/projectNextAction.js'
@@ -14,6 +15,8 @@ const routeProject = useRouteProject()
 const projectStore = useProjectStore()
 let mounted = false
 let reconciledArchivedProjectId = ''
+const manuscriptSummary = ref(null)
+const manuscriptSummaryError = ref(false)
 
 const preparation = computed(() => (
   projectStore.preparationProjectId
@@ -75,6 +78,18 @@ async function refreshPreparation() {
   }
 }
 
+async function refreshManuscriptSummary() {
+  const projectId = routeProject.project.value?.id
+  if (!projectId) return
+  manuscriptSummaryError.value = false
+  try {
+    const directory = await api.manuscripts.index(String(projectId))
+    if (String(routeProject.project.value?.id || '') === String(projectId)) manuscriptSummary.value = directory.summary
+  } catch {
+    if (String(routeProject.project.value?.id || '') === String(projectId)) manuscriptSummaryError.value = true
+  }
+}
+
 async function retryRouteProject() {
   const projectId = String(
     projectStore.preparationProjectId
@@ -93,12 +108,14 @@ async function flushCurrentDraft() {
 onMounted(() => {
   mounted = true
   void refreshPreparation()
+  void refreshManuscriptSummary()
 })
 
 watch(
   () => [routeProject.state.value, routeProject.project.value?.id],
   () => {
     if (mounted) void refreshPreparation()
+    if (mounted) void refreshManuscriptSummary()
   },
 )
 </script>
@@ -212,11 +229,9 @@ watch(
           规划模型不可用；手工契约与圣经仍可继续，只有 AI 生成被停用。
         </p>
 
-        <novel-download-panel
-          :key="String(routeProject.project.value.id)"
-          :project-id="routeProject.project.value.id"
-          :title="routeProject.project.value.title"
-        />
+        <router-link class="overview-manuscript-link" :to="manuscriptPath(routeProject.project.value.id)">
+          作品稿件 · {{ manuscriptSummaryError ? '暂时无法读取已定稿数量' : `已定稿 ${manuscriptSummary?.finalChapterCount ?? '…'} 章` }}
+        </router-link>
         <project-backup-panel
           :key="`backup:${routeProject.project.value.id}`"
           :project-id="routeProject.project.value.id"
@@ -322,6 +337,7 @@ h1 {
   color: var(--nc-muted);
   line-height: 1.7;
 }
+.overview-manuscript-link { display:inline-flex; margin-top:24px; color:var(--nc-vermilion); font-weight:700; text-underline-offset:4px; }
 .model-note {
   margin-top: 14px;
 }

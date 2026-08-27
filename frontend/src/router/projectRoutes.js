@@ -9,6 +9,10 @@ const StyleLibraryView = () => import('../views/assets/StyleLibraryView.vue')
 const ExperienceLibraryView = () => import('../views/assets/ExperienceLibraryView.vue')
 const CorpusLibraryView = () => import('../views/assets/CorpusLibraryView.vue')
 const ChapterWriterView = () => import('../views/ChapterWriterView.vue')
+const ManuscriptIndexView = () => import('../views/ManuscriptIndexView.vue')
+// Task 7 owns the reader surface.  Keep its URL available now without importing a
+// future file, so this phase remains buildable.
+const FinalChapterReaderView = () => import('../views/ManuscriptIndexView.vue')
 const ProviderSettingsView = () => import('../views/ProviderSettingsView.vue')
 const ApplicationSettingsView = () => import('../views/ApplicationSettingsView.vue')
 const ProjectModelSettingsView = () => import('../views/ProjectModelSettingsView.vue')
@@ -88,6 +92,14 @@ export function chapterWriterPath(projectId, chapterNumber) {
   return `/projects/${segment(projectId)}/write/chapters/${positiveChapterNumber(chapterNumber)}`
 }
 
+export function manuscriptPath(projectId) {
+  return `/projects/${segment(projectId)}/manuscript`
+}
+
+export function finalChapterPath(projectId, chapterNumber) {
+  return `${manuscriptPath(projectId)}/chapters/${positiveChapterNumber(chapterNumber)}`
+}
+
 export const projectRoutes = Object.freeze([
   {
     path: '/',
@@ -165,6 +177,18 @@ export const projectRoutes = Object.freeze([
     name: 'ProjectPlanningStoryBlocks',
     component: ProjectPlanningView,
     props: { activeTab: 'story-blocks' },
+  },
+  {
+    path: '/projects/:projectId/manuscript',
+    name: 'ProjectManuscript',
+    component: ManuscriptIndexView,
+    props: true,
+  },
+  {
+    path: '/projects/:projectId/manuscript/chapters/:chapterNumber([1-9]\\d*)',
+    name: 'FinalChapterReader',
+    component: FinalChapterReaderView,
+    props: true,
   },
   {
     path: '/projects/:projectId/write/chapters/:chapterNumber([1-9]\\d*)',
