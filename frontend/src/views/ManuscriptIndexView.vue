@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, watch } from 'vue'
 import { NButton, NResult, NSkeleton } from 'naive-ui'
 import { useRoute } from 'vue-router'
 
@@ -34,34 +34,30 @@ const directory = computed(() => manuscript.content.value.data)
 const preparation = computed(() => manuscript.preparation.value)
 const isArchived = computed(() => directory.value?.lifecycle === 'archived' || preparation.value.status === 'archived')
 const hasChapters = computed(() => (directory.value?.summary?.finalChapterCount || 0) > 0)
-const chapterOptions = computed(() => new Set((download.options.value?.chapters || []).map(item => item.number)))
-const selectedFormat = ref('')
+const downloadableChapters = computed(() => (download.options.value?.chapters || []).map(item => item.number))
 let routeGeneration = 0
 
-async function loadDirectory(force = false) { await manuscript.loadDirectory(projectId.value, { force }) }
-async function loadPreparation() { await manuscript.loadPreparation(projectId.value) }
-async function loadOptions() { if (hasChapters.value) { try { await download.loadOptions(projectId.value) } catch {} } }
-async function downloadBook() { if (selectedFormat.value) { try { await download.download(projectId.value, { scope: 'book', format: selectedFormat.value }) } catch {} } }
-async function downloadVolume(volumeId) { if (selectedFormat.value) { try { await download.download(projectId.value, { scope: 'volume', volumeId, format: selectedFormat.value }) } catch {} } }
-async function downloadChapter(chapterNumber) {
-  const format = selectedFormat.value
-  if (format && chapterOptions.value.has(chapterNumber)) { try { await download.download(projectId.value, { scope: 'chapter', chapterNumber, format }) } catch {} }
-}
-function retryContent() { void loadDirectory(true) }
-
-watch(projectId, async () => {
-  const id = projectId.value
+async function loadProjectFlow(id, { force = false, resetDownloads = false } = {}) {
   const generation = ++routeGeneration
-  download.selectProject(id)
-  selectedFormat.value = ''
-  await manuscript.loadDirectory(id)
+  if (resetDownloads) download.selectProject(id)
+  await manuscript.loadDirectory(id, { force })
   if (generation !== routeGeneration || id !== projectId.value) return
   if (directory.value?.lifecycle === 'active') {
     await manuscript.loadPreparation(id)
     if (generation !== routeGeneration || id !== projectId.value) return
   }
-  if (hasChapters.value) await loadOptions()
-}, { immediate: true })
+  if (hasChapters.value) {
+    try { await download.loadOptions(id) } catch {}
+  }
+}
+function loadPreparation() { return manuscript.loadPreparation(projectId.value) }
+function loadOptions() { return download.loadOptions(projectId.value).catch(() => false) }
+async function downloadBook(format) { try { await download.download(projectId.value, { scope: 'book', format }) } catch {} }
+async function downloadVolume(volumeId, format) { try { await download.download(projectId.value, { scope: 'volume', volumeId, format }) } catch {} }
+async function downloadChapter(chapterNumber, format) { try { await download.download(projectId.value, { scope: 'chapter', chapterNumber, format }) } catch {} }
+function retryContent() { return loadProjectFlow(projectId.value, { force: true }) }
+
+watch(projectId, id => { void loadProjectFlow(id, { resetDownloads: true }) }, { immediate: true })
 onBeforeUnmount(() => { manuscript.dispose(); download.dispose() })
 </script>
 
@@ -75,7 +71,7 @@ onBeforeUnmount(() => { manuscript.dispose(); download.dispose() })
       <n-skeleton text width="22%" /><n-skeleton text :repeat="5" />
     </section>
     <section v-else-if="manuscript.content.value.status === 'missing-project'" class="manuscript-index__sheet"><p>项目不存在或已被删除。</p><router-link to="/projects">返回项目库</router-link></section>
-    <n-result v-else-if="['integrity-failure', 'invalid-address'].includes(manuscript.content.value.status)" status="error" title="作品稿件暂时不可用" description="为保护已定稿内容，当前无法展示目录。">
+      <n-result v-else-if="['integrity-failure', 'invalid-address'].includes(manuscript.content.value.status)" status="error" title="作品稿件暂时不可用" description="为保护已定稿内容，当前无法展示目录。">
       <template #footer><n-button type="primary" @click="retryContent">重新读取</n-button></template>
     </n-result>
     <section v-else-if="manuscript.content.value.status === 'unavailable' && !directory" class="manuscript-index__sheet"><p>目录暂时无法读取。</p><button type="button" @click="retryContent">重新读取</button></section>
@@ -91,16 +87,18 @@ onBeforeUnmount(() => { manuscript.dispose(); download.dispose() })
       <template v-else-if="preparation.status === 'ready'"><p>当前创作位置：{{ preparation.nextAction.label }}</p><router-link class="manuscript-index__action" :to="preparation.nextAction.targetPath">{{ preparation.nextAction.label }}</router-link></template>
       <div v-else-if="preparation.status === 'unavailable'" class="manuscript-index__local-error">创作状态暂时无法读取。<button type="button" @click="loadPreparation">重新读取</button></div>
 
-      <div v-if="hasChapters && download.options.value?.available" class="manuscript-index__downloads" :aria-busy="download.busy.value">
-        <label for="manuscript-download-format">下载格式</label>
-        <select id="manuscript-download-format" v-model="selectedFormat"><option value="">选择下载格式</option><option v-for="format in download.options.value.formats" :key="format" :value="format">{{ format === 'markdown' ? 'Markdown' : 'TXT' }}</option></select>
-        <template v-if="selectedFormat"><button type="button" :disabled="download.busy.value" @click="downloadBook">下载整本定稿</button><button v-for="volume in download.options.value.volumes" :key="volume.id" type="button" :disabled="download.busy.value" @click="downloadVolume(volume.id)">下载第{{ volume.order }}卷</button></template>
+      <details v-if="hasChapters && download.options.value?.available && download.options.value.formats.length" class="manuscript-download-menu" :aria-busy="download.busy.value">
+        <summary :aria-disabled="download.busy.value">下载定稿</summary>
+        <div class="manuscript-download-menu__actions">
+          <button v-for="format in download.options.value.formats" :key="`book:${format}`" type="button" :disabled="download.busy.value" :aria-label="`下载整本定稿 ${format === 'markdown' ? 'Markdown' : 'TXT'}`" @click="downloadBook(format)">下载整本定稿 {{ format === 'markdown' ? 'Markdown' : 'TXT' }}</button>
+          <template v-for="volume in download.options.value.volumes" :key="volume.id"><button v-for="format in download.options.value.formats" :key="`${volume.id}:${format}`" type="button" :disabled="download.busy.value" :aria-label="`下载第${volume.order}卷 ${format === 'markdown' ? 'Markdown' : 'TXT'}`" @click="downloadVolume(volume.id, format)">下载第{{ volume.order }}卷 {{ format === 'markdown' ? 'Markdown' : 'TXT' }}</button></template>
+        </div>
         <p v-if="download.busy.value" role="status">正在准备下载</p>
-      </div>
+      </details>
       <p v-if="download.error.value" class="manuscript-index__local-error" role="alert">{{ download.error.value }}<button v-if="!download.options.value" type="button" @click="loadOptions">重新读取</button></p>
 
       <p v-if="manuscript.content.value.status === 'empty'" class="manuscript-index__empty">还没有已定稿章节</p>
-      <manuscript-chapter-list v-else :project-id="projectId" :volumes="directory.volumes" :download-chapter="downloadChapter" :busy="download.busy.value" :can-download-chapter="number => Boolean(selectedFormat) && chapterOptions.has(number)" />
+      <manuscript-chapter-list v-else :project-id="projectId" :volumes="directory.volumes" :formats="download.options.value?.available ? download.options.value.formats : []" :downloadable-chapters="downloadableChapters" :download-chapter="downloadChapter" :busy="download.busy.value" />
       <div v-if="manuscript.content.value.status === 'unavailable'" class="manuscript-index__local-error" role="alert">目录暂时无法更新，已保留可安全显示的内容。<button type="button" @click="retryContent">重新读取</button></div>
     </section>
   </section>

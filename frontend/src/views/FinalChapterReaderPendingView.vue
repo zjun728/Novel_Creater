@@ -1,16 +1,19 @@
 <script setup>
 import { computed } from 'vue'
-import { manuscriptPath } from '../router/projectRoutes.js'
+import { manuscriptPath, parsePositiveChapterNumber } from '../router/projectRoutes.js'
 
 const props = defineProps({ projectId: { type: String, required: true }, chapterNumber: { type: String, required: true } })
 const directoryPath = computed(() => manuscriptPath(props.projectId))
+const parsedChapterNumber = computed(() => {
+  try { return parsePositiveChapterNumber(props.chapterNumber) } catch { return null }
+})
 </script>
 
 <template>
   <section class="reader-pending" aria-labelledby="reader-pending-title">
     <p class="reader-pending__eyebrow">FINAL MANUSCRIPT</p>
-    <h1 id="reader-pending-title">第 {{ chapterNumber }} 章定稿</h1>
-    <p>阅读内容正在接入。</p>
+    <h1 id="reader-pending-title">{{ parsedChapterNumber ? `第 ${parsedChapterNumber} 章定稿` : '章节地址无效' }}</h1>
+    <p>{{ parsedChapterNumber ? '阅读内容正在接入。' : '无法识别该章节地址。' }}</p>
     <router-link :to="directoryPath">返回作品目录</router-link>
   </section>
 </template>

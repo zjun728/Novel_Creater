@@ -25,7 +25,7 @@ test('chapter list renders semantic reader links and sibling controls without vo
   try {
     const Component = (await vite.ssrLoadModule('/src/components/manuscript/ManuscriptChapterList.vue')).default
     const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/projects/:projectId/manuscript/chapters/:chapterNumber', component: { template: '<div />' } }] })
-    const app = createSSRApp(Component, { projectId: 'p', volumes: [{ id: '123e4567-e89b-12d3-a456-426614174000', order: 1, title: '卷一', chapters: [{ number: 2, title: '章名', scalarCount: 8, finalizedAt: '2026-01-01T00:00:00Z' }] }], canDownloadChapter: () => true, downloadChapter: () => {} })
+    const app = createSSRApp(Component, { projectId: 'p', volumes: [{ id: '123e4567-e89b-12d3-a456-426614174000', order: 1, title: '卷一', chapters: [{ number: 2, title: '章名', scalarCount: 8, finalizedAt: '2026-01-01T00:00:00Z' }] }], formats: ['txt'], downloadableChapters: [2], downloadChapter: () => {} })
     app.use(router)
     const html = await renderToString(app)
     assert.match(html, /href="\/projects\/p\/manuscript\/chapters\/2"/)
