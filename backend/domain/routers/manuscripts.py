@@ -20,6 +20,7 @@ from backend.services.manuscripts import (
 
 router = APIRouter(tags=["manuscripts"])
 _service = ManuscriptReadingService(transaction)
+_MAX_CHAPTER_NUMBER = 2_147_483_647
 
 
 def get_manuscript_reading_service() -> ManuscriptReadingService:
@@ -62,12 +63,17 @@ def _require_no_query_parameters(request: Request) -> None:
 
 
 def _chapter_number(value: str) -> int:
-    if not value.isascii() or not value.isdecimal():
+    if (
+        not value
+        or not value.isascii()
+        or not value.isdecimal()
+        or value[0] == "0"
+        or len(value) > len(str(_MAX_CHAPTER_NUMBER))
+        or len(value) == len(str(_MAX_CHAPTER_NUMBER))
+        and value > str(_MAX_CHAPTER_NUMBER)
+    ):
         raise ManuscriptRequestInvalid()
-    number = int(value)
-    if number < 1:
-        raise ManuscriptRequestInvalid()
-    return number
+    return int(value)
 
 
 def _raise_public(error: Exception) -> None:

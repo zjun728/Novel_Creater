@@ -161,7 +161,9 @@ class ManuscriptReadingService:
                 lookup = await self._repository.load_chapter(session, project_id, chapter_number)
         except ManuscriptUnavailable:
             raise ManuscriptTemporarilyUnavailable() from None
-        except (ManuscriptCorrupt, FinalChapterMissing):
+        except FinalChapterMissing:
+            raise FinalChapterNotFound() from None
+        except ManuscriptCorrupt:
             raise ManuscriptIntegrityFailure() from None
         if not lookup.project_exists:
             raise ManuscriptProjectNotFound()

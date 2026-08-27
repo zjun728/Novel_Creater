@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from backend.domain.manuscripts import (
+    FinalChapterMissing,
     FinalChapterRecord,
     FinalOutlineProjection,
     ManuscriptChapterLookup,
@@ -13,6 +14,7 @@ from backend.domain.manuscripts import (
     ManuscriptDirectoryRecord,
     ManuscriptUnavailable,
     ManuscriptVolume,
+    canonicalize_manuscript_volumes,
 )
 from backend.services.manuscripts import (
     FinalChapterNotFound,
@@ -148,3 +150,51 @@ async def test_service_maps_missing_corrupt_unavailable_and_invalid_timestamp_to
         with pytest.raises(expected):
             await getattr(service, operation)("project-1", 9) if operation == "chapter" else await service.directory("project-1")
         assert transactions.entered == transactions.exited == 1
+
+
+@pytest.mark.asyncio
+async def test_service_maps_repository_missing_final_chapter_to_not_found_not_integrity():
+    service, transactions, _ = _service(Repository(lookup=FinalChapterMissing()))
+
+    with pytest.raises(FinalChapterNotFound):
+        await service.chapter("project-1", 9)
+
+    assert transactions.entered == transactions.exited == 1
+
+
+@pytest.mark.asyncio
+async def test_service_preserves_task3_canonicalized_order_gaps_and_total_without_reconstruction():
+    unordered = (
+        ManuscriptVolume(id="later", order=2, title="Later", chapters=(
+            ManuscriptChapterMeta(number=9, title="Nine", scalar_count=4, finalized_at_ms=1_000),
+        )),
+        ManuscriptVolume(id="first", order=1, title="First", chapters=(
+            ManuscriptChapterMeta(number=2, title="Two", scalar_count=3, finalized_at_ms=0),
+        )),
+    )
+    canonical = canonicalize_manuscript_volumes(unordered)
+    record = ManuscriptDirectoryRecord(
+        project_id="project-1", title="Book", lifecycle="archived",
+        volumes=canonical, total_scalar_count=7,
+    )
+    service, _, _ = _service(Repository(directory=record))
+
+    result = await service.directory("project-1")
+
+    assert [volume.id for volume in result.volumes] == ["first", "later"]
+    assert [chapter.number for volume in result.volumes for chapter in volume.chapters] == [2, 9]
+    assert result.summary.total_scalar_count == 7
+
+
+def test_public_dtos_forbid_unknown_fields_and_content_exists_only_on_target_chapter():
+    from pydantic import ValidationError
+    from backend.services.manuscripts import (
+        ManuscriptChapterResponse,
+        ManuscriptDirectoryResponse,
+        ManuscriptSummaryResponse,
+    )
+
+    with pytest.raises(ValidationError):
+        ManuscriptDirectoryResponse(projectId="project-1", title="Book", lifecycle="active", summary=ManuscriptSummaryResponse(finalChapterCount=0, totalScalarCount=0), volumes=(), internal="hash")
+    with pytest.raises(ValidationError):
+        ManuscriptChapterResponse(number=1, title="One", content="prose", scalarCount=1, finalizedAt="1970-01-01T00:00:00Z", revision="raw")
