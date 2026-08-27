@@ -327,6 +327,114 @@ test('stable same-chapter retry publishes exactly one history render notificatio
   } finally { retry.resolve(response(chapter('p', 2))); item.dispose() }
 })
 
+test('reader waits for download options before publishing a settled history render', async () => {
+  const pendingOptions = deferred()
+  const calls = []
+  const item = await mount('/projects/p/manuscript/chapters/2', {
+    historyOverride: { viewRendered: (currentRoute, options) => { calls.push({ path: currentRoute.fullPath, settled: options?.settled === true }); return options?.settled === true } },
+    fetchOverride(value) {
+      if (value.endsWith('/projects/p/novel-download/options')) return pendingOptions.promise
+      return undefined
+    },
+  })
+  try {
+    assert.deepEqual(calls, [{ path: '/projects/p/manuscript/chapters/2', settled: false }])
+    assert.equal(find(item.target, node => node.props.id === 'final-reader-download'), undefined)
+
+    pendingOptions.resolve(response(options(2)))
+    await flush(); await flush()
+
+    assert.ok(find(item.target, node => node.props.id === 'final-reader-download'))
+    assert.deepEqual(calls, [
+      { path: '/projects/p/manuscript/chapters/2', settled: false },
+      { path: '/projects/p/manuscript/chapters/2', settled: true },
+    ])
+  } finally { pendingOptions.resolve(response(options(2))); item.dispose() }
+})
+
+test('reader settles history only after both preparation and download options finish', async () => {
+  const pendingPreparation = deferred()
+  const pendingOptions = deferred()
+  const calls = []
+  const item = await mount('/projects/p/manuscript/chapters/2', {
+    historyOverride: { viewRendered: (currentRoute, options) => { calls.push(options?.settled === true); return options?.settled === true } },
+    fetchOverride(value) {
+      if (value.endsWith('/projects/p/preparation')) return pendingPreparation.promise
+      if (value.endsWith('/projects/p/novel-download/options')) return pendingOptions.promise
+      return undefined
+    },
+  })
+  try {
+    assert.deepEqual(calls, [false])
+    pendingOptions.resolve(response(options(2)))
+    await flush(); await flush()
+    assert.deepEqual(calls, [false], 'options alone must not declare the page final-ready')
+
+    pendingPreparation.resolve(response(preparation()))
+    await flush(); await flush()
+    assert.deepEqual(calls, [false, true])
+  } finally {
+    pendingPreparation.resolve(response(preparation()))
+    pendingOptions.resolve(response(options(2)))
+    item.dispose()
+  }
+})
+
+test('same-chapter retry displays content before options settle and then publishes final-ready', async () => {
+  const retry = deferred()
+  const pendingOptions = deferred()
+  let chapterAttempts = 0
+  const calls = []
+  const item = await mount('/projects/p/manuscript/chapters/2', {
+    historyOverride: { viewRendered: (_currentRoute, options) => { calls.push(options?.settled === true); return options?.settled === true } },
+    fetchOverride(value) {
+      if (value.endsWith('/projects/p/manuscript/chapters/2')) {
+        chapterAttempts += 1
+        return chapterAttempts === 1 ? errorResponse('ManuscriptTemporarilyUnavailable', 503) : retry.promise
+      }
+      if (value.endsWith('/projects/p/novel-download/options')) return pendingOptions.promise
+      return undefined
+    },
+  })
+  try {
+    await flush()
+    calls.length = 0
+    const retryButton = find(item.target, node => node.props.id === 'final-reader-fallback-retry')
+    const retryRequest = retryButton.props.onClick()
+    retry.resolve(response(chapter('p', 2)))
+    await retryRequest
+    await flush()
+
+    assert.match(textOf(item.target), /第 2 章 · 2章名.*第一段/)
+    assert.deepEqual(calls, [false])
+    pendingOptions.resolve(response(options(2)))
+    await flush(); await flush()
+    assert.deepEqual(calls, [false, true])
+  } finally {
+    retry.resolve(response(chapter('p', 2)))
+    pendingOptions.resolve(response(options(2)))
+    item.dispose()
+  }
+})
+
+test('reader publishes a settled history render after permanent option failure', async () => {
+  const calls = []
+  const item = await mount('/projects/p/manuscript/chapters/2', {
+    historyOverride: { viewRendered: (currentRoute, options) => { calls.push({ path: currentRoute.fullPath, settled: options?.settled === true }); return options?.settled === true } },
+    fetchOverride(value) {
+      if (value.endsWith('/projects/p/novel-download/options')) return Promise.reject(new Error('private options'))
+      return undefined
+    },
+  })
+  try {
+    assert.match(textOf(item.target), /下载选项加载失败/)
+    assert.deepEqual(calls, [
+      { path: '/projects/p/manuscript/chapters/2', settled: false },
+      { path: '/projects/p/manuscript/chapters/2', settled: true },
+    ])
+  } finally { item.dispose() }
+})
+
 test('missing chapter keeps an independently loaded action while archived prose has no creation action', async () => {
   const missing = await mount('/projects/p/manuscript/chapters/9', { fetchOverride(value) {
     if (value.endsWith('/manuscript/chapters/9')) return errorResponse('FinalChapterNotFound', 404)

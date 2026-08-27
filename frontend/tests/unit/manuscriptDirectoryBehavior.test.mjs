@@ -139,9 +139,9 @@ test('mounted active directory loads preparation, options, and exact download se
 
 test('stable mounted directory publishes exactly one history render notification', async () => {
   const calls = []
-  const item = await mount({ historyOverride: { viewRendered: currentRoute => { calls.push(currentRoute.fullPath) } } })
+  const item = await mount({ historyOverride: { viewRendered: (currentRoute, options) => { calls.push([currentRoute.fullPath, options]) } } })
   try {
-    assert.deepEqual(calls, ['/projects/p/manuscript'])
+    assert.deepEqual(calls, [['/projects/p/manuscript', { settled: true }]])
   } finally { item.dispose() }
 })
 

@@ -59,7 +59,7 @@ async function loadProjectFlow(id, { force = false, resetDownloads = false } = {
   if (!isActiveRoute(generation, id)) return
   await nextTick()
   if (!isActiveRoute(generation, id)) return
-  await manuscriptHistory?.viewRendered(route)
+  await manuscriptHistory?.viewRendered(route, { settled: true })
 }
 function loadPreparation() { return manuscript.loadPreparation(projectId.value) }
 function loadOptions() { return download.loadOptions(projectId.value).catch(() => false) }

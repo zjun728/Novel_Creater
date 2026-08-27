@@ -32,6 +32,9 @@ const preparation = computed(() => manuscript.preparation.value)
 const isArchived = computed(() => data.value?.lifecycle === 'archived' || preparation.value.status === 'archived')
 const chapterCanDownload = computed(() => data.value && download.options.value?.available && download.options.value.chapters.some(item => item.number === data.value.chapter.number))
 let routeGeneration = 0
+let contentCycle = 0
+let settledCycle = 0
+let activePreparationRequest = Promise.resolve()
 let closed = false
 
 function isActiveRoute(generation, id, number) {
@@ -51,46 +54,85 @@ function routeSnapshot() {
   }
 }
 
+function contentReadyForRoute(id, number) {
+  if (['idle', 'loading'].includes(status.value)) return false
+  return data.value ? chapterDataMatchesRoute(data.value, id, number) : true
+}
+
+function isActiveContentCycle(cycle, generation, id, number) {
+  return cycle === contentCycle
+    && isActiveRoute(generation, id, number)
+    && contentReadyForRoute(id, number)
+}
+
+async function settleHistoryWhenAuxiliaryReady(cycle, generation, id, number, requests, notifySettled) {
+  await Promise.allSettled(requests)
+  if (!isActiveContentCycle(cycle, generation, id, number)) return false
+  await nextTick()
+  if (!isActiveContentCycle(cycle, generation, id, number)) return false
+  settledCycle = cycle
+  if (notifySettled) await manuscriptHistory?.viewRendered(routeSnapshot(), { settled: true })
+  return isActiveContentCycle(cycle, generation, id, number)
+}
+
+function beginHistorySettlement(cycle, generation, id, number, preparationRequest, notifySettled) {
+  const optionsRequest = data.value && !download.options.value
+    ? loadOptions()
+    : Promise.resolve(download.options.value)
+  void settleHistoryWhenAuxiliaryReady(cycle, generation, id, number, [preparationRequest, optionsRequest], notifySettled)
+}
+
 function setView(next) { return router.push({ query: { ...route.query, view: next } }) }
 async function retryContent() {
   const id = projectId.value
   const number = chapterNumber.value
   const generation = routeGeneration
+  const cycle = ++contentCycle
+  settledCycle = 0
   if (!number || !isActiveRoute(generation, id, number)) return false
   await manuscript.loadContent(id, number, { force: true })
-  if (!isActiveRoute(generation, id, number) || !chapterDataMatchesRoute(data.value, id, number)) return false
+  if (!isActiveContentCycle(cycle, generation, id, number)) return false
   await nextTick()
-  if (!isActiveRoute(generation, id, number) || !chapterDataMatchesRoute(data.value, id, number)) return false
-  await manuscriptHistory?.viewRendered(routeSnapshot())
-  if (!isActiveRoute(generation, id, number) || !chapterDataMatchesRoute(data.value, id, number)) return false
-  if (data.value && !download.options.value) await loadOptions()
+  if (!isActiveContentCycle(cycle, generation, id, number)) return false
+  const historyApplied = await manuscriptHistory?.viewRendered(routeSnapshot())
+  if (!isActiveContentCycle(cycle, generation, id, number)) return false
+  beginHistorySettlement(cycle, generation, id, number, activePreparationRequest, historyApplied === false)
   return true
 }
 function retryPreparation() { return manuscript.loadPreparation(projectId.value) }
 function loadOptions() { return download.loadOptions(projectId.value).catch(() => false) }
 async function loadReader(id, number) {
   const generation = ++routeGeneration
+  const cycle = ++contentCycle
+  settledCycle = 0
   download.selectProject(id)
   download.resetTransient()
   if (!number) {
     await manuscript.loadContent(id, 0)
+    if (!isActiveContentCycle(cycle, generation, id, number)) return
+    await nextTick()
+    if (!isActiveContentCycle(cycle, generation, id, number)) return
+    const historyApplied = await manuscriptHistory?.viewRendered(routeSnapshot())
+    if (!isActiveContentCycle(cycle, generation, id, number)) return
+    beginHistorySettlement(cycle, generation, id, number, Promise.resolve(), historyApplied === false)
     return
   }
   const contentRequest = manuscript.loadContent(id, number)
-  void manuscript.loadPreparation(id)
+  const preparationRequest = manuscript.loadPreparation(id)
+  activePreparationRequest = preparationRequest
   await contentRequest
-  if (!isActiveRoute(generation, id, number)) return
+  if (!isActiveContentCycle(cycle, generation, id, number)) return
   await nextTick()
-  if (!isActiveRoute(generation, id, number)) return
+  if (!isActiveContentCycle(cycle, generation, id, number)) return
   const scroller = titleRef.value?.closest?.('.product-app-shell__content')
-  await manuscriptHistory?.viewRendered(routeSnapshot())
-  if (!isActiveRoute(generation, id, number)) return
+  const historyApplied = await manuscriptHistory?.viewRendered(routeSnapshot())
+  if (!isActiveContentCycle(cycle, generation, id, number)) return
   if (!manuscriptHistory) {
     titleRef.value?.focus?.({ preventScroll: true })
     if (scroller?.scrollTo) scroller.scrollTo({ top: 0, behavior: 'auto' })
     else if (scroller) scroller.scrollTop = 0
   }
-  if (data.value && !download.options.value) void loadOptions()
+  beginHistorySettlement(cycle, generation, id, number, preparationRequest, historyApplied === false)
 }
 async function downloadChapter(format) { if (data.value) { try { await download.download(projectId.value, { scope: 'chapter', chapterNumber: data.value.chapter.number, format }) } catch {} } }
 watch([projectId, chapterNumber], ([id, number]) => { void loadReader(id, number) }, { immediate: true })
@@ -105,11 +147,12 @@ watch(() => route.query.view, async value => {
   if (!chapterDataMatchesRoute(data.value, id, number)) return
   await nextTick()
   if (!isActiveRoute(generation, id, number) || !chapterDataMatchesRoute(data.value, id, number)) return
-  await manuscriptHistory?.viewRendered(routeSnapshot())
+  await manuscriptHistory?.viewRendered(routeSnapshot(), { settled: settledCycle === contentCycle })
 }, { immediate: true })
 onBeforeUnmount(() => {
   closed = true
   routeGeneration += 1
+  contentCycle += 1
   manuscript.dispose()
   download.dispose()
 })

@@ -81,24 +81,35 @@ export function createManuscriptHistory({
     pendingPopState = event?.state?.[STATE_KEY] || {}
   }
 
-  function restoreRecorded(record, route, scroller) {
+  function restoreRecorded(record, route, scroller, { settled = false } = {}) {
     if (!record || String(record.routeKey || '') !== routeKey(route)) return false
     const top = safeScrollTop(record.scrollTop)
-    const target = record.focusId ? documentRef?.getElementById?.(String(record.focusId)) : null
-    if (record.focusId && (!target || target.isConnected === false || !scroller?.contains?.(target))) {
-      return false
-    }
+    const requestedTarget = record.focusId ? documentRef?.getElementById?.(String(record.focusId)) : null
+    const targetIsUsable = target => Boolean(
+      target
+      && target.isConnected !== false
+      && (!scroller?.contains || scroller.contains(target)),
+    )
+    const exactTarget = targetIsUsable(requestedTarget) ? requestedTarget : null
+    if (record.focusId && !exactTarget && !settled) return false
+    const fallbackTarget = settled && !exactTarget
+      ? scroller?.querySelector?.('h1')
+      : null
+    const focusTarget = exactTarget || (targetIsUsable(fallbackTarget) ? fallbackTarget : null)
     const scrollHeight = Number(scroller?.scrollHeight)
     const clientHeight = Number(scroller?.clientHeight)
+    const hasScrollRange = Number.isFinite(scrollHeight) && Number.isFinite(clientHeight)
+    const maxScroll = hasScrollRange ? Math.max(0, scrollHeight - clientHeight) : top
     if (
       top > 0
-      && Number.isFinite(scrollHeight)
-      && Number.isFinite(clientHeight)
-      && Math.max(0, scrollHeight - clientHeight) < top
+      && hasScrollRange
+      && maxScroll < top
+      && !settled
     ) return false
-    if (scroller?.scrollTo) scroller.scrollTo({ top, behavior: 'auto' })
-    else if (scroller) scroller.scrollTop = top
-    target?.focus?.({ preventScroll: true })
+    const restoredTop = settled ? Math.min(top, maxScroll) : top
+    if (scroller?.scrollTo) scroller.scrollTo({ top: restoredTop, behavior: 'auto' })
+    else if (scroller) scroller.scrollTop = restoredTop
+    focusTarget?.focus?.({ preventScroll: true })
     return true
   }
 
@@ -108,9 +119,9 @@ export function createManuscriptHistory({
     scroller?.querySelector?.('h1')?.focus?.({ preventScroll: true })
   }
 
-  function applyRenderAction(action, route, scroller) {
+  function applyRenderAction(action, route, scroller, options) {
     if (!action || action.routeKey !== routeKey(route)) return false
-    if (action.type === 'restore' && !restoreRecorded(action.record, route, scroller)) return false
+    if (action.type === 'restore' && !restoreRecorded(action.record, route, scroller, options)) return false
     else if (action.type === 'reset') resetForNewManuscriptRoute(scroller)
     replaceManuscriptState(stateFor(route, scroller))
     return true
@@ -149,13 +160,14 @@ export function createManuscriptHistory({
 
   }
 
-  async function viewRendered(route = currentRoute) {
+  async function viewRendered(route = currentRoute, { settled = false } = {}) {
     if (!mounted || !isManuscriptRoute(route)) return false
     const renderedRouteKey = routeKey(route)
     const action = renderAction
+    const renderedIsSettled = settled === true
     await schedule(() => {})
     if (action !== renderAction || renderedRouteKey !== routeKey(currentRoute)) return false
-    const applied = applyRenderAction(action, { fullPath: renderedRouteKey }, getScroller?.())
+    const applied = applyRenderAction(action, { fullPath: renderedRouteKey }, getScroller?.(), { settled: renderedIsSettled })
     if (applied) renderAction = null
     return applied
   }
