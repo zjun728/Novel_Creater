@@ -55,6 +55,16 @@ function route(name, path, params = {}) {
   return { name, path, params }
 }
 
+function declaredTargetSize(source, selector) {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const block = source.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`))?.[1] || ''
+  const declarations = Object.fromEntries(
+    [...block.matchAll(/([\w-]+)\s*:\s*([^;]+);?/g)].map(([, property, value]) => [property, value.trim()]),
+  )
+  const pixels = property => Number.parseFloat(declarations[property] || '0')
+  return { inline: pixels('min-width'), block: pixels('min-height') }
+}
+
 test('shell model exposes the three frozen global destinations', async () => {
   const {
     createProductShellModel,
@@ -299,11 +309,13 @@ test('shell CSS preserves touch size, wrapping, mobile layout, and reduced motio
   assert.match(sidebar, /\.product-sidebar__asset-subnav a[\s\S]*?min-height:\s*44px/)
   const topbar = await readFile(new URL('../../src/components/layout/TopBar.vue', import.meta.url), 'utf8')
   assert.match(topbar, /\.product-topbar__breadcrumbs a[\s\S]*?min-height:\s*44px/)
+  assert.deepEqual(declaredTargetSize(topbar, '.product-topbar__breadcrumbs a'), { inline: 44, block: 44 })
   for (const source of [style, sidebar, index, reader]) {
     assert.match(source, /@media \(prefers-reduced-motion: reduce\)/)
   }
   assert.match(index, /\.manuscript-index :is\(a,button,summary\)[^}]*min-height:\s*44px/)
   assert.match(reader, /\.final-reader :is\(a, button, summary\)[^}]*min-height:\s*44px/)
+  assert.deepEqual(declaredTargetSize(reader, '.final-reader nav a'), { inline: 44, block: 44 })
 })
 
 test('route views never introduce a second main landmark inside the application shell', async () => {

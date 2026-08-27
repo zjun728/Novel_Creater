@@ -126,7 +126,7 @@ onBeforeUnmount(() => { manuscript.dispose(); download.dispose() })
 .final-reader__local-error { color: var(--nc-muted); line-height: 1.75; }
 .final-reader__local-error button { min-height: 44px; margin-left: 8px; border: 0; color: var(--nc-vermilion); background: transparent; text-decoration: underline; cursor: pointer; }
 .final-reader nav { display: flex; justify-content: space-between; gap: 12px; margin-top: 32px; }
-.final-reader nav a { display: inline-flex; min-height: 44px; align-items: center; }
+.final-reader nav a { display: inline-flex; min-width: 44px; min-height: 44px; align-items: center; justify-content: center; }
 .final-reader :is(a, button, summary):focus-visible { outline: 2px solid var(--nc-vermilion); outline-offset: 3px; }
 .final-reader :is(a, button, summary) { min-height: 44px; }
 .final-reader__notice :is(a, button), .final-reader__local-error button { display: inline-flex; align-items: center; }

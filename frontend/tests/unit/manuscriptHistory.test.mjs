@@ -242,6 +242,69 @@ test('initial restore waits for the async manuscript content and focus target to
   manager.dispose()
 })
 
+test('mount publishes its initial action before an in-flight content render notification', async () => {
+  const { createManuscriptHistory } = await loadHistoryModule()
+  const initial = route('/projects/p/manuscript/chapters/3', { chapterNumber: 3 })
+  const env = fakeEnvironment(initial)
+  const scheduled = []
+  const title = { id: 'final-reader-title', isConnected: true, focus() {} }
+  const scroller = {
+    scrollTop: 300,
+    contains: value => value === title,
+    querySelector: () => title,
+    addEventListener() {}, removeEventListener() {},
+    scrollTo({ top }) { this.scrollTop = top },
+  }
+  const manager = createManuscriptHistory({
+    router: env.router,
+    windowRef: env.windowRef,
+    documentRef: { activeElement: null, getElementById: () => null },
+    getScroller: () => scroller,
+    schedule: callback => new Promise(resolve => {
+      scheduled.push(() => { callback(); resolve() })
+    }),
+  })
+
+  const mounting = manager.mount()
+  assert.equal(scheduled.length, 1)
+  const rendering = manager.viewRendered(initial)
+  assert.equal(scheduled.length, 2)
+  scheduled.shift()()
+  await Promise.resolve()
+  scheduled.shift()()
+
+  assert.equal(await rendering, true, 'the content notification must observe the initial action')
+  await mounting
+  assert.equal(scroller.scrollTop, 0)
+  manager.dispose()
+})
+
+test('mount restores a history entry normalized by the child view before the manager mounts', async () => {
+  const { createManuscriptHistory } = await loadHistoryModule()
+  const bad = route('/projects/p/manuscript/chapters/3', { chapterNumber: 3, view: 'bad' })
+  const normalized = route('/projects/p/manuscript/chapters/3', { chapterNumber: 3, view: 'text' })
+  const env = fakeEnvironment(bad)
+  env.entries[0].state.manuscriptView = {
+    routeKey: bad.fullPath,
+    scrollTop: 510,
+    focusId: 'final-reader-view-text',
+  }
+  env.router.currentRoute.value = normalized
+  env.entries[0].route = normalized
+  const target = { id: 'final-reader-view-text', isConnected: true, focus() { documentRef.activeElement = this } }
+  const documentRef = { activeElement: null, getElementById: id => id === target.id ? target : null }
+  const scroller = { scrollTop: 0, contains: value => value === target, querySelector: () => target, addEventListener() {}, removeEventListener() {}, scrollTo({ top }) { this.scrollTop = top } }
+  const manager = createManuscriptHistory({ router: env.router, windowRef: env.windowRef, documentRef, getScroller: () => scroller, schedule: callback => Promise.resolve().then(callback) })
+
+  await manager.mount()
+  await manager.viewRendered(normalized)
+
+  assert.equal(scroller.scrollTop, 510)
+  assert.equal(documentRef.activeElement, target)
+  assert.equal(env.entries[0].state.manuscriptView.routeKey, normalized.fullPath)
+  manager.dispose()
+})
+
 test('invalid view normalization preserves a pending pop restoration', async () => {
   const { createManuscriptHistory } = await loadHistoryModule()
   const bad = route('/projects/p/manuscript/chapters/3', { chapterNumber: 3, view: 'bad' })
@@ -260,5 +323,35 @@ test('invalid view normalization preserves a pending pop restoration', async () 
   assert.equal(scroller.scrollTop, 480)
   assert.equal(documentRef.activeElement, target)
   assert.equal(env.entries[0].state.manuscriptView.routeKey, normalized.fullPath)
+  manager.dispose()
+})
+
+test('invalid view normalization preserves a pending new-chapter reset', async () => {
+  const { createManuscriptHistory } = await loadHistoryModule()
+  const first = route('/projects/p/manuscript/chapters/2', { chapterNumber: 2 })
+  const bad = route('/projects/p/manuscript/chapters/3', { chapterNumber: 3, view: 'bad' })
+  const normalized = route('/projects/p/manuscript/chapters/3', { chapterNumber: 3, view: 'text' })
+  const env = fakeEnvironment(first)
+  const firstTitle = { id: 'chapter-2-title', isConnected: true, focus() {} }
+  const nextTitle = { id: 'chapter-3-title', isConnected: true, focus() { documentRef.activeElement = this } }
+  const documentRef = { activeElement: null, getElementById: () => null }
+  const scroller = {
+    scrollTop: 0,
+    contains: () => true,
+    querySelector: () => env.router.currentRoute.value.params.chapterNumber === '3' ? nextTitle : firstTitle,
+    addEventListener() {}, removeEventListener() {},
+    scrollTo({ top }) { this.scrollTop = top },
+  }
+  const manager = createManuscriptHistory({ router: env.router, windowRef: env.windowRef, documentRef, getScroller: () => scroller, schedule: callback => Promise.resolve().then(callback) })
+  await manager.mount()
+  await manager.viewRendered(first)
+  scroller.scrollTop = 360
+
+  await env.navigate(bad, 'push')
+  await env.navigate(normalized, 'replace')
+  await manager.viewRendered(normalized)
+
+  assert.equal(scroller.scrollTop, 0)
+  assert.equal(documentRef.activeElement, nextTitle)
   manager.dispose()
 })

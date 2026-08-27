@@ -5,6 +5,10 @@ function routeKey(route) {
   return String(route?.fullPath || route?.path || '')
 }
 
+function routeDocumentKey(value) {
+  return String(value || '').split(/[?#]/u, 1)[0]
+}
+
 function routeIdentity(route) {
   const projectId = String(route?.params?.projectId || '')
   const chapter = route?.params?.chapterNumber == null
@@ -111,14 +115,16 @@ export function createManuscriptHistory({
       return
     }
 
-    const carriesPendingRestore = !isPop
-      && priorRenderAction?.type === 'restore'
+    const carriesPendingAction = !isPop
+      && ['reset', 'restore'].includes(priorRenderAction?.type)
       && routeIdentity(to) === routeIdentity(from)
-    renderAction = carriesPendingRestore
+    renderAction = carriesPendingAction
       ? {
           routeKey: routeKey(to),
-          type: 'restore',
-          record: { ...priorRenderAction.record, routeKey: routeKey(to) },
+          type: priorRenderAction.type,
+          record: priorRenderAction.type === 'restore'
+            ? { ...priorRenderAction.record, routeKey: routeKey(to) }
+            : priorRenderAction.record,
         }
       : {
           routeKey: routeKey(to),
@@ -169,13 +175,15 @@ export function createManuscriptHistory({
     removeAfter = router?.afterEach?.((to, from) => afterNavigation(to, from)) || (() => {})
     if (isManuscriptRoute(currentRoute)) {
       const existing = windowRef?.history?.state?.[STATE_KEY]
-      await schedule(() => {})
-      const canRestore = existing && String(existing.routeKey || '') === routeKey(currentRoute)
+      const currentKey = routeKey(currentRoute)
+      const canRestore = existing
+        && routeDocumentKey(existing.routeKey) === routeDocumentKey(currentKey)
       renderAction = {
-        routeKey: routeKey(currentRoute),
+        routeKey: currentKey,
         type: canRestore ? 'restore' : 'reset',
-        record: existing,
+        record: canRestore ? { ...existing, routeKey: currentKey } : existing,
       }
+      await schedule(() => {})
     }
   }
 
