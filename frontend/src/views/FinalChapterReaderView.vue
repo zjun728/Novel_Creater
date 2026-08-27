@@ -112,7 +112,8 @@ onBeforeUnmount(() => { manuscript.dispose(); download.dispose() })
 .final-reader nav { display: flex; justify-content: space-between; gap: 12px; margin-top: 32px; }
 .final-reader nav a { display: inline-flex; min-height: 44px; align-items: center; }
 .final-reader :is(a, button, summary):focus-visible { outline: 2px solid var(--nc-vermilion); outline-offset: 3px; }
-.final-reader :is(a, nav a) { color: var(--nc-vermilion); font-weight: 700; text-underline-offset: 4px; }
+.final-reader__back, .final-reader nav a, .final-reader__notice a { color: var(--nc-vermilion); font-weight: 700; text-underline-offset: 4px; }
+.final-reader__action:hover { color: var(--nc-paper); background: var(--nc-vermilion); }
 .final-reader :is(button, summary, nav a):hover { border-color: var(--nc-vermilion); }
 @media (max-width: 560px) {
   .final-reader { padding: 12px; }

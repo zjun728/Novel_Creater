@@ -241,6 +241,8 @@ test('reader keeps download and creation state local to verified chapter content
   assert.match(source, /preparation\.status === 'ready'/)
   assert.match(source, /link\.hidden = true[\s\S]*document\.body\.append\(link\)[\s\S]*link\.remove\(\)/)
   assert.match(source, /manuscript\.loadContent\(id, 0\)/)
+  assert.match(source, /\.final-reader__action:hover/)
+  assert.doesNotMatch(source, /:is\(a, nav a\)/)
 })
 
 test('article and outline components keep author content plain and bounded', async () => {
