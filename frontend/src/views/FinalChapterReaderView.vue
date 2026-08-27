@@ -48,13 +48,13 @@ async function loadReader(id, number) {
   void manuscript.loadPreparation(id)
   await contentRequest
   if (id !== projectId.value || number !== chapterNumber.value) return
-  if (data.value && !download.options.value) await loadOptions()
   await nextTick()
   if (id !== projectId.value || number !== chapterNumber.value) return
   titleRef.value?.focus?.({ preventScroll: true })
   const scroller = titleRef.value?.closest?.('.product-app-shell__content')
   if (scroller?.scrollTo) scroller.scrollTo({ top: 0, behavior: 'auto' })
   else if (scroller) scroller.scrollTop = 0
+  if (data.value && !download.options.value) void loadOptions()
 }
 async function downloadChapter(format) { if (data.value) { try { await download.download(projectId.value, { scope: 'chapter', chapterNumber: data.value.chapter.number, format }) } catch {} } }
 watch([projectId, chapterNumber], ([id, number]) => { void loadReader(id, number) }, { immediate: true })
