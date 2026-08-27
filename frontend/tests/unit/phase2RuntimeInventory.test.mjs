@@ -191,6 +191,7 @@ const CANONICAL_ROUTE_VIEWS = [
 const PRESERVED_FUTURE_RUNTIME = [
   'components/project/ContractHeadSummary.vue',
   'components/project/WriterCoreStateCard.vue',
+  'components/projects/NovelDownloadPanel.vue',
 ]
 
 test('planning foundation keeps one store, one workspace and the active story-block editor without outlines', async () => {

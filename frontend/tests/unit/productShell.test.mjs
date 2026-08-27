@@ -567,6 +567,15 @@ test('the real project overview consumes shell hydration without a duplicate rea
   const requests = []
   global.fetch = async url => {
     requests.push(String(url))
+    if (String(url).endsWith('/manuscript')) {
+      return new Response(JSON.stringify({
+        projectId: 'project-1',
+        title: '典镇山河',
+        lifecycle: 'active',
+        summary: { finalChapterCount: 0, totalScalarCount: 0 },
+        volumes: [],
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
     return new Response(JSON.stringify({
       id: 'project-1',
       title: '典镇山河',
@@ -630,7 +639,10 @@ test('the real project overview consumes shell hydration without a duplicate rea
     app.use(router)
     const html = await renderToString(app)
 
-    assert.deepEqual(requests, ['http://127.0.0.1:8000/api/projects/project-1'])
+    assert.deepEqual(requests, [
+      'http://127.0.0.1:8000/api/projects/project-1',
+      'http://127.0.0.1:8000/api/projects/project-1/manuscript',
+    ])
     assert.match(html, /class="product-sidebar__project-title"[^>]*>典镇山河</)
   } finally {
     global.fetch = originalFetch
