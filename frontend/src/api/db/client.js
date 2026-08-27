@@ -2164,7 +2164,9 @@ export const api = {
   },
 
   novelDownloads: {
-    options: (projectId, options = {}) => get(`/projects/${segment(projectId)}/novel-download/options`, { signal: options?.signal }),
+    options: (projectId, options = {}) => request(
+      'GET', `/projects/${segment(projectId)}/novel-download/options`, undefined, DEFAULT_TIMEOUT, options?.signal,
+    ),
     download: (projectId, selector = {}, options = {}) => {
       const query = new URLSearchParams()
       for (const field of ['scope', 'format', 'volumeId', 'chapterNumber']) {

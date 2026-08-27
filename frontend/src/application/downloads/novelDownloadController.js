@@ -106,17 +106,24 @@ export function createNovelDownloadController({
   const busy = computed(() => busyState.value)
   const available = computed(() => options.value?.available === true)
 
+  function normalizeProjectId(projectId) { return typeof projectId === 'string' ? projectId.trim() : String(projectId ?? '').trim() }
+  function selectProject(projectId) {
+    const key = normalizeProjectId(projectId)
+    if (key === optionsProjectId.value) return key
+    loadGeneration += 1
+    optionsAbort?.abort()
+    optionsAbort = null
+    optionsProjectId.value = key
+    options.value = null
+    error.value = ''
+    loadingState.value = false
+    return key
+  }
+
   async function loadOptions(projectId) {
-    const key = typeof projectId === 'string' ? projectId.trim() : String(projectId ?? '').trim()
+    const key = normalizeProjectId(projectId)
     if (disposed || !key) return false
-    if (key !== optionsProjectId.value) {
-      loadGeneration += 1
-      optionsAbort?.abort()
-      optionsProjectId.value = key
-      options.value = null
-      error.value = ''
-      loadingState.value = false
-    }
+    selectProject(key)
     if (loadingState.value) return false
     const token = ++loadGeneration
     const active = () => !disposed && token === loadGeneration && optionsProjectId.value === key
@@ -138,7 +145,7 @@ export function createNovelDownloadController({
   }
 
   async function download(projectId, selector) {
-    if (disposed || inFlight || !available.value) return false
+    if (disposed || inFlight || !available.value || normalizeProjectId(projectId) !== optionsProjectId.value) return false
     const token = ++downloadGeneration
     const abortController = abortControllerFactory()
     if (!abortController?.signal || typeof abortController.abort !== 'function') {
@@ -231,6 +238,7 @@ export function createNovelDownloadController({
     busy,
     error,
     available,
+    selectProject,
     loadOptions,
     download,
     dispose,

@@ -46,12 +46,19 @@ export function corpusLibraryPath() {
   return '/assets/corpus'
 }
 
+export function parsePositiveChapterNumber(value) {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return value
+  if (typeof value === 'string' && /^[1-9]\d*$/u.test(value)) {
+    const chapterNumber = Number(value)
+    if (Number.isSafeInteger(chapterNumber) && String(chapterNumber) === value) return chapterNumber
+  }
+  throw new TypeError('Expected a positive chapter number')
+}
+
 function positiveChapterNumber(value) {
-  const chapterNumber = Number(value)
-  if (!Number.isSafeInteger(chapterNumber) || chapterNumber < 1) {
+  try { return parsePositiveChapterNumber(value) } catch {
     throw new TypeError('Expected a positive chapter number')
   }
-  return chapterNumber
 }
 
 export function projectOverviewPath(projectId) {

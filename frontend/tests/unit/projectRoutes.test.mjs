@@ -41,6 +41,7 @@ test('canonical path builders encode project IDs and require positive chapter nu
     applicationSettingsPath,
     experienceLibraryPath,
     chapterWriterPath,
+    parsePositiveChapterNumber,
     finalChapterPath,
     manuscriptPath,
     projectContractPath,
@@ -78,6 +79,7 @@ test('canonical path builders encode project IDs and require positive chapter nu
     assert.throws(() => chapterWriterPath('project-1', invalid), /positive chapter number/i)
     assert.throws(() => finalChapterPath('project-1', invalid), /positive chapter number/i)
   }
+  for (const invalid of ['01', '9007199254740993']) assert.throws(() => parsePositiveChapterNumber(invalid), /positive chapter number/i)
 })
 
 test('formal route registry names only canonical destinations and catches retired paths', async () => {

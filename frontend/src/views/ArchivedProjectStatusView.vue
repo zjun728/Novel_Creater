@@ -4,8 +4,9 @@ import { useRouter } from 'vue-router'
 import { NAlert, NButton } from 'naive-ui'
 
 import ProjectBackupPanel from '../components/projects/ProjectBackupPanel.vue'
+import ManuscriptSummaryLink from '../components/manuscript/ManuscriptSummaryLink.vue'
 import { useProjectStore } from '../stores/projectStore.js'
-import { manuscriptPath, projectBiblePath, projectContractPath } from '../router/projectRoutes.js'
+import { projectBiblePath, projectContractPath } from '../router/projectRoutes.js'
 
 const props = defineProps({
   project: {
@@ -59,9 +60,7 @@ function returnToLibrary() {
         <n-button :loading="restoring" type="primary" @click="restoreProject">恢复项目</n-button>
         <n-button quaternary @click="returnToLibrary">返回项目库</n-button>
       </div>
-      <router-link class="readonly-contract-link" :to="manuscriptPath(project.id)">
-        作品稿件
-      </router-link>
+      <manuscript-summary-link :project-id="project.id" />
       <project-backup-panel
         :key="`backup:${project.id}`"
         :project-id="project.id"

@@ -48,6 +48,7 @@ async function downloadChapter(chapterNumber) {
 function retryContent() { void loadDirectory(true) }
 
 watch(projectId, async () => {
+  download.selectProject(projectId.value)
   await loadDirectory()
   if (directory.value?.lifecycle === 'active') await loadPreparation()
   if (hasChapters.value) await loadOptions()
