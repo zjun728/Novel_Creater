@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 import pytest
@@ -23,6 +24,7 @@ from backend.services.manuscripts import (
     ManuscriptProjectNotFound,
     ManuscriptReadingService,
     ManuscriptTemporarilyUnavailable,
+    _is_availability_failure,
 )
 
 
@@ -190,6 +192,42 @@ async def test_service_maps_database_read_only_boundary_availability_to_temporar
 
     with pytest.raises(ManuscriptTemporarilyUnavailable):
         await service.directory("project-1")
+
+
+@pytest.mark.asyncio
+async def test_service_maps_all_availability_combined_transaction_group_to_temporary_unavailable():
+    availability_group = BaseExceptionGroup(
+        "combined", [
+            ManuscriptUnavailable(),
+            BaseExceptionGroup("nested", [DatabaseUnavailable(), ManuscriptUnavailable()]),
+        ],
+    )
+    service = ManuscriptReadingService(FailingTransaction(availability_group), Repository())
+
+    with pytest.raises(ManuscriptTemporarilyUnavailable):
+        await service.directory("project-1")
+
+
+@pytest.mark.parametrize("leaf", [RuntimeError("programmer bug"), asyncio.CancelledError("cancel")])
+def test_availability_group_helper_rejects_nested_mixed_programmer_or_cancellation_leaves(leaf):
+    error = BaseExceptionGroup(
+        "mixed", [DatabaseUnavailable(), BaseExceptionGroup("nested", [leaf])],
+    )
+
+    assert _is_availability_failure(error) is False
+
+
+@pytest.mark.asyncio
+async def test_service_preserves_the_original_mixed_transaction_group():
+    mixed = BaseExceptionGroup(
+        "mixed", [DatabaseUnavailable(), RuntimeError("rollback programmer bug")],
+    )
+    service = ManuscriptReadingService(FailingTransaction(mixed), Repository())
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await service.directory("project-1")
+
+    assert raised.value is mixed
 
 
 @pytest.mark.asyncio

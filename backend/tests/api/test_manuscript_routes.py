@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from backend.domain.routers import manuscripts
+from backend.domain.manuscripts import ManuscriptUnavailable
 from backend.database import DatabaseUnavailable, read_only_transaction
 from backend.security.redaction import install_error_handlers
 from backend.services.manuscripts import (
@@ -269,3 +270,19 @@ def test_programmer_transaction_error_is_not_mapped_to_manuscript_503():
     assert response.status_code == 500
     assert response.json()["message"] == "Internal server error"
     assert response.json().get("code") != "ManuscriptTemporarilyUnavailable"
+
+
+def test_all_availability_transaction_group_maps_to_safe_api_503_without_raw_leaks():
+    error = BaseExceptionGroup(
+        "RAW_GROUP_SENTINEL", [
+            DatabaseUnavailable(),
+            ManuscriptUnavailable(),
+        ],
+    )
+    response = _boundary_client(error).get("/api/projects/project-1/manuscript")
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "ManuscriptTemporarilyUnavailable"
+    assert response.json()["message"] == "Finalized manuscript is temporarily unavailable"
+    assert "RAW_GROUP_SENTINEL" not in response.text
+    assert "RAW_SERVICE_SENTINEL" not in response.text

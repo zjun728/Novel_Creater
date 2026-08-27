@@ -240,6 +240,44 @@ async def test_read_only_transaction_translates_pool_creation_and_body_driver_fa
 
 
 @pytest.mark.asyncio
+async def test_read_only_transaction_preserves_driver_body_and_programmer_rollback_failures(
+    monkeypatch,
+):
+    pool = FakePool()
+    body_error = aiomysql.OperationalError(2006, "RAW_BODY_SENTINEL")
+    rollback_error = RuntimeError("rollback programmer bug")
+    pool.raw.rollback_error = rollback_error
+    use_pool(monkeypatch, pool)
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        async with database.read_only_transaction():
+            raise body_error
+
+    assert raised.value.exceptions[0].__class__ is database.DatabaseUnavailable
+    assert raised.value.exceptions[0].__cause__ is None
+    assert raised.value.exceptions[1] is rollback_error
+    assert pool.raw.rollback_count == pool.release_count == 1
+
+
+@pytest.mark.asyncio
+async def test_read_only_transaction_preserves_cancellation_when_driver_body_and_rollback_fail(
+    monkeypatch,
+):
+    pool = FakePool()
+    cancellation = asyncio.CancelledError("rollback cancellation")
+    pool.raw.rollback_error = cancellation
+    use_pool(monkeypatch, pool)
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        async with database.read_only_transaction():
+            raise aiomysql.OperationalError(2006, "RAW_BODY_SENTINEL")
+
+    assert raised.value.exceptions[0].__class__ is database.DatabaseUnavailable
+    assert raised.value.exceptions[1] is cancellation
+    assert pool.raw.rollback_count == pool.release_count == 1
+
+
+@pytest.mark.asyncio
 async def test_connection_body_error_releases_without_transaction_calls(monkeypatch):
     pool = FakePool()
     use_pool(monkeypatch, pool)

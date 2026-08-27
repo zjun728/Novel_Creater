@@ -44,6 +44,17 @@ class DatabaseUnavailable(RuntimeError):
 _DRIVER_UNAVAILABLE_ERRORS = (aiomysql.OperationalError, aiomysql.InterfaceError)
 
 
+def _normalize_driver_failure(error: BaseException) -> BaseException:
+    """Replace driver leaves with the fixed availability error without loss."""
+    if isinstance(error, _DRIVER_UNAVAILABLE_ERRORS):
+        return DatabaseUnavailable()
+    if isinstance(error, BaseExceptionGroup):
+        normalized = tuple(_normalize_driver_failure(item) for item in error.exceptions)
+        if normalized != error.exceptions:
+            return error.derive(normalized)
+    return error
+
+
 async def get_pool():
     global _pool
     if _pool is None:
@@ -121,19 +132,16 @@ async def read_only_transaction():
             try:
                 await raw.rollback()
             except BaseException as rollback_error:
-                if isinstance(body_error, _DRIVER_UNAVAILABLE_ERRORS):
-                    raise DatabaseUnavailable() from None
-                if isinstance(rollback_error, _DRIVER_UNAVAILABLE_ERRORS):
-                    raise BaseExceptionGroup(
-                        "read-only transaction body failed and rollback also failed",
-                        [body_error, DatabaseUnavailable()],
-                    ) from body_error
                 raise BaseExceptionGroup(
                     "read-only transaction body failed and rollback also failed",
-                    [body_error, rollback_error],
-                ) from body_error
-            if isinstance(body_error, _DRIVER_UNAVAILABLE_ERRORS):
-                raise DatabaseUnavailable() from None
+                    [
+                        _normalize_driver_failure(body_error),
+                        _normalize_driver_failure(rollback_error),
+                    ],
+                ) from None
+            normalized_body = _normalize_driver_failure(body_error)
+            if normalized_body is not body_error:
+                raise normalized_body from None
             raise
         else:
             try:

@@ -38,6 +38,15 @@ class ManuscriptTemporarilyUnavailable(RuntimeError):
     """The finalized manuscript store is temporarily unavailable."""
 
 
+def _is_availability_failure(error: BaseException) -> bool:
+    """Return true only when every recursive failure leaf is availability-safe."""
+    if isinstance(error, (DatabaseUnavailable, ManuscriptUnavailable)):
+        return True
+    if isinstance(error, BaseExceptionGroup):
+        return all(_is_availability_failure(item) for item in error.exceptions)
+    return False
+
+
 class _PublicManuscriptValue(BaseModel):
     model_config = ConfigDict(
         strict=True, frozen=True, extra="forbid", populate_by_name=True,
@@ -150,6 +159,10 @@ class ManuscriptReadingService:
             raise ManuscriptTemporarilyUnavailable() from None
         except DatabaseUnavailable:
             raise ManuscriptTemporarilyUnavailable() from None
+        except BaseExceptionGroup as error:
+            if _is_availability_failure(error):
+                raise ManuscriptTemporarilyUnavailable() from None
+            raise
         except ManuscriptCorrupt:
             raise ManuscriptIntegrityFailure() from None
         if record is None:
@@ -166,6 +179,10 @@ class ManuscriptReadingService:
             raise ManuscriptTemporarilyUnavailable() from None
         except DatabaseUnavailable:
             raise ManuscriptTemporarilyUnavailable() from None
+        except BaseExceptionGroup as error:
+            if _is_availability_failure(error):
+                raise ManuscriptTemporarilyUnavailable() from None
+            raise
         except FinalChapterMissing:
             raise FinalChapterNotFound() from None
         except ManuscriptCorrupt:
