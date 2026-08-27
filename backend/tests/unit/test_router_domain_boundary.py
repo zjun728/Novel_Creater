@@ -35,6 +35,7 @@ EXPECTED_ROUTER_FILES = {
     "finalization.py",
     "helpers.py",
     "market_sources.py",
+    "manuscripts.py",
     "model_bindings.py",
     "novel_downloads.py",
     "planning.py",
