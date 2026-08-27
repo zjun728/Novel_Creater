@@ -69,7 +69,11 @@ export function createManuscriptHistory({
   }
 
   function recordCurrent() {
-    if (!isManuscriptRoute(currentRoute)) return
+    if (
+      !isManuscriptRoute(currentRoute)
+      || pendingPopState !== null
+      || ['reset', 'restore'].includes(renderAction?.type)
+    ) return
     replaceManuscriptState(stateFor(currentRoute, getScroller?.()))
   }
 
@@ -80,12 +84,21 @@ export function createManuscriptHistory({
   function restoreRecorded(record, route, scroller) {
     if (!record || String(record.routeKey || '') !== routeKey(route)) return false
     const top = safeScrollTop(record.scrollTop)
+    const target = record.focusId ? documentRef?.getElementById?.(String(record.focusId)) : null
+    if (record.focusId && (!target || target.isConnected === false || !scroller?.contains?.(target))) {
+      return false
+    }
+    const scrollHeight = Number(scroller?.scrollHeight)
+    const clientHeight = Number(scroller?.clientHeight)
+    if (
+      top > 0
+      && Number.isFinite(scrollHeight)
+      && Number.isFinite(clientHeight)
+      && Math.max(0, scrollHeight - clientHeight) < top
+    ) return false
     if (scroller?.scrollTo) scroller.scrollTo({ top, behavior: 'auto' })
     else if (scroller) scroller.scrollTop = top
-    const target = record.focusId ? documentRef?.getElementById?.(String(record.focusId)) : null
-    if (target?.isConnected !== false && target && scroller?.contains?.(target)) {
-      target.focus?.({ preventScroll: true })
-    }
+    target?.focus?.({ preventScroll: true })
     return true
   }
 
@@ -97,7 +110,7 @@ export function createManuscriptHistory({
 
   function applyRenderAction(action, route, scroller) {
     if (!action || action.routeKey !== routeKey(route)) return false
-    if (action.type === 'restore') restoreRecorded(action.record, route, scroller)
+    if (action.type === 'restore' && !restoreRecorded(action.record, route, scroller)) return false
     else if (action.type === 'reset') resetForNewManuscriptRoute(scroller)
     replaceManuscriptState(stateFor(route, scroller))
     return true

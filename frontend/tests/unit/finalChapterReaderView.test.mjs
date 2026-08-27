@@ -145,6 +145,7 @@ test('history records a stable focus id from the actually rendered reader contro
       schedule: callback => Promise.resolve().then(callback),
     })
     await manager.mount()
+    await manager.viewRendered(item.router.currentRoute.value)
     manager.recordCurrent()
     assert.deepEqual(history.state.manuscriptView, {
       routeKey: '/projects/p/manuscript/chapters/2',

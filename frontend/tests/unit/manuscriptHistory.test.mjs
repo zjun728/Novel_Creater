@@ -47,12 +47,13 @@ function fakeEnvironment(initialRoute) {
     beforeEach(handler) { before.push(handler); return () => before.splice(before.indexOf(handler), 1) },
     afterEach(handler) { after.push(handler); return () => after.splice(after.indexOf(handler), 1) },
   }
-  async function navigate(next, kind = 'push') {
+  async function navigate(next, kind = 'push', duringTransition) {
     const from = currentRoute.value
     if (kind === 'popstate' || kind === 'popstate-late') {
       index -= 1
       if (kind === 'popstate') listeners.get('popstate')?.({ state: entries[index].state })
     }
+    await duringTransition?.()
     for (const handler of [...before]) await handler(next, from)
     if (kind === 'popstate-late') listeners.get('popstate')?.({ state: entries[index].state })
     if (kind === 'push') history.pushState({}, '', next.fullPath)
@@ -400,5 +401,102 @@ test('a reactive old render notification cannot mutate into and consume the curr
   holdSchedule = false
   assert.equal(await manager.viewRendered(second), true)
   assert.equal(scroller.scrollTop, 0)
+  manager.dispose()
+})
+
+test('pending pop restoration preserves its entry until the new DOM can restore scroll and focus', async () => {
+  const { createManuscriptHistory } = await loadHistoryModule()
+  const first = route('/projects/p/manuscript/chapters/1', { chapterNumber: 1, view: 'outline' })
+  const second = route('/projects/p/manuscript/chapters/2', { chapterNumber: 2, view: 'text' })
+  const env = fakeEnvironment(first)
+  const listeners = new Map()
+  let ready = true
+  let scrollCalls = 0
+  const target = { id: 'final-reader-next', isConnected: true, focus() { documentRef.activeElement = this } }
+  const firstTitle = { id: 'chapter-1-title', focus() {} }
+  const secondTitle = { id: 'chapter-2-title', focus() {} }
+  const documentRef = {
+    activeElement: target,
+    getElementById: id => ready && id === target.id ? target : null,
+  }
+  const scroller = {
+    scrollTop: 222,
+    scrollHeight: 1200,
+    clientHeight: 600,
+    contains: value => ready && value === target,
+    querySelector: () => env.router.currentRoute.value.params.chapterNumber === '2' ? secondTitle : firstTitle,
+    addEventListener(type, listener) { listeners.set(type, listener) },
+    removeEventListener(type, listener) { if (listeners.get(type) === listener) listeners.delete(type) },
+    scrollTo({ top }) {
+      scrollCalls += 1
+      this.scrollTop = Math.min(top, Math.max(0, this.scrollHeight - this.clientHeight))
+    },
+  }
+  const manager = createManuscriptHistory({ router: env.router, windowRef: env.windowRef, documentRef, getScroller: () => scroller, schedule: callback => Promise.resolve().then(callback) })
+  await manager.mount()
+  await manager.viewRendered(first)
+  scroller.scrollTop = 222
+  documentRef.activeElement = target
+  manager.recordCurrent()
+  assert.deepEqual(env.entries[0].state.manuscriptView, {
+    routeKey: first.fullPath,
+    scrollTop: 222,
+    focusId: 'final-reader-next',
+  })
+
+  await env.navigate(second, 'push')
+  await manager.viewRendered(second)
+  ready = false
+  scroller.scrollTop = 0
+  scroller.scrollHeight = 600
+  documentRef.activeElement = null
+  await env.navigate(first, 'popstate', () => {
+    listeners.get('scroll')?.()
+    listeners.get('focusin')?.()
+    assert.deepEqual(env.entries[0].state.manuscriptView, {
+      routeKey: first.fullPath,
+      scrollTop: 222,
+      focusId: 'final-reader-next',
+    })
+  })
+  listeners.get('scroll')?.()
+  listeners.get('focusin')?.()
+
+  assert.equal(await manager.viewRendered(first), false)
+  assert.equal(scrollCalls, 2, 'the early restore must not attempt a clamped scroll')
+  assert.deepEqual(env.entries[0].state.manuscriptView, {
+    routeKey: first.fullPath,
+    scrollTop: 222,
+    focusId: 'final-reader-next',
+  })
+
+  ready = true
+  scroller.scrollHeight = 1200
+  assert.equal(await manager.viewRendered(first), true)
+  assert.equal(scroller.scrollTop, 222)
+  assert.equal(documentRef.activeElement, target)
+  assert.equal(await manager.viewRendered(first), false, 'the successful restore is consumed exactly once')
+  assert.deepEqual(env.entries[0].state.manuscriptView, {
+    routeKey: first.fullPath,
+    scrollTop: 222,
+    focusId: 'final-reader-next',
+  })
+  manager.dispose()
+})
+
+test('zero-scroll history entry without focus is immediately restorable', async () => {
+  const { createManuscriptHistory } = await loadHistoryModule()
+  const initial = route('/projects/p/manuscript/chapters/1', { chapterNumber: 1 })
+  const env = fakeEnvironment(initial)
+  env.entries[0].state.manuscriptView = { routeKey: initial.fullPath, scrollTop: 0, focusId: '' }
+  const scroller = {
+    scrollTop: 0, scrollHeight: 0, clientHeight: 0,
+    contains: () => false, querySelector: () => null,
+    addEventListener() {}, removeEventListener() {}, scrollTo({ top }) { this.scrollTop = top },
+  }
+  const manager = createManuscriptHistory({ router: env.router, windowRef: env.windowRef, documentRef: { activeElement: null, getElementById: () => null }, getScroller: () => scroller, schedule: callback => Promise.resolve().then(callback) })
+  await manager.mount()
+  assert.equal(await manager.viewRendered(initial), true)
+  assert.equal(await manager.viewRendered(initial), false)
   manager.dispose()
 })
