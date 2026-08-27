@@ -595,7 +595,7 @@ test('a settled restore clamps a position that no longer fits the rendered layou
   manager.dispose()
 })
 
-test('a user scroll during pending restore wins over the late settled history position', async () => {
+test('a pending scroll event stays latched even when the user returns to the baseline position', async () => {
   const { createManuscriptHistory } = await loadHistoryModule()
   const initial = route('/projects/p/manuscript/chapters/1', { chapterNumber: 1 })
   const env = fakeEnvironment(initial)
@@ -607,6 +607,7 @@ test('a user scroll during pending restore wins over the late settled history po
   let ready = false
   let targetFocusCount = 0
   let scrollCalls = 0
+  const listeners = new Map()
   const target = { id: 'final-reader-download', isConnected: true, focus() { targetFocusCount += 1; documentRef.activeElement = this } }
   const title = { id: 'final-reader-title', isConnected: true, focus() { documentRef.activeElement = this } }
   const documentRef = { activeElement: null, getElementById: id => ready && id === target.id ? target : null }
@@ -614,7 +615,8 @@ test('a user scroll during pending restore wins over the late settled history po
     scrollTop: 0, scrollHeight: 500, clientHeight: 500,
     contains: value => value === target || value === title,
     querySelector: selector => selector === 'h1' ? title : null,
-    addEventListener() {}, removeEventListener() {},
+    addEventListener(type, listener) { listeners.set(type, listener) },
+    removeEventListener(type, listener) { if (listeners.get(type) === listener) listeners.delete(type) },
     scrollTo({ top }) { scrollCalls += 1; this.scrollTop = top },
   }
   const manager = createManuscriptHistory({ router: env.router, windowRef: env.windowRef, documentRef, getScroller: () => scroller, schedule: callback => Promise.resolve().then(callback) })
@@ -622,24 +624,27 @@ test('a user scroll during pending restore wins over the late settled history po
 
   assert.equal(await manager.viewRendered(initial), false)
   scroller.scrollTop = 84
+  listeners.get('scroll')?.({ type: 'scroll' })
+  scroller.scrollTop = 0
   ready = true
   scroller.scrollHeight = 1200
   assert.equal(await manager.viewRendered(initial, { settled: true }), true)
 
-  assert.equal(scroller.scrollTop, 84)
+  assert.equal(scroller.scrollTop, 0)
   assert.equal(scrollCalls, 0, 'settling must not issue a historical scroll after the user moved')
   assert.equal(targetFocusCount, 0)
   assert.deepEqual(env.entries[0].state.manuscriptView, {
     routeKey: initial.fullPath,
-    scrollTop: 84,
+    scrollTop: 0,
     focusId: '',
   })
   manager.dispose()
 })
 
-test('a user focus change during pending restore wins over late exact or fallback focus', async () => {
+test('a pending focus event survives a same-chapter query carry and wins over late restoration', async () => {
   const { createManuscriptHistory } = await loadHistoryModule()
-  const initial = route('/projects/p/manuscript/chapters/1', { chapterNumber: 1 })
+  const initial = route('/projects/p/manuscript/chapters/1', { chapterNumber: 1, view: 'text' })
+  const outline = route('/projects/p/manuscript/chapters/1', { chapterNumber: 1, view: 'outline' })
   const env = fakeEnvironment(initial)
   env.entries[0].state.manuscriptView = {
     routeKey: initial.fullPath,
@@ -649,6 +654,7 @@ test('a user focus change during pending restore wins over late exact or fallbac
   let targetReady = false
   let targetFocusCount = 0
   let titleFocusCount = 0
+  const listeners = new Map()
   const target = { id: 'final-reader-download', isConnected: true, focus() { targetFocusCount += 1; documentRef.activeElement = this } }
   const userControl = { id: 'final-reader-view-outline', isConnected: true, focus() { documentRef.activeElement = this } }
   const title = { id: 'final-reader-title', isConnected: true, focus() { titleFocusCount += 1; documentRef.activeElement = this } }
@@ -657,7 +663,8 @@ test('a user focus change during pending restore wins over late exact or fallbac
     scrollTop: 0, scrollHeight: 1000, clientHeight: 500,
     contains: value => [target, userControl, title].includes(value),
     querySelector: selector => selector === 'h1' ? title : null,
-    addEventListener() {}, removeEventListener() {},
+    addEventListener(type, listener) { listeners.set(type, listener) },
+    removeEventListener(type, listener) { if (listeners.get(type) === listener) listeners.delete(type) },
     scrollTo({ top }) { this.scrollTop = top },
   }
   const manager = createManuscriptHistory({ router: env.router, windowRef: env.windowRef, documentRef, getScroller: () => scroller, schedule: callback => Promise.resolve().then(callback) })
@@ -665,8 +672,10 @@ test('a user focus change during pending restore wins over late exact or fallbac
 
   assert.equal(await manager.viewRendered(initial), false)
   userControl.focus()
+  listeners.get('focusin')?.({ type: 'focusin', target: userControl })
+  await env.navigate(outline, 'push')
   targetReady = true
-  assert.equal(await manager.viewRendered(initial, { settled: true }), true)
+  assert.equal(await manager.viewRendered(outline, { settled: true }), true)
 
   assert.equal(scroller.scrollTop, 0)
   assert.equal(documentRef.activeElement, userControl)
@@ -674,8 +683,49 @@ test('a user focus change during pending restore wins over late exact or fallbac
   assert.equal(titleFocusCount, 0)
   assert.deepEqual(env.entries[0].state.manuscriptView, {
     routeKey: initial.fullPath,
+    scrollTop: 160,
+    focusId: 'final-reader-download',
+  }, 'the source history entry remains the original record')
+  assert.deepEqual(env.entries[1].state.manuscriptView, {
+    routeKey: outline.fullPath,
     scrollTop: 0,
     focusId: 'final-reader-view-outline',
-  })
+  }, 'the carried destination records the user-controlled state')
+  manager.dispose()
+})
+
+test('a DOM-transition event before the restore baseline exists does not cancel exact restoration', async () => {
+  const { createManuscriptHistory } = await loadHistoryModule()
+  const initial = route('/projects/p/manuscript/chapters/1', { chapterNumber: 1 })
+  const env = fakeEnvironment(initial)
+  env.entries[0].state.manuscriptView = {
+    routeKey: initial.fullPath,
+    scrollTop: 210,
+    focusId: 'final-reader-next',
+  }
+  const listeners = new Map()
+  let ready = false
+  const target = { id: 'final-reader-next', isConnected: true, focus() { documentRef.activeElement = this } }
+  const documentRef = { activeElement: null, getElementById: id => ready && id === target.id ? target : null }
+  const scroller = {
+    scrollTop: 0, scrollHeight: 500, clientHeight: 500,
+    contains: value => value === target,
+    querySelector: () => null,
+    addEventListener(type, listener) { listeners.set(type, listener) },
+    removeEventListener(type, listener) { if (listeners.get(type) === listener) listeners.delete(type) },
+    scrollTo({ top }) { this.scrollTop = top },
+  }
+  const manager = createManuscriptHistory({ router: env.router, windowRef: env.windowRef, documentRef, getScroller: () => scroller, schedule: callback => Promise.resolve().then(callback) })
+  await manager.mount()
+
+  listeners.get('scroll')?.({ type: 'scroll' })
+  listeners.get('focusin')?.({ type: 'focusin' })
+  assert.equal(await manager.viewRendered(initial), false)
+  ready = true
+  scroller.scrollHeight = 1000
+  assert.equal(await manager.viewRendered(initial, { settled: true }), true)
+
+  assert.equal(scroller.scrollTop, 210)
+  assert.equal(documentRef.activeElement, target)
   manager.dispose()
 })

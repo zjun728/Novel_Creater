@@ -99,24 +99,23 @@ export function createManuscriptHistory({
         && active.isConnected !== false
         && scroller?.contains?.(active),
       ),
+      overrideLatched: false,
     }
   }
 
-  function restoreWasOverridden(action, route, scroller) {
+  function restoreWasOverridden(action, route) {
     const baseline = restoreBaseline
     if (!baseline || baseline.action !== action || baseline.routeKey !== routeKey(route)) return false
-    if (safeScrollTop(scroller?.scrollTop) !== baseline.scrollTop) return true
-    const active = documentRef?.activeElement || null
-    const activeIsInScroller = Boolean(
-      active
-      && active.isConnected !== false
-      && scroller?.contains?.(active),
-    )
-    return activeIsInScroller && (
-      !baseline.activeWasInScroller
-      || active !== baseline.activeElement
-      || String(active.id || '') !== baseline.activeId
-    )
+    return baseline.overrideLatched === true
+  }
+
+  function handleScrollerInteraction() {
+    if (
+      restoreBaseline
+      && restoreBaseline.action === renderAction
+      && restoreBaseline.routeKey === routeKey(currentRoute)
+    ) restoreBaseline.overrideLatched = true
+    recordCurrent()
   }
 
   function restoreRecorded(record, route, scroller, { settled = false } = {}) {
@@ -159,7 +158,7 @@ export function createManuscriptHistory({
 
   function applyRenderAction(action, route, scroller, options) {
     if (!action || action.routeKey !== routeKey(route)) return false
-    if (action.type === 'restore' && options?.settled && restoreWasOverridden(action, route, scroller)) {
+    if (action.type === 'restore' && options?.settled && restoreWasOverridden(action, route)) {
       replaceManuscriptState(stateFor(route, scroller))
       restoreBaseline = null
       return true
@@ -176,14 +175,15 @@ export function createManuscriptHistory({
 
   async function afterNavigation(to, from) {
     const priorRenderAction = renderAction
+    const priorRestoreBaseline = restoreBaseline
     const popRecord = pendingPopState
     const isPop = pendingPopState !== null
     pendingPopState = null
     currentRoute = to
-    restoreBaseline = null
     historyPosition = windowRef?.history?.state?.position
     if (!isManuscriptRoute(to)) {
       renderAction = null
+      restoreBaseline = null
       return
     }
 
@@ -205,6 +205,15 @@ export function createManuscriptHistory({
             : (!isManuscriptRoute(from) || routeIdentity(to) !== routeIdentity(from) ? 'reset' : 'preserve'),
           record: popRecord,
         }
+    restoreBaseline = carriesPendingAction
+      && priorRestoreBaseline?.action === priorRenderAction
+      && priorRestoreBaseline.routeKey === priorRenderAction.routeKey
+      ? {
+          ...priorRestoreBaseline,
+          action: renderAction,
+          routeKey: routeKey(to),
+        }
+      : null
 
   }
 
@@ -225,8 +234,8 @@ export function createManuscriptHistory({
     mounted = true
     currentRoute = router?.currentRoute?.value || currentRoute
     attachedScroller = getScroller?.() || null
-    attachedScroller?.addEventListener?.('scroll', recordCurrent, { passive: true })
-    attachedScroller?.addEventListener?.('focusin', recordCurrent)
+    attachedScroller?.addEventListener?.('scroll', handleScrollerInteraction, { passive: true })
+    attachedScroller?.addEventListener?.('focusin', handleScrollerInteraction)
     windowRef?.addEventListener?.('popstate', handlePopState)
     removeBefore = router?.beforeEach?.((to, from) => {
       const destinationState = windowRef?.history?.state?.[STATE_KEY]
@@ -266,8 +275,8 @@ export function createManuscriptHistory({
     if (!mounted) return
     if (pendingPopState === null) recordCurrent()
     mounted = false
-    attachedScroller?.removeEventListener?.('scroll', recordCurrent)
-    attachedScroller?.removeEventListener?.('focusin', recordCurrent)
+    attachedScroller?.removeEventListener?.('scroll', handleScrollerInteraction)
+    attachedScroller?.removeEventListener?.('focusin', handleScrollerInteraction)
     windowRef?.removeEventListener?.('popstate', handlePopState)
     removeBefore()
     removeAfter()
