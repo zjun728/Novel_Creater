@@ -410,10 +410,10 @@ test('overview keeps its one primary next action before the manuscript entry and
     bible: 'missing',
   }))
   assert.equal((html.match(/class="overview-next-action"/g) || []).length, 1)
-  assert.match(html, /overview-manuscript-link/)
+  assert.match(html, /manuscript-summary-link/)
   assert.match(html, /project-backup-panel/)
-  assert.ok(html.indexOf('overview-next-action') < html.indexOf('overview-manuscript-link'))
-  assert.ok(html.indexOf('overview-manuscript-link') < html.indexOf('project-backup-panel'))
+  assert.ok(html.indexOf('manuscript-summary-link') < html.indexOf('overview-next-action'))
+  assert.ok(html.indexOf('manuscript-summary-link') < html.indexOf('project-backup-panel'))
 })
 
 test('active and archived views pass exact backup authority after the delivery desk', async () => {
@@ -430,17 +430,18 @@ test('active and archived views pass exact backup authority after the delivery d
     'utf8',
   )
   assert.match(overviewSource, /import ProjectBackupPanel/)
-  assert.match(overviewSource, /overview-manuscript-link[\s\S]*<project-backup-panel/)
-  assert.match(overviewSource, /api\.manuscripts\.index/)
+  assert.match(overviewSource, /<manuscript-summary-link[\s\S]*<project-backup-panel/)
+  assert.match(overviewSource, /import ManuscriptSummaryLink/)
   assert.doesNotMatch(overviewSource, /NovelDownloadPanel|novel-download-panel/)
   assert.match(overviewSource, /<project-backup-panel[\s\S]*:project-id="routeProject\.project\.value\.id"/)
   assert.match(overviewSource, /:title="routeProject\.project\.value\.title"/)
   assert.match(overviewSource, /:lifecycle-revision="routeProject\.project\.value\.lifecycleRevision"/)
   assert.match(overviewSource, /:archived="false"/)
   assert.match(overviewSource, /:flush-current-draft="flushCurrentDraft"/)
-  assert.match(source, /import NovelDownloadPanel/)
+  assert.match(source, /import ManuscriptSummaryLink/)
   assert.match(source, /import ProjectBackupPanel/)
-  assert.match(source, /<novel-download-panel[\s\S]*<project-backup-panel/)
+  assert.match(source, /<manuscript-summary-link[\s\S]*<project-backup-panel/)
+  assert.doesNotMatch(source, /NovelDownloadPanel|novel-download-panel/)
   assert.match(source, /<project-backup-panel[\s\S]*:project-id="project\.id"/)
   assert.match(source, /:title="project\.title"/)
   assert.match(source, /:lifecycle-revision="project\.lifecycleRevision"/)
@@ -456,7 +457,7 @@ test('overview uses the project store for preparation and the manuscript read mo
 
   assert.match(source, /useProjectStore/)
   assert.match(source, /currentPreparation/)
-  assert.match(source, /api\.manuscripts\.index/)
+  assert.match(source, /import ManuscriptSummaryLink/)
   assert.doesNotMatch(
     source,
     /seedStore|creationContractStore|bibleStore|loadSelected|loadContract|loadBible|current_chapter|currentChapter|\+\s*1/,
