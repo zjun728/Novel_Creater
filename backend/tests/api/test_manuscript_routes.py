@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import pytest
 
 from backend.domain.routers import manuscripts
 from backend.security.redaction import install_error_handlers
@@ -106,10 +107,13 @@ def test_chapter_path_accepts_only_bounded_positive_ascii_decimal_numbers():
     assert all(response.json()["code"] == "ManuscriptRequestInvalid" for response in responses)
     assert service.calls == []
 
-    valid = client.get("/api/projects/project-1/manuscript/chapters/8")
+    valid = client.get("/api/projects/project-1/manuscript/chapters/2147483647")
+    too_large = client.get("/api/projects/project-1/manuscript/chapters/2147483648")
     assert valid.status_code == 404
     assert valid.json()["code"] == "FinalChapterNotFound"
-    assert service.calls == [("chapter", "project-1", 8)]
+    assert too_large.status_code == 422
+    assert too_large.json()["code"] == "ManuscriptRequestInvalid"
+    assert service.calls == [("chapter", "project-1", 2147483647)]
 
 
 def test_chapter_success_is_exact_content_only_projection_with_headers():
@@ -145,20 +149,53 @@ def test_both_routes_reject_blank_and_duplicate_unknown_query_parameters():
     assert service.calls == []
 
 
-def test_all_public_codes_have_fixed_safe_messages_and_no_internal_leaks():
+@pytest.mark.parametrize(
+    "url,error,status,code,message",
+    [
+        ("/api/projects/project-1/manuscript", ManuscriptProjectNotFound, 404, "ManuscriptProjectNotFound", "Manuscript project not found"),
+        ("/api/projects/project-1/manuscript", ManuscriptIntegrityFailure, 500, "ManuscriptIntegrityFailure", "Finalized manuscript could not be read"),
+        ("/api/projects/project-1/manuscript", ManuscriptTemporarilyUnavailable, 503, "ManuscriptTemporarilyUnavailable", "Finalized manuscript is temporarily unavailable"),
+        ("/api/projects/project-1/manuscript/chapters/9", ManuscriptProjectNotFound, 404, "ManuscriptProjectNotFound", "Manuscript project not found"),
+        ("/api/projects/project-1/manuscript/chapters/9", FinalChapterNotFound, 404, "FinalChapterNotFound", "Finalized chapter not found"),
+        ("/api/projects/project-1/manuscript/chapters/9", ManuscriptIntegrityFailure, 500, "ManuscriptIntegrityFailure", "Finalized manuscript could not be read"),
+        ("/api/projects/project-1/manuscript/chapters/9", ManuscriptTemporarilyUnavailable, 503, "ManuscriptTemporarilyUnavailable", "Finalized manuscript is temporarily unavailable"),
+    ],
+)
+def test_applicable_error_matrix_has_exact_safe_public_body(
+    url, error, status, code, message,
+):
     client, service = _client()
-    sentinel = "STORED_ID HASH FIELD_PATH SELECT prose RAW_JSON exception"
-    cases = [
-        ("/api/projects/project-1/manuscript?x=", None, 422, "ManuscriptRequestInvalid", "Manuscript request is invalid"),
-        ("/api/projects/project-1/manuscript", ManuscriptProjectNotFound(sentinel), 404, "ManuscriptProjectNotFound", "Manuscript project not found"),
-        ("/api/projects/project-1/manuscript/chapters/9", FinalChapterNotFound(sentinel), 404, "FinalChapterNotFound", "Finalized chapter not found"),
-        ("/api/projects/project-1/manuscript", ManuscriptIntegrityFailure(sentinel), 500, "ManuscriptIntegrityFailure", "Finalized manuscript could not be read"),
-        ("/api/projects/project-1/manuscript/chapters/9", ManuscriptTemporarilyUnavailable(sentinel), 503, "ManuscriptTemporarilyUnavailable", "Finalized manuscript is temporarily unavailable"),
-    ]
-    for url, error, status, code, message in cases:
-        service.error = error
-        response = client.get(url)
-        assert response.status_code == status
-        assert response.json()["code"] == code
-        assert response.json()["message"] == message
-        assert sentinel not in response.text
+    tokens = (
+        "project-internal-7", "stored-record-9", "sha256:deadbeef",
+        "chapter.content", "SELECT final_content FROM final_chapters",
+        "private prose fragment", '{"raw":"json"}', "RuntimeError: raw exception",
+    )
+    service.error = error(" | ".join(tokens))
+
+    response = client.get(url)
+
+    assert response.status_code == status
+    assert response.json()["code"] == code
+    assert response.json()["message"] == message
+    assert set(response.json()) == {"code", "message", "correlationId"}
+    assert all(token not in response.text for token in tokens)
+    assert all(token not in response.text for token in ("projectId", "volumes", '"content"', '"outline"'))
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "/api/projects/project-1/manuscript?invalid=",
+        "/api/projects/project-1/manuscript/chapters/9?invalid=",
+    ],
+)
+def test_request_invalid_has_fixed_safe_public_body_without_partial_data(url):
+    client, _ = _client()
+
+    response = client.get(url)
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "ManuscriptRequestInvalid"
+    assert response.json()["message"] == "Manuscript request is invalid"
+    assert set(response.json()) == {"code", "message", "correlationId"}
+    assert all(token not in response.text for token in ("projectId", "volumes", '"content"', '"outline"'))
