@@ -6,6 +6,7 @@ defineProps({
   volumes: { type: Array, default: () => [] },
   downloadChapter: { type: Function, default: null },
   canDownloadChapter: { type: Function, default: () => false },
+  busy: { type: Boolean, default: false },
 })
 
 function dateLabel(value) {
@@ -27,7 +28,7 @@ function dateLabel(value) {
             <time :datetime="chapter.finalizedAt">{{ dateLabel(chapter.finalizedAt) }}</time>
             <span>已定稿</span>
           </router-link>
-          <button v-if="canDownloadChapter(chapter.number)" type="button" class="manuscript-chapter-list__download" :aria-label="`下载第 ${chapter.number} 章定稿`" @click="downloadChapter(chapter.number)">下载</button>
+          <button v-if="canDownloadChapter(chapter.number)" type="button" class="manuscript-chapter-list__download" :disabled="busy" :aria-label="`下载第 ${chapter.number} 章定稿`" @click="downloadChapter(chapter.number)">下载</button>
         </li>
       </ol>
     </section>

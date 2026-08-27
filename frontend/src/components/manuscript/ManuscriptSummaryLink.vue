@@ -16,7 +16,7 @@ async function load() {
   failed.value = false
   try {
     const data = await api.manuscripts.index(id, { signal: abort.signal })
-    if (current === token && data.projectId === id) count.value = data.summary.finalChapterCount
+    if (current === token && String(data.projectId || '').trim() === id) count.value = data.summary.finalChapterCount
     else if (current === token) failed.value = true
   } catch { if (current === token) failed.value = true }
 }

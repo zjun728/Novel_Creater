@@ -36,6 +36,7 @@ const isArchived = computed(() => directory.value?.lifecycle === 'archived' || p
 const hasChapters = computed(() => (directory.value?.summary?.finalChapterCount || 0) > 0)
 const chapterOptions = computed(() => new Set((download.options.value?.chapters || []).map(item => item.number)))
 const selectedFormat = ref('')
+let routeGeneration = 0
 
 async function loadDirectory(force = false) { await manuscript.loadDirectory(projectId.value, { force }) }
 async function loadPreparation() { await manuscript.loadPreparation(projectId.value) }
@@ -49,10 +50,16 @@ async function downloadChapter(chapterNumber) {
 function retryContent() { void loadDirectory(true) }
 
 watch(projectId, async () => {
-  download.selectProject(projectId.value)
+  const id = projectId.value
+  const generation = ++routeGeneration
+  download.selectProject(id)
   selectedFormat.value = ''
-  await loadDirectory()
-  if (directory.value?.lifecycle === 'active') await loadPreparation()
+  await manuscript.loadDirectory(id)
+  if (generation !== routeGeneration || id !== projectId.value) return
+  if (directory.value?.lifecycle === 'active') {
+    await manuscript.loadPreparation(id)
+    if (generation !== routeGeneration || id !== projectId.value) return
+  }
   if (hasChapters.value) await loadOptions()
 }, { immediate: true })
 onBeforeUnmount(() => { manuscript.dispose(); download.dispose() })
@@ -71,15 +78,17 @@ onBeforeUnmount(() => { manuscript.dispose(); download.dispose() })
     <n-result v-else-if="['integrity-failure', 'invalid-address'].includes(manuscript.content.value.status)" status="error" title="作品稿件暂时不可用" description="为保护已定稿内容，当前无法展示目录。">
       <template #footer><n-button type="primary" @click="retryContent">重新读取</n-button></template>
     </n-result>
-    <section v-else class="manuscript-index__sheet" aria-labelledby="manuscript-index-title">
-      <p class="manuscript-index__title">{{ directory?.title || '正在整理稿件目录' }}</p>
+    <section v-else-if="manuscript.content.value.status === 'unavailable' && !directory" class="manuscript-index__sheet"><p>目录暂时无法读取。</p><button type="button" @click="retryContent">重新读取</button></section>
+    <section v-else-if="directory" class="manuscript-index__sheet" aria-labelledby="manuscript-index-title">
+      <p class="manuscript-index__title">{{ directory.title }}</p>
       <dl v-if="directory" class="manuscript-index__summary" aria-label="稿件统计">
         <div><dt>已定稿</dt><dd>{{ directory.summary.finalChapterCount }} 章</dd></div>
         <div><dt>字数</dt><dd>{{ directory.summary.totalScalarCount }}</dd></div>
       </dl>
 
       <p v-if="isArchived" class="manuscript-index__readonly">项目已归档，稿件仅供阅读与下载。</p>
-      <router-link v-else-if="preparation.status === 'ready'" class="manuscript-index__action" :to="preparation.nextAction.targetPath">{{ preparation.nextAction.label }}</router-link>
+      <p v-else-if="['loading', 'idle'].includes(preparation.status)" role="status">正在读取当前创作位置</p>
+      <template v-else-if="preparation.status === 'ready'"><p>当前创作位置：{{ preparation.nextAction.label }}</p><router-link class="manuscript-index__action" :to="preparation.nextAction.targetPath">{{ preparation.nextAction.label }}</router-link></template>
       <div v-else-if="preparation.status === 'unavailable'" class="manuscript-index__local-error">创作状态暂时无法读取。<button type="button" @click="loadPreparation">重新读取</button></div>
 
       <div v-if="hasChapters && download.options.value?.available" class="manuscript-index__downloads" :aria-busy="download.busy.value">
@@ -88,10 +97,10 @@ onBeforeUnmount(() => { manuscript.dispose(); download.dispose() })
         <template v-if="selectedFormat"><button type="button" :disabled="download.busy.value" @click="downloadBook">下载整本定稿</button><button v-for="volume in download.options.value.volumes" :key="volume.id" type="button" :disabled="download.busy.value" @click="downloadVolume(volume.id)">下载第{{ volume.order }}卷</button></template>
         <p v-if="download.busy.value" role="status">正在准备下载</p>
       </div>
-      <p v-if="download.error.value" class="manuscript-index__local-error" role="alert">下载选项暂时无法加载。<button type="button" @click="loadOptions">重新读取</button></p>
+      <p v-if="download.error.value" class="manuscript-index__local-error" role="alert">{{ download.error.value }}<button v-if="!download.options.value" type="button" @click="loadOptions">重新读取</button></p>
 
       <p v-if="manuscript.content.value.status === 'empty'" class="manuscript-index__empty">还没有已定稿章节</p>
-      <manuscript-chapter-list v-else-if="directory" :project-id="projectId" :volumes="directory.volumes" :download-chapter="downloadChapter" :can-download-chapter="number => Boolean(selectedFormat) && chapterOptions.has(number)" />
+      <manuscript-chapter-list v-else :project-id="projectId" :volumes="directory.volumes" :download-chapter="downloadChapter" :busy="download.busy.value" :can-download-chapter="number => Boolean(selectedFormat) && chapterOptions.has(number)" />
       <div v-if="manuscript.content.value.status === 'unavailable'" class="manuscript-index__local-error" role="alert">目录暂时无法更新，已保留可安全显示的内容。<button type="button" @click="retryContent">重新读取</button></div>
     </section>
   </section>
