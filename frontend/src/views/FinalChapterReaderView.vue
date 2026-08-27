@@ -11,7 +11,16 @@ import { useOperationStore } from '../stores/operationStore.js'
 import { finalChapterPath, manuscriptPath, parsePositiveChapterNumber } from '../router/projectRoutes.js'
 
 const route = useRoute(); const router = useRouter(); const manuscript = createManuscriptController({ api })
-const download = createNovelDownloadController({ api, operationStore: useOperationStore(), createObjectURL: blob => URL.createObjectURL(blob), revokeObjectURL: value => URL.revokeObjectURL(value), saveBlob: (url, filename) => { const link = document.createElement('a'); link.href = url; link.download = filename; link.click() } })
+function saveDownload(url, filename) {
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.hidden = true
+  document.body.append(link)
+  link.click()
+  link.remove()
+}
+const download = createNovelDownloadController({ api, operationStore: useOperationStore(), createObjectURL: blob => URL.createObjectURL(blob), revokeObjectURL: value => URL.revokeObjectURL(value), saveBlob: saveDownload })
 const projectId = computed(() => String(route.params.projectId || ''))
 const chapterNumber = computed(() => { try { return parsePositiveChapterNumber(route.params.chapterNumber) } catch { return null } })
 const view = computed(() => route.query.view === 'outline' ? 'outline' : 'text')
@@ -23,7 +32,10 @@ function setView(next) { router.push({ query: next === 'text' ? {} : { view: nex
 function retry() { if (chapterNumber.value) return manuscript.loadContent(projectId.value, chapterNumber.value, { force: true }) }
 async function loadReader(id, number) {
   download.selectProject(id)
-  if (!number) return
+  if (!number) {
+    await manuscript.loadContent(id, 0)
+    return
+  }
   await manuscript.loadContent(id, number)
   if (id !== projectId.value || number !== chapterNumber.value) return
   void manuscript.loadPreparation(id)
