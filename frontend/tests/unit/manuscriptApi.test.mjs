@@ -31,12 +31,14 @@ test('manuscript API forwards caller abort as request_aborted', async () => {
 
 test('directory rejects unsafe IDs and accepts a backend-valid backslash ID', async () => {
   const prior = global.fetch
-  for (const id of [' v1', 'v1\u200B']) {
-    global.fetch = async () => new Response(JSON.stringify({ ...directory, volumes: [{ ...directory.volumes[0], id }] }))
-    await assert.rejects(api.manuscripts.index('p'), error => error.code === 'invalid_response')
-  }
-  global.fetch = async () => new Response(JSON.stringify({ ...directory, volumes: [{ ...directory.volumes[0], id: 'v\\1' }] }))
-  try { assert.equal((await api.manuscripts.index('p')).volumes[0].id, 'v\\1') } finally { global.fetch = prior }
+  try {
+    for (const id of [' v1', 'v1\u200B']) {
+      global.fetch = async () => new Response(JSON.stringify({ ...directory, volumes: [{ ...directory.volumes[0], id }] }))
+      await assert.rejects(api.manuscripts.index('p'), error => error.code === 'invalid_response')
+    }
+    global.fetch = async () => new Response(JSON.stringify({ ...directory, volumes: [{ ...directory.volumes[0], id: 'v\\1' }] }))
+    assert.equal((await api.manuscripts.index('p')).volumes[0].id, 'v\\1')
+  } finally { global.fetch = prior }
 })
 
 test('directory accepts the empty-book shape and returned graph is source-isolated', async () => {
@@ -89,4 +91,23 @@ test('archived multi-volume directory and archived chapter parse as deeply froze
   global.fetch = async () => new Response(JSON.stringify(global.fetch.calls++ === 0 ? archivedDirectory : archivedChapter)); global.fetch.calls = 0
   const walk = value => { if (value && typeof value === 'object') { assert.equal(Object.isFrozen(value), true); Object.values(value).forEach(walk) } }
   try { const directoryResult = await api.manuscripts.index('p'); const chapterResult = await api.manuscripts.chapter('p', 2); assert.deepEqual(directoryResult.volumes.flatMap(volume => volume.chapters.map(item => item.number)), [1, 3, 7]); assert.equal(chapterResult.lifecycle, 'archived'); walk(directoryResult); walk(chapterResult) } finally { global.fetch = prior }
+})
+
+test('titles and manuscript prose reject malformed Unicode while legal newlines and emoji pass', async () => {
+  const titleMutations = [
+    ['directory', x => { x.title = ' ' }], ['volume', x => { x.volumes[0].title = ' T' }], ['meta', x => { x.volumes[0].chapters[0].title = '\u0001' }], ['directory zero-width', x => { x.title = 'T\u200B' }], ['directory surrogate', x => { x.title = '\uD800' }],
+  ]
+  for (const [name, mutate] of titleMutations) { const value = structuredClone(directory); mutate(value); await rejectsMutation(name, value) }
+  for (const [name, mutate] of [
+    ['project title surrogate', x => { x.projectTitle = '\uD800' }], ['project title trim', x => { x.projectTitle = ' T' }], ['chapter title empty', x => { x.chapter.title = '' }], ['content surrogate', x => { x.chapter.content = '\uD800'; x.chapter.scalarCount = 1 }], ['outline goal surrogate', x => { x.outline.chapterGoal = '\uD800' }], ['outline item surrogate', x => { x.outline.scenes = ['\uD800'] }],
+  ]) { const value = structuredClone(chapter); mutate(value); await rejectsMutation(name, value, () => api.manuscripts.chapter('p', 2)) }
+  const prior = global.fetch; const valid = structuredClone(chapter); valid.chapter.content = 'line\n😀'; valid.chapter.scalarCount = 6; valid.outline.chapterGoal = 'line\n😀'; valid.outline.scenes = ['a\n😀']
+  global.fetch = async () => new Response(JSON.stringify(valid)); try { assert.equal((await api.manuscripts.chapter('p', 2)).chapter.scalarCount, 6) } finally { global.fetch = prior }
+})
+
+test('project preparation uses its exact abortable GET contract', async () => {
+  const prior = global.fetch; let seen
+  global.fetch = async (url, options) => { assert.match(String(url), /\/projects\/p\/preparation$/); assert.equal(options.method, 'GET'); seen = options.signal; return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(Object.assign(new Error(), { name: 'AbortError' })))) }
+  const controller = new AbortController(); const request = api.projects.preparation('p', { signal: controller.signal }); controller.abort()
+  try { await assert.rejects(request, error => error.code === 'request_aborted'); assert.equal(seen.aborted, true) } finally { global.fetch = prior }
 })

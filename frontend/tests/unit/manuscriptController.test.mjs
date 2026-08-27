@@ -122,3 +122,13 @@ test('disposed preparation ignores both late resolve and reject', async () => {
     await request; assert.equal(controller.preparation.value.status, 'loading', outcome)
   }
 })
+
+test('all loads after dispose are no-ops and preparation signals abort on every invalidation', async () => {
+  let calls = 0; const signals = []; const pending = deferred()
+  const controller = createManuscriptController({ api: { manuscripts: { chapter: async () => { calls += 1; return chapter() }, index: async () => { calls += 1; return {} } }, projects: { preparation: (_id, options) => { calls += 1; signals.push(options.signal); return pending.promise } } } })
+  const first = controller.loadPreparation('p'); const switched = controller.loadPreparation('q'); assert.equal(signals[0].aborted, true)
+  await controller.loadPreparation('bad\u200B'); assert.equal(signals[1].aborted, true)
+  const current = controller.loadPreparation('r'); controller.dispose(); assert.equal(signals.at(-1).aborted, true)
+  const before = { content: controller.content.value, preparation: controller.preparation.value, calls }; await controller.loadContent('p', 2); await controller.loadDirectory('p'); await controller.loadPreparation('p'); assert.equal(calls, before.calls); assert.equal(controller.content.value, before.content); assert.equal(controller.preparation.value, before.preparation)
+  pending.resolve(preparation); await Promise.all([first, switched, current]); assert.equal(controller.preparation.value, before.preparation)
+})
