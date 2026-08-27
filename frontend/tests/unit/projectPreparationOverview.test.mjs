@@ -383,11 +383,11 @@ test('new and recoverable planning states keep the exact server-selected destina
 
 test('outline and writer actions navigate only to the exact server targetPath', async () => {
   const cases = [
-    ['prepare_chapter_outline', '准备下一章小纲', '/server-selected/outline/new'],
-    ['continue_chapter_outline', '继续下一章小纲', '/server-selected/outline/draft'],
-    ['recover_chapter_outline_operation', '核对小纲生成结果', '/server-selected/outline/recovery'],
-    ['start_chapter_session', '进入章节写作', '/server-selected/writer/start'],
-    ['continue_writing', '继续章节写作', '/server-selected/writer/continue'],
+    ['prepare_chapter_outline', '准备第 8 章小纲', '/server-selected/outline/new'],
+    ['continue_chapter_outline', '继续第 8 章小纲', '/server-selected/outline/draft'],
+    ['recover_chapter_outline_operation', '核对第 8 章小纲生成结果', '/server-selected/outline/recovery'],
+    ['start_chapter_session', '进入第 8 章写作', '/server-selected/writer/start'],
+    ['continue_writing', '继续创作第 8 章', '/server-selected/writer/continue'],
   ]
   for (const [nextAction, label, targetPath] of cases) {
     const html = await renderOverview(preparation({

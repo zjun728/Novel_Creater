@@ -8,6 +8,7 @@ import NovelDownloadPanel from '../components/projects/NovelDownloadPanel.vue'
 import ProjectBackupPanel from '../components/projects/ProjectBackupPanel.vue'
 import { useRouteProject } from '../composables/useRouteProject.js'
 import { useProjectStore } from '../stores/projectStore.js'
+import { mapProjectNextAction } from '../application/projects/projectNextAction.js'
 
 const routeProject = useRouteProject()
 const projectStore = useProjectStore()
@@ -21,63 +22,7 @@ const preparation = computed(() => (
     : null
 ))
 
-const actionCopy = computed(() => ({
-  select_seed: {
-    eyebrow: 'CREATIVE SEED',
-    title: '选择创作种子',
-    description: '从候选种子中明确本项目唯一的当前创作方向。',
-  },
-  continue_contract: {
-    eyebrow: 'CREATION CONTRACT',
-    title: '继续创作契约',
-    description: '完成故事发动机、风格、经验与篇幅边界，并由作者确认。',
-  },
-  continue_bible: {
-    eyebrow: 'CREATION BIBLE',
-    title: '继续创作圣经',
-    description: '补全未来设计；手工建立与确认不依赖可用模型。',
-  },
-  continue_planning: {
-    eyebrow: 'STORY PLANNING',
-    title: '继续故事规划',
-    description: '建立分卷、情节线与滚动故事块，让后续章节有方向也有调整余地。',
-  },
-  establish_planning: {
-    eyebrow: 'STORY PLANNING',
-    title: '开始故事规划',
-    description: '从空白工作稿建立分卷与情节线，再逐步形成可执行的完整规划。',
-  },
-  recover_planning_operation: {
-    eyebrow: 'STORY PLANNING',
-    title: '核对规划生成结果',
-    description: '沿用原操作标识读取权威结果，不会重复发起一次 AI 生成。',
-  },
-  recover_chapter_outline_operation: {
-    eyebrow: 'CHAPTER OUTLINE',
-    title: '核对小纲生成结果',
-    description: '读取本章小纲生成操作的权威结果，不会重复发起生成。',
-  },
-  prepare_chapter_outline: {
-    eyebrow: 'CHAPTER OUTLINE',
-    title: '准备下一章小纲',
-    description: '基于当前规划、Canon 与 Projection 建立本章的写作边界。',
-  },
-  continue_chapter_outline: {
-    eyebrow: 'CHAPTER OUTLINE',
-    title: '继续下一章小纲',
-    description: '完善当前章节小纲并确认，随后即可进入正文工作台。',
-  },
-  start_chapter_session: {
-    eyebrow: 'WRITER',
-    title: '进入章节写作',
-    description: '使用已确认的小纲与固定权威基线创建章节工作会话。',
-  },
-  continue_writing: {
-    eyebrow: 'WRITER',
-    title: '继续章节写作',
-    description: '回到已有章节工作会话，继续编辑工作稿与候选稿。',
-  },
-}[preparation.value?.nextAction] || null))
+const actionCopy = computed(() => mapProjectNextAction(preparation.value))
 
 const statusItems = computed(() => {
   const value = preparation.value
@@ -240,12 +185,12 @@ watch(
         </dl>
 
         <router-link
-          v-if="preparation.targetPath && actionCopy"
+          v-if="actionCopy.state === 'available'"
           class="overview-next-action"
-          :to="preparation.targetPath"
+          :to="actionCopy.targetPath"
         >
           <span>{{ actionCopy.eyebrow }}</span>
-          <strong>{{ actionCopy.title }}</strong>
+          <strong>{{ actionCopy.label }}</strong>
           <small>{{ actionCopy.description }}</small>
         </router-link>
 

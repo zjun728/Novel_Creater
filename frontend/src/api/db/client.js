@@ -14,8 +14,12 @@ const STORY_ENGINE_GENERATION_TIMEOUT = 210_000
 const ASSET_RECOMMENDATION_TIMEOUT = 210_000
 const FINALIZATION_PREPARE_TIMEOUT = 1_210_000
 
-async function request(method, path, body, timeoutMs = DEFAULT_TIMEOUT) {
+async function request(method, path, body, timeoutMs = DEFAULT_TIMEOUT, externalSignal) {
   const controller = new AbortController()
+  let externallyAborted = false
+  const abortFromExternalSignal = () => { externallyAborted = true; controller.abort() }
+  if (externalSignal?.aborted) abortFromExternalSignal()
+  else externalSignal?.addEventListener?.('abort', abortFromExternalSignal, { once: true })
   const timer = setTimeout(() => controller.abort(), timeoutMs)
 
   try {
@@ -44,16 +48,17 @@ async function request(method, path, body, timeoutMs = DEFAULT_TIMEOUT) {
       })
     }
   } catch (error) {
-    if (error.name === 'AbortError') {
+    if (controller.signal.aborted || error.name === 'AbortError') {
       throw new ApiError({
-        code: 'request_timeout',
-        message: `请求超时 (${timeoutMs / 1000}s)`,
+        code: externallyAborted ? 'request_aborted' : 'request_timeout',
+        message: externallyAborted ? '请求已取消' : `请求超时 (${timeoutMs / 1000}s)`,
       })
     }
     if (error instanceof ApiError) throw error
     throw new ApiError()
   } finally {
     clearTimeout(timer)
+    externalSignal?.removeEventListener?.('abort', abortFromExternalSignal)
   }
 }
 
@@ -178,6 +183,72 @@ const put = (path, body) => request('PUT', path, body)
 const del = (path, body) => request('DELETE', path, body)
 
 const segment = value => encodeURIComponent(String(value))
+
+function manuscriptObject(value, keys) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).length !== keys.length || keys.some(key => !Object.hasOwn(value, key))) {
+    throw new TypeError('Invalid manuscript response')
+  }
+  return value
+}
+const manuscriptText = value => typeof value === 'string'
+const manuscriptSafeId = value => manuscriptText(value) && value.length > 0 && !/[\\\u0000-\u001f\u007f]/u.test(value)
+const manuscriptPositive = value => Number.isInteger(value) && value > 0
+const manuscriptNonnegative = value => Number.isInteger(value) && value >= 0
+function manuscriptTimestamp(value) {
+  const match = typeof value === 'string' && /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.\d+)?Z$/u.exec(value)
+  if (!match) return false
+  const date = new Date(value)
+  return !Number.isNaN(date.valueOf())
+    && date.getUTCFullYear() === Number(match[1]) && date.getUTCMonth() + 1 === Number(match[2])
+    && date.getUTCDate() === Number(match[3]) && date.getUTCHours() === Number(match[4])
+    && date.getUTCMinutes() === Number(match[5]) && date.getUTCSeconds() === Number(match[6])
+}
+function manuscriptFreeze(value) {
+  if (Array.isArray(value)) value.forEach(manuscriptFreeze)
+  else if (value && typeof value === 'object') Object.values(value).forEach(manuscriptFreeze)
+  return Object.freeze(value)
+}
+function manuscriptChapterMeta(value) {
+  manuscriptObject(value, ['number', 'title', 'scalarCount', 'finalizedAt'])
+  if (!manuscriptPositive(value.number) || !manuscriptText(value.title) || !manuscriptNonnegative(value.scalarCount) || !manuscriptTimestamp(value.finalizedAt)) throw new TypeError('Invalid manuscript response')
+  return { ...value }
+}
+function manuscriptDirectory(value) {
+  manuscriptObject(value, ['projectId', 'title', 'lifecycle', 'summary', 'volumes'])
+  if (!manuscriptText(value.projectId) || value.projectId.length === 0 || !manuscriptText(value.title) || !['active', 'archived'].includes(value.lifecycle) || !Array.isArray(value.volumes)) throw new TypeError('Invalid manuscript response')
+  manuscriptObject(value.summary, ['finalChapterCount', 'totalScalarCount'])
+  if (!manuscriptNonnegative(value.summary.finalChapterCount) || !manuscriptNonnegative(value.summary.totalScalarCount)) throw new TypeError('Invalid manuscript response')
+  let priorOrder = 0; let priorChapter = 0; let total = 0; const ids = new Set(); const volumes = value.volumes.map(volume => {
+    manuscriptObject(volume, ['id', 'order', 'title', 'chapters'])
+    if (!manuscriptSafeId(volume.id) || !manuscriptPositive(volume.order) || volume.order <= priorOrder || !manuscriptText(volume.title) || !Array.isArray(volume.chapters) || volume.chapters.length === 0 || ids.has(volume.id)) throw new TypeError('Invalid manuscript response')
+    priorOrder = volume.order; ids.add(volume.id)
+    const chapters = volume.chapters.map(manuscriptChapterMeta)
+    if (chapters.some(item => item.number <= priorChapter)) throw new TypeError('Invalid manuscript response')
+    if (chapters.length) priorChapter = chapters.at(-1).number
+    total += chapters.reduce((sum, item) => sum + item.scalarCount, 0)
+    return { id: volume.id, order: volume.order, title: volume.title, chapters }
+  })
+  const count = volumes.reduce((sum, volume) => sum + volume.chapters.length, 0)
+  if (value.summary.finalChapterCount !== count || value.summary.totalScalarCount !== total) throw new TypeError('Invalid manuscript response')
+  return manuscriptFreeze({ projectId: value.projectId, title: value.title, lifecycle: value.lifecycle, summary: { ...value.summary }, volumes })
+}
+function manuscriptChapter(value) {
+  manuscriptObject(value, ['projectId', 'projectTitle', 'lifecycle', 'volume', 'chapter', 'outline', 'navigation'])
+  if (!manuscriptText(value.projectId) || !value.projectId || !manuscriptText(value.projectTitle) || !['active', 'archived'].includes(value.lifecycle)) throw new TypeError('Invalid manuscript response')
+  manuscriptObject(value.volume, ['id', 'order', 'title']); if (!manuscriptSafeId(value.volume.id) || !manuscriptPositive(value.volume.order) || !manuscriptText(value.volume.title)) throw new TypeError('Invalid manuscript response')
+  manuscriptObject(value.chapter, ['number', 'title', 'content', 'scalarCount', 'finalizedAt']); if (!manuscriptPositive(value.chapter.number) || !manuscriptText(value.chapter.title) || !manuscriptText(value.chapter.content) || !manuscriptNonnegative(value.chapter.scalarCount) || !manuscriptTimestamp(value.chapter.finalizedAt) || unicodeScalarLength(value.chapter.content) !== value.chapter.scalarCount) throw new TypeError('Invalid manuscript response')
+  manuscriptObject(value.outline, ['chapterGoal', 'expectedCharacters', 'continuation', 'plannedTasks', 'scenes', 'forbiddenEarlyEvents']); if (!manuscriptText(value.outline.chapterGoal) || !['expectedCharacters', 'continuation', 'plannedTasks', 'scenes', 'forbiddenEarlyEvents'].every(key => Array.isArray(value.outline[key]) && value.outline[key].every(manuscriptText))) throw new TypeError('Invalid manuscript response')
+  manuscriptObject(value.navigation, ['previousChapterNumber', 'nextChapterNumber']); const { previousChapterNumber: previous, nextChapterNumber: next } = value.navigation
+  if (!(previous === null || manuscriptPositive(previous)) || !(next === null || manuscriptPositive(next)) || (previous !== null && previous >= value.chapter.number) || (next !== null && next <= value.chapter.number)) throw new TypeError('Invalid manuscript response')
+  return manuscriptFreeze({ projectId: value.projectId, projectTitle: value.projectTitle, lifecycle: value.lifecycle, volume: { ...value.volume }, chapter: { ...value.chapter }, outline: { ...value.outline, expectedCharacters: [...value.outline.expectedCharacters], continuation: [...value.outline.continuation], plannedTasks: [...value.outline.plannedTasks], scenes: [...value.outline.scenes], forbiddenEarlyEvents: [...value.outline.forbiddenEarlyEvents] }, navigation: { ...value.navigation } })
+}
+async function manuscriptRequest(path, options, parser) {
+  try { return parser(await request('GET', path, undefined, DEFAULT_TIMEOUT, options?.signal)) } catch (error) {
+    if (error instanceof ApiError) throw error
+    throw new ApiError({ code: 'invalid_response', message: '服务返回了无效响应' })
+  }
+}
 
 function pickDefined(value = {}, fields = []) {
   const result = {}
@@ -2052,6 +2123,16 @@ function finalizationCommitted(value) {
 
 export const api = {
   health: () => get('/health'),
+
+  manuscripts: {
+    index: (projectId, options = {}) => manuscriptRequest(
+      `/projects/${segment(projectId)}/manuscript`, options, manuscriptDirectory,
+    ),
+    chapter: (projectId, chapterNumber, options = {}) => manuscriptRequest(
+      `/projects/${segment(projectId)}/manuscript/chapters/${segment(chapterNumber)}`,
+      options, manuscriptChapter,
+    ),
+  },
 
   projectBackups: {
     create: (projectId, expectedLifecycleRevision, options = {}) => binaryRequest(
