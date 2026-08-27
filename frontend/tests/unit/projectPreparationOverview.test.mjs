@@ -239,6 +239,10 @@ test.before(async () => {
     await vite.ssrLoadModule('/src/components/projects/ProjectBackupPanel.vue')
   ).default
   BackupPanel.render = await clientRender('components/projects/ProjectBackupPanel.vue')
+  const ManuscriptSummaryLink = (
+    await vite.ssrLoadModule('/src/components/manuscript/ManuscriptSummaryLink.vue')
+  ).default
+  ManuscriptSummaryLink.render = await clientRender('components/manuscript/ManuscriptSummaryLink.vue')
   ArchivedOverview = (
     await vite.ssrLoadModule('/src/views/ArchivedProjectStatusView.vue')
   ).default
@@ -402,7 +406,7 @@ test('outline and writer actions navigate only to the exact server targetPath', 
   }
 })
 
-test('overview keeps its one primary next action before the manuscript entry and backup', async () => {
+test('overview keeps one manuscript entry before its preparation action and backup', async () => {
   const html = await renderOverview(preparation({
     nextAction: 'continue_contract',
     targetPath: '/projects/project%20%2F%20%E4%B8%80/contract',

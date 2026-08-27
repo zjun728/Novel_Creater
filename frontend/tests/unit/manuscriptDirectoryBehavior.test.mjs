@@ -72,6 +72,7 @@ async function mount({
   directorySequence = [], preparationSequence = [], optionSequence = [], fetchOverride,
 } = {}) {
   const originalFetch = global.fetch; const originalDocument = global.document; const calls = []
+  let app
   let directoryAttempt = 0; let preparationAttempt = 0; let optionAttempt = 0
   global.document = { createElement: () => ({ click() {}, remove() {} }), body: { append() {} } }
   global.fetch = async (url, init = {}) => {
@@ -100,10 +101,19 @@ async function mount({
     }
     return new Response(new Blob(['x']), { headers: { 'content-disposition': 'attachment; filename="book.txt"' } })
   }
-  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/projects/:projectId/manuscript', component: Index }, { path: '/projects/:projectId/contract', component: { render: () => null } }, { path: '/projects/:projectId/manuscript/chapters/:chapterNumber', component: { render: () => null } }] })
-  await router.push('/projects/p/manuscript'); await router.isReady()
-  const target = makeNode('root'); const app = renderer.createApp({ render: () => VueRuntime.h(RouterView) }); const pinia = createPinia(); setActivePinia(pinia); app.use(pinia); app.use(router); app.provide(ssrContextKey, { modules: new Set() }); app.mount(target); await flush(); await flush()
-  return { target, calls, router, dispose() { app.unmount(); global.fetch = originalFetch; global.document = originalDocument } }
+  try {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/projects/:projectId/manuscript', component: Index }, { path: '/projects/:projectId/contract', component: { render: () => null } }, { path: '/projects/:projectId/manuscript/chapters/:chapterNumber', component: { render: () => null } }] })
+    await router.push('/projects/p/manuscript'); await router.isReady()
+    const target = makeNode('root')
+    app = renderer.createApp({ render: () => VueRuntime.h(RouterView) })
+    const pinia = createPinia(); setActivePinia(pinia); app.use(pinia); app.use(router); app.provide(ssrContextKey, { modules: new Set() }); app.mount(target); await flush(); await flush()
+    return { target, calls, router, dispose() { app.unmount(); global.fetch = originalFetch; global.document = originalDocument } }
+  } catch (error) {
+    app?.unmount()
+    global.fetch = originalFetch
+    global.document = originalDocument
+    throw error
+  }
 }
 
 test('mounted active directory loads preparation, options, and exact download selectors', async () => {
@@ -127,13 +137,17 @@ test('mounted active directory loads preparation, options, and exact download se
 })
 
 test('mounted archived and empty directories keep lifecycle calls independent', async () => {
-  const archived = await mount({ lifecycle: 'archived' }); const empty = await mount({ chapters: false })
+  const archived = await mount({ lifecycle: 'archived' })
   try {
     assert.match(text(archived.target), /仅供阅读与下载/)
     assert.equal(archived.calls.filter(([url]) => url.endsWith('/preparation')).length, 0)
+  } finally { archived.dispose() }
+
+  const empty = await mount({ chapters: false })
+  try {
     assert.match(text(empty.target), /还没有已定稿章节/)
     assert.equal(empty.calls.filter(([url]) => url.endsWith('/novel-download/options')).length, 0)
-  } finally { archived.dispose(); empty.dispose() }
+  } finally { empty.dispose() }
 })
 
 test('unavailable download options leave the mounted directory readable without controls', async () => {
@@ -162,18 +176,24 @@ test('integrity retry and independent preparation or option failures never hide 
     code: 'ManuscriptIntegrityFailure', message: '作品稿件完整性校验失败', correlationId: 'safe_2',
   }), { status: 500, headers: { 'content-type': 'application/json' } })
   const integrity = await mount({ directorySequence: [integrityResponse, directory('p')] })
-  const preparationFailure = await mount({ preparationSequence: [new Error('private preparation failure')] })
-  const optionFailure = await mount({ optionSequence: [new Error('private option failure')] })
   try {
     const retry = find(integrity.target, node => node.type === 'button' && /重新读取/.test(text(node)))
     assert.ok(retry)
     await retry.props.onClick(); await flush(); await flush()
     assert.match(text(integrity.target), /p 书名.*当前创作位置/)
+  } finally { integrity.dispose() }
+
+  const preparationFailure = await mount({ preparationSequence: [new Error('private preparation failure')] })
+  try {
     assert.match(text(preparationFailure.target), /p 书名.*创作状态暂时无法读取/)
     assert.doesNotMatch(text(preparationFailure.target), /private preparation failure/)
+  } finally { preparationFailure.dispose() }
+
+  const optionFailure = await mount({ optionSequence: [new Error('private option failure')] })
+  try {
     assert.match(text(optionFailure.target), /p 书名.*下载选项加载失败，请重试/)
     assert.doesNotMatch(text(optionFailure.target), /private option failure/)
-  } finally { integrity.dispose(); preparationFailure.dispose(); optionFailure.dispose() }
+  } finally { optionFailure.dispose() }
 })
 
 test('switching projects fences a late directory and keeps only the new project flow', async () => {

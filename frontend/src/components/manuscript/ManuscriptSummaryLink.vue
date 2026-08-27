@@ -30,7 +30,28 @@ onBeforeUnmount(() => { token += 1; abort?.abort() })
   </span>
 </template>
 <style scoped>
-.manuscript-summary-link { display:inline-flex; gap:8px; align-items:center; }
-.manuscript-summary-link a,.manuscript-summary-link button { color:var(--nc-vermilion); font-weight:700; }
-.manuscript-summary-link button { border:0; background:none; text-decoration:underline; cursor:pointer; }
+.manuscript-summary-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-block: 20px;
+}
+.manuscript-summary-link a,
+.manuscript-summary-link button {
+  color: var(--nc-vermilion);
+  font-weight: 700;
+  text-underline-offset: 4px;
+}
+.manuscript-summary-link button {
+  min-height: 44px;
+  padding-inline: 6px;
+  border: 0;
+  background: none;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.manuscript-summary-link :is(a, button):focus-visible {
+  outline: 2px solid var(--nc-vermilion);
+  outline-offset: 3px;
+}
 </style>

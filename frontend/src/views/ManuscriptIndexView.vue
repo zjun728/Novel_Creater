@@ -71,15 +71,15 @@ onBeforeUnmount(() => { manuscript.dispose(); download.dispose() })
       <n-skeleton text width="22%" /><n-skeleton text :repeat="5" />
     </section>
     <section v-else-if="manuscript.content.value.status === 'missing-project'" class="manuscript-index__sheet"><p>项目不存在或已被删除。</p><router-link to="/projects">返回项目库</router-link></section>
-      <n-result v-else-if="['integrity-failure', 'invalid-address'].includes(manuscript.content.value.status)" status="error" title="作品稿件暂时不可用" description="为保护已定稿内容，当前无法展示目录。">
+    <n-result v-else-if="['integrity-failure', 'invalid-address'].includes(manuscript.content.value.status)" class="manuscript-index__sheet" status="error" title="作品稿件暂时不可用" description="为保护已定稿内容，当前无法展示目录。">
       <template #footer><n-button type="primary" @click="retryContent">重新读取</n-button></template>
     </n-result>
     <section v-else-if="manuscript.content.value.status === 'unavailable' && !directory" class="manuscript-index__sheet"><p>目录暂时无法读取。</p><button type="button" @click="retryContent">重新读取</button></section>
     <section v-else-if="directory" class="manuscript-index__sheet" aria-labelledby="manuscript-index-title">
       <p class="manuscript-index__title">{{ directory.title }}</p>
       <dl v-if="directory" class="manuscript-index__summary" aria-label="稿件统计">
-        <div><dt>已定稿</dt><dd>{{ directory.summary.finalChapterCount }} 章</dd></div>
-        <div><dt>字数</dt><dd>{{ directory.summary.totalScalarCount }}</dd></div>
+        <div><dt>已定稿</dt><dd>{{ directory.summary.finalChapterCount.toLocaleString('zh-CN') }} 章</dd></div>
+        <div><dt>字数</dt><dd>{{ directory.summary.totalScalarCount.toLocaleString('zh-CN') }}</dd></div>
       </dl>
 
       <p v-if="isArchived" class="manuscript-index__readonly">项目已归档，稿件仅供阅读与下载。</p>

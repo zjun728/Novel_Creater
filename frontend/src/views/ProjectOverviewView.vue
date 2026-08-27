@@ -319,7 +319,6 @@ h1 {
   color: var(--nc-muted);
   line-height: 1.7;
 }
-.overview-manuscript-link { display:inline-flex; margin-top:24px; color:var(--nc-vermilion); font-weight:700; text-underline-offset:4px; }
 .model-note {
   margin-top: 14px;
 }
