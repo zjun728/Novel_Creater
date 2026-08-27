@@ -1,6 +1,6 @@
 <script setup>
 defineProps({ outline: { type: Object, required: true } })
-const labels = Object.freeze({ chapterGoal: '章节目标', expectedCharacters: '预期人物', continuation: '承接关系', plannedTasks: '计划任务', scenes: '场景', forbiddenEarlyEvents: '禁止提前发生' })
+const labels = Object.freeze({ chapterGoal: '本章目标', expectedCharacters: '预计人物', continuation: '延续项', plannedTasks: '计划任务', scenes: '场景', forbiddenEarlyEvents: '禁止提前发生事项' })
 function value(items) { return Array.isArray(items) ? (items.length ? items.join('；') : '无') : items || '无' }
 </script>
 <template>

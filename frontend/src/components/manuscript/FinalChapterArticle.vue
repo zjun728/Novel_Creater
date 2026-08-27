@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 
 const props = defineProps({ content: { type: String, required: true } })
-const paragraphs = computed(() => props.content.replace(/\r\n?/gu, '\n').split(/\n[\t ]*\n+/u).map(value => value.trim()).filter(Boolean))
+const paragraphs = computed(() => props.content.replace(/\r\n?/gu, '\n').split(/\n[\t ]*\n+/u).filter(value => value.trim().length > 0))
 </script>
 
 <template>

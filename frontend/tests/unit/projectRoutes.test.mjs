@@ -145,11 +145,11 @@ test('formal route registry names only canonical destinations and catches retire
   }
 })
 
-test('reader route lazy-loads the honest pending surface with params-only props', async () => {
+test('reader route lazy-loads the finalized chapter reader with params-only props', async () => {
   const { projectRoutes } = await loadRouteModule()
   const route = projectRoutes.find(item => item.name === 'FinalChapterReader')
   assert.equal(route.props, true)
-  assert.match(String(route.component), /FinalChapterReaderPendingView/)
+  assert.match(String(route.component), /FinalChapterReaderView/)
 })
 
 test('planning tabs share one view and survive direct navigation and browser history', async () => {
