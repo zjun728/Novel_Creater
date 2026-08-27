@@ -53,6 +53,8 @@ test('loads safe options, surfaces a fixed retryable error, and does not expose 
   } } })
   await assert.rejects(() => controller.loadOptions('p'))
   assert.equal(controller.error.value, '下载选项加载失败，请重试。')
+  controller.clearError()
+  assert.equal(controller.error.value, '')
   assert.equal(controller.options.value, null)
   assert.equal(controller.loading.value, false)
   assert.deepEqual(await controller.loadOptions('p'), OPTIONS)

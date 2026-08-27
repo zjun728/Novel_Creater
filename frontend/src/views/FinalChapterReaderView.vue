@@ -40,6 +40,7 @@ function retryPreparation() { return manuscript.loadPreparation(projectId.value)
 function loadOptions() { return download.loadOptions(projectId.value).catch(() => false) }
 async function loadReader(id, number) {
   download.selectProject(id)
+  download.clearError()
   if (!number) {
     await manuscript.loadContent(id, 0)
     return

@@ -127,6 +127,8 @@ export function createNovelDownloadController({
     return key
   }
 
+  function clearError() { error.value = '' }
+
   async function loadOptions(projectId) {
     const key = normalizeProjectId(projectId)
     if (disposed || !key) return false
@@ -247,6 +249,7 @@ export function createNovelDownloadController({
     error,
     available,
     selectProject,
+    clearError,
     loadOptions,
     download,
     dispose,

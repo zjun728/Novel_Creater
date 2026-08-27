@@ -151,6 +151,9 @@ test('chapter download uses the exact selector and a safe local failure never hi
     assert.match(textOf(item.target), /<b>第一段<\/b>/)
     assert.match(textOf(item.target), /下载失败，请重试/)
     assert.doesNotMatch(textOf(item.target), /private transport detail|NovelDownloadUnavailable/)
+    await item.router.push('/projects/p/manuscript/chapters/5'); await flush(); await flush()
+    assert.match(textOf(item.target), /第 5 章 · 5章名/)
+    assert.doesNotMatch(textOf(item.target), /下载失败，请重试/)
   } finally { item.dispose() }
 })
 
