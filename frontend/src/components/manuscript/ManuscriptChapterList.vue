@@ -16,8 +16,8 @@ function dateLabel(value) {
 
 <template>
   <div class="manuscript-chapter-list" aria-label="已定稿章节目录">
-    <section v-for="volume in volumes" :key="volume.id" class="manuscript-chapter-list__volume" :aria-labelledby="`volume-${volume.id}`">
-      <h2 :id="`volume-${volume.id}`">第{{ volume.order }}卷 · {{ volume.title }}</h2>
+    <section v-for="(volume, volumeIndex) in volumes" :key="volume.id" class="manuscript-chapter-list__volume" :aria-labelledby="`volume-heading-${volumeIndex + 1}`">
+      <h2 :id="`volume-heading-${volumeIndex + 1}`">第{{ volume.order }}卷 · {{ volume.title }}</h2>
       <ol class="manuscript-chapter-list__chapters">
         <li v-for="chapter in volume.chapters" :key="chapter.number" class="manuscript-chapter-list__row">
           <router-link class="manuscript-chapter-list__reader" :to="finalChapterPath(projectId, chapter.number)">

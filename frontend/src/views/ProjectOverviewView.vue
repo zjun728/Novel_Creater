@@ -157,6 +157,7 @@ watch(
       <p class="eyebrow">PROJECT OVERVIEW</p>
       <h1 id="project-overview-title">{{ routeProject.project.value.title }}</h1>
       <p>这里汇总服务端已经持久化的创作准备事实，并只给出一个当前下一步。</p>
+      <manuscript-summary-link :project-id="routeProject.project.value.id" />
 
       <n-result
         v-if="projectStore.preparationStatus === 'error'"
@@ -213,7 +214,6 @@ watch(
           规划模型不可用；手工契约与圣经仍可继续，只有 AI 生成被停用。
         </p>
 
-        <manuscript-summary-link :project-id="routeProject.project.value.id" />
         <project-backup-panel
           :key="`backup:${routeProject.project.value.id}`"
           :project-id="routeProject.project.value.id"
