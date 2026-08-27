@@ -537,3 +537,41 @@ async def test_load_snapshot_suppresses_sensitive_exception_causes_and_traceback
         assert error.__cause__ is None
         assert sentinel not in rendered
         assert "INTERNAL_ID_SENTINEL" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_download_delegate_does_not_reclassify_shared_helper_programmer_type_error(
+    monkeypatch,
+):
+    from backend.repositories import novel_downloads as novel_download_repository
+
+    def programmer_bug(*_args, **_kwargs):
+        raise TypeError("programmer bug")
+
+    monkeypatch.setattr(
+        novel_download_repository,
+        "decode_finalized_authority",
+        programmer_bug,
+    )
+    with pytest.raises(TypeError, match="programmer bug"):
+        await novel_download_repository.NovelDownloadRepository().load_finalized_metadata(
+            CapturingSession([_row()]), "project-id",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stored_value",
+    ("PERSISTED_JSON_SENTINEL", {"schemaVersion": "planning-v1"}),
+)
+async def test_malformed_persistent_authority_remains_a_safe_download_corruption(
+    stored_value,
+):
+    row = _row()
+    row["planning_content_json"] = stored_value
+
+    with pytest.raises(NovelDownloadDataCorruption) as caught:
+        await NovelDownloadRepository().load_finalized_metadata(
+            CapturingSession([row]), "project-id",
+        )
+    assert caught.value.__cause__ is None

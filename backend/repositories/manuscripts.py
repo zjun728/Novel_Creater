@@ -231,7 +231,7 @@ def decode_finalized_authority(
         outline = ChapterOutline.model_validate(
             decode_json_object(row.get("outline_content_json")),
         )
-    except (ValidationError, ValueError, TypeError):
+    except (ManuscriptCorrupt, ValidationError):
         raise manuscript_corruption() from None
     if (
         planning_content_hash(

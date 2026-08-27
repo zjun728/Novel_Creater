@@ -224,3 +224,46 @@ async def test_repository_maps_only_driver_availability_failures_without_sensiti
         await ManuscriptRepository().load_directory(
             CapturingSession(failure=TypeError("programmer bug")), "project-id",
         )
+
+
+@pytest.mark.asyncio
+async def test_authority_decoder_does_not_reclassify_model_programmer_type_error(
+    monkeypatch,
+):
+    from backend.repositories import manuscripts as manuscript_repository
+
+    row = _directory_row()
+
+    def programmer_bug(_cls, _value):
+        raise TypeError("programmer bug")
+
+    monkeypatch.setattr(
+        manuscript_repository.PlanningAggregate,
+        "model_validate",
+        classmethod(programmer_bug),
+    )
+    with pytest.raises(TypeError, match="programmer bug"):
+        await manuscript_repository.ManuscriptRepository().load_directory(
+            CapturingSession(([row],)), "project-id",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stored_value",
+    ("PERSISTED_JSON_SENTINEL", {"schemaVersion": "planning-v1"}),
+)
+async def test_malformed_persistent_authority_remains_a_safe_manuscript_corruption(
+    stored_value,
+):
+    from backend.repositories.manuscripts import ManuscriptRepository
+
+    row = _directory_row()
+    row["planning_content_json"] = stored_value
+    with pytest.raises(ManuscriptCorrupt) as caught:
+        await ManuscriptRepository().load_directory(
+            CapturingSession(([row],)), "project-id",
+        )
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert caught.value.__cause__ is None
+    assert "PERSISTED_JSON_SENTINEL" not in rendered

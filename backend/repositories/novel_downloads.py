@@ -112,7 +112,7 @@ def _authority_from_row(row: Mapping[str, object]) -> _FinalizedAuthority:
                 volume_title=authority.volume.title,
             ),
         )
-    except (ManuscriptCorrupt, ValidationError, ValueError, TypeError):
+    except (ManuscriptCorrupt, ValidationError):
         raise _corruption() from None
 
 
