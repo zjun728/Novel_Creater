@@ -509,7 +509,10 @@ onBeforeUnmount(() => {
                 <span v-if="session">第 {{ session.chapterNum }} 章 · revision {{ autosave.persistedRevision.value }}</span>
                 <span v-else>第 {{ chapterNumber }} 章 · 尚未创建章节会话</span>
               </div>
-              <n-tag :type="session ? 'success' : 'default'" :bordered="false">{{ session ? 'drafting' : 'not started' }}</n-tag>
+              <n-tag
+                :type="finalization.finalized.value ? 'success' : session ? 'success' : 'default'"
+                :bordered="false"
+              >{{ finalization.finalized.value ? '已定稿' : session ? 'drafting' : 'not started' }}</n-tag>
             </div>
           </template>
 

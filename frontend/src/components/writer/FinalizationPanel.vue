@@ -210,7 +210,7 @@ async function refreshPostFinalization() {
           :loading="controller.postBusy.value"
           :disabled="controller.postBusy.value"
           @click="refreshPostFinalization"
-        >{{ postFinalization.currentAction.label }}</n-button>
+        >{{ controller.postBusy.value ? '正在读取创作状态…' : postFinalization.currentAction.label }}</n-button>
         <p
           v-else-if="postFinalization.currentAction.state === 'archived'"
           class="muted"

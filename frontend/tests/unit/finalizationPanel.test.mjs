@@ -151,3 +151,51 @@ test('finalized panel renders a loading state while post-commit refresh is pendi
   assert.match(html, /正在读取定稿后的创作状态/)
   assert.doesNotMatch(html, /项目当前为只读状态|重新读取创作状态/)
 })
+
+
+test('initialized post-finalization refresh shows progress until retry is settled', async () => {
+  const controller = {
+    review: shallowRef({ status: 'committed' }),
+    result: shallowRef({ chapterNumber: 4 }),
+    postFinalization: shallowRef({
+      currentAction: {
+        state: 'unavailable',
+        label: '重新读取创作状态',
+      },
+      finalizedChapterReadable: false,
+    }),
+    postBusy: computed(() => true),
+    busy: computed(() => true),
+    error: ref(''),
+    hardBlocks: computed(() => []),
+    finalized: computed(() => true),
+    primaryAction: computed(() => 'done'),
+    refreshPostFinalization: async () => {},
+  }
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/', component: { render: () => h('div') } }],
+  })
+  await router.push('/')
+  await router.isReady()
+  const app = createSSRApp(FinalizationPanel, { controller })
+  app.use(router)
+
+  const html = await renderToString(app)
+
+  assert.match(html, /正在读取创作状态…/)
+  assert.doesNotMatch(html, /重新读取创作状态|项目当前为只读状态/)
+
+  const settledApp = createSSRApp(FinalizationPanel, {
+    controller: {
+      ...controller,
+      postBusy: computed(() => false),
+      busy: computed(() => false),
+    },
+  })
+  settledApp.use(router)
+  const settledHtml = await renderToString(settledApp)
+
+  assert.match(settledHtml, /重新读取创作状态/)
+  assert.doesNotMatch(settledHtml, /正在读取创作状态…/)
+})

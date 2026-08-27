@@ -1,8 +1,35 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFile } from 'node:fs/promises'
+import { compile } from '@vue/compiler-dom'
+import { createSSRApp, h, ref } from 'vue'
+import * as VueRuntime from 'vue'
+import { renderToString } from '@vue/server-renderer'
 
 const source = path => readFile(new URL(`../../src/${path}`, import.meta.url), 'utf8')
+
+async function renderWriterStatusTag({ finalized, hasSession = true }) {
+  const view = await source('views/ChapterWriterView.vue')
+  const template = view.match(/<n-tag\s+:type="[^"]+"\s+:bordered="false"\s*>[\s\S]*?<\/n-tag>/u)?.[0]
+  assert.ok(template, 'writer status tag template is missing')
+  const render = new Function(
+    'Vue',
+    compile(template, { mode: 'function', prefixIdentifiers: true }).code,
+  )(VueRuntime)
+  const app = createSSRApp({
+    setup: () => ({
+      session: hasSession ? { chapterNum: 4 } : null,
+      finalization: { finalized: ref(finalized) },
+    }),
+    render,
+  })
+  app.component('n-tag', {
+    setup(_, { attrs, slots }) {
+      return () => h('span', attrs, slots.default?.())
+    },
+  })
+  return renderToString(app)
+}
 
 function functionBody(moduleSource, signature) {
   const start = moduleSource.indexOf(signature)
@@ -256,6 +283,24 @@ test('candidate workbench compares exactly two read-only drafts and loads explic
   assert.match(view, /controller\.resetContext\(\)[\s\S]{0,80}selectedCandidateIds\.value = \[\]/)
   assert.doesNotMatch(view, /v-model[^>]*candidate\.content|contenteditable|融合候选|fusion|diff-match-patch|candidate-modal|history-drawer/)
   assert.match(view, /workspace-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 320px/)
+})
+
+test('writer status tag switches from drafting to one finalized author label', async () => {
+  const view = await source('views/ChapterWriterView.vue')
+
+  assert.match(
+    view,
+    /finalization\.finalized\.value\s*\?\s*'已定稿'\s*:\s*session\s*\?\s*'drafting'/,
+  )
+
+  const draftingHtml = await renderWriterStatusTag({ finalized: false })
+  assert.match(draftingHtml, />drafting<\/span>/)
+  assert.doesNotMatch(draftingHtml, /已定稿/)
+
+  const finalizedHtml = await renderWriterStatusTag({ finalized: true })
+  assert.match(finalizedHtml, /type="success"/)
+  assert.match(finalizedHtml, />已定稿<\/span>/)
+  assert.doesNotMatch(finalizedHtml, /drafting/)
 })
 
 
