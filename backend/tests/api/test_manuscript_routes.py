@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from backend.domain.routers import manuscripts
+from backend.database import DatabaseUnavailable, read_only_transaction
 from backend.security.redaction import install_error_handlers
 from backend.services.manuscripts import (
     FinalChapterNotFound, ManuscriptChapterDetailResponse,
@@ -49,6 +50,48 @@ def _client():
     app.include_router(manuscripts.router, prefix="/api")
     app.dependency_overrides[manuscripts.get_manuscript_reading_service] = lambda: service
     return TestClient(app, raise_server_exceptions=False), service
+
+
+def test_production_manuscript_router_uses_database_enforced_read_only_boundary():
+    assert manuscripts._service._transaction_factory is read_only_transaction
+
+
+class BoundaryFailure:
+    def __init__(self, error, *, on_exit=False):
+        self.error = error
+        self.on_exit = on_exit
+
+    def __call__(self):
+        return self
+
+    async def __aenter__(self):
+        if not self.on_exit:
+            raise self.error
+        return object()
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        if self.on_exit:
+            raise self.error
+
+
+class UnusedRepository:
+    async def load_directory(self, session, project_id):
+        pytest.fail("repository must not run when transaction boundary fails")
+
+    async def load_chapter(self, session, project_id, chapter_number):
+        pytest.fail("repository must not run when transaction boundary fails")
+
+
+def _boundary_client(error, *, on_exit=False):
+    from backend.services.manuscripts import ManuscriptReadingService
+
+    app = FastAPI()
+    install_error_handlers(app)
+    app.include_router(manuscripts.router, prefix="/api")
+    app.dependency_overrides[manuscripts.get_manuscript_reading_service] = lambda: ManuscriptReadingService(
+        BoundaryFailure(error, on_exit=on_exit), UnusedRepository(),
+    )
+    return TestClient(app, raise_server_exceptions=False)
 
 
 def test_directory_shape_headers_and_closed_query_contract():
@@ -199,3 +242,30 @@ def test_request_invalid_has_fixed_safe_public_body_without_partial_data(url):
     assert response.json()["message"] == "Manuscript request is invalid"
     assert set(response.json()) == {"code", "message", "correlationId"}
     assert all(token not in response.text for token in ("projectId", "volumes", '"content"', '"outline"'))
+
+
+@pytest.mark.parametrize("url", [
+    "/api/projects/project-1/manuscript",
+    "/api/projects/project-1/manuscript/chapters/9",
+])
+@pytest.mark.parametrize("on_exit", [False, True])
+def test_database_read_only_boundary_unavailability_is_public_503_without_partial_data(
+    url, on_exit,
+):
+    response = _boundary_client(DatabaseUnavailable(), on_exit=on_exit).get(url)
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "ManuscriptTemporarilyUnavailable"
+    assert response.json()["message"] == "Finalized manuscript is temporarily unavailable"
+    assert set(response.json()) == {"code", "message", "correlationId"}
+    assert all(token not in response.text for token in ("projectId", "volumes", '"content"', '"outline"'))
+
+
+def test_programmer_transaction_error_is_not_mapped_to_manuscript_503():
+    response = _boundary_client(RuntimeError("programmer failure")).get(
+        "/api/projects/project-1/manuscript",
+    )
+
+    assert response.status_code == 500
+    assert response.json()["message"] == "Internal server error"
+    assert response.json().get("code") != "ManuscriptTemporarilyUnavailable"

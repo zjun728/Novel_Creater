@@ -156,6 +156,90 @@ async def test_transaction_rollback_failure_keeps_body_and_rollback_errors(monke
 
 
 @pytest.mark.asyncio
+async def test_read_only_transaction_uses_mysql_read_only_start_and_commits_once(monkeypatch):
+    pool = FakePool()
+    use_pool(monkeypatch, pool)
+
+    async with database.read_only_transaction() as session:
+        assert session.raw is pool.raw
+        assert await session.fetchone("SELECT one") == {"value": "one"}
+
+    assert pool.acquire_count == pool.release_count == 1
+    assert pool.raw.executions[0] == ("START TRANSACTION READ ONLY", None)
+    assert pool.raw.begin_count == 0
+    assert pool.raw.commit_count == 1
+    assert pool.raw.rollback_count == 0
+
+
+@pytest.mark.asyncio
+async def test_read_only_transaction_rolls_back_body_error_and_preserves_programmer_error(monkeypatch):
+    pool = FakePool()
+    use_pool(monkeypatch, pool)
+
+    with pytest.raises(RuntimeError, match="body failure"):
+        async with database.read_only_transaction():
+            raise RuntimeError("body failure")
+
+    assert pool.raw.commit_count == 0
+    assert pool.raw.rollback_count == 1
+    assert pool.release_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["acquire", "start", "commit"])
+@pytest.mark.parametrize("driver_error", [aiomysql.OperationalError, aiomysql.InterfaceError])
+async def test_read_only_transaction_translates_driver_availability_failures_safely(
+    monkeypatch, phase, driver_error,
+):
+    pool = FakePool()
+    error = driver_error(2006, "RAW_DB_SENTINEL")
+    if phase == "acquire":
+        pool.acquire_error = error
+    elif phase == "start":
+        pool.raw.execute_error = error
+    else:
+        pool.raw.commit_error = error
+    use_pool(monkeypatch, pool)
+
+    with pytest.raises(database.DatabaseUnavailable) as raised:
+        async with database.read_only_transaction():
+            if phase != "commit":
+                pytest.fail("body must not run before failed acquisition or start")
+
+    assert str(raised.value) == "Database is temporarily unavailable"
+    assert raised.value.__cause__ is None
+    assert "RAW_DB_SENTINEL" not in str(raised.value)
+    assert pool.release_count == (0 if phase == "acquire" else 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("driver_error", [aiomysql.OperationalError, aiomysql.InterfaceError])
+async def test_read_only_transaction_translates_pool_creation_and_body_driver_failures(
+    monkeypatch, driver_error,
+):
+    pool_error = driver_error(2006, "RAW_POOL_SENTINEL")
+
+    async def failed_pool():
+        raise pool_error
+
+    monkeypatch.setattr(database, "get_pool", failed_pool)
+    with pytest.raises(database.DatabaseUnavailable) as raised:
+        async with database.read_only_transaction():
+            pytest.fail("body must not run without a pool")
+    assert raised.value.__cause__ is None
+    assert "RAW_POOL_SENTINEL" not in str(raised.value)
+
+    pool = FakePool()
+    use_pool(monkeypatch, pool)
+    with pytest.raises(database.DatabaseUnavailable) as raised:
+        async with database.read_only_transaction():
+            raise driver_error(2006, "RAW_BODY_SENTINEL")
+    assert raised.value.__cause__ is None
+    assert "RAW_BODY_SENTINEL" not in str(raised.value)
+    assert pool.raw.rollback_count == pool.release_count == 1
+
+
+@pytest.mark.asyncio
 async def test_connection_body_error_releases_without_transaction_calls(monkeypatch):
     pool = FakePool()
     use_pool(monkeypatch, pool)

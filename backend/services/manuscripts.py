@@ -7,6 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.database import DatabaseUnavailable
 from backend.domain.manuscripts import (
     FinalChapterMissing,
     FinalChapterRecord,
@@ -147,6 +148,8 @@ class ManuscriptReadingService:
                 record = await self._repository.load_directory(session, project_id)
         except ManuscriptUnavailable:
             raise ManuscriptTemporarilyUnavailable() from None
+        except DatabaseUnavailable:
+            raise ManuscriptTemporarilyUnavailable() from None
         except ManuscriptCorrupt:
             raise ManuscriptIntegrityFailure() from None
         if record is None:
@@ -160,6 +163,8 @@ class ManuscriptReadingService:
             async with self._transaction_factory() as session:
                 lookup = await self._repository.load_chapter(session, project_id, chapter_number)
         except ManuscriptUnavailable:
+            raise ManuscriptTemporarilyUnavailable() from None
+        except DatabaseUnavailable:
             raise ManuscriptTemporarilyUnavailable() from None
         except FinalChapterMissing:
             raise FinalChapterNotFound() from None

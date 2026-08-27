@@ -16,6 +16,7 @@ from backend.domain.manuscripts import (
     ManuscriptVolume,
     canonicalize_manuscript_volumes,
 )
+from backend.database import DatabaseUnavailable
 from backend.services.manuscripts import (
     FinalChapterNotFound,
     ManuscriptIntegrityFailure,
@@ -160,6 +161,35 @@ async def test_service_maps_repository_missing_final_chapter_to_not_found_not_in
         await service.chapter("project-1", 9)
 
     assert transactions.entered == transactions.exited == 1
+
+
+class FailingTransaction:
+    def __init__(self, error, *, exit_error=False):
+        self.error = error
+        self.exit_error = exit_error
+
+    def __call__(self):
+        return self
+
+    async def __aenter__(self):
+        if not self.exit_error:
+            raise self.error
+        return object()
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        if self.exit_error:
+            raise self.error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exit_error", [False, True])
+async def test_service_maps_database_read_only_boundary_availability_to_temporary_unavailable(exit_error):
+    service = ManuscriptReadingService(
+        FailingTransaction(DatabaseUnavailable(), exit_error=exit_error), Repository(),
+    )
+
+    with pytest.raises(ManuscriptTemporarilyUnavailable):
+        await service.directory("project-1")
 
 
 @pytest.mark.asyncio

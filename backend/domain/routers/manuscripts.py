@@ -7,7 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
-from backend.database import transaction
+from backend.database import read_only_transaction
 from backend.http_errors import PublicDomainError
 from backend.services.manuscripts import (
     FinalChapterNotFound,
@@ -19,7 +19,7 @@ from backend.services.manuscripts import (
 
 
 router = APIRouter(tags=["manuscripts"])
-_service = ManuscriptReadingService(transaction)
+_service = ManuscriptReadingService(read_only_transaction)
 _MAX_CHAPTER_NUMBER = 2_147_483_647
 
 

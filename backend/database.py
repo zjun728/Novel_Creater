@@ -34,6 +34,16 @@ class DatabaseSession:
             return await cursor.fetchall()
 
 
+class DatabaseUnavailable(RuntimeError):
+    """A driver-level database operation could not be completed safely."""
+
+    def __init__(self) -> None:
+        super().__init__("Database is temporarily unavailable")
+
+
+_DRIVER_UNAVAILABLE_ERRORS = (aiomysql.OperationalError, aiomysql.InterfaceError)
+
+
 async def get_pool():
     global _pool
     if _pool is None:
@@ -90,6 +100,49 @@ async def transaction():
             await raw.commit()
     finally:
         pool.release(raw)
+
+
+@asynccontextmanager
+async def read_only_transaction():
+    """Yield one session inside an enforced MySQL read-only transaction."""
+    raw = None
+    pool = None
+    try:
+        try:
+            pool = await get_pool()
+            raw = await pool.acquire()
+            session = DatabaseSession(raw)
+            await session.execute("START TRANSACTION READ ONLY")
+        except _DRIVER_UNAVAILABLE_ERRORS:
+            raise DatabaseUnavailable() from None
+        try:
+            yield session
+        except BaseException as body_error:
+            try:
+                await raw.rollback()
+            except BaseException as rollback_error:
+                if isinstance(body_error, _DRIVER_UNAVAILABLE_ERRORS):
+                    raise DatabaseUnavailable() from None
+                if isinstance(rollback_error, _DRIVER_UNAVAILABLE_ERRORS):
+                    raise BaseExceptionGroup(
+                        "read-only transaction body failed and rollback also failed",
+                        [body_error, DatabaseUnavailable()],
+                    ) from body_error
+                raise BaseExceptionGroup(
+                    "read-only transaction body failed and rollback also failed",
+                    [body_error, rollback_error],
+                ) from body_error
+            if isinstance(body_error, _DRIVER_UNAVAILABLE_ERRORS):
+                raise DatabaseUnavailable() from None
+            raise
+        else:
+            try:
+                await raw.commit()
+            except _DRIVER_UNAVAILABLE_ERRORS:
+                raise DatabaseUnavailable() from None
+    finally:
+        if raw is not None:
+            pool.release(raw)
 
 
 async def execute(sql, args=None):
