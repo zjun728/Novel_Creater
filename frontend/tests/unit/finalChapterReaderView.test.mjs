@@ -12,7 +12,7 @@ import vuePlugin from '@vitejs/plugin-vue'
 import { createServer } from 'vite'
 
 const root = fileURLToPath(new URL('../..', import.meta.url))
-const node = type => ({ type, text: '', props: {}, children: [], parent: null })
+const node = type => ({ type, text: '', props: {}, children: [], parent: null, focused: false, focus() { this.focused = true }, closest() { return null } })
 const detach = child => { if (child?.parent) child.parent.children.splice(child.parent.children.indexOf(child), 1) }
 const renderer = createRenderer({ patchProp(n, k, _o, v) { if (v == null) delete n.props[k]; else n.props[k] = v }, insert(c, p, a = null) { detach(c); c.parent = p; const i = a ? p.children.indexOf(a) : -1; if (i < 0) p.children.push(c); else p.children.splice(i, 0, c) }, remove: detach, createElement: node, createText: value => ({ ...node('#text'), text: String(value) }), createComment: value => ({ ...node('#comment'), text: String(value || '') }), setText: (n, v) => { n.text = String(v) }, setElementText: (n, v) => { n.text = String(v); n.children = [] }, parentNode: n => n?.parent || null, nextSibling: n => n?.parent?.children[n.parent.children.indexOf(n) + 1] || null, querySelector: () => null, setScopeId: (n, id) => { n.props[id] = '' }, cloneNode: n => ({ ...n, props: { ...n.props }, children: [...n.children], parent: null }), insertStaticContent(c, p, a) { const n = { ...node('#static'), text: c }; renderer.insert(n, p, a); return [n, n] } })
 const textOf = n => [n?.text, ...(n?.children || []).map(textOf)].filter(Boolean).join(' ')
@@ -64,10 +64,14 @@ test('mounted reader switches text and outline by query without reloading chapte
   const item = await mount('/projects/p/manuscript/chapters/2?view=text')
   try {
     assert.match(textOf(item.target), /<b>第一段<\/b>.*第二段/, JSON.stringify(item.calls))
+    const title = find(item.target, n => n.type === 'h1')
+    assert.equal(title.focused, true)
+    title.focused = false
     const counts = () => ({ chapter: item.calls.filter(([url]) => /\/manuscript\/chapters\/2$/.test(url)).length, preparation: item.calls.filter(([url]) => url.endsWith('/preparation')).length, options: item.calls.filter(([url]) => url.endsWith('/novel-download/options')).length })
     assert.deepEqual(counts(), { chapter: 1, preparation: 1, options: 1 })
     await item.router.push({ query: { view: 'outline' } }); await flush()
     assert.match(textOf(item.target), /本章小纲.*目标.*无/)
+    assert.equal(title.focused, false)
     assert.deepEqual(counts(), { chapter: 1, preparation: 1, options: 1 })
     item.router.back(); await waitFor(() => item.router.currentRoute.value.query.view === 'text', 'browser back did not restore text view')
     assert.match(textOf(item.target), /<b>第一段<\/b>/)
@@ -76,13 +80,20 @@ test('mounted reader switches text and outline by query without reloading chapte
     assert.deepEqual(counts(), { chapter: 1, preparation: 1, options: 1 })
     await item.router.push({ query: { view: 'private-invalid' } }); await waitFor(() => item.router.currentRoute.value.query.view === 'text', 'invalid view was not normalized with replace')
     assert.match(textOf(item.target), /<b>第一段<\/b>/)
+    item.router.back(); await waitFor(() => item.router.currentRoute.value.query.view === 'outline', 'invalid view normalization added a history entry instead of replacing it')
+    assert.match(textOf(item.target), /本章小纲/)
     assert.deepEqual(counts(), { chapter: 1, preparation: 1, options: 1 })
   } finally { item.dispose() }
 })
 
 test('mounted reader uses response navigation and has no author write controls', async () => {
   const item = await mount()
-  try { assert.ok(find(item.target, n => n.props.href === '/projects/p/manuscript/chapters/1')); assert.ok(find(item.target, n => n.props.href === '/projects/p/manuscript/chapters/5')); assert.equal(find(item.target, n => n.type === 'textarea' || n.props.contenteditable), undefined); assert.doesNotMatch(textOf(item.target), /编辑本章|提交|生成/) } finally { item.dispose() }
+  try {
+    assert.ok(find(item.target, n => n.props.href === '/projects/p/manuscript/chapters/1')); assert.ok(find(item.target, n => n.props.href === '/projects/p/manuscript/chapters/5'))
+    const rendered = textOf(item.target)
+    assert.ok(rendered.indexOf('下一篇') < rendered.indexOf('继续创作契约'))
+    assert.equal(find(item.target, n => n.type === 'textarea' || n.props.contenteditable), undefined); assert.doesNotMatch(rendered, /编辑本章|提交|生成/)
+  } finally { item.dispose() }
 })
 
 test('mounted reader fences a late chapter when project and chapter change', async () => {
@@ -98,6 +109,7 @@ test('mounted reader fences a late chapter when project and chapter change', asy
     await item.router.push('/projects/p/manuscript/chapters/3'); await flush()
     await item.router.push('/projects/q/manuscript/chapters/7'); await flush(); await flush()
     assert.match(textOf(item.target), /第 7 章 · 7章名/, JSON.stringify(item.calls))
+    assert.equal(find(item.target, n => n.type === 'h1').focused, true)
     late.resolve(response(chapter('p', 3))); await flush(); await flush()
     assert.match(textOf(item.target), /第 7 章 · 7章名/)
     assert.doesNotMatch(textOf(item.target), /3章名/)
@@ -184,7 +196,8 @@ test('missing projects and independent preparation or option failures remain act
     const prepRetry = find(failures.target, n => n.type === 'button' && /重新读取创作状态/.test(textOf(n)))
     const optionRetry = find(failures.target, n => n.type === 'button' && /重新读取下载选项/.test(textOf(n)))
     await prepRetry.props.onClick(); await optionRetry.props.onClick(); await flush(); await flush()
-    assert.match(textOf(failures.target), /继续创作契约.*下载本章定稿/)
+    assert.match(textOf(failures.target), /继续创作契约/)
+    assert.match(textOf(failures.target), /下载本章定稿/)
   } finally { failures.dispose() }
 })
 
@@ -224,7 +237,8 @@ test('reader keeps download and creation state local to verified chapter content
   assert.match(source, /scope: 'chapter'/)
   assert.match(source, /download\.error\.value/)
   assert.match(source, /manuscript\.loadPreparation/)
-  assert.match(source, /preparation\.status === 'ready' && !isArchived/)
+  assert.match(source, /!isArchived && !\['idle', 'loading', 'invalid-address', 'missing-project'\]\.includes\(status\)/)
+  assert.match(source, /preparation\.status === 'ready'/)
   assert.match(source, /link\.hidden = true[\s\S]*document\.body\.append\(link\)[\s\S]*link\.remove\(\)/)
   assert.match(source, /manuscript\.loadContent\(id, 0\)/)
 })
