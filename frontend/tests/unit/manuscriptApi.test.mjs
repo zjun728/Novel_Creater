@@ -28,3 +28,19 @@ test('manuscript API forwards caller abort as request_aborted', async () => {
   const controller = new AbortController(); const request = api.manuscripts.index('p', { signal: controller.signal }); controller.abort()
   try { await assert.rejects(request, error => error.code === 'request_aborted'); assert.ok(seen.aborted) } finally { global.fetch = prior }
 })
+
+test('directory rejects unsafe IDs and accepts a backend-valid backslash ID', async () => {
+  const prior = global.fetch
+  for (const id of [' v1', 'v1\u200B']) {
+    global.fetch = async () => new Response(JSON.stringify({ ...directory, volumes: [{ ...directory.volumes[0], id }] }))
+    await assert.rejects(api.manuscripts.index('p'), error => error.code === 'invalid_response')
+  }
+  global.fetch = async () => new Response(JSON.stringify({ ...directory, volumes: [{ ...directory.volumes[0], id: 'v\\1' }] }))
+  try { assert.equal((await api.manuscripts.index('p')).volumes[0].id, 'v\\1') } finally { global.fetch = prior }
+})
+
+test('directory accepts the empty-book shape and returned graph is source-isolated', async () => {
+  const prior = global.fetch; const source = { ...directory, summary: { finalChapterCount: 0, totalScalarCount: 0 }, volumes: [] }
+  global.fetch = async () => new Response(JSON.stringify(source))
+  try { const value = await api.manuscripts.index('p'); source.title = 'changed'; assert.equal(value.title, 'T'); assert.equal(Object.isFrozen(value), true); assert.equal(Object.isFrozen(value.volumes), true) } finally { global.fetch = prior }
+})

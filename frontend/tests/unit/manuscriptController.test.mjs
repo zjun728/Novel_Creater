@@ -54,3 +54,19 @@ test('unknown failures do not retain correlation IDs', async () => {
   await controller.loadContent('p', 2)
   assert.equal(controller.content.value.correlationId, '')
 })
+
+test('invalid preparation invalidates a late valid preparation response', async () => {
+  const pending = deferred()
+  const controller = createManuscriptController({ api: { manuscripts: { chapter: async () => chapter(), index: async () => ({}) }, projects: { preparation: () => pending.promise } } })
+  const earlier = controller.loadPreparation('p')
+  await controller.loadPreparation('bad\u200B')
+  pending.resolve(preparation); await earlier
+  assert.equal(controller.preparation.value.status, 'unavailable')
+})
+
+test('controller maps each public error without cross-target retention', async () => {
+  for (const [code, status] of Object.entries({ ManuscriptProjectNotFound: 'missing-project', FinalChapterNotFound: 'missing-chapter', ManuscriptRequestInvalid: 'invalid-address', ManuscriptIntegrityFailure: 'integrity-failure', ManuscriptTemporarilyUnavailable: 'unavailable', unknown: 'unavailable' })) {
+    const controller = createManuscriptController({ api: { manuscripts: { chapter: async () => { throw new ApiError({ code }) }, index: async () => ({}) }, projects: { preparation: async () => preparation } } })
+    await controller.loadContent('p', 2); assert.equal(controller.content.value.status, status); assert.equal(controller.content.value.data, null)
+  }
+})

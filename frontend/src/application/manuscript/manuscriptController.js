@@ -6,7 +6,7 @@ const COPY = Object.freeze({
   'invalid-address': '章节地址无效', 'integrity-failure': '章节内容校验失败', unavailable: '正文暂时无法加载',
 })
 const ERROR_STATUS = Object.freeze({ ManuscriptProjectNotFound: 'missing-project', FinalChapterNotFound: 'missing-chapter', ManuscriptRequestInvalid: 'invalid-address', ManuscriptIntegrityFailure: 'integrity-failure', ManuscriptTemporarilyUnavailable: 'unavailable' })
-function normalizeProjectId(value) { if (typeof value !== 'string') return null; const id = value.trim(); return id && !/[\u0000-\u001f\u007f]/u.test(id) ? id : null }
+function normalizeProjectId(value) { if (typeof value !== 'string') return null; const id = value.trim(); return id && !/\p{C}/u.test(id) ? id : null }
 const normalizeChapter = value => Number.isSafeInteger(value) && value > 0 ? value : null
 function contentState(status, { data = null, correlationId = '' } = {}) { return Object.freeze({ status, title: COPY[status] || '', correlationId, data }) }
 const preparationState = (status, nextAction = null) => Object.freeze({ status, nextAction })
@@ -40,8 +40,9 @@ export function createManuscriptController({ api, abortControllerFactory = () =>
   const loadContent = (projectId, chapterNumber, options) => load('chapter', projectId, chapterNumber, options)
   const loadDirectory = (projectId, options) => load('directory', projectId, null, options)
   async function loadPreparation(rawProjectId) {
+    const token = ++preparationGeneration
     const projectId = normalizeProjectId(rawProjectId); if (!projectId) { preparation.value = preparationState('unavailable'); return preparation.value }
-    const token = ++preparationGeneration; preparation.value = preparationState('loading')
+    preparation.value = preparationState('loading')
     try { const mapped = mapProjectNextAction(await api.projects.preparation(projectId)); if (!disposed && token === preparationGeneration) preparation.value = preparationState(mapped.state === 'archived' ? 'archived' : mapped.state === 'available' ? 'ready' : 'unavailable', mapped) } catch { if (!disposed && token === preparationGeneration) preparation.value = preparationState('unavailable') }
     return preparation.value
   }

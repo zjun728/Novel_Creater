@@ -192,7 +192,7 @@ function manuscriptObject(value, keys) {
   return value
 }
 const manuscriptText = value => typeof value === 'string'
-const manuscriptSafeId = value => manuscriptText(value) && value.trim().length > 0 && !/[\\\u0000-\u001f\u007f]/u.test(value)
+const manuscriptSafeId = value => manuscriptText(value) && value.length > 0 && value === value.trim() && !/\p{C}/u.test(value)
 const manuscriptPositive = value => Number.isSafeInteger(value) && value > 0
 const manuscriptNonnegative = value => Number.isSafeInteger(value) && value >= 0
 function manuscriptTimestamp(value) {

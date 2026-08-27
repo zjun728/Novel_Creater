@@ -46,3 +46,16 @@ test('continue writing has the fixed author-facing description', () => {
   assert.equal(action.description, '回到当前权威章节，继续已有写作。')
   assert.deepEqual(Object.keys(action).sort(), ['chapterNumber', 'description', 'eyebrow', 'label', 'state', 'targetPath'])
 })
+
+test('every action returns a closed complete available object', () => {
+  const labels = {
+    select_seed: '选择创作种子', continue_contract: '继续创作契约', continue_bible: '继续创作圣经',
+    recover_planning_operation: '核对规划生成结果', establish_planning: '开始故事规划', continue_planning: '继续故事规划',
+    recover_chapter_outline_operation: '核对第 7 章小纲生成结果', prepare_chapter_outline: '准备第 7 章小纲',
+    continue_chapter_outline: '继续第 7 章小纲', start_chapter_session: '进入第 7 章写作', continue_writing: '继续创作第 7 章',
+  }
+  for (const [nextAction, label] of Object.entries(labels)) {
+    const value = mapProjectNextAction({ lifecycle: 'active', nextAction, targetPath: '/authority', authoritativeChapterNumber: 7 })
+    assert.equal(value.state, 'available'); assert.equal(value.label, label); assert.equal(value.targetPath, '/authority'); assert.equal(value.chapterNumber, chapterActions.includes(nextAction) ? 7 : null); assert.ok(value.description)
+  }
+})
