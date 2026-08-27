@@ -795,7 +795,9 @@ test('project overview renders one server-authoritative Phase 2 next action', as
   )
 
   assert.match(overview, /useProjectStore/)
-  assert.match(overview, /preparation\.targetPath/)
+  assert.match(overview, /import \{ mapProjectNextAction \}/)
+  assert.match(overview, /computed\(\(\) => mapProjectNextAction\(preparation\.value\)\)/)
+  assert.match(overview, /:to="actionCopy\.targetPath"/)
   assert.equal((overview.match(/class="overview-next-action"/g) || []).length, 1)
   assert.doesNotMatch(overview, /projectContractPath|projectBiblePath/)
   assert.doesNotMatch(overview, /WriterView|\/writer\//)

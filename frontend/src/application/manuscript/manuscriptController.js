@@ -16,10 +16,11 @@ const correlation = error => ['ManuscriptIntegrityFailure', 'ManuscriptTemporari
 export function createManuscriptController({ api, abortControllerFactory = () => new AbortController() } = {}) {
   if (!api?.manuscripts || !api?.projects || typeof abortControllerFactory !== 'function') throw new TypeError('manuscript API and abortControllerFactory are required')
   const content = shallowRef(contentState('idle')); const preparation = shallowRef(preparationState('idle'))
-  let generation = 0; let preparationGeneration = 0; let key = ''; let controller = null; let disposed = false
+  let generation = 0; let preparationGeneration = 0; let key = ''; let controller = null; let prepAbort = null; let disposed = false
   function invalidate(state) { generation += 1; key = ''; controller?.abort(); controller = null; content.value = state }
   function makeController() { const value = abortControllerFactory(); if (!value?.signal || typeof value.abort !== 'function') throw new TypeError('abortControllerFactory returned invalid controller'); return value }
   async function load(kind, rawProjectId, rawChapterNumber, { force = false } = {}) {
+    if (disposed) return content.value
     const projectId = normalizeProjectId(rawProjectId); const chapterNumber = kind === 'chapter' ? normalizeChapter(rawChapterNumber) : null
     if (!projectId || (kind === 'chapter' && !chapterNumber)) { invalidate(contentState('invalid-address')); return content.value }
     const nextKey = `${kind}\u0000${projectId}\u0000${chapterNumber ?? ''}`; const same = nextKey === key
@@ -40,12 +41,15 @@ export function createManuscriptController({ api, abortControllerFactory = () =>
   const loadContent = (projectId, chapterNumber, options) => load('chapter', projectId, chapterNumber, options)
   const loadDirectory = (projectId, options) => load('directory', projectId, null, options)
   async function loadPreparation(rawProjectId) {
+    if (disposed) return preparation.value
     const token = ++preparationGeneration
+    prepAbort?.abort()
     const projectId = normalizeProjectId(rawProjectId); if (!projectId) { preparation.value = preparationState('unavailable'); return preparation.value }
+    prepAbort = makeController()
     preparation.value = preparationState('loading')
-    try { const mapped = mapProjectNextAction(await api.projects.preparation(projectId)); if (!disposed && token === preparationGeneration) preparation.value = preparationState(mapped.state === 'archived' ? 'archived' : mapped.state === 'available' ? 'ready' : 'unavailable', mapped) } catch { if (!disposed && token === preparationGeneration) preparation.value = preparationState('unavailable') }
+    try { const mapped = mapProjectNextAction(await api.projects.preparation(projectId, { signal: prepAbort.signal })); if (!disposed && token === preparationGeneration) preparation.value = preparationState(mapped.state === 'archived' ? 'archived' : mapped.state === 'available' ? 'ready' : 'unavailable', mapped) } catch { if (!disposed && token === preparationGeneration) preparation.value = preparationState('unavailable') }
     return preparation.value
   }
-  function dispose() { disposed = true; generation += 1; preparationGeneration += 1; controller?.abort() }
+  function dispose() { disposed = true; generation += 1; preparationGeneration += 1; controller?.abort(); prepAbort?.abort() }
   return { content, preparation, loadContent, loadDirectory, loadPreparation, dispose }
 }

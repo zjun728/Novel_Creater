@@ -47,6 +47,12 @@ test('continue writing has the fixed author-facing description', () => {
   assert.deepEqual(Object.keys(action).sort(), ['chapterNumber', 'description', 'eyebrow', 'label', 'state', 'targetPath'])
 })
 
+test('chapter actions reject non-safe chapter numbers', () => {
+  for (const chapterNumber of [Number.MAX_SAFE_INTEGER + 1, Infinity, 1.5, 0]) {
+    assert.deepEqual(mapProjectNextAction({ lifecycle: 'active', nextAction: 'continue_writing', targetPath: '/write', authoritativeChapterNumber: chapterNumber }), { state: 'unavailable', label: '重新读取创作状态' })
+  }
+})
+
 test('every action returns a closed complete available object', () => {
   const labels = {
     select_seed: ['CREATIVE SEED', '选择创作种子', '从候选种子中明确本项目唯一的当前创作方向。'], continue_contract: ['CREATION CONTRACT', '继续创作契约', '完成故事发动机、风格、经验与篇幅边界，并由作者确认。'], continue_bible: ['CREATION BIBLE', '继续创作圣经', '补全未来设计；手工建立与确认不依赖可用模型。'],

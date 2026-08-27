@@ -30,7 +30,7 @@ export function mapProjectNextAction(preparation) {
     return Object.freeze({ state: 'unavailable', label: '重新读取创作状态' })
   }
   const chapterNumber = preparation.authoritativeChapterNumber
-  if (CHAPTER_ACTIONS.has(nextAction) && (!Number.isInteger(chapterNumber) || chapterNumber <= 0)) {
+  if (CHAPTER_ACTIONS.has(nextAction) && (!Number.isSafeInteger(chapterNumber) || chapterNumber <= 0)) {
     return Object.freeze({ state: 'unavailable', label: '重新读取创作状态' })
   }
   const number = CHAPTER_ACTIONS.has(nextAction) ? chapterNumber : null
