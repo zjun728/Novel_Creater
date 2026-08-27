@@ -6,7 +6,7 @@ const props = defineProps({
   volumes: { type: Array, default: () => [] },
   formats: { type: Array, default: () => [] },
   downloadableChapters: { type: Array, default: () => [] },
-  downloadChapter: { type: Function, default: null },
+  downloadChapter: { type: Function, required: true },
   busy: { type: Boolean, default: false },
 })
 
@@ -35,7 +35,7 @@ function canDownload(chapterNumber) {
           </router-link>
           <button v-if="canDownload(chapter.number) && formats.length === 1" type="button" class="manuscript-chapter-list__download" :disabled="busy" :aria-label="`下载第 ${chapter.number} 章定稿 ${formats[0] === 'markdown' ? 'Markdown' : 'TXT'}`" @click="downloadChapter(chapter.number, formats[0])">下载</button>
           <details v-else-if="canDownload(chapter.number)" class="manuscript-chapter-list__download-menu">
-            <summary :aria-label="`下载第${chapter.number}章定稿`">下载</summary>
+            <summary :aria-label="`下载第${chapter.number}章定稿`" :aria-disabled="busy" @click="busy && $event.preventDefault()">下载</summary>
             <button v-for="format in formats" :key="format" type="button" :disabled="busy" :aria-label="`下载第 ${chapter.number} 章定稿 ${format === 'markdown' ? 'Markdown' : 'TXT'}`" @click="downloadChapter(chapter.number, format)">{{ format === 'markdown' ? 'Markdown' : 'TXT' }}</button>
           </details>
         </li>

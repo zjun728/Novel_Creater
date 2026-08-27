@@ -117,6 +117,13 @@ export function createNovelDownloadController({
     options.value = null
     error.value = ''
     loadingState.value = false
+    if (inFlight?.projectKey !== key) {
+      downloadGeneration += 1
+      const previous = inFlight
+      inFlight = null
+      busyState.value = false
+      previous?.abortController?.abort()
+    }
     return key
   }
 
@@ -145,17 +152,18 @@ export function createNovelDownloadController({
   }
 
   async function download(projectId, selector) {
-    if (disposed || inFlight || !available.value || normalizeProjectId(projectId) !== optionsProjectId.value) return false
+    const projectKey = normalizeProjectId(projectId)
+    if (disposed || inFlight || !available.value || projectKey !== optionsProjectId.value) return false
     const token = ++downloadGeneration
     const abortController = abortControllerFactory()
     if (!abortController?.signal || typeof abortController.abort !== 'function') {
       throw new TypeError('abortControllerFactory must return an AbortController')
     }
-    const active = () => !disposed && inFlight?.token === token
+    const active = () => !disposed && inFlight?.token === token && optionsProjectId.value === projectKey
     const operationId = operationStore.start({
       label: '正在准备下载', detail: '', blocking: true,
     })
-    inFlight = { token, abortController }
+    inFlight = { token, projectKey, abortController }
     busyState.value = true
     error.value = ''
     let objectUrl = null

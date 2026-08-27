@@ -43,7 +43,7 @@ function returnToLibrary() {
 </script>
 
 <template>
-  <main class="archived-page">
+  <section class="archived-page" aria-labelledby="archived-title">
     <section class="archived-sheet" aria-labelledby="archived-title">
       <p class="eyebrow">ARCHIVED PROJECT</p>
       <span class="status-mark">已归档</span>
@@ -69,7 +69,7 @@ function returnToLibrary() {
         :archived="true"
       />
     </section>
-  </main>
+  </section>
 </template>
 
 <style scoped>

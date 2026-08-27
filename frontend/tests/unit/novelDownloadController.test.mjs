@@ -82,6 +82,26 @@ test('a new project aborts and replaces an older options request', async () => {
   assert.equal(controller.options.value.chapters[0].number, 2)
 })
 
+test('switching projects fences an old download even when its transport ignores abort', async () => {
+  const pending = deferred(); let signal
+  const { controller, operations, saved, revoked } = harness({ api: { novelDownloads: {
+    options: async () => OPTIONS,
+    download: (_projectId, _selector, request) => { signal = request.signal; return pending.promise },
+  } } })
+  await controller.loadOptions('A')
+  const old = controller.download('A', selector)
+  controller.selectProject('B')
+  pending.resolve({ blob: new Blob(['old']), contentDisposition: 'attachment; filename="old.txt"' })
+  assert.equal(await old, false)
+  assert.equal(signal.aborted, true)
+  assert.deepEqual(saved, [])
+  assert.deepEqual(revoked, [])
+  assert.equal(controller.busy.value, false)
+  assert.deepEqual(operations.filter(item => Array.isArray(item) && item[0] === 'finish'), [['finish', 'op-1']])
+  await controller.loadOptions('B')
+  assert.equal(await controller.download('B', selector), true)
+})
+
 test('only one available download starts, saves, finishes and always revokes', async () => {
   const pending = deferred()
   let downloads = 0

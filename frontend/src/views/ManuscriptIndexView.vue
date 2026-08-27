@@ -88,7 +88,7 @@ onBeforeUnmount(() => { manuscript.dispose(); download.dispose() })
       <div v-else-if="preparation.status === 'unavailable'" class="manuscript-index__local-error">创作状态暂时无法读取。<button type="button" @click="loadPreparation">重新读取</button></div>
 
       <details v-if="hasChapters && download.options.value?.available && download.options.value.formats.length" class="manuscript-download-menu" :aria-busy="download.busy.value">
-        <summary :aria-disabled="download.busy.value">下载定稿</summary>
+        <summary :aria-disabled="download.busy.value" @click="download.busy.value && $event.preventDefault()">下载定稿</summary>
         <div class="manuscript-download-menu__actions">
           <button v-for="format in download.options.value.formats" :key="`book:${format}`" type="button" :disabled="download.busy.value" :aria-label="`下载整本定稿 ${format === 'markdown' ? 'Markdown' : 'TXT'}`" @click="downloadBook(format)">下载整本定稿 {{ format === 'markdown' ? 'Markdown' : 'TXT' }}</button>
           <template v-for="volume in download.options.value.volumes" :key="volume.id"><button v-for="format in download.options.value.formats" :key="`${volume.id}:${format}`" type="button" :disabled="download.busy.value" :aria-label="`下载第${volume.order}卷 ${format === 'markdown' ? 'Markdown' : 'TXT'}`" @click="downloadVolume(volume.id, format)">下载第{{ volume.order }}卷 {{ format === 'markdown' ? 'Markdown' : 'TXT' }}</button></template>
@@ -111,8 +111,36 @@ onBeforeUnmount(() => { manuscript.dispose(); download.dispose() })
 h1 { margin:0; font:600 clamp(34px,6vw,58px) Georgia,'Noto Serif SC',serif; }
 .manuscript-index__title { margin:12px 0 0; color:var(--nc-muted); font:500 18px Georgia,'Noto Serif SC',serif; }
 .manuscript-index__summary { display:flex; gap:28px; margin:26px 0; }.manuscript-index__summary div { display:grid; gap:4px; }.manuscript-index__summary dt { color:var(--nc-muted); font-size:12px; }.manuscript-index__summary dd { margin:0; font:700 18px Georgia,'Noto Serif SC',serif; }
-.manuscript-index__action,.manuscript-index__downloads > button { display:inline-flex; min-height:44px; align-items:center; padding:0 16px; border:1px solid var(--nc-ink); color:var(--nc-paper); background:var(--nc-ink); text-decoration:none; font:600 14px Georgia,'Noto Serif SC',serif; }
-.manuscript-index__downloads { margin:18px 0; }.manuscript-index__readonly,.manuscript-index__empty { margin:22px 0; color:var(--nc-muted); line-height:1.8; }.manuscript-index__empty { padding:28px 0; border-top:1px solid var(--nc-border); }
+.manuscript-index__action {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  padding: 0 16px;
+  border: 1px solid var(--nc-ink);
+  color: var(--nc-paper);
+  background: var(--nc-ink);
+  text-decoration: none;
+  font: 600 14px Georgia, 'Noto Serif SC', serif;
+}
+.manuscript-download-menu {
+  margin: 22px 0;
+  border: 1px solid var(--nc-border);
+  background: var(--nc-paper);
+}
+.manuscript-download-menu summary {
+  min-height: 44px;
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  color: var(--nc-ink);
+  cursor: pointer;
+  font: 600 14px Georgia, 'Noto Serif SC', serif;
+}
+.manuscript-download-menu[open] summary { border-bottom: 1px solid var(--nc-border); }
+.manuscript-download-menu__actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; }
+.manuscript-download-menu button { min-height: 44px; padding: 0 12px; border: 1px solid var(--nc-border); color: var(--nc-ink); background: var(--nc-paper); cursor: pointer; }
+.manuscript-index__readonly,.manuscript-index__empty { margin:22px 0; color:var(--nc-muted); line-height:1.8; }.manuscript-index__empty { padding:28px 0; border-top:1px solid var(--nc-border); }
 .manuscript-index__local-error { margin:18px 0; color:var(--nc-muted); line-height:1.7; }.manuscript-index__local-error button { margin-left:8px; border:0; color:var(--nc-vermilion); background:transparent; text-decoration:underline; cursor:pointer; }
 .manuscript-index :is(a,button):focus-visible { outline:2px solid var(--nc-vermilion); outline-offset:3px; }
+@media (max-width: 760px) { .manuscript-download-menu__actions { display: grid; } .manuscript-download-menu button { width: 100%; } }
 </style>
