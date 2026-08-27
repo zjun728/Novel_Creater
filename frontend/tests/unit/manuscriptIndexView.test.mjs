@@ -79,3 +79,32 @@ test('manuscript index is a real route section with one stable heading while loa
     await vite.close()
   }
 })
+
+test('pending reader renders a safe chapter heading and never echoes an unsafe route value', async () => {
+  const vite = await createServer({
+    configFile: false,
+    root: frontendRoot,
+    plugins: [vuePlugin()],
+    server: { middlewareMode: true, hmr: false, ws: false },
+    optimizeDeps: { noDiscovery: true },
+  })
+  try {
+    const Component = (await vite.ssrLoadModule('/src/views/FinalChapterReaderPendingView.vue')).default
+    const render = async chapterNumber => {
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [{ path: '/projects/:projectId/manuscript', component: { template: '<div />' } }],
+      })
+      const app = createSSRApp(Component, { projectId: 'p', chapterNumber })
+      app.use(router)
+      return renderToString(app)
+    }
+    const valid = await render('3')
+    assert.match(valid, /<h1[^>]*>第 3 章定稿<\/h1>/)
+    const unsafe = await render('9007199254740993')
+    assert.match(unsafe, /<h1[^>]*>章节地址无效<\/h1>/)
+    assert.doesNotMatch(unsafe, /9007199254740993/)
+  } finally {
+    await vite.close()
+  }
+})

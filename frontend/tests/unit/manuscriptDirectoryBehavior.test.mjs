@@ -17,7 +17,7 @@ const naiveStubId = '\0manuscript-directory-naive-stub'
 const naiveStub = {
   name: 'manuscript-directory-naive-stub', enforce: 'pre',
   resolveId(id) { return id === 'naive-ui' ? naiveStubId : undefined },
-  load(id) { return id === naiveStubId ? `import { defineComponent, h } from 'vue'; const stub = name => defineComponent({ name, setup(_, { attrs, slots }) { return () => h('div', attrs, slots.default?.()) } }); export const NButton = stub('NButton'); export const NResult = stub('NResult'); export const NSkeleton = stub('NSkeleton')` : undefined },
+  load(id) { return id === naiveStubId ? `import { defineComponent, h } from 'vue'; const children = slots => Object.values(slots).flatMap(slot => slot?.() || []); const stub = name => defineComponent({ name, setup(_, { attrs, slots }) { return () => h('div', attrs, children(slots)) } }); export const NButton = defineComponent({ name: 'NButton', setup(_, { attrs, slots }) { return () => h('button', attrs, children(slots)) } }); export const NResult = stub('NResult'); export const NSkeleton = stub('NSkeleton')` : undefined },
 }
 const makeNode = type => ({ type, text: '', props: {}, children: [], parent: null })
 const detach = child => { if (child?.parent) child.parent.children.splice(child.parent.children.indexOf(child), 1) }
@@ -30,6 +30,20 @@ const renderer = createRenderer({
 const text = node => [node?.text, ...(node?.children || []).map(text)].filter(Boolean).join(' ')
 const find = (node, predicate) => node && (predicate(node) ? node : (node.children || []).map(child => find(child, predicate)).find(Boolean))
 async function flush() { for (let i = 0; i < 8; i += 1) await Promise.resolve(); await nextTick() }
+async function waitFor(predicate, message) {
+  for (let index = 0; index < 20; index += 1) {
+    const value = predicate()
+    if (value) return value
+    await flush()
+  }
+  assert.fail(message)
+}
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((onResolve, onReject) => { resolve = onResolve; reject = onReject })
+  return { promise, resolve, reject }
+}
 
 let vite; let Index
 async function clientRender(path, id) {
@@ -53,31 +67,62 @@ const preparation = id => ({ projectId: id, lifecycle: 'active', nextAction: 'co
 const options = { available: true, reason: null, formats: ['txt', 'markdown'], volumes: [{ id: 'v-1', order: 1, title: '上卷' }], chapters: [{ number: 2, title: '第二章', volumeId: 'v-1' }] }
 const response = body => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } })
 
-async function mount({ lifecycle = 'active', chapters = true, unavailable = false } = {}) {
+async function mount({
+  lifecycle = 'active', chapters = true, unavailable = false,
+  directorySequence = [], preparationSequence = [], optionSequence = [], fetchOverride,
+} = {}) {
   const originalFetch = global.fetch; const originalDocument = global.document; const calls = []
+  let directoryAttempt = 0; let preparationAttempt = 0; let optionAttempt = 0
   global.document = { createElement: () => ({ click() {}, remove() {} }), body: { append() {} } }
   global.fetch = async (url, init = {}) => {
     const value = String(url); calls.push([value, init])
-    if (value.endsWith('/manuscript')) return response(directory('p', lifecycle, chapters))
-    if (value.endsWith('/preparation')) return response(preparation('p'))
-    if (value.endsWith('/novel-download/options')) return response({ ...options, available: !unavailable })
+    if (fetchOverride) {
+      const overridden = fetchOverride(value, init, calls)
+      if (overridden !== undefined) return overridden
+    }
+    if (value.endsWith('/manuscript')) {
+      const next = directorySequence[directoryAttempt++]
+      if (next instanceof Error) throw next
+      if (next instanceof Response) return next
+      return response(next || directory('p', lifecycle, chapters))
+    }
+    if (value.endsWith('/preparation')) {
+      const next = preparationSequence[preparationAttempt++]
+      if (next instanceof Error) throw next
+      if (next instanceof Response) return next
+      return response(next || preparation('p'))
+    }
+    if (value.endsWith('/novel-download/options')) {
+      const next = optionSequence[optionAttempt++]
+      if (next instanceof Error) throw next
+      if (next instanceof Response) return next
+      return response(next || { ...options, available: !unavailable })
+    }
     return new Response(new Blob(['x']), { headers: { 'content-disposition': 'attachment; filename="book.txt"' } })
   }
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/projects/:projectId/manuscript', component: Index }, { path: '/projects/:projectId/contract', component: { render: () => null } }, { path: '/projects/:projectId/manuscript/chapters/:chapterNumber', component: { render: () => null } }] })
   await router.push('/projects/p/manuscript'); await router.isReady()
   const target = makeNode('root'); const app = renderer.createApp({ render: () => VueRuntime.h(RouterView) }); const pinia = createPinia(); setActivePinia(pinia); app.use(pinia); app.use(router); app.provide(ssrContextKey, { modules: new Set() }); app.mount(target); await flush(); await flush()
-  return { target, calls, dispose() { app.unmount(); global.fetch = originalFetch; global.document = originalDocument } }
+  return { target, calls, router, dispose() { app.unmount(); global.fetch = originalFetch; global.document = originalDocument } }
 }
 
 test('mounted active directory loads preparation, options, and exact download selectors', async () => {
   const item = await mount()
   try {
-    assert.match(text(item.target), /p 书名.*123.*当前创作位置/) 
+    assert.match(text(item.target), /p 书名.*123.*当前创作位置/)
     assert.ok(find(item.target, node => node.type === 'details' && text(node).includes('下载定稿')))
     const book = find(item.target, node => node.type === 'button' && node.props['aria-label'] === '下载整本定稿 TXT')
     await book.props.onClick(); await flush()
-    const query = new URL(item.calls.at(-1)[0]).searchParams
+    let query = new URL(item.calls.at(-1)[0]).searchParams
     assert.equal(query.get('scope'), 'book'); assert.equal(query.get('format'), 'txt')
+    const volume = find(item.target, node => node.type === 'button' && node.props['aria-label'] === '下载第1卷 Markdown')
+    await volume.props.onClick(); await flush()
+    query = new URL(item.calls.at(-1)[0]).searchParams
+    assert.equal(query.get('scope'), 'volume'); assert.equal(query.get('volumeId'), 'v-1'); assert.equal(query.get('format'), 'markdown')
+    const chapter = find(item.target, node => node.type === 'button' && node.props['aria-label'] === '下载第 2 章定稿 Markdown')
+    await chapter.props.onClick(); await flush()
+    query = new URL(item.calls.at(-1)[0]).searchParams
+    assert.equal(query.get('scope'), 'chapter'); assert.equal(query.get('chapterNumber'), '2'); assert.equal(query.get('format'), 'markdown')
   } finally { item.dispose() }
 })
 
@@ -94,4 +139,61 @@ test('mounted archived and empty directories keep lifecycle calls independent', 
 test('unavailable download options leave the mounted directory readable without controls', async () => {
   const item = await mount({ unavailable: true })
   try { assert.match(text(item.target), /p 书名/); assert.ok(!find(item.target, node => node.type === 'details' && text(node).includes('下载定稿'))) } finally { item.dispose() }
+})
+
+test('a first temporary failure retries the complete directory preparation and options flow', async () => {
+  const unavailableResponse = new Response(JSON.stringify({
+    code: 'ManuscriptTemporarilyUnavailable', message: '作品稿件暂时不可用', correlationId: 'safe_1',
+  }), { status: 503, headers: { 'content-type': 'application/json' } })
+  const item = await mount({ directorySequence: [unavailableResponse, directory('p')] })
+  try {
+    assert.match(text(item.target), /目录暂时无法读取/)
+    assert.doesNotMatch(text(item.target), /已保留可安全显示/)
+    const retry = find(item.target, node => node.type === 'button' && /重新读取/.test(text(node)))
+    await retry.props.onClick(); await flush(); await flush()
+    assert.match(text(item.target), /p 书名.*当前创作位置/)
+    assert.equal(item.calls.filter(([url]) => url.endsWith('/preparation')).length, 1)
+    assert.equal(item.calls.filter(([url]) => url.endsWith('/novel-download/options')).length, 1)
+  } finally { item.dispose() }
+})
+
+test('integrity retry and independent preparation or option failures never hide the directory', async () => {
+  const integrityResponse = new Response(JSON.stringify({
+    code: 'ManuscriptIntegrityFailure', message: '作品稿件完整性校验失败', correlationId: 'safe_2',
+  }), { status: 500, headers: { 'content-type': 'application/json' } })
+  const integrity = await mount({ directorySequence: [integrityResponse, directory('p')] })
+  const preparationFailure = await mount({ preparationSequence: [new Error('private preparation failure')] })
+  const optionFailure = await mount({ optionSequence: [new Error('private option failure')] })
+  try {
+    const retry = find(integrity.target, node => node.type === 'button' && /重新读取/.test(text(node)))
+    assert.ok(retry)
+    await retry.props.onClick(); await flush(); await flush()
+    assert.match(text(integrity.target), /p 书名.*当前创作位置/)
+    assert.match(text(preparationFailure.target), /p 书名.*创作状态暂时无法读取/)
+    assert.doesNotMatch(text(preparationFailure.target), /private preparation failure/)
+    assert.match(text(optionFailure.target), /p 书名.*下载选项加载失败，请重试/)
+    assert.doesNotMatch(text(optionFailure.target), /private option failure/)
+  } finally { integrity.dispose(); preparationFailure.dispose(); optionFailure.dispose() }
+})
+
+test('switching projects fences a late directory and keeps only the new project flow', async () => {
+  const pendingA = deferred()
+  const item = await mount({
+    fetchOverride(value) {
+      if (value.endsWith('/projects/A/manuscript')) return pendingA.promise
+      if (value.endsWith('/projects/B/manuscript')) return response(directory('B'))
+      if (value.endsWith('/projects/B/preparation')) return response(preparation('B'))
+      if (value.endsWith('/projects/B/novel-download/options')) return response(options)
+      return undefined
+    },
+  })
+  try {
+    await item.router.push('/projects/A/manuscript'); await flush()
+    await item.router.push('/projects/B/manuscript'); await flush(); await flush()
+    assert.match(text(item.target), /B 书名/)
+    pendingA.resolve(response(directory('A')))
+    await flush(); await flush()
+    assert.match(text(item.target), /B 书名/)
+    assert.doesNotMatch(text(item.target), /A 书名/)
+  } finally { item.dispose() }
 })
