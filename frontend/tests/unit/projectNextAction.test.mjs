@@ -38,4 +38,11 @@ test('rejects malformed and unsafe targets and archived authority wins', () => {
   }
   assert.deepEqual(mapProjectNextAction({ lifecycle: 'archived', nextAction: 'continue_writing', targetPath: '/write/8', authoritativeChapterNumber: 8 }), { state: 'archived' })
   assert.equal(mapProjectNextAction({ lifecycle: 'active', nextAction: 'unknown', targetPath: '/x' }).label, '重新读取创作状态')
+  assert.deepEqual(mapProjectNextAction({ lifecycle: 'active', nextAction: 'archived_read_only', targetPath: '/read' }), { state: 'unavailable', label: '重新读取创作状态' })
+})
+
+test('continue writing has the fixed author-facing description', () => {
+  const action = mapProjectNextAction({ lifecycle: 'active', nextAction: 'continue_writing', targetPath: '/write/2', authoritativeChapterNumber: 2 })
+  assert.equal(action.description, '回到当前权威章节，继续已有写作。')
+  assert.deepEqual(Object.keys(action).sort(), ['chapterNumber', 'description', 'eyebrow', 'label', 'state', 'targetPath'])
 })

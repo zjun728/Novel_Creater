@@ -28,4 +28,3 @@ test('manuscript API forwards caller abort as request_aborted', async () => {
   const controller = new AbortController(); const request = api.manuscripts.index('p', { signal: controller.signal }); controller.abort()
   try { await assert.rejects(request, error => error.code === 'request_aborted'); assert.ok(seen.aborted) } finally { global.fetch = prior }
 })
-

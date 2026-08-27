@@ -192,9 +192,9 @@ function manuscriptObject(value, keys) {
   return value
 }
 const manuscriptText = value => typeof value === 'string'
-const manuscriptSafeId = value => manuscriptText(value) && value.length > 0 && !/[\\\u0000-\u001f\u007f]/u.test(value)
-const manuscriptPositive = value => Number.isInteger(value) && value > 0
-const manuscriptNonnegative = value => Number.isInteger(value) && value >= 0
+const manuscriptSafeId = value => manuscriptText(value) && value.trim().length > 0 && !/[\\\u0000-\u001f\u007f]/u.test(value)
+const manuscriptPositive = value => Number.isSafeInteger(value) && value > 0
+const manuscriptNonnegative = value => Number.isSafeInteger(value) && value >= 0
 function manuscriptTimestamp(value) {
   const match = typeof value === 'string' && /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.\d+)?Z$/u.exec(value)
   if (!match) return false
@@ -216,7 +216,7 @@ function manuscriptChapterMeta(value) {
 }
 function manuscriptDirectory(value) {
   manuscriptObject(value, ['projectId', 'title', 'lifecycle', 'summary', 'volumes'])
-  if (!manuscriptText(value.projectId) || value.projectId.length === 0 || !manuscriptText(value.title) || !['active', 'archived'].includes(value.lifecycle) || !Array.isArray(value.volumes)) throw new TypeError('Invalid manuscript response')
+  if (!manuscriptSafeId(value.projectId) || !manuscriptText(value.title) || !['active', 'archived'].includes(value.lifecycle) || !Array.isArray(value.volumes)) throw new TypeError('Invalid manuscript response')
   manuscriptObject(value.summary, ['finalChapterCount', 'totalScalarCount'])
   if (!manuscriptNonnegative(value.summary.finalChapterCount) || !manuscriptNonnegative(value.summary.totalScalarCount)) throw new TypeError('Invalid manuscript response')
   let priorOrder = 0; let priorChapter = 0; let total = 0; const ids = new Set(); const volumes = value.volumes.map(volume => {
@@ -226,7 +226,7 @@ function manuscriptDirectory(value) {
     const chapters = volume.chapters.map(manuscriptChapterMeta)
     if (chapters.some(item => item.number <= priorChapter)) throw new TypeError('Invalid manuscript response')
     if (chapters.length) priorChapter = chapters.at(-1).number
-    total += chapters.reduce((sum, item) => sum + item.scalarCount, 0)
+    for (const chapter of chapters) { total += chapter.scalarCount; if (!Number.isSafeInteger(total)) throw new TypeError('Invalid manuscript response') }
     return { id: volume.id, order: volume.order, title: volume.title, chapters }
   })
   const count = volumes.reduce((sum, volume) => sum + volume.chapters.length, 0)
@@ -235,7 +235,7 @@ function manuscriptDirectory(value) {
 }
 function manuscriptChapter(value) {
   manuscriptObject(value, ['projectId', 'projectTitle', 'lifecycle', 'volume', 'chapter', 'outline', 'navigation'])
-  if (!manuscriptText(value.projectId) || !value.projectId || !manuscriptText(value.projectTitle) || !['active', 'archived'].includes(value.lifecycle)) throw new TypeError('Invalid manuscript response')
+  if (!manuscriptSafeId(value.projectId) || !manuscriptText(value.projectTitle) || !['active', 'archived'].includes(value.lifecycle)) throw new TypeError('Invalid manuscript response')
   manuscriptObject(value.volume, ['id', 'order', 'title']); if (!manuscriptSafeId(value.volume.id) || !manuscriptPositive(value.volume.order) || !manuscriptText(value.volume.title)) throw new TypeError('Invalid manuscript response')
   manuscriptObject(value.chapter, ['number', 'title', 'content', 'scalarCount', 'finalizedAt']); if (!manuscriptPositive(value.chapter.number) || !manuscriptText(value.chapter.title) || !manuscriptText(value.chapter.content) || !manuscriptNonnegative(value.chapter.scalarCount) || !manuscriptTimestamp(value.chapter.finalizedAt) || unicodeScalarLength(value.chapter.content) !== value.chapter.scalarCount) throw new TypeError('Invalid manuscript response')
   manuscriptObject(value.outline, ['chapterGoal', 'expectedCharacters', 'continuation', 'plannedTasks', 'scenes', 'forbiddenEarlyEvents']); if (!manuscriptText(value.outline.chapterGoal) || !['expectedCharacters', 'continuation', 'plannedTasks', 'scenes', 'forbiddenEarlyEvents'].every(key => Array.isArray(value.outline[key]) && value.outline[key].every(manuscriptText))) throw new TypeError('Invalid manuscript response')

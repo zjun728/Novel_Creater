@@ -9,7 +9,7 @@ const COPY = Object.freeze({
   prepare_chapter_outline: ['CHAPTER OUTLINE', '准备第 {n} 章小纲', '基于当前规划、Canon 与 Projection 建立本章的写作边界。'],
   continue_chapter_outline: ['CHAPTER OUTLINE', '继续第 {n} 章小纲', '完善当前章节小纲并确认，随后即可进入正文工作台。'],
   start_chapter_session: ['WRITER', '进入第 {n} 章写作', '使用已确认的小纲与固定权威基线创建章节工作会话。'],
-  continue_writing: ['WRITER', '继续创作第 {n} 章', '回到已有章节工作会话，继续编辑工作稿与候选稿。'],
+  continue_writing: ['WRITER', '继续创作第 {n} 章', '回到当前权威章节，继续已有写作。'],
 })
 const CHAPTER_ACTIONS = new Set([
   'recover_chapter_outline_operation', 'prepare_chapter_outline',
