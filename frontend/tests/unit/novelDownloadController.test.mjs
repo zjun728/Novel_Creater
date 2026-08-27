@@ -53,7 +53,7 @@ test('loads safe options, surfaces a fixed retryable error, and does not expose 
   } } })
   await assert.rejects(() => controller.loadOptions('p'))
   assert.equal(controller.error.value, '下载选项加载失败，请重试。')
-  controller.clearError()
+  controller.resetTransient()
   assert.equal(controller.error.value, '')
   assert.equal(controller.options.value, null)
   assert.equal(controller.loading.value, false)
@@ -102,6 +102,23 @@ test('switching projects fences an old download even when its transport ignores 
   assert.deepEqual(operations.filter(item => Array.isArray(item) && item[0] === 'finish'), [['finish', 'op-1']])
   await controller.loadOptions('B')
   assert.equal(await controller.download('B', selector), true)
+})
+
+test('resetting transient state fences a same-project late download failure and still finishes its operation', async () => {
+  const pending = deferred(); let signal
+  const { controller, operations } = harness({ api: { novelDownloads: {
+    options: async () => OPTIONS,
+    download: (_projectId, _selector, request) => { signal = request.signal; return pending.promise },
+  } } })
+  await controller.loadOptions('p')
+  const old = controller.download('p', selector)
+  controller.resetTransient()
+  pending.reject(new Error('late chapter failure'))
+  assert.equal(await old, false)
+  assert.equal(signal.aborted, true)
+  assert.equal(controller.error.value, '')
+  assert.equal(controller.busy.value, false)
+  assert.deepEqual(operations.filter(item => Array.isArray(item) && item[0] === 'finish'), [['finish', 'op-1']])
 })
 
 test('only one available download starts, saves, finishes and always revokes', async () => {

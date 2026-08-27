@@ -157,6 +157,24 @@ test('chapter download uses the exact selector and a safe local failure never hi
   } finally { item.dispose() }
 })
 
+test('a late old-chapter download failure cannot publish into the next chapter', async () => {
+  const pendingDownload = deferred()
+  const item = await mount('/projects/p/manuscript/chapters/2', { fetchOverride(value) {
+    if (value.includes('/novel-download?')) return pendingDownload.promise
+    return undefined
+  } })
+  try {
+    const button = find(item.target, n => n.type === 'button' && /下载 TXT/.test(textOf(n)))
+    const oldDownload = button.props.onClick()
+    await flush()
+    await item.router.push('/projects/p/manuscript/chapters/5'); await flush(); await flush()
+    pendingDownload.reject(new Error('late private chapter failure'))
+    await oldDownload; await flush()
+    assert.match(textOf(item.target), /第 5 章 · 5章名/)
+    assert.doesNotMatch(textOf(item.target), /下载失败|late private chapter failure/)
+  } finally { pendingDownload.reject(new Error('cleanup')); item.dispose() }
+})
+
 test('integrity and invalid addresses fail closed without prose or outline', async () => {
   const integrity = await mount('/projects/p/manuscript/chapters/2?view=outline', { fetchOverride(value) {
     if (value.endsWith('/manuscript/chapters/2')) return errorResponse('ManuscriptIntegrityFailure')

@@ -127,7 +127,17 @@ export function createNovelDownloadController({
     return key
   }
 
-  function clearError() { error.value = '' }
+  function resetTransient() {
+    error.value = ''
+    if (!inFlight) return
+    downloadGeneration += 1
+    const previous = inFlight
+    inFlight = null
+    busyState.value = false
+    try { previous.abortController.abort() } catch {
+      // The request generation is already fenced even if a custom abort implementation fails.
+    }
+  }
 
   async function loadOptions(projectId) {
     const key = normalizeProjectId(projectId)
@@ -249,7 +259,7 @@ export function createNovelDownloadController({
     error,
     available,
     selectProject,
-    clearError,
+    resetTransient,
     loadOptions,
     download,
     dispose,
