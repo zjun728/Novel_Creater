@@ -22,6 +22,7 @@ import FinalizationPanel from '@/components/writer/FinalizationPanel.vue'
 import { createWorkingDraftAutosave } from '@/application/writer/workingDraftAutosave'
 import { createChapterWriterController } from '@/application/writer/chapterWriterController'
 import { createFinalizationController } from '@/application/writer/finalizationController'
+import { mapProjectNextAction } from '@/application/projects/projectNextAction'
 import { api } from '@/api/db/client'
 import { useChapterSessionStore } from '@/stores/chapterSessionStore'
 import { createLatestRequestGuard } from '@/utils/latestRequest'
@@ -30,6 +31,7 @@ import {
   unicodeScalarLength,
 } from '@/utils/unicodeScalarText'
 import {
+  finalChapterPath,
   planningStoryBlocksPath,
   projectOverviewPath,
 } from '@/router/projectRoutes'
@@ -99,15 +101,31 @@ const finalization = createFinalizationController({
     session.value.id,
     command,
   ),
-  commit: command => api.chapterSessions.commitFinalization(
-    projectId.value,
-    session.value.id,
-    command,
-  ),
+  commit: async command => {
+    const committedChapterNumber = session.value?.chapterNum
+    const committed = await api.chapterSessions.commitFinalization(
+      projectId.value,
+      session.value.id,
+      command,
+    )
+    return { ...committed, chapterNumber: committedChapterNumber }
+  },
   onCommitted: async () => {
     const workspace = await chapterSessionStore.reloadCurrentWorkspace(projectId.value)
     if (workspace?.workingDraft) autosave.reset(workspace)
   },
+  getProjectId: () => projectId.value,
+  getChapterNumber: () => chapterNumber.value,
+  reloadPreparation: projectId => api.projects.preparation(projectId),
+  readFinalizedChapter: (projectId, chapterNumber) => api.manuscripts.chapter(
+    projectId,
+    chapterNumber,
+  ),
+  mapNextAction: mapProjectNextAction,
+  finalizedChapterPath: (projectId, chapterNumber) => finalChapterPath(
+    projectId,
+    chapterNumber,
+  ),
 })
 const controller = createChapterWriterController({
   autosave,

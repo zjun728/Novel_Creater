@@ -57,3 +57,19 @@ test('the panel renders evidence without exposing full candidate prose', async (
   assert.match(panel, /endScalar/)
   assert.doesNotMatch(panel, /candidate\.content|workingDraft\.content|rawProvider|prompt|apiKey|dsn/i)
 })
+
+
+test('finalized panel stays in place and offers only verified explicit navigation', async () => {
+  const panel = await source('components/writer/FinalizationPanel.vue')
+
+  assert.match(panel, /controller\.postFinalization\.value/)
+  assert.match(panel, /postFinalization\?\.currentAction\.state === 'available'/)
+  assert.match(panel, /:to="postFinalization\.currentAction\.targetPath"/)
+  assert.match(panel, /\{\{ postFinalization\.currentAction\.label \}\}/)
+  assert.match(panel, /postFinalization\?\.finalizedChapterReadable/)
+  assert.match(panel, /:to="postFinalization\.finalizedChapterPath"/)
+  assert.match(panel, /查看本章定稿/)
+  assert.match(panel, /controller\.refreshPostFinalization/)
+  assert.match(panel, /:disabled="controller\.postBusy\.value"/)
+  assert.doesNotMatch(panel, /未实现内容|router\.push|router\.replace|window\.location/)
+})

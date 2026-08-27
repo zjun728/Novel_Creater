@@ -1,5 +1,7 @@
 import { computed, ref, shallowRef, toRaw } from 'vue'
 
+import { mapProjectNextAction } from '../projects/projectNextAction.js'
+import { finalChapterPath as projectFinalChapterPath } from '../../router/projectRoutes.js'
 import { generateId } from '../../utils/id.js'
 import { sha256Text } from '../../utils/sha256Text.js'
 
@@ -34,6 +36,32 @@ function currentCandidate(value) {
   return value
 }
 
+function unavailableCurrentAction(mapNextAction) {
+  try {
+    return mapNextAction(null)
+  } catch {
+    return Object.freeze({ state: 'unavailable', label: '重新读取创作状态' })
+  }
+}
+
+function projectIdValue(value) {
+  if (typeof value !== 'string') return ''
+  const projectId = value.trim()
+  return projectId && !/\p{C}/u.test(projectId) ? projectId : ''
+}
+
+function chapterNumberValue(value) {
+  return Number.isSafeInteger(value) && value > 0 ? value : null
+}
+
+function routePathValue(value) {
+  return typeof value === 'string'
+    && /^\/(?!\/)/u.test(value)
+    && !/[\\\u0000-\u001f\u007f]/u.test(value)
+    ? value
+    : ''
+}
+
 export function createFinalizationController({
   getReview = unavailable('getReview'),
   prepare = unavailable('prepare'),
@@ -42,14 +70,24 @@ export function createFinalizationController({
   cancel = unavailable('cancel'),
   commit = unavailable('commit'),
   onCommitted = async () => {},
+  getProjectId = () => '',
+  getChapterNumber = () => null,
+  reloadPreparation = unavailable('reloadPreparation'),
+  readFinalizedChapter = unavailable('readFinalizedChapter'),
+  mapNextAction = mapProjectNextAction,
+  finalizedChapterPath = projectFinalChapterPath,
   idFactory = generateId,
 } = {}) {
   const review = shallowRef(null)
   const result = shallowRef(null)
+  const postFinalization = shallowRef(null)
+  const postBusy = ref(false)
   const busy = ref(false)
   const error = ref('')
   let generation = 0
+  let postGeneration = 0
   let disposed = false
+  let committedTarget = null
 
   const hardBlocks = computed(() => (
     Array.isArray(review.value?.qualityReport?.deterministicBlocks)
@@ -88,6 +126,70 @@ export function createFinalizationController({
     } catch {
       // The server commit is already authoritative; a later page load retries this refresh.
     }
+  }
+
+  function committedContext(committed = null, fallback = null) {
+    const projectId = fallback?.projectId || projectIdValue(getProjectId())
+    const resultChapterNumber = chapterNumberValue(committed?.chapterNumber)
+    const chapterNumber = resultChapterNumber
+      ?? fallback?.chapterNumber
+      ?? chapterNumberValue(getChapterNumber())
+    return projectId && chapterNumber ? Object.freeze({ projectId, chapterNumber }) : null
+  }
+
+  async function refreshPostFinalization(active = () => !disposed) {
+    const target = committedTarget
+    if (!target || disposed) return null
+    const token = generation
+    const postToken = ++postGeneration
+    postBusy.value = true
+    postFinalization.value = Object.freeze({
+      currentAction: unavailableCurrentAction(mapNextAction),
+      finalizedChapterPath: '',
+      finalizedChapterReadable: false,
+    })
+    const [preparation, chapter] = await Promise.allSettled([
+      Promise.resolve().then(() => reloadPreparation(target.projectId)),
+      Promise.resolve().then(() => (
+        readFinalizedChapter(target.projectId, target.chapterNumber)
+      )),
+    ])
+    if (
+      !active()
+      || disposed
+      || token !== generation
+      || postToken !== postGeneration
+      || target !== committedTarget
+    ) {
+      return null
+    }
+    let currentAction = unavailableCurrentAction(mapNextAction)
+    if (preparation.status === 'fulfilled') {
+      try {
+        currentAction = mapNextAction(preparation.value)
+      } catch {
+        currentAction = unavailableCurrentAction(mapNextAction)
+      }
+    }
+    const readable = chapter.status === 'fulfilled'
+      && chapter.value?.projectId === target.projectId
+      && chapter.value?.chapter?.number === target.chapterNumber
+    let path = ''
+    if (readable) {
+      try {
+        const value = finalizedChapterPath(target.projectId, target.chapterNumber)
+        path = routePathValue(value)
+      } catch {
+        path = ''
+      }
+    }
+    postFinalization.value = Object.freeze({
+      currentAction,
+      finalizedChapterPath: path,
+      finalizedChapterReadable: readable && Boolean(path),
+    })
+    postBusy.value = false
+    return postFinalization.value
   }
 
   async function run(action, message) {
@@ -187,6 +289,7 @@ export function createFinalizationController({
       if (primaryAction.value !== 'commit') {
         throw new TypeError('finalization commit is unavailable')
       }
+      const commitTarget = committedContext()
       const command = {
         ...currentRevision(review.value),
         idempotencyKey: await key('commit'),
@@ -194,10 +297,14 @@ export function createFinalizationController({
       try {
         const committed = await commit(command)
         if (!active()) return null
-        result.value = committed
+        committedTarget = committedContext(committed, commitTarget)
+        result.value = committedTarget
+          ? Object.freeze({ ...committed, chapterNumber: committedTarget.chapterNumber })
+          : committed
         review.value = { ...review.value, status: 'committed' }
         await refreshCommittedWorkspace()
-        return committed
+        await refreshPostFinalization(active)
+        return result.value
       } catch (failure) {
         if (!active()) return null
         const unknown = Number(failure?.status || 0) === 0
@@ -208,7 +315,9 @@ export function createFinalizationController({
         if (recovered?.status !== 'committed') throw failure
         review.value = recovered
         error.value = ''
+        committedTarget = commitTarget
         await refreshCommittedWorkspace()
+        await refreshPostFinalization(active)
         return null
       }
     }, '定稿结果未确认，请刷新后查看当前状态。')
@@ -216,8 +325,12 @@ export function createFinalizationController({
 
   function reset() {
     generation += 1
+    postGeneration += 1
     review.value = null
     result.value = null
+    postFinalization.value = null
+    postBusy.value = false
+    committedTarget = null
     busy.value = false
     error.value = ''
   }
@@ -230,6 +343,8 @@ export function createFinalizationController({
   return {
     review,
     result,
+    postFinalization,
+    postBusy: computed(() => postBusy.value),
     busy: computed(() => busy.value),
     error,
     hardBlocks,
@@ -241,6 +356,7 @@ export function createFinalizationController({
     confirmChangeSet,
     cancelReview,
     commitChapter,
+    refreshPostFinalization,
     reset,
     dispose,
   }

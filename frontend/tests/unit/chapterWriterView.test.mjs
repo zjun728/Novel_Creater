@@ -257,3 +257,23 @@ test('candidate workbench compares exactly two read-only drafts and loads explic
   assert.doesNotMatch(view, /v-model[^>]*candidate\.content|contenteditable|融合候选|fusion|diff-match-patch|candidate-modal|history-drawer/)
   assert.match(view, /workspace-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 320px/)
 })
+
+
+test('writer finalization reloads server actions and verifies the committed chapter without navigating', async () => {
+  const view = await source('views/ChapterWriterView.vue')
+  const commit = functionBody(view, 'commit: async command =>')
+
+  assert.match(view, /mapProjectNextAction/)
+  assert.match(view, /finalChapterPath/)
+  assert.match(view, /getProjectId:\s*\(\)\s*=>\s*projectId\.value/)
+  assert.match(view, /getChapterNumber:\s*\(\)\s*=>\s*chapterNumber\.value/)
+  assert.match(view, /reloadPreparation:\s*projectId\s*=>\s*api\.projects\.preparation\(projectId/)
+  assert.match(view, /readFinalizedChapter:\s*\(projectId, chapterNumber\)\s*=>\s*api\.manuscripts\.chapter\(\s*projectId,\s*chapterNumber/)
+  assert.match(view, /mapNextAction:\s*mapProjectNextAction/)
+  assert.match(view, /finalizedChapterPath:\s*\(projectId, chapterNumber\)\s*=>\s*finalChapterPath\(\s*projectId,\s*chapterNumber/)
+  assert.ok(commit.indexOf('const committedChapterNumber') >= 0)
+  assert.ok(commit.indexOf('const committedChapterNumber') < commit.indexOf('await api.chapterSessions.commitFinalization'))
+  assert.match(commit, /chapterNumber:\s*committedChapterNumber/)
+  assert.doesNotMatch(view, /reloadPreparation:\s*.*chapterNumber|targetPath:\s*chapterWriterPath\([^,]+,\s*chapterNumber/)
+  assert.doesNotMatch(view, /onCommitted[\s\S]{0,500}router\.(?:push|replace)/)
+})

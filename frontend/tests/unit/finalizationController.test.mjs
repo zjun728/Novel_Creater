@@ -29,6 +29,22 @@ const review = {
   confirmation: null,
 }
 
+const preparation = {
+  lifecycle: 'active',
+  nextAction: 'prepare_chapter_outline',
+  targetPath: '/projects/p1/planning/story-blocks',
+  authoritativeChapterNumber: 5,
+}
+
+function committed(chapterNumber = 4) {
+  return {
+    recordId: 'record-1', finalChapterId: 'chapter-1', chapterNumber,
+    canonRevision: 1, projectionHash: HASH_A,
+    planningRevisionId: 'planning-2', planningRevision: 2,
+    planningHash: HASH_B, replayed: false,
+  }
+}
+
 
 test('prepare, correct, confirm and commit expose one fenced primary action', async () => {
   const calls = []
@@ -249,4 +265,281 @@ test('a failed local refresh cannot turn a confirmed server commit into an error
   assert.equal(committed.finalChapterId, 'chapter-1')
   assert.equal(controller.finalized.value, true)
   assert.equal(controller.error.value, '')
+})
+
+
+test('commit preserves its chapter number and publishes two verified author paths after one refresh', async () => {
+  const calls = []
+  const confirmed = {
+    ...review,
+    confirmation: { revision: 1, contentHash: HASH_A },
+  }
+  const controller = createFinalizationController({
+    getReview: async () => confirmed,
+    commit: async () => committed(4),
+    getProjectId: () => 'p1',
+    getChapterNumber: () => 99,
+    onCommitted: async () => { calls.push('committed') },
+    reloadPreparation: async projectId => {
+      calls.push(['preparation', projectId])
+      return preparation
+    },
+    readFinalizedChapter: async (projectId, chapterNumber) => {
+      calls.push(['chapter', projectId, chapterNumber])
+      return { projectId, chapter: { number: chapterNumber } }
+    },
+    idFactory: () => '44444444-4444-4444-8444-444444444444',
+  })
+  await controller.load()
+
+  const value = await controller.commitChapter()
+
+  assert.equal(value.chapterNumber, 4)
+  assert.equal(controller.result.value.chapterNumber, 4)
+  assert.deepEqual(controller.postFinalization.value, {
+    currentAction: {
+      state: 'available', eyebrow: 'CHAPTER OUTLINE',
+      label: '准备第 5 章小纲',
+      description: '基于当前规划建立本章的写作边界。',
+      targetPath: '/projects/p1/planning/story-blocks', chapterNumber: 5,
+    },
+    finalizedChapterPath: '/projects/p1/manuscript/chapters/4',
+    finalizedChapterReadable: true,
+  })
+  assert.equal(calls.filter(item => item === 'committed').length, 1)
+  assert.deepEqual(calls.slice(1).sort((left, right) => String(left[0]).localeCompare(String(right[0]))), [
+    ['chapter', 'p1', 4],
+    ['preparation', 'p1'],
+  ])
+})
+
+
+test('follow-up reads fail independently without changing committed authority', async () => {
+  for (const failure of ['preparation', 'reader']) {
+    const confirmed = {
+      ...review,
+      confirmation: { revision: 1, contentHash: HASH_A },
+    }
+    const controller = createFinalizationController({
+      getReview: async () => confirmed,
+      commit: async () => committed(4),
+      getProjectId: () => 'p1',
+      getChapterNumber: () => 4,
+      reloadPreparation: () => {
+        if (failure === 'preparation') throw new Error('private preparation failure')
+        return preparation
+      },
+      readFinalizedChapter: async () => {
+        if (failure === 'reader') throw new Error('private reader failure')
+        return { projectId: 'p1', chapter: { number: 4 } }
+      },
+      idFactory: () => '44444444-4444-4444-8444-444444444444',
+    })
+    await controller.load()
+
+    await controller.commitChapter()
+
+    assert.equal(controller.finalized.value, true, failure)
+    assert.equal(controller.error.value, '', failure)
+    assert.equal(
+      controller.postFinalization.value.currentAction.state,
+      failure === 'preparation' ? 'unavailable' : 'available',
+      failure,
+    )
+    assert.equal(
+      controller.postFinalization.value.finalizedChapterReadable,
+      failure !== 'reader',
+      failure,
+    )
+    assert.equal(
+      controller.postFinalization.value.finalizedChapterPath,
+      failure === 'reader' ? '' : '/projects/p1/manuscript/chapters/4',
+      failure,
+    )
+  }
+})
+
+
+test('unknown commit recovery keeps the original chapter and runs post-commit work once', async () => {
+  let getCalls = 0
+  let commitCalls = 0
+  let committedCalls = 0
+  let chapterRead = null
+  const confirmed = {
+    ...review,
+    confirmation: { revision: 1, contentHash: HASH_A },
+  }
+  const controller = createFinalizationController({
+    getReview: async () => (++getCalls === 1 ? confirmed : { ...confirmed, status: 'committed' }),
+    commit: async () => {
+      commitCalls += 1
+      throw Object.assign(new Error('transport detail'), { status: 0 })
+    },
+    getProjectId: () => 'p1',
+    getChapterNumber: () => 4,
+    onCommitted: async () => { committedCalls += 1 },
+    reloadPreparation: async () => preparation,
+    readFinalizedChapter: async (projectId, chapterNumber) => {
+      chapterRead = [projectId, chapterNumber]
+      return { projectId, chapter: { number: chapterNumber } }
+    },
+    idFactory: () => '44444444-4444-4444-8444-444444444444',
+  })
+  await controller.load()
+
+  const first = controller.commitChapter()
+  const duplicate = await controller.commitChapter()
+  const recovered = await first
+
+  assert.equal(duplicate, false)
+  assert.equal(recovered, null)
+  assert.equal(commitCalls, 1)
+  assert.equal(committedCalls, 1)
+  assert.deepEqual(chapterRead, ['p1', 4])
+  assert.equal(controller.postFinalization.value.finalizedChapterReadable, true)
+})
+
+
+test('reset fences late post-finalization reads from the previous chapter', async () => {
+  let releasePreparation
+  let releaseChapter
+  const confirmed = {
+    ...review,
+    confirmation: { revision: 1, contentHash: HASH_A },
+  }
+  const controller = createFinalizationController({
+    getReview: async () => confirmed,
+    commit: async () => committed(4),
+    getProjectId: () => 'p1',
+    getChapterNumber: () => 4,
+    reloadPreparation: () => new Promise(resolve => { releasePreparation = resolve }),
+    readFinalizedChapter: () => new Promise(resolve => { releaseChapter = resolve }),
+    idFactory: () => '44444444-4444-4444-8444-444444444444',
+  })
+  await controller.load()
+
+  const pending = controller.commitChapter()
+  for (let attempt = 0; attempt < 20 && (!releasePreparation || !releaseChapter); attempt += 1) {
+    await new Promise(resolve => setImmediate(resolve))
+  }
+  assert.equal(typeof releasePreparation, 'function')
+  assert.equal(typeof releaseChapter, 'function')
+  controller.reset()
+  releasePreparation(preparation)
+  releaseChapter({ projectId: 'p1', chapter: { number: 4 } })
+  await pending
+
+  assert.equal(controller.result.value, null)
+  assert.equal(controller.postFinalization.value, null)
+  assert.equal(controller.finalized.value, false)
+})
+
+
+test('commit snapshots its project and fallback chapter before the request starts', async () => {
+  let currentProjectId = 'p1'
+  let currentChapterNumber = 4
+  let releaseCommit
+  const reads = []
+  const confirmed = {
+    ...review,
+    confirmation: { revision: 1, contentHash: HASH_A },
+  }
+  const controller = createFinalizationController({
+    getReview: async () => confirmed,
+    commit: () => new Promise(resolve => { releaseCommit = resolve }),
+    getProjectId: () => currentProjectId,
+    getChapterNumber: () => currentChapterNumber,
+    reloadPreparation: async projectId => {
+      reads.push(['preparation', projectId])
+      return preparation
+    },
+    readFinalizedChapter: async (projectId, chapterNumber) => {
+      reads.push(['chapter', projectId, chapterNumber])
+      return { projectId, chapter: { number: chapterNumber } }
+    },
+    idFactory: () => '44444444-4444-4444-8444-444444444444',
+  })
+  await controller.load()
+
+  const pending = controller.commitChapter()
+  while (!releaseCommit) await new Promise(resolve => setImmediate(resolve))
+  currentProjectId = 'p2'
+  currentChapterNumber = 9
+  releaseCommit({ ...committed(), chapterNumber: undefined })
+  await pending
+
+  assert.deepEqual(reads.sort((left, right) => left[0].localeCompare(right[0])), [
+    ['chapter', 'p1', 4],
+    ['preparation', 'p1'],
+  ])
+  assert.equal(controller.result.value.chapterNumber, 4)
+  assert.equal(controller.postFinalization.value.finalizedChapterPath, '/projects/p1/manuscript/chapters/4')
+})
+
+
+test('a repeated post-finalization refresh discards its older late response', async () => {
+  let preparationCalls = 0
+  let releaseOlder
+  const confirmed = {
+    ...review,
+    confirmation: { revision: 1, contentHash: HASH_A },
+  }
+  const newer = {
+    lifecycle: 'active', nextAction: 'continue_contract',
+    targetPath: '/projects/p1/contract', authoritativeChapterNumber: 5,
+  }
+  const older = {
+    lifecycle: 'active', nextAction: 'continue_bible',
+    targetPath: '/projects/p1/bible', authoritativeChapterNumber: 5,
+  }
+  const controller = createFinalizationController({
+    getReview: async () => confirmed,
+    commit: async () => committed(4),
+    getProjectId: () => 'p1',
+    getChapterNumber: () => 4,
+    reloadPreparation: async () => {
+      preparationCalls += 1
+      if (preparationCalls === 1) return preparation
+      if (preparationCalls === 2) return new Promise(resolve => { releaseOlder = resolve })
+      return newer
+    },
+    readFinalizedChapter: async () => ({ projectId: 'p1', chapter: { number: 4 } }),
+    idFactory: () => '44444444-4444-4444-8444-444444444444',
+  })
+  await controller.load()
+  await controller.commitChapter()
+
+  const first = controller.refreshPostFinalization()
+  while (!releaseOlder) await new Promise(resolve => setImmediate(resolve))
+  const second = controller.refreshPostFinalization()
+  await second
+  releaseOlder(older)
+  await first
+
+  assert.equal(controller.postFinalization.value.currentAction.label, '继续创作契约')
+  assert.equal(controller.postBusy.value, false)
+})
+
+
+test('reader verification never publishes an unsafe finalized chapter path', async () => {
+  const confirmed = {
+    ...review,
+    confirmation: { revision: 1, contentHash: HASH_A },
+  }
+  const controller = createFinalizationController({
+    getReview: async () => confirmed,
+    commit: async () => committed(4),
+    getProjectId: () => 'p1',
+    getChapterNumber: () => 4,
+    reloadPreparation: async () => preparation,
+    readFinalizedChapter: async () => ({ projectId: 'p1', chapter: { number: 4 } }),
+    finalizedChapterPath: () => '/projects/p1/unsafe\\chapter\n4',
+    idFactory: () => '44444444-4444-4444-8444-444444444444',
+  })
+  await controller.load()
+
+  await controller.commitChapter()
+
+  assert.equal(controller.postFinalization.value.finalizedChapterReadable, false)
+  assert.equal(controller.postFinalization.value.finalizedChapterPath, '')
 })

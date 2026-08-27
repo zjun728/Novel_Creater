@@ -13,6 +13,7 @@ const props = defineProps({
 const selectedCandidateId = ref('')
 const changeSetDraft = ref(null)
 const review = computed(() => props.controller.review.value)
+const postFinalization = computed(() => props.controller.postFinalization.value)
 const busy = computed(() => props.disabled || props.controller.busy.value)
 const currentCandidates = computed(() => props.candidates.filter(
   item => item.basisStatus === 'current',
@@ -155,6 +156,10 @@ async function cancelReview() {
     // The controller owns the fixed public error.
   }
 }
+
+async function refreshPostFinalization() {
+  await props.controller.refreshPostFinalization()
+}
 </script>
 
 <template>
@@ -175,14 +180,40 @@ async function cancelReview() {
       class="panel-alert"
     >审查未完成，正文和候选稿未受影响。可稍后重新点击“审查并定稿”。</n-alert>
 
-    <n-alert
-      v-if="controller.finalized.value"
-      type="success"
-      title="本章已定稿"
-      class="panel-alert"
-    >
-      正文与对应小纲现为只读；后续修改请在未实现内容中承接。
-    </n-alert>
+    <template v-if="controller.finalized.value">
+      <n-alert
+        type="success"
+        title="本章已定稿"
+        class="panel-alert"
+      >
+        正文与对应小纲已进入作品稿件。你可以继续当前创作步骤，也可以先回看本章定稿。
+      </n-alert>
+      <nav class="finalized-actions" aria-label="定稿后下一步">
+        <router-link
+          v-if="postFinalization?.currentAction.state === 'available'"
+          class="finalized-action finalized-action--primary"
+          :to="postFinalization.currentAction.targetPath"
+        >
+          <small>{{ postFinalization.currentAction.eyebrow }}</small>
+          <strong>{{ postFinalization.currentAction.label }}</strong>
+          <span>{{ postFinalization.currentAction.description }}</span>
+        </router-link>
+        <n-button
+          v-else-if="postFinalization?.currentAction.state === 'unavailable'"
+          type="primary"
+          block
+          :loading="controller.postBusy.value"
+          :disabled="controller.postBusy.value"
+          @click="refreshPostFinalization"
+        >{{ postFinalization.currentAction.label }}</n-button>
+        <p v-else class="muted">项目当前为只读状态。</p>
+        <router-link
+          v-if="postFinalization?.finalizedChapterReadable"
+          class="finalized-action finalized-action--secondary"
+          :to="postFinalization.finalizedChapterPath"
+        >查看本章定稿</router-link>
+      </nav>
+    </template>
 
     <template v-else-if="!review || controller.primaryAction.value === 'blocked'">
       <section v-if="hardBlocks.length" class="review-section" aria-label="确定性阻断">
@@ -330,6 +361,14 @@ async function cancelReview() {
 .finalization-panel { border-top: 3px solid #9b6a32; }
 .panel-intro { margin: 0 0 14px; color: #786f62; font-size: 12px; line-height: 1.7; }
 .panel-alert { margin-bottom: 14px; }
+.finalized-actions { display: grid; gap: 10px; }
+.finalized-action { min-height: 44px; border-radius: 8px; color: #4d4033; text-decoration: none; }
+.finalized-action:focus-visible { outline: 2px solid #8b5c25; outline-offset: 3px; }
+.finalized-action--primary { display: grid; gap: 4px; border: 1px solid #b88955; padding: 13px 14px; background: #fbf2e3; }
+.finalized-action--primary small { color: #8b5c25; font-size: 10px; font-weight: 800; letter-spacing: .12em; }
+.finalized-action--primary strong { font-family: Georgia, 'Noto Serif SC', serif; font-size: 16px; }
+.finalized-action--primary span { color: #786f62; font-size: 12px; line-height: 1.6; }
+.finalized-action--secondary { display: flex; align-items: center; justify-content: center; border: 1px solid #d9cbb7; padding: 9px 12px; font-weight: 700; }
 .candidate-picker, .change-set label { display: grid; gap: 6px; margin-bottom: 12px; color: #675d51; font-size: 12px; font-weight: 700; }
 select { width: 100%; border: 1px solid #d9cbb7; border-radius: 7px; padding: 8px 9px; color: #453b31; background: #fffdf8; }
 .review-section { margin-bottom: 16px; border-bottom: 1px solid #e4d8c6; padding-bottom: 14px; }
