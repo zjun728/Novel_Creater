@@ -86,6 +86,19 @@ test('mounted reader switches text and outline by query without reloading chapte
   } finally { item.dispose() }
 })
 
+test('reader view controls change only the view query field', async () => {
+  const item = await mount('/projects/p/manuscript/chapters/2?view=text&return=directory')
+  try {
+    const outline = find(item.target, n => n.type === 'button' && /本章小纲/.test(textOf(n)))
+    await outline.props.onClick()
+    await waitFor(() => item.router.currentRoute.value.query.view === 'outline', 'view control did not navigate to outline')
+    assert.deepEqual(item.router.currentRoute.value.query, {
+      view: 'outline',
+      return: 'directory',
+    })
+  } finally { item.dispose() }
+})
+
 test('mounted reader uses response navigation and has no author write controls', async () => {
   const item = await mount()
   try {
@@ -246,10 +259,14 @@ test('reader keeps query view local, renders only readonly prose and response na
   assert.match(source, /router\.replace/)
   assert.match(source, /watch\(\(\) => route\.query\.view/)
   assert.match(source, /watch\(\[projectId, chapterNumber\]/)
+  assert.match(source, /MANUSCRIPT_HISTORY_CONTEXT/)
+  assert.match(source, /viewRendered/)
   assert.match(source, /navigation\.previousChapterNumber/)
   assert.match(source, /navigation\.nextChapterNumber/)
   assert.match(source, /不属于作品稿件/)
   assert.doesNotMatch(source, /v-html|contenteditable|编辑本章|重新打开会话/)
+  assert.match(source, /<section class="final-reader"/)
+  assert.doesNotMatch(source, /<main\b/)
 })
 
 test('reader keeps download and creation state local to verified chapter content', async () => {

@@ -206,7 +206,7 @@ defineProps({
 .product-sidebar__nav-link,
 .product-sidebar__module-link {
   display: flex;
-  min-height: 42px;
+  min-height: 44px;
   align-items: center;
   gap: 11px;
   border-radius: 6px;

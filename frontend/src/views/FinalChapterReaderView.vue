@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NButton, NResult, NSkeleton } from 'naive-ui'
 import FinalChapterArticle from '../components/manuscript/FinalChapterArticle.vue'
@@ -9,8 +9,10 @@ import { createManuscriptController } from '../application/manuscript/manuscript
 import { createNovelDownloadController } from '../application/downloads/novelDownloadController.js'
 import { useOperationStore } from '../stores/operationStore.js'
 import { finalChapterPath, manuscriptPath, parsePositiveChapterNumber } from '../router/projectRoutes.js'
+import { MANUSCRIPT_HISTORY_CONTEXT } from '../application/manuscript/manuscriptHistory.js'
 
 const route = useRoute(); const router = useRouter(); const manuscript = createManuscriptController({ api })
+const manuscriptHistory = inject(MANUSCRIPT_HISTORY_CONTEXT, null)
 const titleRef = ref(null)
 function saveDownload(url, filename) {
   const link = document.createElement('a')
@@ -29,10 +31,12 @@ const status = computed(() => manuscript.content.value.status)
 const preparation = computed(() => manuscript.preparation.value)
 const isArchived = computed(() => data.value?.lifecycle === 'archived' || preparation.value.status === 'archived')
 const chapterCanDownload = computed(() => data.value && download.options.value?.available && download.options.value.chapters.some(item => item.number === data.value.chapter.number))
-function setView(next) { router.push({ query: { view: next } }) }
+function setView(next) { return router.push({ query: { ...route.query, view: next } }) }
 async function retryContent() {
   if (!chapterNumber.value) return false
   await manuscript.loadContent(projectId.value, chapterNumber.value, { force: true })
+  await nextTick()
+  await manuscriptHistory?.viewRendered(route)
   if (data.value && !download.options.value) await loadOptions()
   return data.value !== null
 }
@@ -51,15 +55,25 @@ async function loadReader(id, number) {
   if (id !== projectId.value || number !== chapterNumber.value) return
   await nextTick()
   if (id !== projectId.value || number !== chapterNumber.value) return
-  titleRef.value?.focus?.({ preventScroll: true })
   const scroller = titleRef.value?.closest?.('.product-app-shell__content')
-  if (scroller?.scrollTo) scroller.scrollTo({ top: 0, behavior: 'auto' })
-  else if (scroller) scroller.scrollTop = 0
+  await manuscriptHistory?.viewRendered(route)
+  if (!manuscriptHistory) {
+    titleRef.value?.focus?.({ preventScroll: true })
+    if (scroller?.scrollTo) scroller.scrollTo({ top: 0, behavior: 'auto' })
+    else if (scroller) scroller.scrollTop = 0
+  }
   if (data.value && !download.options.value) void loadOptions()
 }
 async function downloadChapter(format) { if (data.value) { try { await download.download(projectId.value, { scope: 'chapter', chapterNumber: data.value.chapter.number, format }) } catch {} } }
 watch([projectId, chapterNumber], ([id, number]) => { void loadReader(id, number) }, { immediate: true })
-watch(() => route.query.view, value => { if (value !== undefined && value !== 'text' && value !== 'outline') router.replace({ query: { view: 'text' } }) }, { immediate: true })
+watch(() => route.query.view, async value => {
+  if (value !== undefined && value !== 'text' && value !== 'outline') {
+    await router.replace({ query: { ...route.query, view: 'text' } })
+    return
+  }
+  await nextTick()
+  await manuscriptHistory?.viewRendered(route)
+}, { immediate: true })
 onBeforeUnmount(() => { manuscript.dispose(); download.dispose() })
 </script>
 <template>
@@ -93,7 +107,7 @@ onBeforeUnmount(() => { manuscript.dispose(); download.dispose() })
   </section>
 </template>
 <style scoped>
-.final-reader { min-height: 100%; padding: clamp(24px, 5vw, 64px); overflow-wrap: anywhere; color: var(--nc-ink); background: var(--nc-canvas); }
+.final-reader { min-width: 0; min-height: 100%; padding: clamp(24px, 5vw, 64px); overflow-wrap: anywhere; color: var(--nc-ink); background: var(--nc-canvas); }
 .final-reader__back { display: flex; width: min(760px, 100%); min-height: 44px; margin: 0 auto 12px; align-items: center; }
 .final-reader__header, .final-reader__sheet, .final-reader__notice, .final-reader__continuation { width: min(760px, 100%); margin: 0 auto; padding: clamp(24px, 4vw, 48px); border: 1px solid var(--nc-border); background: var(--nc-paper); box-shadow: 0 24px 64px rgba(58, 43, 27, .07); }
 .final-reader__sheet, .final-reader__notice, .final-reader__continuation { margin-top: 16px; }
@@ -122,5 +136,8 @@ onBeforeUnmount(() => { manuscript.dispose(); download.dispose() })
   .final-reader__tabs, .final-reader__download > div { display: grid; }
   .final-reader__tabs button, .final-reader__download button { width: 100%; }
   .final-reader__sheet :deep(.final-outline-panel) { padding: 0; border: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .final-reader, .final-reader * { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
 }
 </style>

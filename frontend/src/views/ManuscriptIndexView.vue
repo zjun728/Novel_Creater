@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, watch } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, watch } from 'vue'
 import { NButton, NResult, NSkeleton } from 'naive-ui'
 import { useRoute } from 'vue-router'
 
@@ -8,10 +8,12 @@ import { api } from '../api/db/client.js'
 import { createManuscriptController } from '../application/manuscript/manuscriptController.js'
 import { createNovelDownloadController } from '../application/downloads/novelDownloadController.js'
 import { useOperationStore } from '../stores/operationStore.js'
+import { MANUSCRIPT_HISTORY_CONTEXT } from '../application/manuscript/manuscriptHistory.js'
 
 const route = useRoute()
 const projectId = computed(() => String(route.params.projectId || ''))
 const manuscript = createManuscriptController({ api })
+const manuscriptHistory = inject(MANUSCRIPT_HISTORY_CONTEXT, null)
 
 function saveDownload(objectUrl, filename) {
   const link = document.createElement('a')
@@ -49,6 +51,9 @@ async function loadProjectFlow(id, { force = false, resetDownloads = false } = {
   if (hasChapters.value) {
     try { await download.loadOptions(id) } catch {}
   }
+  if (generation !== routeGeneration || id !== projectId.value) return
+  await nextTick()
+  await manuscriptHistory?.viewRendered(route)
 }
 function loadPreparation() { return manuscript.loadPreparation(projectId.value) }
 function loadOptions() { return download.loadOptions(projectId.value).catch(() => false) }
@@ -65,7 +70,7 @@ onBeforeUnmount(() => { manuscript.dispose(); download.dispose() })
   <section class="manuscript-index" aria-labelledby="manuscript-index-title" :aria-busy="manuscript.content.value.status === 'loading'">
     <header class="manuscript-index__sheet manuscript-index__header">
       <p class="manuscript-index__eyebrow">FINAL MANUSCRIPT</p>
-      <h1 id="manuscript-index-title">作品稿件</h1>
+      <h1 id="manuscript-index-title" tabindex="-1">作品稿件</h1>
     </header>
     <section v-if="manuscript.content.value.status === 'loading' && !directory" class="manuscript-index__sheet">
       <n-skeleton text width="22%" /><n-skeleton text :repeat="5" />
@@ -105,8 +110,8 @@ onBeforeUnmount(() => { manuscript.dispose(); download.dispose() })
 </template>
 
 <style scoped>
-.manuscript-index { min-height:100%; padding:clamp(24px,5vw,64px); color:var(--nc-ink); background:var(--nc-canvas); }
-.manuscript-index__sheet { width:min(1040px,100%); margin:auto; padding:clamp(26px,5vw,54px); border:1px solid var(--nc-border); background:var(--nc-paper); box-shadow:0 24px 64px rgba(58,43,27,.07); }
+.manuscript-index { min-width:0; min-height:100%; padding:clamp(24px,5vw,64px); overflow-wrap:anywhere; color:var(--nc-ink); background:var(--nc-canvas); }
+.manuscript-index__sheet { width:min(1040px,100%); min-width:0; margin:auto; padding:clamp(26px,5vw,54px); border:1px solid var(--nc-border); background:var(--nc-paper); box-shadow:0 24px 64px rgba(58,43,27,.07); }
 .manuscript-index__eyebrow { margin:0 0 10px; color:var(--nc-vermilion); font:700 11px Georgia,serif; letter-spacing:.16em; }
 h1 { margin:0; font:600 clamp(34px,6vw,58px) Georgia,'Noto Serif SC',serif; }
 .manuscript-index__title { margin:12px 0 0; color:var(--nc-muted); font:500 18px Georgia,'Noto Serif SC',serif; }
@@ -142,5 +147,6 @@ h1 { margin:0; font:600 clamp(34px,6vw,58px) Georgia,'Noto Serif SC',serif; }
 .manuscript-index__readonly,.manuscript-index__empty { margin:22px 0; color:var(--nc-muted); line-height:1.8; }.manuscript-index__empty { padding:28px 0; border-top:1px solid var(--nc-border); }
 .manuscript-index__local-error { margin:18px 0; color:var(--nc-muted); line-height:1.7; }.manuscript-index__local-error button { margin-left:8px; border:0; color:var(--nc-vermilion); background:transparent; text-decoration:underline; cursor:pointer; }
 .manuscript-index :is(a,button):focus-visible { outline:2px solid var(--nc-vermilion); outline-offset:3px; }
-@media (max-width: 760px) { .manuscript-download-menu__actions { display: grid; } .manuscript-download-menu button { width: 100%; } }
+@media (max-width: 760px) { .manuscript-index { padding:12px; } .manuscript-index__sheet { padding:clamp(18px,5vw,28px); } .manuscript-index__summary { flex-wrap:wrap; } .manuscript-download-menu__actions { display: grid; } .manuscript-download-menu button { width: 100%; white-space:normal; } }
+@media (prefers-reduced-motion: reduce) { .manuscript-index, .manuscript-index * { scroll-behavior:auto !important; transition:none !important; animation:none !important; } }
 </style>

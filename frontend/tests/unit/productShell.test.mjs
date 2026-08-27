@@ -276,6 +276,31 @@ test('desktop breakpoint collapses navigation without removing the route title',
   assert.equal(desktop.sidebarCollapsed, false)
 })
 
+test('application shell owns the only main landmark and begins with a skip link', async () => {
+  const app = await readFile(new URL('../../src/App.vue', import.meta.url), 'utf8')
+  assert.match(app, /class="skip-link"[^>]*href="#main-content"[^>]*>跳到主内容</)
+  assert.equal((app.match(/<main\b/g) || []).length, 1)
+  assert.match(app, /<main[^>]*id="main-content"[^>]*tabindex="-1"/)
+  assert.match(app, /MobileNavigationDrawer/)
+  assert.match(app, /ref="shellRegion"[\s\S]*class="skip-link"[\s\S]*class="product-app-shell"/)
+})
+
+test('shell CSS preserves touch size, wrapping, mobile layout, and reduced motion', async () => {
+  const [style, sidebar, index, reader] = await Promise.all([
+    readFile(new URL('../../src/style.css', import.meta.url), 'utf8'),
+    readFile(new URL('../../src/components/layout/Sidebar.vue', import.meta.url), 'utf8'),
+    readFile(new URL('../../src/views/ManuscriptIndexView.vue', import.meta.url), 'utf8'),
+    readFile(new URL('../../src/views/FinalChapterReaderView.vue', import.meta.url), 'utf8'),
+  ])
+  assert.match(style, /@media \(max-width: 760px\)/)
+  assert.match(style, /grid-template-columns:\s*minmax\(0, 1fr\)/)
+  assert.match(style, /\.product-mobile-topbar button[\s\S]*?min-height:\s*44px/)
+  assert.match(sidebar, /\.product-sidebar__nav-link,[\s\S]*?min-height:\s*44px/)
+  for (const source of [style, sidebar, index, reader]) {
+    assert.match(source, /@media \(prefers-reduced-motion: reduce\)/)
+  }
+})
+
 test('forced shell hydration bypasses a matching cached project for lifecycle authority', async () => {
   const { useShellProjectHydration } = await loadShellModule()
   const cached = {

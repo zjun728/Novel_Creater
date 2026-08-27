@@ -17,6 +17,11 @@ test('manuscript index keeps directory, preparation, and download-option failure
   assert.match(source, /作品稿件/)
   assert.match(source, /<h1[^>]*>作品稿件<\/h1>/)
   assert.doesNotMatch(source, /Canon|Projection|revision|hash/i)
+  assert.match(source, /<section class="manuscript-index"/)
+  assert.match(source, /id="manuscript-index-title"[^>]*tabindex="-1"/)
+  assert.match(source, /MANUSCRIPT_HISTORY_CONTEXT/)
+  assert.match(source, /viewRendered/)
+  assert.doesNotMatch(source, /<main\b/)
 })
 
 const frontendRoot = fileURLToPath(new URL('../..', import.meta.url))
