@@ -70,3 +70,25 @@ test('controller maps each public error without cross-target retention', async (
     await controller.loadContent('p', 2); assert.equal(controller.content.value.status, status); assert.equal(controller.content.value.data, null)
   }
 })
+
+test('directory table covers ready empty identity errors and same-target retry retention', async () => {
+  const success = { projectId: 'p', title: 'T', lifecycle: 'active', summary: { finalChapterCount: 0, totalScalarCount: 0 }, volumes: [] }
+  let error = null
+  const controller = createManuscriptController({ api: { manuscripts: { chapter: async () => chapter(), index: async () => { if (error) throw error; return success } }, projects: { preparation: async () => preparation } } })
+  await controller.loadDirectory('p'); assert.equal(controller.content.value.status, 'empty'); assert.equal(controller.content.value.data, success)
+  error = new ApiError({ code: 'ManuscriptTemporarilyUnavailable' }); const retry = controller.loadDirectory('p', { force: true }); assert.equal(controller.content.value.status, 'loading'); assert.equal(controller.content.value.data, success); await retry; assert.equal(controller.content.value.data, success)
+  for (const code of ['ManuscriptProjectNotFound', 'FinalChapterNotFound', 'ManuscriptRequestInvalid', 'ManuscriptIntegrityFailure', 'unknown']) { error = new ApiError({ code }); await controller.loadDirectory('p', { force: true }); assert.equal(controller.content.value.data, null) }
+})
+
+test('target switching invalidation and dispose abort signals and reject late publication', async () => {
+  const pending = deferred(); const signals = []
+  const controller = createManuscriptController({ api: { manuscripts: { chapter: (_p, n, { signal }) => { signals.push(signal); return n === 2 ? pending.promise : Promise.resolve(chapter(n)) }, index: async () => ({}) }, projects: { preparation: async () => preparation } } })
+  const old = controller.loadContent('p', 2); await controller.loadContent('p', 3); assert.equal(signals[0].aborted, true); pending.resolve(chapter(2)); await old; assert.equal(controller.content.value.data.chapter.number, 3)
+  const waiting = deferred(); const disposed = createManuscriptController({ api: { manuscripts: { chapter: (_p, _n, { signal }) => { signals.push(signal); return waiting.promise }, index: async () => ({}) }, projects: { preparation: async () => preparation } } }); const request = disposed.loadContent('p', 2); disposed.dispose(); assert.equal(signals.at(-1).aborted, true); waiting.resolve(chapter()); await request; assert.equal(disposed.content.value.status, 'loading')
+})
+
+test('preparation table is independent from content and honors archived, stale and dispose', async () => {
+  const first = deferred(); let count = 0
+  const controller = createManuscriptController({ api: { manuscripts: { chapter: async () => { throw new ApiError({ code: 'unknown' }) }, index: async () => ({}) }, projects: { preparation: () => (++count === 1 ? first.promise : Promise.resolve({ ...preparation, lifecycle: 'archived', nextAction: 'archived_read_only', targetPath: null })) } } })
+  const old = controller.loadPreparation('p'); await controller.loadPreparation('q'); first.resolve(preparation); await old; assert.equal(controller.preparation.value.status, 'archived'); await controller.loadContent('p', 2); assert.equal(controller.content.value.status, 'unavailable')
+})

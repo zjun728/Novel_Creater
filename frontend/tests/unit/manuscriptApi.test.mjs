@@ -44,3 +44,37 @@ test('directory accepts the empty-book shape and returned graph is source-isolat
   global.fetch = async () => new Response(JSON.stringify(source))
   try { const value = await api.manuscripts.index('p'); source.title = 'changed'; assert.equal(value.title, 'T'); assert.equal(Object.isFrozen(value), true); assert.equal(Object.isFrozen(value.volumes), true) } finally { global.fetch = prior }
 })
+
+async function rejectsMutation(name, value, call = () => api.manuscripts.index('p')) {
+  const prior = global.fetch
+  global.fetch = async () => new Response(JSON.stringify(value))
+  try { await assert.rejects(call(), error => error.code === 'invalid_response' && error.message === '服务返回了无效响应' && !error.message.includes('secret'), name) } finally { global.fetch = prior }
+}
+
+test('directoryMutations reject exact keys, primitives, ordering, timestamps and arithmetic', async () => {
+  const cases = [
+    ['summary hash', x => { x.summary.hash = 'secret' }], ['volume revision', x => { x.volumes[0].revision = 1 }],
+    ['chapter-meta basis', x => { x.volumes[0].chapters[0].basis = 'secret' }], ['root internalId', x => { x.internalId = 'secret' }],
+    ['summary primitive', x => { x.summary = null }], ['volume primitive', x => { x.volumes[0] = null }], ['chapters primitive', x => { x.volumes[0].chapters = {} }],
+    ['meta number string', x => { x.volumes[0].chapters[0].number = '2' }], ['meta title null', x => { x.volumes[0].chapters[0].title = null }],
+    ['duplicate chapter', x => { x.volumes.push({ id: 'v2', order: 2, title: 'V2', chapters: [structuredClone(x.volumes[0].chapters[0])] }) }],
+    ['same-volume unsorted', x => { x.volumes[0].chapters.push({ ...structuredClone(x.volumes[0].chapters[0]), number: 1 }) }],
+    ['cross-volume rollback', x => { x.volumes.push({ id: 'v2', order: 2, title: 'V2', chapters: [{ ...structuredClone(x.volumes[0].chapters[0]), number: 1 }] }) }],
+    ['duplicate volume ID', x => { x.volumes.push({ id: 'v1', order: 2, title: 'V2', chapters: [{ ...structuredClone(x.volumes[0].chapters[0]), number: 3 }] }) }],
+    ['unsorted volume order', x => { x.volumes.push({ id: 'v2', order: 1, title: 'V2', chapters: [{ ...structuredClone(x.volumes[0].chapters[0]), number: 3 }] }) }],
+    ['invalid calendar', x => { x.volumes[0].chapters[0].finalizedAt = '2025-02-31T00:00:00Z' }], ['timestamp offset', x => { x.volumes[0].chapters[0].finalizedAt = '2025-01-01T00:00:00+00:00' }], ['timestamp no Z', x => { x.volumes[0].chapters[0].finalizedAt = '2025-01-01T00:00:00' }],
+    ['unsafe order', x => { x.volumes[0].order = Number.MAX_SAFE_INTEGER + 1 }], ['unsafe chapter', x => { x.volumes[0].chapters[0].number = Number.MAX_SAFE_INTEGER + 1 }], ['unsafe count', x => { x.summary.totalScalarCount = Number.MAX_SAFE_INTEGER + 1 }], ['summary mismatch', x => { x.summary.finalChapterCount = 9 }], ['total mismatch', x => { x.summary.totalScalarCount = 9 }],
+  ]
+  for (const [name, mutate] of cases) { const value = structuredClone(directory); mutate(value); await rejectsMutation(name, value) }
+})
+
+test('chapterMutations reject every nested boundary and navigation contract', async () => {
+  const cases = [
+    ['root hash', x => { x.hash = 'secret' }], ['volume contentHash', x => { x.volume.contentHash = 'secret' }], ['chapter revision', x => { x.chapter.revision = 1 }], ['outline basis', x => { x.outline.basis = 'secret' }], ['navigation internalId', x => { x.navigation.internalId = 'secret' }],
+    ['root primitive', x => { x.projectTitle = [] }], ['volume primitive', x => { x.volume = [] }], ['chapter primitive', x => { x.chapter = null }], ['outline primitive', x => { x.outline = [] }], ['navigation primitive', x => { x.navigation = null }],
+    ['chapterGoal wrong', x => { x.outline.chapterGoal = [] }], ...['expectedCharacters', 'continuation', 'plannedTasks', 'scenes', 'forbiddenEarlyEvents'].map(key => [`${key} wrong`, x => { x.outline[key] = [null] }]),
+    ['emoji scalar mismatch', x => { x.chapter.content = '😀'; x.chapter.scalarCount = 2 }], ['chapter count unsafe', x => { x.chapter.scalarCount = Number.MAX_SAFE_INTEGER + 1 }],
+    ['previous equals current', x => { x.navigation.previousChapterNumber = x.chapter.number }], ['next equals current', x => { x.navigation.nextChapterNumber = x.chapter.number }], ['navigation primitive', x => { x.navigation.nextChapterNumber = '8' }],
+  ]
+  for (const [name, mutate] of cases) { const value = structuredClone(chapter); mutate(value); await rejectsMutation(name, value, () => api.manuscripts.chapter('p', 2)) }
+})
