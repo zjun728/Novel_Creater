@@ -29,6 +29,16 @@ const review = {
   confirmation: null,
 }
 
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((onResolve, onReject) => {
+    resolve = onResolve
+    reject = onReject
+  })
+  return { promise, resolve, reject }
+}
+
 const preparation = {
   lifecycle: 'active',
   nextAction: 'prepare_chapter_outline',
@@ -542,4 +552,144 @@ test('reader verification never publishes an unsafe finalized chapter path', asy
 
   assert.equal(controller.postFinalization.value.finalizedChapterReadable, false)
   assert.equal(controller.postFinalization.value.finalizedChapterPath, '')
+})
+
+
+test('reset while the idempotency key is pending prevents every commit request', async () => {
+  const pendingId = deferred()
+  let idRequested = false
+  let commitCalls = 0
+  const confirmed = {
+    ...review,
+    confirmation: { revision: 1, contentHash: HASH_A },
+  }
+  const controller = createFinalizationController({
+    getReview: async () => confirmed,
+    commit: async () => { commitCalls += 1; return committed(4) },
+    getProjectId: () => 'p1',
+    getSessionId: () => 's1',
+    getChapterNumber: () => 4,
+    idFactory: () => { idRequested = true; return pendingId.promise },
+  })
+  await controller.load()
+
+  const pending = controller.commitChapter()
+  while (!idRequested) await new Promise(resolve => setImmediate(resolve))
+  controller.reset()
+  pendingId.resolve('44444444-4444-4444-8444-444444444444')
+
+  assert.equal(await pending, null)
+  assert.equal(commitCalls, 0)
+  assert.equal(controller.error.value, '')
+})
+
+
+test('dispose while the idempotency key is pending prevents every commit request', async () => {
+  const pendingId = deferred()
+  let idRequested = false
+  let commitCalls = 0
+  const confirmed = {
+    ...review,
+    confirmation: { revision: 1, contentHash: HASH_A },
+  }
+  const controller = createFinalizationController({
+    getReview: async () => confirmed,
+    commit: async () => { commitCalls += 1; return committed(4) },
+    getProjectId: () => 'p1',
+    getSessionId: () => 's1',
+    getChapterNumber: () => 4,
+    idFactory: () => { idRequested = true; return pendingId.promise },
+  })
+  await controller.load()
+
+  const pending = controller.commitChapter()
+  while (!idRequested) await new Promise(resolve => setImmediate(resolve))
+  controller.dispose()
+  pendingId.resolve('44444444-4444-4444-8444-444444444444')
+
+  assert.equal(await pending, null)
+  assert.equal(commitCalls, 0)
+})
+
+
+test('commit passes one frozen project session and chapter identity after a delayed key', async () => {
+  const pendingId = deferred()
+  let idRequested = false
+  let currentProjectId = 'p1'
+  let currentSessionId = 's1'
+  let currentChapterNumber = 4
+  let submittedTarget = null
+  const confirmed = {
+    ...review,
+    confirmation: { revision: 1, contentHash: HASH_A },
+  }
+  const controller = createFinalizationController({
+    getReview: async () => confirmed,
+    commit: async (_command, target) => {
+      submittedTarget = target
+      return committed(4)
+    },
+    getProjectId: () => currentProjectId,
+    getSessionId: () => currentSessionId,
+    getChapterNumber: () => currentChapterNumber,
+    reloadPreparation: async () => preparation,
+    readFinalizedChapter: async (projectId, chapterNumber) => ({
+      projectId,
+      chapter: { number: chapterNumber },
+    }),
+    idFactory: () => { idRequested = true; return pendingId.promise },
+  })
+  await controller.load()
+
+  const pending = controller.commitChapter()
+  while (!idRequested) await new Promise(resolve => setImmediate(resolve))
+  currentProjectId = 'p2'
+  currentSessionId = 's2'
+  currentChapterNumber = 9
+  pendingId.resolve('44444444-4444-4444-8444-444444444444')
+  await pending
+
+  assert.deepEqual(submittedTarget, {
+    projectId: 'p1',
+    sessionId: 's1',
+    chapterNumber: 4,
+  })
+  assert.equal(controller.postFinalization.value.finalizedChapterPath, '/projects/p1/manuscript/chapters/4')
+})
+
+
+test('committed state is visible while onCommitted delays post-finalization reads', async () => {
+  const refresh = deferred()
+  let preparationCalls = 0
+  let chapterCalls = 0
+  const confirmed = {
+    ...review,
+    confirmation: { revision: 1, contentHash: HASH_A },
+  }
+  const controller = createFinalizationController({
+    getReview: async () => confirmed,
+    commit: async () => committed(4),
+    getProjectId: () => 'p1',
+    getSessionId: () => 's1',
+    getChapterNumber: () => 4,
+    onCommitted: () => refresh.promise,
+    reloadPreparation: async () => { preparationCalls += 1; return preparation },
+    readFinalizedChapter: async () => {
+      chapterCalls += 1
+      return { projectId: 'p1', chapter: { number: 4 } }
+    },
+    idFactory: () => '44444444-4444-4444-8444-444444444444',
+  })
+  await controller.load()
+
+  const pending = controller.commitChapter()
+  while (!controller.finalized.value) await new Promise(resolve => setImmediate(resolve))
+
+  assert.equal(controller.postFinalization.value, null)
+  assert.equal(controller.busy.value, true)
+  assert.equal(preparationCalls, 0)
+  assert.equal(chapterCalls, 0)
+  refresh.resolve()
+  await pending
+  assert.equal(controller.postFinalization.value.currentAction.state, 'available')
 })

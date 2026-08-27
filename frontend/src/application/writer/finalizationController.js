@@ -71,6 +71,7 @@ export function createFinalizationController({
   commit = unavailable('commit'),
   onCommitted = async () => {},
   getProjectId = () => '',
+  getSessionId = () => '',
   getChapterNumber = () => null,
   reloadPreparation = unavailable('reloadPreparation'),
   readFinalizedChapter = unavailable('readFinalizedChapter'),
@@ -113,16 +114,16 @@ export function createFinalizationController({
   })
 
   async function key(kind) {
-    const value = idFactory()
+    const value = await idFactory()
     if (typeof value !== 'string' || !value) {
       throw new TypeError('finalization idempotency key is invalid')
     }
     return sha256Text(`finalization:${kind}:${value}`)
   }
 
-  async function refreshCommittedWorkspace() {
+  async function refreshCommittedWorkspace(target) {
     try {
-      await onCommitted()
+      await onCommitted(target)
     } catch {
       // The server commit is already authoritative; a later page load retries this refresh.
     }
@@ -130,11 +131,16 @@ export function createFinalizationController({
 
   function committedContext(committed = null, fallback = null) {
     const projectId = fallback?.projectId || projectIdValue(getProjectId())
+    const sessionId = fallback?.sessionId || projectIdValue(getSessionId())
     const resultChapterNumber = chapterNumberValue(committed?.chapterNumber)
     const chapterNumber = resultChapterNumber
       ?? fallback?.chapterNumber
       ?? chapterNumberValue(getChapterNumber())
-    return projectId && chapterNumber ? Object.freeze({ projectId, chapterNumber }) : null
+    return projectId && chapterNumber ? Object.freeze({
+      projectId,
+      ...(sessionId ? { sessionId } : {}),
+      chapterNumber,
+    }) : null
   }
 
   async function refreshPostFinalization(active = () => !disposed) {
@@ -222,12 +228,14 @@ export function createFinalizationController({
   async function prepareCandidate(candidateValue) {
     const candidate = currentCandidate(candidateValue)
     return run(async active => {
+      const idempotencyKey = await key('prepare')
+      if (!active()) return null
       await prepare(candidate.id, {
         candidateHash: candidate.contentHash,
         expectedCanonRevision: candidate.canonRevision,
         expectedPlanningHash: candidate.planningHash,
         expectedOutlineHash: candidate.outlineHash,
-        idempotencyKey: await key('prepare'),
+        idempotencyKey,
       })
       if (!active()) return null
       const value = await getReview()
@@ -290,19 +298,21 @@ export function createFinalizationController({
         throw new TypeError('finalization commit is unavailable')
       }
       const commitTarget = committedContext()
+      const idempotencyKey = await key('commit')
+      if (!active()) return null
       const command = {
         ...currentRevision(review.value),
-        idempotencyKey: await key('commit'),
+        idempotencyKey,
       }
       try {
-        const committed = await commit(command)
+        const committed = await commit(command, commitTarget)
         if (!active()) return null
         committedTarget = committedContext(committed, commitTarget)
         result.value = committedTarget
           ? Object.freeze({ ...committed, chapterNumber: committedTarget.chapterNumber })
           : committed
         review.value = { ...review.value, status: 'committed' }
-        await refreshCommittedWorkspace()
+        await refreshCommittedWorkspace(committedTarget)
         await refreshPostFinalization(active)
         return result.value
       } catch (failure) {
@@ -316,7 +326,7 @@ export function createFinalizationController({
         review.value = recovered
         error.value = ''
         committedTarget = commitTarget
-        await refreshCommittedWorkspace()
+        await refreshCommittedWorkspace(committedTarget)
         await refreshPostFinalization(active)
         return null
       }

@@ -101,20 +101,20 @@ const finalization = createFinalizationController({
     session.value.id,
     command,
   ),
-  commit: async command => {
-    const committedChapterNumber = session.value?.chapterNum
+  commit: async (command, target) => {
     const committed = await api.chapterSessions.commitFinalization(
-      projectId.value,
-      session.value.id,
+      target.projectId,
+      target.sessionId,
       command,
     )
-    return { ...committed, chapterNumber: committedChapterNumber }
+    return { ...committed, chapterNumber: target.chapterNumber }
   },
-  onCommitted: async () => {
-    const workspace = await chapterSessionStore.reloadCurrentWorkspace(projectId.value)
+  onCommitted: async target => {
+    const workspace = await chapterSessionStore.reloadCurrentWorkspace(target.projectId)
     if (workspace?.workingDraft) autosave.reset(workspace)
   },
   getProjectId: () => projectId.value,
+  getSessionId: () => session.value?.id,
   getChapterNumber: () => chapterNumber.value,
   reloadPreparation: projectId => api.projects.preparation(projectId),
   readFinalizedChapter: (projectId, chapterNumber) => api.manuscripts.chapter(

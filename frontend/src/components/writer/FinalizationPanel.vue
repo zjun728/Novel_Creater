@@ -189,8 +189,13 @@ async function refreshPostFinalization() {
         正文与对应小纲已进入作品稿件。你可以继续当前创作步骤，也可以先回看本章定稿。
       </n-alert>
       <nav class="finalized-actions" aria-label="定稿后下一步">
+        <p
+          v-if="!postFinalization"
+          class="finalized-transition-status"
+          role="status"
+        >正在读取定稿后的创作状态…</p>
         <router-link
-          v-if="postFinalization?.currentAction.state === 'available'"
+          v-else-if="postFinalization.currentAction.state === 'available'"
           class="finalized-action finalized-action--primary"
           :to="postFinalization.currentAction.targetPath"
         >
@@ -199,14 +204,17 @@ async function refreshPostFinalization() {
           <span>{{ postFinalization.currentAction.description }}</span>
         </router-link>
         <n-button
-          v-else-if="postFinalization?.currentAction.state === 'unavailable'"
+          v-else-if="postFinalization.currentAction.state === 'unavailable'"
           type="primary"
           block
           :loading="controller.postBusy.value"
           :disabled="controller.postBusy.value"
           @click="refreshPostFinalization"
         >{{ postFinalization.currentAction.label }}</n-button>
-        <p v-else class="muted">项目当前为只读状态。</p>
+        <p
+          v-else-if="postFinalization.currentAction.state === 'archived'"
+          class="muted"
+        >项目当前为只读状态。</p>
         <router-link
           v-if="postFinalization?.finalizedChapterReadable"
           class="finalized-action finalized-action--secondary"
@@ -359,15 +367,16 @@ async function refreshPostFinalization() {
 
 <style scoped>
 .finalization-panel { border-top: 3px solid #9b6a32; }
-.panel-intro { margin: 0 0 14px; color: #786f62; font-size: 12px; line-height: 1.7; }
+.panel-intro { margin: 0 0 14px; color: #675d51; font-size: 12px; line-height: 1.7; }
 .panel-alert { margin-bottom: 14px; }
 .finalized-actions { display: grid; gap: 10px; }
+.finalized-transition-status { min-height: 44px; margin: 0; color: #675d51; font-size: 12px; line-height: 1.7; }
 .finalized-action { min-height: 44px; border-radius: 8px; color: #4d4033; text-decoration: none; }
 .finalized-action:focus-visible { outline: 2px solid #8b5c25; outline-offset: 3px; }
 .finalized-action--primary { display: grid; gap: 4px; border: 1px solid #b88955; padding: 13px 14px; background: #fbf2e3; }
 .finalized-action--primary small { color: #8b5c25; font-size: 10px; font-weight: 800; letter-spacing: .12em; }
 .finalized-action--primary strong { font-family: Georgia, 'Noto Serif SC', serif; font-size: 16px; }
-.finalized-action--primary span { color: #786f62; font-size: 12px; line-height: 1.6; }
+.finalized-action--primary span { color: #675d51; font-size: 12px; line-height: 1.6; }
 .finalized-action--secondary { display: flex; align-items: center; justify-content: center; border: 1px solid #d9cbb7; padding: 9px 12px; font-weight: 700; }
 .candidate-picker, .change-set label { display: grid; gap: 6px; margin-bottom: 12px; color: #675d51; font-size: 12px; font-weight: 700; }
 select { width: 100%; border: 1px solid #d9cbb7; border-radius: 7px; padding: 8px 9px; color: #453b31; background: #fffdf8; }
@@ -381,5 +390,5 @@ h3 { font-size: 15px; } h4 { font-size: 13px; }
 .change-group { margin-top: 14px; }
 .change-item { margin-bottom: 8px; }
 pre { overflow: auto; max-height: 150px; margin: 0; color: #55493c; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.6 ui-monospace, monospace; }
-.muted { color: #8a7d6d; font-size: 12px; line-height: 1.6; }
+.muted { color: #6f6559; font-size: 12px; line-height: 1.6; }
 </style>
