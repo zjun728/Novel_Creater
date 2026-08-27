@@ -10,7 +10,7 @@ const ExperienceLibraryView = () => import('../views/assets/ExperienceLibraryVie
 const CorpusLibraryView = () => import('../views/assets/CorpusLibraryView.vue')
 const ChapterWriterView = () => import('../views/ChapterWriterView.vue')
 const ManuscriptIndexView = () => import('../views/ManuscriptIndexView.vue')
-const FinalChapterReaderView = () => import('../views/FinalChapterReaderPendingView.vue')
+const FinalChapterReaderView = () => import('../views/FinalChapterReaderView.vue')
 const ProviderSettingsView = () => import('../views/ProviderSettingsView.vue')
 const ApplicationSettingsView = () => import('../views/ApplicationSettingsView.vue')
 const ProjectModelSettingsView = () => import('../views/ProjectModelSettingsView.vue')
