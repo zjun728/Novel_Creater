@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -406,6 +407,34 @@ def test_cli_accepts_one_explicit_project_id():
     assert parse_project_id(("--project-id", PROJECT_ID)) == PROJECT_ID
 
 
+@pytest.mark.parametrize(
+    "argv",
+    (
+        ("--project-id", "not-a-uuid"),
+        ("--project-id", "x" * 100_000),
+        ("--project-id", PROJECT_ID + "\x7f"),
+        ("--project-id", PROJECT_ID + "\u202e"),
+        ("--project-id", PROJECT_ID.upper()),
+        ("--project-id", "{" + PROJECT_ID + "}"),
+        ("--project-id", PROJECT_ID.replace("-", "")),
+        ("--pro", PROJECT_ID),
+        ("--project", PROJECT_ID),
+    ),
+    ids=(
+        "not-uuid", "oversized", "del", "bidi", "uppercase", "braced",
+        "unhyphenated", "short-abbreviation", "long-abbreviation",
+    ),
+)
+def test_cli_rejects_noncanonical_or_abbreviated_project_id(argv):
+    from backend.scripts.verify_manuscript_product_smoke import (
+        SmokeArgumentError,
+        parse_project_id,
+    )
+
+    with pytest.raises(SmokeArgumentError):
+        parse_project_id(argv)
+
+
 @pytest.mark.asyncio
 async def test_run_cli_prints_only_fixed_safe_summary():
     import json
@@ -466,3 +495,22 @@ def test_main_redacts_invalid_extra_argument(capsys):
     assert captured.out == ""
     assert captured.err.strip() == '{"category":"arguments","status":"failed"}'
     assert SECRET not in captured.err
+
+
+@pytest.mark.parametrize(
+    "control_flow_error",
+    (KeyboardInterrupt(), SystemExit(9), asyncio.CancelledError()),
+    ids=("keyboard-interrupt", "system-exit", "async-cancellation"),
+)
+def test_main_preserves_control_flow_base_exceptions(control_flow_error):
+    from backend.scripts.verify_manuscript_product_smoke import main
+
+    with pytest.raises(type(control_flow_error)) as raised:
+        main(
+            ("--project-id", PROJECT_ID),
+            dependencies=_dependencies(
+                manuscript=ManuscriptService(error=control_flow_error),
+            ),
+        )
+
+    assert raised.value is control_flow_error

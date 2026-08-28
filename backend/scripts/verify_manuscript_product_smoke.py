@@ -10,6 +10,7 @@ import json
 import re
 import sys
 from typing import Callable, Sequence
+from uuid import UUID
 
 
 APPROVED_CHAPTER_TITLES = (
@@ -259,7 +260,7 @@ async def verify_product_smoke(
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = _SafeArgumentParser(add_help=False)
+    parser = _SafeArgumentParser(add_help=False, allow_abbrev=False)
     parser.add_argument("--project-id", action="append", required=True)
     return parser
 
@@ -271,12 +272,17 @@ def parse_project_id(argv: Sequence[str] | None) -> str:
         type(values) is not list
         or len(values) != 1
         or type(values[0]) is not str
-        or not values[0].strip()
-        or values[0] != values[0].strip()
-        or any(ord(character) < 32 for character in values[0])
+        or len(values[0]) != 36
     ):
         raise SmokeArgumentError() from None
-    return values[0]
+    project_id = values[0]
+    try:
+        canonical = str(UUID(project_id))
+    except (ValueError, AttributeError):
+        raise SmokeArgumentError() from None
+    if canonical != project_id:
+        raise SmokeArgumentError() from None
+    return project_id
 
 
 async def run_cli(
@@ -302,7 +308,7 @@ def _failure(category: str, project_id: str | None = None) -> str:
     return json.dumps(receipt, sort_keys=True, separators=(",", ":"))
 
 
-def _failure_category(error: BaseException) -> str:
+def _failure_category(error: Exception) -> str:
     from backend.services.manuscripts import (
         FinalChapterNotFound,
         ManuscriptIntegrityFailure,
@@ -338,7 +344,7 @@ def main(
                 dependencies=dependencies or _default_dependencies(),
             )
         )
-    except BaseException as error:
+    except Exception as error:
         print(_failure(_failure_category(error), project_id), file=sys.stderr)
         return 1
     print(json.dumps(summary, sort_keys=True, separators=(",", ":")))
