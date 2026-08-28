@@ -611,6 +611,99 @@ def test_main_runtime_cleanup_failure_is_fixed_and_both_cleanup_steps_are_attemp
     assert SECRET not in captured.err
 
 
+def _runtime_snapshot():
+    from backend.config import RuntimeConfiguration
+
+    return RuntimeConfiguration(
+        mysql_items=(
+            ("host", "127.0.0.1"),
+            ("port", 3307),
+            ("user", "owner"),
+            ("password", "private"),
+            ("db", "owner_database"),
+            ("charset", "utf8mb4"),
+            ("autocommit", True),
+            ("minsize", 1),
+            ("maxsize", 10),
+        ),
+        corpus_root=None,
+        managed_corpus_root=None,
+        market_scheduler_enabled=False,
+    )
+
+
+def test_install_rejection_does_not_close_or_clear_existing_runtime_owner(
+    monkeypatch,
+    capsys,
+):
+    from backend import config, database
+    from backend.scripts import verify_manuscript_product_smoke as verifier
+    from backend.tests.support.fakes import FakePool
+
+    existing_owner = _runtime_snapshot()
+    rejected_snapshot = _runtime_snapshot()
+    existing_pool = FakePool()
+    monkeypatch.setattr(config, "_active_runtime_configuration", existing_owner)
+    monkeypatch.setattr(database, "_pool", existing_pool)
+    monkeypatch.setattr(
+        config,
+        "load_runtime_configuration",
+        lambda: rejected_snapshot,
+    )
+
+    assert verifier.main(("--project-id", PROJECT_ID)) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "unexpected" in captured.err
+    assert config.current_runtime_configuration() is existing_owner
+    assert database._pool is existing_pool
+    assert existing_pool.close_count == 0
+    assert existing_pool.wait_closed_count == 0
+
+
+@pytest.mark.parametrize(
+    "cleanup_control_flow",
+    (KeyboardInterrupt(), SystemExit(7), asyncio.CancelledError()),
+    ids=("keyboard-interrupt", "system-exit", "async-cancellation"),
+)
+def test_cleanup_control_flow_outranks_primary_exception_and_still_clears(
+    monkeypatch,
+    cleanup_control_flow,
+):
+    from backend import config, database
+    from backend.scripts import verify_manuscript_product_smoke as verifier
+
+    snapshot = object()
+    events = []
+    monkeypatch.setattr(config, "load_runtime_configuration", lambda: snapshot)
+    monkeypatch.setattr(config, "install_runtime_configuration", lambda _value: None)
+    monkeypatch.setattr(
+        verifier,
+        "_default_dependencies",
+        lambda: _dependencies(
+            manuscript=ManuscriptService(error=RuntimeError(SECRET)),
+        ),
+    )
+
+    async def close():
+        events.append("close")
+        raise cleanup_control_flow
+
+    def clear(value):
+        assert value is snapshot
+        events.append("clear")
+
+    monkeypatch.setattr(database, "close_pool", close)
+    monkeypatch.setattr(config, "clear_runtime_configuration", clear)
+
+    with pytest.raises(type(cleanup_control_flow)) as raised:
+        verifier.main(("--project-id", PROJECT_ID))
+
+    assert raised.value is cleanup_control_flow
+    assert events == ["close", "clear"]
+
+
 @pytest.mark.parametrize(
     "control_flow_error",
     (KeyboardInterrupt(), SystemExit(9), asyncio.CancelledError()),

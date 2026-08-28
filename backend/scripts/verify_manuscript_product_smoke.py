@@ -358,17 +358,26 @@ async def _verify_with_owned_runtime(project_id: str) -> dict[str, object]:
         primary_error = error
 
     cleanup_error = None
-    try:
-        await close_pool()
-    except BaseException as error:
-        cleanup_error = error
     if installed:
+        try:
+            await close_pool()
+        except BaseException as error:
+            cleanup_error = error
         try:
             clear_runtime_configuration(snapshot)
         except BaseException as error:
-            if cleanup_error is None:
+            if cleanup_error is None or (
+                isinstance(cleanup_error, Exception)
+                and not isinstance(error, Exception)
+            ):
                 cleanup_error = error
 
+    if (
+        cleanup_error is not None
+        and not isinstance(cleanup_error, Exception)
+        and (primary_error is None or isinstance(primary_error, Exception))
+    ):
+        raise cleanup_error
     if primary_error is not None:
         raise primary_error
     if cleanup_error is not None:
