@@ -55,6 +55,7 @@ function createRoots(owned) {
     denyProxyPath: path.join(owned, 'deny-proxy.cjs'),
     viteConfigPath: path.join(owned, 'vite.config.mjs'),
     resultPath: path.join(owned, 'browser-result.json'),
+    pageEventLedgerPath: path.join(owned, 'page-events.json'),
     outboundLedgerPath: path.join(owned, 'outbound-ledger.log'),
     denyProxyLedgerPath: path.join(owned, 'deny-proxy.log'),
   }
@@ -153,14 +154,34 @@ export function classifyBrowserFailure(resultPath) {
       : null
     const line = error.location?.file?.endsWith('manuscript-productization.spec.mjs') && Number.isInteger(error.location.line)
       ? error.location.line : stackLine || 'unknown'
-    const motionMarker = error.message.match(/phase8a-motion-[a-z0-9_-]+/u)?.[0]
-    if (motionMarker) return `${motionMarker}@${line}`
+    const evidenceMarker = error.message.match(/phase8a-(?:motion|page-events)-[a-z0-9_-]+/u)?.[0]
+    if (evidenceMarker) return `${evidenceMarker}@${line}`
     const category = /timed out|timeout/iu.test(error.message)
       ? 'timeout' : /locator|strict mode/iu.test(error.message) ? 'locator' : 'assertion'
     return `${category}@${line}`
   } catch {
     return 'unclassified'
   }
+}
+
+export function assertPageEventLedger(value) {
+  let parsed
+  try { parsed = JSON.parse(value) } catch { throw new Error('Phase8A page event ledger was invalid') }
+  const keys = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? Object.keys(parsed).sort() : []
+  const expectedKeys = ['consoleErrors', 'pageErrors', 'requestFailures', 'responses', 'summaries']
+  const routes = ['manuscript-chapter', 'novel-download-chapter', 'novel-download-volume', 'novel-download-book']
+  const expectedResponses = routes.map(route => ({ method: 'GET', route, stage: 'corrupt', status: 500 }))
+  const expectedSummaries = routes.map(source => ({
+    kind: 'console-error', category: 'resource-status', source, status: 500,
+  }))
+  if (
+    JSON.stringify(keys) !== JSON.stringify(expectedKeys.sort())
+    || parsed.consoleErrors !== 4 || parsed.pageErrors !== 0 || parsed.requestFailures !== 0
+    || JSON.stringify(parsed.responses) !== JSON.stringify(expectedResponses)
+    || JSON.stringify(parsed.summaries) !== JSON.stringify(expectedSummaries)
+  ) throw new Error('Phase8A page event ledger was invalid')
+  return { consoleKnownLinked: 4, consoleUnexpected: 0, pageErrors: 0, requestFailures: 0 }
 }
 
 export function safeFailureSummary(error) {
@@ -250,6 +271,7 @@ export async function runPhase8A({
           BROWSER_DOWNLOAD_ROOT: roots.downloadRoot,
           BROWSER_BROWSER_DOWNLOADS_ROOT: roots.browserDownloadsRoot,
           BROWSER_RESULT_PATH: roots.resultPath,
+          BROWSER_PAGE_EVENT_LEDGER_PATH: roots.pageEventLedgerPath,
           BROWSER_ALLOWED_ORIGINS: JSON.stringify([viteUrl, apiUrl]),
           BROWSER_DENY_PROXY_URL: denyUrl,
           BROWSER_COMPLETE_PROJECT_ID: '8a000000-0000-4000-8000-000000000001',
@@ -277,6 +299,12 @@ export async function runPhase8A({
         }
         if (deps.readOwnedText(roots.outboundLedgerPath).trim()) throw new Error('Phase8A Provider request ledger was not zero')
         deniedConnects = assertBrowserDenyLedger(deps.readOwnedText(roots.denyProxyLedgerPath)).deniedConnectCount
+        try {
+          assertPageEventLedger(deps.readOwnedText(roots.pageEventLedgerPath))
+        } catch (error) {
+          error.phase8aBrowserCause = 'page-events-invalid'
+          throw error
+        }
         await bodyCommand(python, ['-m', 'backend.scripts.prepare_phase8a_browser_db', '--database', database, '--verify-postconditions'], root, backendEnvironment, 'Phase8A postcondition verifier', [backend, deny, vite])
       },
       stopServer: server => deps.stopOwnedServer(server, { timeoutMs: limits.stopMs }),
@@ -292,7 +320,7 @@ export async function runPhase8A({
     processTarget.removeListener('SIGTERM', onSigterm)
   }
   deps.assertDatabaseResidue(database, database, { created, cleaned, remaining: 0 })
-  log(`Phase8A browser: 1/1 wide-screen point passed; Provider requests=0; denied Chromium background connects=${deniedConnects}; live website access=0; owned child processes/ports/temp/downloads/disposable schemas=0`)
+  log(`Phase8A browser: 1/1 wide-screen point passed; Provider requests=0; denied Chromium background connects=${deniedConnects}; page console known linked=4; page console unexpected=0; page errors=0; request failures=0; live website access=0; owned child processes/ports/temp/downloads/disposable schemas=0`)
   return 0
 }
 

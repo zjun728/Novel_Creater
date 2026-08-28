@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { parseIterationCount } from './accessibility.mjs'
 
@@ -7,6 +7,7 @@ const COMPLETE = process.env.BROWSER_COMPLETE_PROJECT_ID
 const AWAITING = process.env.BROWSER_AWAITING_PROJECT_ID
 const CORRUPT = process.env.BROWSER_CORRUPT_PROJECT_ID
 const DOWNLOAD_ROOT = process.env.BROWSER_DOWNLOAD_ROOT
+const PAGE_EVENT_LEDGER_PATH = process.env.BROWSER_PAGE_EVENT_LEDGER_PATH
 const WIDE_MATRIX = '1440×900 prefers-reduced-motion'
 const TITLES = ['泔水醒来，三日织机赌局', '废料改机', '复验定局']
 const PROSE = [
@@ -29,6 +30,84 @@ const FOCUSABLE_SELECTOR = [
   '[role="button"]:visible:not([aria-disabled="true"]):not([tabindex="-1"])',
   '[role="link"]:visible:not([aria-disabled="true"]):not([tabindex="-1"])',
 ].join(', ')
+
+function installPageEventLedger(page) {
+  const ledger = { consoleErrors: 0, pageErrors: 0, requestFailures: 0, summaries: [], responses: [] }
+  let stage = 'setup'
+  const record = (field, summary) => {
+    ledger[field] += 1
+    ledger.summaries.push(summary)
+  }
+  page.on('console', message => {
+    if (message.type() !== 'error') return
+    const status = message.text().match(/status (?:code )?of (\d{3})|status (\d{3})/iu)
+    let source = 'other'
+    try {
+      const pathname = new URL(message.location().url).pathname
+      if (pathname.includes('/novel-download')) {
+        const scope = new URL(message.location().url).searchParams.get('scope')
+        source = `novel-download-${['chapter', 'volume', 'book'].includes(scope) ? scope : 'unknown'}`
+      }
+      else if (pathname.includes('/manuscript/chapters/')) source = 'manuscript-chapter'
+      else if (pathname.includes('/manuscript')) source = 'manuscript-index'
+      else if (pathname.includes('/lifecycle')) source = 'lifecycle'
+      else if (pathname.startsWith('/api/')) source = 'other-api'
+      else if (pathname.startsWith('/src/') || pathname.startsWith('/assets/')) source = 'frontend-asset'
+    } catch {}
+    record('consoleErrors', status
+      ? { kind: 'console-error', category: 'resource-status', source, status: Number(status[1] || status[2]) }
+      : { kind: 'console-error', category: 'other', source, status: null })
+  })
+  page.on('pageerror', () => record('pageErrors', { kind: 'page-error' }))
+  page.on('requestfailed', () => record('requestFailures', { kind: 'request-failed' }))
+  page.on('response', response => {
+    if (response.status() < 400) return
+    let route = 'other'
+    try {
+      const parsed = new URL(response.url())
+      if (parsed.pathname.includes('/manuscript/chapters/')) route = 'manuscript-chapter'
+      else if (parsed.pathname.includes('/novel-download')) route = `novel-download-${parsed.searchParams.get('scope') || 'unknown'}`
+      else if (parsed.pathname.startsWith('/api/')) route = 'other-api'
+    } catch {}
+    ledger.responses.push({ method: response.request().method(), route, stage, status: response.status() })
+  })
+  return {
+    setStage(value) { stage = value },
+    assertPageEventsZero(stage = 'workflow') {
+      if (ledger.consoleErrors || ledger.pageErrors || ledger.requestFailures || ledger.responses.length) {
+        const consoleSummary = ledger.summaries.find(item => item.kind === 'console-error')
+        const category = consoleSummary
+          ? `${consoleSummary.source}-${consoleSummary.category}-${consoleSummary.status || 0}` : 'none-other-0'
+        const response = ledger.responses[0]
+        const responseMarker = response
+          ? `${response.stage}-${response.method.toLowerCase()}-${response.route}-${response.status}` : 'none-get-other-0'
+        throw new Error(`phase8a-page-events-${stage}-console-${ledger.consoleErrors}-page-${ledger.pageErrors}-request-${ledger.requestFailures}-first-${category}-response-${responseMarker}`)
+      }
+      expect(ledger.pageErrors).toBe(0)
+      expect(ledger.requestFailures).toBe(0)
+    },
+    assertExpectedCorruptPageEvents() {
+      const routes = ['manuscript-chapter', 'novel-download-chapter', 'novel-download-volume', 'novel-download-book']
+      expect(ledger.responses).toEqual(routes.map(route => ({
+        method: 'GET', route, stage: 'corrupt', status: 500,
+      })))
+      expect(ledger.summaries).toEqual(routes.map(source => ({
+        kind: 'console-error', category: 'resource-status', source, status: 500,
+      })))
+      expect(ledger.consoleErrors).toBe(4)
+      expect(ledger.pageErrors).toBe(0)
+      expect(ledger.requestFailures).toBe(0)
+    },
+    write() {
+      writeFileSync(PAGE_EVENT_LEDGER_PATH, JSON.stringify(ledger), { encoding: 'utf8', flag: 'wx' })
+    },
+  }
+}
+
+async function settleAndAssertPageEvents(page, pageEvents, stage) {
+  await page.waitForTimeout(0)
+  pageEvents.assertPageEventsZero(stage)
+}
 async function geometry(page) {
   return page.evaluate(() => ({
     innerWidth: window.innerWidth,
@@ -147,7 +226,7 @@ async function assertNoWriterConflict(page) {
   for (const message of WRITER_CONFLICT_TEXT) await expect(page.locator('body')).not.toContainText(message)
 }
 
-async function acceptComplete(page) {
+async function acceptComplete(page, pageEvents) {
   await page.goto(`/projects/${COMPLETE}/overview`)
   await expect(page.getByRole('heading', { name: '织机赌局 · 完整稿件' })).toBeVisible()
   await expect(page.getByRole('link', { name: '作品稿件 · 已定稿 3 章' })).toBeVisible()
@@ -176,6 +255,7 @@ async function acceptComplete(page) {
   await expect(page.getByRole('link', { name: '进入第 4 章写作' })).toBeVisible()
   await assertNoWriterConflict(page)
   await page.getByRole('link', { name: '返回作品目录' }).click()
+  await settleAndAssertPageEvents(page, pageEvents, 'complete-reader')
 
   await page.locator('#manuscript-chapter-1-download').click()
   const chapterText = await saveDownload(page, page.locator('#manuscript-chapter-1-download-txt'), 'complete-chapter-1.txt')
@@ -187,6 +267,7 @@ async function acceptComplete(page) {
   assertFinalSequence(volumeText, [0, 1, 2])
   const bookText = await saveDownload(page, page.getByRole('button', { name: '下载整本定稿 TXT' }), 'complete-book.txt')
   assertFinalSequence(bookText, [0, 1, 2])
+  await settleAndAssertPageEvents(page, pageEvents, 'complete-downloads')
 
   await page.getByRole('link', { name: 'Novel Creator 项目库', exact: true }).click()
   const card = page.locator('.project-card').filter({ hasText: '织机赌局 · 完整稿件' })
@@ -206,6 +287,7 @@ async function acceptComplete(page) {
   await openDownloadMenu(page)
   const archived = await saveDownload(page, page.getByRole('button', { name: '下载整本定稿 TXT' }), 'archived-complete-book.txt')
   assertFinalSequence(archived, [0, 1, 2])
+  await settleAndAssertPageEvents(page, pageEvents, 'complete-archive')
 }
 
 const PINNED_GOAL = '在三日织机赌局中取得一次可验证的喘息'
@@ -270,7 +352,16 @@ async function acceptCorrupt(page) {
 test('@phase8a accepts the complete awaiting-author and corrupt manuscript workflows at wide desktop sizes', async ({ page }, testInfo) => {
   expect(WIDE_MATRIX).toContain('1440×900')
   expect(testInfo.project.name).toBe('chromium-wide-100')
-  await acceptComplete(page)
+  const pageEvents = installPageEventLedger(page)
+  pageEvents.setStage('complete')
+  await acceptComplete(page, pageEvents)
+  pageEvents.assertPageEventsZero()
+  pageEvents.setStage('awaiting')
   await acceptAwaitingAuthor(page)
+  pageEvents.assertPageEventsZero()
+  pageEvents.setStage('corrupt')
   await acceptCorrupt(page)
+  await page.waitForTimeout(0)
+  pageEvents.assertExpectedCorruptPageEvents()
+  pageEvents.write()
 })

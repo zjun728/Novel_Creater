@@ -51,6 +51,7 @@ test('Phase 8A runner owns unique ports, root, browser cache, downloads, and sch
     'runOwnedProductLifecycle', 'stopOwnedServer', 'BROWSER_OUTBOUND_LEDGER_PATH',
     'assertDenyProxyLedger', '1/1 wide-screen point passed', 'owned child processes/ports/temp/downloads/disposable schemas=0',
     'expectedConnectCount: counts.connect',
+    'pageEventLedgerPath', 'console known linked=4', 'console unexpected=0', 'page errors=0', 'request failures=0',
     "processTarget.once('SIGINT'", "processTarget.once('SIGTERM'", 'deps.cleanupRoot(owned, roots, ports)',
   ]) assert.equal(runner.includes(marker), true, marker)
   assert.doesNotMatch(runner, /\bmysqld\b|MYSQL_DB:\s*['"]novel_creator['"]/u)
@@ -150,6 +151,12 @@ test('Phase 8A visible workflow is wide-screen only and mutation safe', () => {
   assert.match(spec, /expect\(box\)\.not\.toBeNull\(\)/u)
   assert.match(spec, /getComputedStyle\(element, '::before'\)/u)
   assert.match(spec, /getComputedStyle\(element, '::after'\)/u)
+  assert.match(spec, /page\.on\('console'/u)
+  assert.match(spec, /page\.on\('pageerror'/u)
+  assert.match(spec, /page\.on\('requestfailed'/u)
+  assert.match(spec, /page\.on\('response'/u)
+  assert.match(spec, /assertPageEventsZero/u)
+  assert.match(spec, /assertExpectedCorruptPageEvents/u)
 })
 
 test('Phase 8A config has one Chromium worker and runner-owned output paths', () => {
@@ -158,9 +165,50 @@ test('Phase 8A config has one Chromium worker and runner-owned output paths', ()
     assert.equal(config.includes(marker), true, marker)
   }
   assert.match(config, /chromium-wide-100/u)
+  assert.match(config, /headless:\s*false/u)
   assert.match(config, /launchOptions:\s*\{\s*downloadsPath:\s*browserDownloadsRoot\s*\}/u)
   assert.match(config, /contextOptions:\s*\{\s*reducedMotion:\s*'reduce'\s*\}/u)
   const spec = source('frontend/e2e/phase8a/manuscript-productization.spec.mjs')
+})
+
+test('Phase 8A page event ledger accepts only the exact linked corrupt failures and emits safe diagnostics', async () => {
+  const { assertPageEventLedger } = await import('../../frontend/e2e/run-phase8a.mjs')
+  const linked = {
+    consoleErrors: 4, pageErrors: 0, requestFailures: 0,
+    summaries: [
+      { kind: 'console-error', category: 'resource-status', source: 'manuscript-chapter', status: 500 },
+      { kind: 'console-error', category: 'resource-status', source: 'novel-download-chapter', status: 500 },
+      { kind: 'console-error', category: 'resource-status', source: 'novel-download-volume', status: 500 },
+      { kind: 'console-error', category: 'resource-status', source: 'novel-download-book', status: 500 },
+    ],
+    responses: [
+      { method: 'GET', route: 'manuscript-chapter', stage: 'corrupt', status: 500 },
+      { method: 'GET', route: 'novel-download-chapter', stage: 'corrupt', status: 500 },
+      { method: 'GET', route: 'novel-download-volume', stage: 'corrupt', status: 500 },
+      { method: 'GET', route: 'novel-download-book', stage: 'corrupt', status: 500 },
+    ],
+  }
+  assert.deepEqual(assertPageEventLedger(JSON.stringify(linked)), {
+    consoleKnownLinked: 4, consoleUnexpected: 0, pageErrors: 0, requestFailures: 0,
+  })
+  for (const mutate of [
+    value => value.responses.pop(),
+    value => value.responses.reverse(),
+    value => value.summaries.push(value.summaries[0]),
+  ]) {
+    const invalid = structuredClone(linked)
+    mutate(invalid)
+    assert.throws(() => assertPageEventLedger(JSON.stringify(invalid)), /page event ledger/u)
+  }
+  const nonzero = JSON.stringify({
+    ...linked, pageErrors: 1, summaries: [...linked.summaries, { kind: 'page-error' }],
+  })
+  let failure
+  try { assertPageEventLedger(nonzero) } catch (error) { failure = error }
+  assert.match(failure.message, /page event ledger/u)
+  const unsafe = nonzero.replace('page-error', 'https://secret.example/?token=never-echo')
+  try { assertPageEventLedger(unsafe) } catch (error) { failure = error }
+  assert.doesNotMatch(failure.message, /secret|token|https?:/iu)
 })
 
 test('Phase 8A reduced-motion parser treats infinite iteration as motion', async () => {
@@ -174,6 +222,11 @@ test('Phase 8A assertion failures are classified without exposing report content
   const owned = mkdtempSync(path.join(os.tmpdir(), 'phase8a-report-'))
   const report = path.join(owned, 'result.json')
   try {
+    writeFileSync(report, JSON.stringify({ errors: [{
+      message: 'phase8a-page-events-console-1-page-0-request-0-first-resource-status-500',
+      location: { file: 'manuscript-productization.spec.mjs', line: 47, column: 4 },
+    }] }))
+    assert.equal(classifyBrowserFailure(report), 'phase8a-page-events-console-1-page-0-request-0-first-resource-status-500@47')
     writeFileSync(report, JSON.stringify({ errors: [{ message: 'aggregate failure' }], suites: [{ specs: [{ tests: [{ results: [{ errors: [{
       message: 'SECRET visible manuscript value',
       location: { file: 'manuscript-productization.spec.mjs', line: 123, column: 4 },
@@ -214,6 +267,7 @@ function phase8aHarness(scenario) {
     denyProxyPath: 'C:\\owned\\deny.cjs', viteConfigPath: 'C:\\owned\\vite.mjs',
     resultPath: 'C:\\owned\\result.json', outboundLedgerPath: 'C:\\owned\\outbound.log',
     denyProxyLedgerPath: 'C:\\owned\\deny.log',
+    pageEventLedgerPath: 'C:\\owned\\page-events.json',
   }
   const dependencies = {
     validateTestEnvironment() {},
@@ -238,7 +292,24 @@ function phase8aHarness(scenario) {
       if (!server.stopped) { server.stopped = true; resources.childProcesses -= 1 }
     },
     async waitForOwnedServer() {},
-    readOwnedText() { return '' },
+    readOwnedText(target) {
+      if (target === roots.pageEventLedgerPath) return JSON.stringify({
+        consoleErrors: 4, pageErrors: 0, requestFailures: 0,
+        summaries: [
+          { kind: 'console-error', category: 'resource-status', source: 'manuscript-chapter', status: 500 },
+          { kind: 'console-error', category: 'resource-status', source: 'novel-download-chapter', status: 500 },
+          { kind: 'console-error', category: 'resource-status', source: 'novel-download-volume', status: 500 },
+          { kind: 'console-error', category: 'resource-status', source: 'novel-download-book', status: 500 },
+        ],
+        responses: [
+          { method: 'GET', route: 'manuscript-chapter', stage: 'corrupt', status: 500 },
+          { method: 'GET', route: 'novel-download-chapter', stage: 'corrupt', status: 500 },
+          { method: 'GET', route: 'novel-download-volume', stage: 'corrupt', status: 500 },
+          { method: 'GET', route: 'novel-download-book', stage: 'corrupt', status: 500 },
+        ],
+      })
+      return ''
+    },
     async runBoundedOwnedCommand(command, args, _options, settings) {
       commandCalls.push({ command, args: [...args], label: settings.label, sequence: sequence++ })
       if (settings.label === 'Phase8A database preparation') resources.schemas += 1
