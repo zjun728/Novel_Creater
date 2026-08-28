@@ -206,6 +206,19 @@ async def test_guarded_transaction_preserves_read_only_boundary_and_select_reads
         "SELECT value INTO DUMPFILE '/tmp/export' FROM safe_table",
         "SELECT value FROM safe_table FOR UPDATE",
         "SELECT value FROM safe_table LOCK IN SHARE MODE",
+        "SELECT GET_LOCK('smoke', 1) FROM safe_table",
+        "SELECT RELEASE_LOCK('smoke') FROM safe_table",
+        "SELECT IS_FREE_LOCK('smoke') FROM safe_table",
+        "SELECT IS_USED_LOCK('smoke') FROM safe_table",
+        "SELECT LOAD_FILE('/tmp/private') FROM safe_table",
+        "SELECT SLEEP(1) FROM safe_table",
+        "SELECT BENCHMARK(1, SHA2('x', 256)) FROM safe_table",
+        "SELECT product_udf(value) FROM safe_table",
+        "SELECT `product_udf`(value) FROM safe_table",
+        "SELECT `product`.`product_udf`(value) FROM safe_table",
+        'SELECT "product_udf"(value) FROM safe_table',
+        "SELECT @captured := value FROM safe_table",
+        "SELECT 1",
     ),
 )
 async def test_sql_guard_rejects_writes_multiple_statements_comments_and_ctes(sql):
@@ -267,6 +280,55 @@ async def test_default_dependencies_share_guarded_production_read_only_factory(m
         assert await session.fetchone("SELECT value FROM safe_table") == {"ok": 1}
     assert entered == exited == 1
     assert underlying.calls == [("fetchone", "SELECT value FROM safe_table", None)]
+
+
+class ProductQueryCorpusSession(Session):
+    async def fetchone(self, sql, args=None):
+        self.calls.append(("fetchone", sql, args))
+        normalized = " ".join(sql.split()).lower()
+        if "from projects where id=%s" in normalized:
+            return {"id": PROJECT_ID, "archived_at": None}
+        if "from project_contract_heads" in normalized:
+            return {"revision": 0}
+        return None
+
+    async def fetchall(self, sql, args=None):
+        self.calls.append(("fetchall", sql, args))
+        return []
+
+
+@pytest.mark.asyncio
+async def test_default_production_service_query_corpus_passes_guard(monkeypatch):
+    from backend import database
+    from backend.repositories.contracts import ContractRepository
+    from backend.scripts.verify_manuscript_product_smoke import _default_dependencies
+    from backend.services.manuscripts import ManuscriptProjectNotFound
+
+    underlying = ProductQueryCorpusSession()
+
+    @asynccontextmanager
+    async def fake_read_only_transaction():
+        yield underlying
+
+    monkeypatch.setattr(database, "read_only_transaction", fake_read_only_transaction)
+    dependencies = _default_dependencies()
+
+    with pytest.raises(ManuscriptProjectNotFound):
+        await dependencies.manuscript.directory(PROJECT_ID)
+    for number in range(1, 4):
+        with pytest.raises(ManuscriptProjectNotFound):
+            await dependencies.manuscript.chapter(PROJECT_ID, number)
+    preparation = await dependencies.preparation.preparation(PROJECT_ID)
+    async with dependencies.manuscript._transaction_factory() as session:
+        binding = await ContractRepository().read_binding_snapshot(
+            session,
+            PROJECT_ID,
+        )
+
+    assert preparation.authoritative_chapter_number == 1
+    assert binding is None
+    assert len(underlying.calls) >= 20
+    assert all(call[1].lstrip().lower().startswith("select") for call in underlying.calls)
 
 
 @pytest.mark.asyncio

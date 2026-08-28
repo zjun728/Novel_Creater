@@ -27,6 +27,14 @@ _SIDE_EFFECT_SELECT = re.compile(
     re.IGNORECASE,
 )
 _COMMENT_MARKERS = ("--", "#", "/*", "*/")
+_UNSAFE_LEXEMES = ("`", '"', "@", ":=")
+_FUNCTION_CALL = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_SAFE_READ_FUNCTIONS = frozenset(
+    {"char_length", "field", "lower", "max", "trim"}
+)
+_GROUPING_TOKENS = frozenset(
+    {"and", "exists", "from", "in", "or", "where"}
+)
 
 
 class SmokeArgumentError(ValueError):
@@ -51,24 +59,60 @@ class ReadOnlySqlSession:
     """Fail closed around the small SQL surface used by read repositories.
 
     This is deliberately a conservative lexical guard, not a SQL parser. It
-    accepts only one comment-free, semicolon-free statement beginning with
-    SELECT and rejects common write, locking, and SELECT-INTO forms.
+    accepts only one comment-free, semicolon-free SELECT with a FROM clause.
+    Function calls are limited to the pure-read functions used by the smoke's
+    production repositories; unknown functions fail closed.
     """
 
     def __init__(self, session) -> None:
         self._session = session
 
     @staticmethod
+    def _mask_literals(sql: str) -> str:
+        masked = list(sql)
+        quote = None
+        index = 0
+        while index < len(sql):
+            character = sql[index]
+            if quote is None:
+                if character in ("'", '"', "`"):
+                    quote = character
+                    masked[index] = " "
+            else:
+                masked[index] = " "
+                if character == "\\" and index + 1 < len(sql):
+                    index += 1
+                    masked[index] = " "
+                elif character == quote:
+                    if index + 1 < len(sql) and sql[index + 1] == quote:
+                        index += 1
+                        masked[index] = " "
+                    else:
+                        quote = None
+            index += 1
+        if quote is not None:
+            raise ReadOnlySqlError() from None
+        return "".join(masked)
+
+    @staticmethod
     def _require_select(sql: object) -> str:
         if type(sql) is not str:
             raise ReadOnlySqlError() from None
-        stripped = sql.lstrip()
+        masked = ReadOnlySqlSession._mask_literals(sql)
+        stripped = masked.lstrip()
+        functions = {
+            match.group(1).lower()
+            for match in _FUNCTION_CALL.finditer(masked)
+        } - _GROUPING_TOKENS
         if (
             not re.match(r"(?i)^select\b", stripped)
+            or re.search(r"(?i)\bfrom\b", stripped) is None
             or ";" in sql
             or any(marker in sql for marker in _COMMENT_MARKERS)
-            or _WRITE_KEYWORDS.search(sql)
-            or _SIDE_EFFECT_SELECT.search(sql)
+            or any(marker in sql for marker in _UNSAFE_LEXEMES)
+            or _WRITE_KEYWORDS.search(masked)
+            or _SIDE_EFFECT_SELECT.search(masked)
+            or not functions.issubset(_SAFE_READ_FUNCTIONS)
         ):
             raise ReadOnlySqlError() from None
         return sql
