@@ -33,7 +33,7 @@ def test_phase8a_fixture_declares_three_deterministic_projects_and_exact_authori
     assert expected["outlineGoals"] == [[item.chapter_goal for item in fixture.PINNED_OUTLINES]] * 3
     for project_outlines in expected["outlines"]:
         for outline in project_outlines:
-            assert outline["schemaVersion"] == "chapter-outline-v1"
+            assert outline["content"]["schemaVersion"] == "chapter-outline-v1"
             assert outline["hashMatches"] is True
             for field in ("volumeRef", "storyBlockRef"):
                 assert set(outline["content"][field]) == {"id", "revision", "contentHash"}
@@ -72,6 +72,7 @@ def test_fixture_uses_local_deterministic_finalization_and_has_no_schema_ddl():
 
 def test_outline_hash_verifier_rejects_changed_content_with_the_stored_hash_unchanged():
     payload = deepcopy(fixture.fixture_signature()["outlines"][0][0]["content"])
+    payload.pop("contentHash")
     payload.update({"chapterNumber": 1, "canonRevision": 0, "projectionRevision": 0})
     stored_hash = fixture.canonical_hash(payload)
     persisted = {**payload, "contentHash": stored_hash}
@@ -155,6 +156,22 @@ async def test_prepare_refuses_a_fixture_with_corrupted_authority(monkeypatch, f
     else:
         observed["outlines"][0][0]["content"]["chapterGoal"] = "被篡改的小纲"
         observed["outlines"][0][0]["hashMatches"] = False
+
+    monkeypatch.setattr(fixture, "assert_owned_database", lambda _database: asyncio.sleep(0))
+    monkeypatch.setattr(fixture, "read_fixture_signature", lambda: asyncio.sleep(0, result=observed))
+
+    with pytest.raises(RuntimeError, match="empty or exact"):
+        await fixture.prepare(DATABASE)
+
+
+@pytest.mark.asyncio
+async def test_prepare_rejects_changed_confirmed_outline_authority_even_with_a_recomputed_hash(monkeypatch):
+    observed = deepcopy(fixture.fixture_signature())
+    content = observed["outlines"][1][2]["content"]
+    content["chapterNumber"] += 1
+    hash_payload = {key: value for key, value in content.items() if key != "contentHash"}
+    content["contentHash"] = fixture.canonical_hash(hash_payload)
+    observed["outlines"][1][2]["hashMatches"] = True
 
     monkeypatch.setattr(fixture, "assert_owned_database", lambda _database: asyncio.sleep(0))
     monkeypatch.setattr(fixture, "read_fixture_signature", lambda: asyncio.sleep(0, result=observed))

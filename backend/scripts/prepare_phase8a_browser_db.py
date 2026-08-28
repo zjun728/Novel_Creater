@@ -16,7 +16,13 @@ from backend.config import (
     install_runtime_configuration,
     load_runtime_configuration,
 )
-from backend.domain.chapter_outlines import EditableChapterOutlineContent
+from backend.domain.chapter_outlines import (
+    ChapterOutline,
+    DraftChapterOutline,
+    EditableChapterOutlineContent,
+    OutlineCapacityPolicy,
+    normalize_chapter_outline,
+)
 from backend.domain.finalization import FinalizationChangeSet
 from backend.domain.json_contracts import canonical_hash
 from backend.domain.planning import DraftPlanningAggregate, normalize_planning_aggregate
@@ -46,6 +52,7 @@ from backend.services.finalization import (
 )
 from backend.services.finalization_commit import AtomicFinalizationService, CommitFinalization
 from backend.services.planning import PlanningService
+from backend.services.projections import build_projection_bundle
 
 
 PROJECTS = {
@@ -129,7 +136,7 @@ def _planning_id_factory(project_id: str):
     return next_id
 
 
-def _pinned_refs(project_id: str) -> dict[str, object]:
+def _deterministic_planning(project_id: str):
     index = 1  # Planning Draft consumes the first service-issued identity.
 
     def next_node_id() -> str:
@@ -137,12 +144,15 @@ def _pinned_refs(project_id: str) -> dict[str, object]:
         index += 1
         return _planning_id(project_id, index)
 
-    planning = normalize_planning_aggregate(
+    return normalize_planning_aggregate(
         DraftPlanningAggregate.model_validate(base._planning_payload()),
         previous_confirmed=None,
         previous_draft=None,
         id_factory=next_node_id,
     )
+
+
+def _pinned_refs(planning) -> dict[str, object]:
     volume, block = planning.volumes[0], planning.story_blocks[0]
     stage, task = block.stages[0], block.stages[0].scene_tasks[0]
     ref = lambda item: {
@@ -154,18 +164,37 @@ def _pinned_refs(project_id: str) -> dict[str, object]:
     }
 
 
-def _outline_signature(project_id: str, template: OutlineTemplate) -> dict[str, object]:
-    content = {
-        "schemaVersion": "chapter-outline-v1",
-        **_pinned_refs(project_id),
+def _outline_signature(
+    project_id: str, chapter_number: int, template: OutlineTemplate,
+) -> dict[str, object]:
+    planning = _deterministic_planning(project_id)
+    editable = EditableChapterOutlineContent.model_validate({
+        "schemaVersion": "chapter-outline-draft-v1", **_pinned_refs(planning),
         "chapterGoal": template.chapter_goal,
-        "expectedCharacters": list(template.expected_characters),
-        "continuation": list(template.continuation),
-        "plannedTasks": list(template.planned_tasks),
-        "scenes": list(template.scenes),
-        "forbiddenEarlyEvents": list(template.forbidden_early_events),
-    }
-    return {"schemaVersion": content["schemaVersion"], "content": content, "hashMatches": True}
+        "expectedCharacters": template.expected_characters,
+        "continuation": template.continuation,
+        "plannedTasks": template.planned_tasks,
+        "scenes": template.scenes,
+        "forbiddenEarlyEvents": template.forbidden_early_events,
+    })
+    capacity = OutlineCapacityPolicy(targetMin=2000, targetMax=3000, softCeiling=3000)
+    draft = DraftChapterOutline.model_validate({
+        "schemaVersion": "chapter-outline-v1", "chapterNumber": chapter_number,
+        "planningRevisionId": _planning_id(project_id, 8), "planningRevision": 1,
+        "planningHash": planning.content_hash,
+        **editable.model_dump(mode="json", by_alias=True, exclude={"schema_version"}),
+        "capacityPolicy": capacity.model_dump(mode="json", by_alias=True),
+    })
+    revision = chapter_number - 1
+    projection_hash = build_projection_bundle(revision, ()).content_hash
+    confirmed = normalize_chapter_outline(
+        draft, planning=planning, authoritative_chapter_number=chapter_number,
+        planning_revision_id=_planning_id(project_id, 8), planning_revision=1,
+        capacity_policy=capacity, canon_revision=revision, projection_revision=revision,
+        projection_hash=projection_hash,
+    )
+    content = confirmed.model_dump(mode="json", by_alias=True)
+    return {"content": content, "hashMatches": True}
 
 
 def outline_hash_matches(content: dict[str, object], stored_hash: str) -> bool:
@@ -204,7 +233,8 @@ def _signature(*, postconditions: bool) -> dict[str, object]:
         ],
         "outlineGoals": [[item.chapter_goal for item in PINNED_OUTLINES]] * 3,
         "outlines": [
-            [_outline_signature(project_id, item) for item in PINNED_OUTLINES]
+            [_outline_signature(project_id, chapter, item)
+             for chapter, item in enumerate(PINNED_OUTLINES, start=1)]
             for project_id in PROJECTS.values()
         ],
         "authoritativeChapters": [4, 5 if postconditions else 4, 4],
@@ -270,13 +300,11 @@ async def read_fixture_signature() -> dict[str, object] | None:
                     content = content.decode("utf-8")
                 if isinstance(content, str):
                     content = json.loads(content)
-                exact_content = {key: content[key] for key in (
-                    "schemaVersion", "volumeRef", "storyBlockRef", "stageRefs", "sceneTaskRefs",
-                    "chapterGoal", "expectedCharacters", "continuation", "plannedTasks", "scenes",
-                    "forbiddenEarlyEvents",
-                )}
+                normalized_content = ChapterOutline.model_validate(content).model_dump(
+                    mode="json", by_alias=True,
+                )
                 outlines.append({
-                    "schemaVersion": content.get("schemaVersion"), "content": exact_content,
+                    "content": normalized_content,
                     "hashMatches": outline_hash_matches(content, item["content_hash"]),
                 })
             outlines_by_project.append(outlines)
