@@ -110,9 +110,8 @@ async def test_smoke_calls_production_service_contracts_once_and_returns_safe_co
         "projectId": PROJECT_ID,
         "status": "passed",
         "finalChapterCount": 3,
-        "chapterChecks": 3,
-        "outlineChecks": 3,
-        "authorityChapter": 4,
+        "chapterCheckCount": 3,
+        "pinnedCheckCount": 3,
     }
 
 
@@ -202,6 +201,11 @@ async def test_guarded_transaction_preserves_read_only_boundary_and_select_reads
         "SELECT 1 -- hidden write", "SELECT 1 # hidden write", "SELECT /* hidden */ 1",
         "WITH disguised AS (SELECT 1) SELECT * FROM disguised",
         "(SELECT 1)", "SELECT 'safe';", "SELECT 1 UNION UPDATE x SET y=1",
+        "SELECT value INTO @captured FROM safe_table",
+        "SELECT value INTO OUTFILE '/tmp/export' FROM safe_table",
+        "SELECT value INTO DUMPFILE '/tmp/export' FROM safe_table",
+        "SELECT value FROM safe_table FOR UPDATE",
+        "SELECT value FROM safe_table LOCK IN SHARE MODE",
     ),
 )
 async def test_sql_guard_rejects_writes_multiple_statements_comments_and_ctes(sql):
@@ -223,6 +227,89 @@ async def test_sql_guard_rejects_execute_even_for_select():
     with pytest.raises(ReadOnlySqlError):
         await ReadOnlySqlSession(underlying).execute("SELECT 1")
     assert underlying.calls == []
+
+
+@pytest.mark.asyncio
+async def test_default_dependencies_share_guarded_production_read_only_factory(monkeypatch):
+    from backend import database
+    from backend.scripts.verify_manuscript_product_smoke import (
+        ReadOnlySqlSession,
+        _default_dependencies,
+    )
+    from backend.services.manuscripts import ManuscriptReadingService
+    from backend.services.project_lifecycle import ProjectLifecycleService
+
+    entered = exited = 0
+    underlying = Session()
+
+    @asynccontextmanager
+    async def fake_read_only_transaction():
+        nonlocal entered, exited
+        entered += 1
+        try:
+            yield underlying
+        finally:
+            exited += 1
+
+    monkeypatch.setattr(database, "read_only_transaction", fake_read_only_transaction)
+
+    dependencies = _default_dependencies()
+
+    assert isinstance(dependencies.manuscript, ManuscriptReadingService)
+    assert isinstance(dependencies.preparation, ProjectLifecycleService)
+    assert (
+        dependencies.manuscript._transaction_factory
+        is dependencies.preparation.transaction_factory
+        is dependencies.preparation.connection_factory
+    )
+    async with dependencies.manuscript._transaction_factory() as session:
+        assert isinstance(session, ReadOnlySqlSession)
+        assert await session.fetchone("SELECT value FROM safe_table") == {"ok": 1}
+    assert entered == exited == 1
+    assert underlying.calls == [("fetchone", "SELECT value FROM safe_table", None)]
+
+
+@pytest.mark.asyncio
+async def test_real_read_only_transaction_starts_read_only_commits_and_releases(monkeypatch):
+    from backend import database
+    from backend.tests.support.fakes import FakePool
+
+    pool = FakePool()
+
+    async def fake_get_pool():
+        return pool
+
+    monkeypatch.setattr(database, "get_pool", fake_get_pool)
+
+    async with database.read_only_transaction() as session:
+        assert await session.fetchone("SELECT one") == {"value": "one"}
+
+    assert pool.raw.executions[0] == ("START TRANSACTION READ ONLY", None)
+    assert pool.raw.commit_count == 1
+    assert pool.raw.rollback_count == 0
+    assert pool.acquire_count == pool.release_count == 1
+
+
+@pytest.mark.asyncio
+async def test_real_read_only_transaction_rolls_back_error_and_releases(monkeypatch):
+    from backend import database
+    from backend.tests.support.fakes import FakePool
+
+    pool = FakePool()
+
+    async def fake_get_pool():
+        return pool
+
+    monkeypatch.setattr(database, "get_pool", fake_get_pool)
+
+    with pytest.raises(RuntimeError, match="body failed"):
+        async with database.read_only_transaction():
+            raise RuntimeError("body failed")
+
+    assert pool.raw.executions[0] == ("START TRANSACTION READ ONLY", None)
+    assert pool.raw.commit_count == 0
+    assert pool.raw.rollback_count == 1
+    assert pool.acquire_count == pool.release_count == 1
 
 
 @pytest.mark.parametrize(
@@ -256,14 +343,22 @@ async def test_run_cli_prints_only_fixed_safe_summary():
     ) == 0
 
     assert json.loads(output[0]) == {
-        "authorityChapter": 4,
-        "chapterChecks": 3,
+        "chapterCheckCount": 3,
         "finalChapterCount": 3,
-        "outlineChecks": 3,
+        "pinnedCheckCount": 3,
         "projectId": PROJECT_ID,
         "status": "passed",
     }
+    assert set(json.loads(output[0])) == {
+        "chapterCheckCount",
+        "finalChapterCount",
+        "pinnedCheckCount",
+        "projectId",
+        "status",
+    }
     assert not any(title in output[0] for title in TITLES)
+    assert "authority" not in output[0].lower()
+    assert "outline" not in output[0].lower()
     assert "content" not in output[0].lower()
     assert "hash" not in output[0].lower()
 

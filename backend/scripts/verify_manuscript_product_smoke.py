@@ -22,6 +22,10 @@ _WRITE_KEYWORDS = re.compile(
     r"\b(?:insert|update|delete|replace|alter|drop|create|truncate)\b",
     re.IGNORECASE,
 )
+_SIDE_EFFECT_SELECT = re.compile(
+    r"\b(?:into|for\s+update|lock\s+in\s+share\s+mode)\b",
+    re.IGNORECASE,
+)
 _COMMENT_MARKERS = ("--", "#", "/*", "*/")
 
 
@@ -48,7 +52,7 @@ class ReadOnlySqlSession:
 
     This is deliberately a conservative lexical guard, not a SQL parser. It
     accepts only one comment-free, semicolon-free statement beginning with
-    SELECT and rejects common write keywords anywhere in the statement.
+    SELECT and rejects common write, locking, and SELECT-INTO forms.
     """
 
     def __init__(self, session) -> None:
@@ -64,6 +68,7 @@ class ReadOnlySqlSession:
             or ";" in sql
             or any(marker in sql for marker in _COMMENT_MARKERS)
             or _WRITE_KEYWORDS.search(sql)
+            or _SIDE_EFFECT_SELECT.search(sql)
         ):
             raise ReadOnlySqlError() from None
         return sql
@@ -203,9 +208,8 @@ async def verify_product_smoke(
         "projectId": project_id,
         "status": "passed",
         "finalChapterCount": final_count,
-        "chapterChecks": len(chapters),
-        "outlineChecks": len(chapters),
-        "authorityChapter": authority,
+        "chapterCheckCount": len(chapters),
+        "pinnedCheckCount": len(chapters),
     }
 
 
