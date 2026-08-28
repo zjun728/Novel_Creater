@@ -110,11 +110,28 @@ async def test_prepare_is_idempotent_only_for_the_same_complete_fixture(monkeypa
     monkeypatch.setattr(fixture, "assert_owned_database", authority)
     monkeypatch.setattr(fixture, "read_fixture_signature", snapshot)
     monkeypatch.setattr(fixture, "seed_fixture", seed)
+    monkeypatch.setattr(fixture, "read_business_fingerprint", lambda: asyncio.sleep(0, result="exact"))
+    monkeypatch.setattr(fixture, "_fixture_fingerprints", {})
 
     await fixture.prepare(DATABASE)
     await fixture.prepare(DATABASE)
 
     assert [name for name, _ in calls].count("seed") == 1
+
+
+@pytest.mark.asyncio
+async def test_prepare_rejects_unprojected_business_table_pollution(monkeypatch):
+    snapshots = iter([None, fixture.fixture_signature(), fixture.fixture_signature()])
+    fingerprints = iter(["baseline", "changed-provider-row"])
+    monkeypatch.setattr(fixture, "assert_owned_database", lambda _database: asyncio.sleep(0))
+    monkeypatch.setattr(fixture, "read_fixture_signature", lambda: asyncio.sleep(0, result=next(snapshots)))
+    monkeypatch.setattr(fixture, "read_business_fingerprint", lambda: asyncio.sleep(0, result=next(fingerprints)))
+    monkeypatch.setattr(fixture, "seed_fixture", lambda: asyncio.sleep(0))
+    monkeypatch.setattr(fixture, "_fixture_fingerprints", {})
+
+    await fixture.prepare(DATABASE)
+    with pytest.raises(RuntimeError, match="empty or exact"):
+        await fixture.prepare(DATABASE)
 
 
 @pytest.mark.asyncio

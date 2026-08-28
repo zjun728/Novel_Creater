@@ -143,6 +143,12 @@ test('Phase 8A config has one Chromium worker and runner-owned output paths', ()
   const spec = source('frontend/e2e/phase8a/manuscript-productization.spec.mjs')
 })
 
+test('Phase 8A reduced-motion parser treats infinite iteration as motion', async () => {
+  const { parseIterationCount } = await import('../../frontend/e2e/phase8a/accessibility.mjs')
+  assert.equal(parseIterationCount('infinite'), Number.POSITIVE_INFINITY)
+  assert.equal(parseIterationCount('2'), 2)
+})
+
 test('Phase 8A assertion failures are classified without exposing report content', async () => {
   const { classifyBrowserFailure } = await import('../../frontend/e2e/run-phase8a.mjs')
   const owned = mkdtempSync(path.join(os.tmpdir(), 'phase8a-report-'))

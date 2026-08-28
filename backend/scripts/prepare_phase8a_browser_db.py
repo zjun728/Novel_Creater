@@ -75,6 +75,8 @@ FINAL_PROSE = (
 WORKING_SENTINEL = "PHASE8A_WORKING_SENTINEL_MUST_NOT_DOWNLOAD"
 CANDIDATE_SENTINEL = "PHASE8A_CANDIDATE_SENTINEL_MUST_NOT_DOWNLOAD"
 _DISPOSABLE = re.compile(r"novel_creator_test_[a-f0-9]{32}\Z")
+_SAFE_TABLE = re.compile(r"[A-Za-z0-9_]+\Z")
+_fixture_fingerprints: dict[str, str] = {}
 
 
 @dataclass(frozen=True)
@@ -264,6 +266,42 @@ async def assert_owned_database(database_name: str) -> None:
         selected = await session.fetchone("SELECT DATABASE() AS database_name")
     if selected != {"database_name": database_name}:
         raise RuntimeError("Phase8A fixture selected a non-owned database")
+
+
+def _fingerprint_value(value):
+    if isinstance(value, (bytes, bytearray)):
+        return {"bytes": bytes(value).hex()}
+    if isinstance(value, dict):
+        return {str(key): _fingerprint_value(item) for key, item in sorted(value.items())}
+    if isinstance(value, (list, tuple)):
+        return [_fingerprint_value(item) for item in value]
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+async def read_business_fingerprint() -> str:
+    inventory = []
+    async with connection() as session:
+        tables = await session.fetchall(
+            "SELECT TABLE_NAME AS table_name FROM information_schema.TABLES "
+            "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME"
+        )
+        for item in tables:
+            table = str(item["table_name"])
+            if _SAFE_TABLE.fullmatch(table) is None:
+                raise RuntimeError("Phase8A fixture table inventory is invalid")
+            rows = [_fingerprint_value(row) for row in await session.fetchall(f"SELECT * FROM `{table}`")]
+            rows.sort(key=lambda row: json.dumps(
+                row, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+            ))
+            inventory.append({"table": table, "rows": rows})
+    encoded = json.dumps(
+        inventory, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    )
+    return sha256(encoded.encode("utf-8")).hexdigest()
 
 
 async def read_fixture_signature() -> dict[str, object] | None:
@@ -534,13 +572,19 @@ async def prepare(database_name: str) -> None:
     await assert_owned_database(database_name)
     observed = await read_fixture_signature()
     expected = fixture_signature()
-    if observed == expected:
-        return
     if observed is not None:
+        expected_fingerprint = _fixture_fingerprints.get(database_name)
+        if (
+            observed == expected
+            and expected_fingerprint is not None
+            and await read_business_fingerprint() == expected_fingerprint
+        ):
+            return
         raise RuntimeError("Phase8A fixture schema must be empty or exact")
     await seed_fixture()
     if await read_fixture_signature() != expected:
         raise RuntimeError("Phase8A fixture postcondition failed")
+    _fixture_fingerprints[database_name] = await read_business_fingerprint()
 
 
 async def verify_postconditions(database_name: str) -> None:

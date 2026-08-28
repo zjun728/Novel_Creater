@@ -257,13 +257,13 @@ export async function runPhase8A({
         await ownedCommand(python, ['-m', 'backend.scripts.prepare_phase8a_browser_db', '--database', database], root, backendEnvironment, 'Phase8A fixture preparation')
         await lifecycle.releaseReservation(reservations[0])
         const backend = lifecycle.registerServer(deps.startOwnedServer(python, ['-c', `import runpy; runpy.run_path(${JSON.stringify(roots.backendPath)}, run_name='__main__')`, String(apiPort)], options(root, backendEnvironment), { label: 'Phase8A API' }))
-        await deps.waitForOwnedServer(backend, `${apiUrl}/api/health`, { expectedNonce: nonce, timeoutMs: limits.healthMs })
+        await deps.waitForOwnedServer(backend, `${apiUrl}/api/health`, { expectedNonce: nonce, timeoutMs: limits.healthMs, signal: controller.signal })
         await lifecycle.releaseReservation(reservations[1])
         const deny = lifecycle.registerServer(deps.startOwnedServer(process.execPath, [roots.denyProxyPath, String(denyPort)], options(root, { ...base, BROWSER_DENY_PROXY_LEDGER_PATH: roots.denyProxyLedgerPath, M2_BROWSER_RUN_NONCE: nonce }), { label: 'Phase8A deny proxy' }))
-        await deps.waitForOwnedServer(deny, `${denyUrl}/health`, { expectedNonce: nonce, timeoutMs: limits.healthMs })
+        await deps.waitForOwnedServer(deny, `${denyUrl}/health`, { expectedNonce: nonce, timeoutMs: limits.healthMs, signal: controller.signal })
         await lifecycle.releaseReservation(reservations[2])
         const vite = lifecycle.registerServer(deps.startOwnedServer(process.execPath, [path.join(frontend, 'node_modules', 'vite', 'bin', 'vite.js'), '--config', roots.viteConfigPath, '--host', '127.0.0.1', '--port', String(vitePort), '--strictPort'], options(frontend, { ...base, VITE_API_BASE_URL: `${apiUrl}/api`, M2_BROWSER_RUN_NONCE: nonce }), { label: 'Phase8A Vite' }))
-        await deps.waitForOwnedServer(vite, `${viteUrl}/__m2-browser-owner`, { expectedNonce: nonce, timeoutMs: limits.healthMs })
+        await deps.waitForOwnedServer(vite, `${viteUrl}/__m2-browser-owner`, { expectedNonce: nonce, timeoutMs: limits.healthMs, signal: controller.signal })
         try {
           await deps.runBoundedOwnedCommand(process.execPath, [path.join(frontend, 'node_modules', 'playwright', 'cli.js'), 'test', `e2e/${FORMAL_SPECS[0]}`, '--config', `e2e/${FORMAL_CONFIG}`], options(frontend, browserEnvironment), { label: 'Phase8A browser test', timeoutMs: limits.browserMs, stopTimeoutMs: limits.stopMs, states: [backend, deny, vite], signal: controller.signal })
         } catch (error) {

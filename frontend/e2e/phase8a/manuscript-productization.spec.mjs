@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
+import { parseIterationCount } from './accessibility.mjs'
 
 const COMPLETE = process.env.BROWSER_COMPLETE_PROJECT_ID
 const AWAITING = process.env.BROWSER_AWAITING_PROJECT_ID
@@ -61,7 +62,8 @@ async function assertKeyboardDomOrder(page) {
 }
 
 async function assertReducedMotion(page) {
-  const motion = await page.locator('.product-app-shell, .product-app-shell *').evaluateAll(elements => {
+  const infiniteIteration = parseIterationCount('infinite')
+  const motion = await page.locator('.product-app-shell, .product-app-shell *').evaluateAll((elements, infinite) => {
     const seconds = value => {
       const parsed = value.split(',').map(part => {
         const item = part.trim()
@@ -82,12 +84,14 @@ async function assertReducedMotion(page) {
           maximumTransition = transition
           transitionOwner = `${element.tagName.toLowerCase()}-${String(element.className).split(/\s+/u)[0] || 'plain'}-${pseudo}-${String(style.content).replaceAll(/[^a-z]/giu, '') || 'empty'}`
         }
-        maximumIterations = Math.max(maximumIterations, ...style.animationIterationCount.split(',').map(value => Number.parseFloat(value) || 0))
+        maximumIterations = Math.max(maximumIterations, ...style.animationIterationCount.split(',').map(value => (
+          value.trim().toLowerCase() === 'infinite' ? infinite : Number.parseFloat(value) || 0
+        )))
         if (style.scrollBehavior === 'smooth') smoothScrolls += 1
       }
     }
     return { maximumAnimation, maximumTransition, maximumIterations, smoothScrolls, transitionOwner }
-  })
+  }, infiniteIteration)
   expect(motion.maximumAnimation).toBeLessThanOrEqual(0.001)
   if (motion.maximumTransition > 0.001) throw new Error(`phase8a-motion-transition-${Math.round(motion.maximumTransition * 1_000_000)}-${motion.transitionOwner}`)
   expect(motion.maximumTransition).toBeLessThanOrEqual(0.001)

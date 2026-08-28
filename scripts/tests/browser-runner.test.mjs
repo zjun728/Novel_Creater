@@ -261,6 +261,38 @@ test('owned command preserves one abort stop rejection by identity', async () =>
 })
 
 
+for (const signalName of ['SIGINT', 'SIGTERM']) {
+  test(`neutral public helpers propagate ${signalName} external abort promptly`, async () => {
+    const support = await import('../../frontend/e2e/support/product-runner.mjs')
+    const reason = new Error(`external-stop-${signalName}`)
+    const commandController = new AbortController()
+    const commandStarted = Date.now()
+    setTimeout(() => commandController.abort(reason), 50)
+    await assert.rejects(
+      support.runBoundedOwnedCommand(
+        process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' },
+        { label: `external ${signalName}`, timeoutMs: 5_000, settleMs: 1_000,
+          stopTimeoutMs: 1_000, signal: commandController.signal },
+      ),
+      error => error === reason,
+    )
+    assert.ok(Date.now() - commandStarted < 2_500)
+
+    const healthController = new AbortController()
+    setTimeout(() => healthController.abort(reason), 50)
+    await assert.rejects(
+      support.waitForOwnedServer(
+        { label: 'external health', state: { failurePromise: new Promise(() => {}) } },
+        'http://127.0.0.1:1/health',
+        { expectedNonce: 'nonce', timeoutMs: 5_000, settleMs: 1_000,
+          signal: healthController.signal, waitForUrlImpl: async () => new Promise(() => {}) },
+      ),
+      error => error === reason,
+    )
+  })
+}
+
+
 test('neutral runner requires every explicit disposable MySQL variable', () => {
   assert.deepEqual(REQUIRED_TEST_VARIABLES, [
     'TEST_MYSQL_HOST',
