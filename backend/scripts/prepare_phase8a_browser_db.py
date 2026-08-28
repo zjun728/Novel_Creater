@@ -329,6 +329,24 @@ async def read_fixture_marker() -> dict[str, str] | None:
     )}
 
 
+def _is_pristine_setup_rows(table: str, rows: list[dict[str, object]]) -> bool:
+    if table == "application_settings":
+        return rows == [{
+            "singleton_id": 1, "fallback_provider_id": None,
+            "revision": 0, "updated_at": 0,
+        }]
+    if table == "schema_metadata":
+        return (
+            len(rows) == 1
+            and rows[0].get("singleton_id") == 1
+            and rows[0].get("schema_version") == EXPECTED_SCHEMA_VERSION
+            and rows[0].get("manifest_hash") == manifest_hash()
+            and type(rows[0].get("initialized_at")) is int
+            and int(rows[0]["initialized_at"]) > 0
+        )
+    return not rows
+
+
 async def business_tables_are_empty() -> bool:
     async with connection() as session:
         tables = await session.fetchall(
@@ -341,26 +359,8 @@ async def business_tables_are_empty() -> bool:
                 continue
             if _SAFE_TABLE.fullmatch(table) is None:
                 return False
-            if table == "application_settings":
-                rows = await session.fetchall("SELECT * FROM application_settings")
-                if rows != [{
-                    "singleton_id": 1, "fallback_provider_id": None,
-                    "revision": 0, "updated_at": 0,
-                }]:
-                    return False
-                continue
-            if table == "schema_metadata":
-                rows = await session.fetchall("SELECT * FROM schema_metadata")
-                if (
-                    len(rows) != 1
-                    or rows[0].get("singleton_id") != 1
-                    or rows[0].get("schema_version") != EXPECTED_SCHEMA_VERSION
-                    or rows[0].get("manifest_hash") != manifest_hash()
-                    or not isinstance(rows[0].get("initialized_at"), int)
-                ):
-                    return False
-                continue
-            if await session.fetchone(f"SELECT 1 AS present FROM `{table}` LIMIT 1") is not None:
+            rows = await session.fetchall(f"SELECT * FROM `{table}`")
+            if not _is_pristine_setup_rows(table, rows):
                 return False
     return True
 

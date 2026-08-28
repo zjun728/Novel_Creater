@@ -76,6 +76,25 @@ test('Phase 8A cleanup removes its owned root even when an audit fails', async (
   assert.equal(existsSync(owned), false)
 })
 
+test('Phase 8A lifecycle prepares the owned fixture in two independent commands before services', async () => {
+  const runner = await import('../../frontend/e2e/run-phase8a.mjs')
+  const harness = phase8aHarness('success')
+  assert.equal(await runner.runPhase8A({
+    environment: harness.environment,
+    dependencies: harness.dependencies,
+    processTarget: harness.processTarget,
+    log() {},
+  }), 0)
+  const fixtureCommands = harness.commandCalls.filter(call => call.label === 'Phase8A fixture preparation')
+  assert.equal(fixtureCommands.length, 2)
+  assert.equal(fixtureCommands[0].command, fixtureCommands[1].command)
+  assert.deepEqual(fixtureCommands[0].args, fixtureCommands[1].args)
+  assert.ok(fixtureCommands[1].sequence < harness.firstServerSequence)
+  assert.deepEqual(harness.resources, {
+    childProcesses: 0, ports: 0, tempRoots: 0, downloads: 0, schemas: 0,
+  })
+})
+
 for (const scenario of ['success', 'assertion-failure', 'SIGINT', 'SIGTERM', 'child-startup-failure']) {
   test(`Phase 8A injected ${scenario} lifecycle releases every owned resource`, async () => {
     const runner = await import('../../frontend/e2e/run-phase8a.mjs')
@@ -186,6 +205,9 @@ function phase8aHarness(scenario) {
   const environment = {}
   let port = 42000
   let serverStarts = 0
+  let sequence = 0
+  const commandCalls = []
+  let firstServerSequence = Number.POSITIVE_INFINITY
   const roots = {
     artifactRoot: 'C:\\owned\\artifacts', downloadRoot: 'C:\\owned\\downloads',
     browserDownloadsRoot: 'C:\\owned\\browser-downloads', backendPath: 'C:\\owned\\backend.py',
@@ -206,6 +228,7 @@ function phase8aHarness(scenario) {
       return { port: value, async release() { if (!released) { released = true; resources.ports -= 1 } } }
     },
     startOwnedServer() {
+      firstServerSequence = Math.min(firstServerSequence, sequence++)
       serverStarts += 1
       if (scenario === 'child-startup-failure' && serverStarts === 1) throw new Error('child startup failed')
       resources.childProcesses += 1
@@ -216,7 +239,8 @@ function phase8aHarness(scenario) {
     },
     async waitForOwnedServer() {},
     readOwnedText() { return '' },
-    async runBoundedOwnedCommand(_command, _args, _options, settings) {
+    async runBoundedOwnedCommand(command, args, _options, settings) {
+      commandCalls.push({ command, args: [...args], label: settings.label, sequence: sequence++ })
       if (settings.label === 'Phase8A database preparation') resources.schemas += 1
       if (settings.label === 'Phase8A database cleanup') {
         if (scenario === 'SIGINT' || scenario === 'SIGTERM') {
@@ -271,5 +295,8 @@ function phase8aHarness(scenario) {
       if (failures.length > 1) throw new AggregateError(failures)
     },
   }
-  return { dependencies, environment, logs: [], processTarget, resources }
+  return {
+    dependencies, environment, logs: [], processTarget, resources, commandCalls,
+    get firstServerSequence() { return firstServerSequence },
+  }
 }

@@ -259,6 +259,7 @@ export async function runPhase8A({
         await bodyCommand(python, ['-m', 'backend.scripts.prepare_product_shell_browser_db', '--database', database], root, mysql, 'Phase8A database preparation')
         created = 1
         await bodyCommand(python, ['-m', 'backend.scripts.prepare_phase8a_browser_db', '--database', database], root, backendEnvironment, 'Phase8A fixture preparation')
+        await bodyCommand(python, ['-m', 'backend.scripts.prepare_phase8a_browser_db', '--database', database], root, backendEnvironment, 'Phase8A fixture preparation')
         await lifecycle.releaseReservation(reservations[0])
         const backend = lifecycle.registerServer(deps.startOwnedServer(python, ['-c', `import runpy; runpy.run_path(${JSON.stringify(roots.backendPath)}, run_name='__main__')`, String(apiPort)], options(root, backendEnvironment), { label: 'Phase8A API' }))
         await deps.waitForOwnedServer(backend, `${apiUrl}/api/health`, { expectedNonce: nonce, timeoutMs: limits.healthMs, signal: controller.signal })

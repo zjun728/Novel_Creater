@@ -2,13 +2,8 @@ import asyncio
 from copy import deepcopy
 from hashlib import sha256
 import re
-import os
-import subprocess
-import sys
-from uuid import uuid4
 
 import pytest
-import aiomysql
 
 import backend.scripts.prepare_phase8a_browser_db as fixture
 
@@ -24,50 +19,31 @@ def isolated_fixture_marker_boundary(monkeypatch):
     monkeypatch.setattr(fixture, "write_fixture_marker", lambda _fingerprint: asyncio.sleep(0))
 
 
-def _mysql_environment(database):
-    return {
-        **os.environ, "MYSQL_HOST": os.environ["TEST_MYSQL_HOST"],
-        "MYSQL_PORT": os.environ["TEST_MYSQL_PORT"], "MYSQL_USER": os.environ["TEST_MYSQL_USER"],
-        "MYSQL_PASSWORD": os.environ["TEST_MYSQL_PASSWORD"], "MYSQL_DB": database,
-        "BROWSER_TEST_DATABASE": database,
-    }
+def test_pristine_setup_boundary_accepts_only_exact_structural_rows():
+    assert fixture._is_pristine_setup_rows("application_settings", [{
+        "singleton_id": 1, "fallback_provider_id": None, "revision": 0, "updated_at": 0,
+    }])
+    assert not fixture._is_pristine_setup_rows("application_settings", [{
+        "singleton_id": 1, "fallback_provider_id": "pollution", "revision": 0, "updated_at": 0,
+    }])
+    metadata = [{
+        "singleton_id": 1, "schema_version": fixture.EXPECTED_SCHEMA_VERSION,
+        "manifest_hash": fixture.manifest_hash(), "initialized_at": 1,
+    }]
+    assert fixture._is_pristine_setup_rows("schema_metadata", metadata)
+    assert not fixture._is_pristine_setup_rows("schema_metadata", [
+        {**metadata[0], "manifest_hash": "pollution"},
+    ])
+    assert fixture._is_pristine_setup_rows("provider_profiles", [])
+    assert not fixture._is_pristine_setup_rows("provider_profiles", [{"id": "pollution"}])
 
 
-def _cli(module, database, *extra):
-    return subprocess.run(
-        [sys.executable, "-m", module, "--database", database, *extra],
-        env=_mysql_environment(database), capture_output=True, text=True, timeout=120,
-    )
-
-
-async def _pollute(database):
-    connection = await aiomysql.connect(
-        host=os.environ["TEST_MYSQL_HOST"], port=int(os.environ["TEST_MYSQL_PORT"]),
-        user=os.environ["TEST_MYSQL_USER"], password=os.environ["TEST_MYSQL_PASSWORD"],
-        db=database, autocommit=True,
-    )
-    try:
-        async with connection.cursor() as cursor:
-            await cursor.execute("CREATE TABLE phase8a_unprojected_probe (id INT PRIMARY KEY)")
-            await cursor.execute("INSERT INTO phase8a_unprojected_probe (id) VALUES (1)")
-    finally:
-        connection.close()
-
-
-def test_fixture_marker_is_cross_process_exact_and_rejects_other_table_pollution():
-    databases = [f"novel_creator_test_{uuid4().hex}" for _ in range(2)]
-    try:
-        for database in databases:
-            assert _cli("backend.scripts.prepare_product_shell_browser_db", database).returncode == 0
-        assert _cli("backend.scripts.prepare_phase8a_browser_db", databases[0]).returncode == 0
-        assert _cli("backend.scripts.prepare_phase8a_browser_db", databases[0]).returncode == 0
-        asyncio.run(_pollute(databases[0]))
-        assert _cli("backend.scripts.prepare_phase8a_browser_db", databases[0]).returncode != 0
-        asyncio.run(_pollute(databases[1]))
-        assert _cli("backend.scripts.prepare_phase8a_browser_db", databases[1]).returncode != 0
-    finally:
-        for database in databases:
-            _cli("backend.scripts.prepare_product_shell_browser_db", database, "--drop")
+def test_fingerprint_normalization_is_stable_and_detects_unprojected_pollution():
+    pristine = fixture._fingerprint_value({"payload": {"b": 2, "a": 1}, "binary": b"ok"})
+    equivalent = fixture._fingerprint_value({"binary": b"ok", "payload": {"a": 1, "b": 2}})
+    polluted = fixture._fingerprint_value({"binary": b"ok", "payload": {"a": 1, "b": 3}})
+    assert pristine == equivalent
+    assert pristine != polluted
 
 
 def test_phase8a_fixture_declares_three_deterministic_projects_and_exact_authority():
