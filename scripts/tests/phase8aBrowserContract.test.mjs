@@ -211,6 +211,30 @@ test('Phase 8A page event ledger accepts only the exact linked corrupt failures 
   assert.doesNotMatch(failure.message, /secret|token|https?:/iu)
 })
 
+test('Phase 8A request failure summaries expose only closed safe categories', async () => {
+  const { summarizeRequestFailure } = await import('../../frontend/e2e/phase8a/page-events.mjs')
+  const secret = '8a000000-0000-4000-8000-000000000003'
+  const request = {
+    method: () => 'GET',
+    url: () => `http://127.0.0.1:43123/api/projects/${secret}/manuscript/chapters/99?token=never-echo`,
+    failure: () => ({ errorText: 'net::ERR_ABORTED secret raw failure' }),
+  }
+  assert.deepEqual(summarizeRequestFailure(request, 'corrupt'), {
+    kind: 'request-failed', stage: 'corrupt', method: 'GET',
+    route: 'manuscript-chapter', failureType: 'aborted',
+  })
+  const encoded = JSON.stringify(summarizeRequestFailure(request, 'corrupt'))
+  assert.doesNotMatch(encoded, /8a000000|99|token|never-echo|secret|ERR_ABORTED|127\.0\.0\.1|43123/iu)
+  assert.deepEqual(summarizeRequestFailure({
+    method: () => 'TRACE',
+    url: () => 'https://outside.example/private?credential=never-echo',
+    failure: () => ({ errorText: 'net::ERR_CONNECTION_RESET private detail' }),
+  }, 'untrusted-stage'), {
+    kind: 'request-failed', stage: 'unknown', method: 'OTHER',
+    route: 'not-owned', failureType: 'connection',
+  })
+})
+
 test('Phase 8A reduced-motion parser treats infinite iteration as motion', async () => {
   const { parseIterationCount } = await import('../../frontend/e2e/phase8a/accessibility.mjs')
   assert.equal(parseIterationCount('infinite'), Number.POSITIVE_INFINITY)

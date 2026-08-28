@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test'
 import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { parseIterationCount } from './accessibility.mjs'
+import { summarizeRequestFailure } from './page-events.mjs'
 
 const COMPLETE = process.env.BROWSER_COMPLETE_PROJECT_ID
 const AWAITING = process.env.BROWSER_AWAITING_PROJECT_ID
@@ -59,7 +60,7 @@ function installPageEventLedger(page) {
       : { kind: 'console-error', category: 'other', source, status: null })
   })
   page.on('pageerror', () => record('pageErrors', { kind: 'page-error' }))
-  page.on('requestfailed', () => record('requestFailures', { kind: 'request-failed' }))
+  page.on('requestfailed', request => record('requestFailures', summarizeRequestFailure(request, stage)))
   page.on('response', response => {
     if (response.status() < 400) return
     let route = 'other'
@@ -81,7 +82,11 @@ function installPageEventLedger(page) {
         const response = ledger.responses[0]
         const responseMarker = response
           ? `${response.stage}-${response.method.toLowerCase()}-${response.route}-${response.status}` : 'none-get-other-0'
-        throw new Error(`phase8a-page-events-${stage}-console-${ledger.consoleErrors}-page-${ledger.pageErrors}-request-${ledger.requestFailures}-first-${category}-response-${responseMarker}`)
+        const request = ledger.summaries.find(item => item.kind === 'request-failed')
+        const requestMarker = request
+          ? `${request.stage}-${request.method.toLowerCase()}-${request.route}-${request.failureType}`
+          : 'none-get-not-owned-other'
+        throw new Error(`phase8a-page-events-${stage}-console-${ledger.consoleErrors}-page-${ledger.pageErrors}-request-${ledger.requestFailures}-first-${category}-response-${responseMarker}-failed-${requestMarker}`)
       }
       expect(ledger.pageErrors).toBe(0)
       expect(ledger.requestFailures).toBe(0)
