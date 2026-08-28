@@ -31,6 +31,8 @@ from backend.repositories.chapter_outlines import ChapterOutlineRepository
 from backend.repositories.chapter_sessions import ChapterSessionRepository
 from backend.repositories.finalization import FinalizationRepository
 from backend.repositories.planning import PlanningRepository
+from backend.schema_manifest import manifest_hash
+from backend.schema_version import EXPECTED_SCHEMA_VERSION
 from backend.scripts import prepare_phase6a_browser_db as base
 from backend.services.canon import CanonService
 from backend.services.chapter_outlines import (
@@ -76,7 +78,9 @@ WORKING_SENTINEL = "PHASE8A_WORKING_SENTINEL_MUST_NOT_DOWNLOAD"
 CANDIDATE_SENTINEL = "PHASE8A_CANDIDATE_SENTINEL_MUST_NOT_DOWNLOAD"
 _DISPOSABLE = re.compile(r"novel_creator_test_[a-f0-9]{32}\Z")
 _SAFE_TABLE = re.compile(r"[A-Za-z0-9_]+\Z")
-_fixture_fingerprints: dict[str, str] = {}
+_METADATA_TABLE = "phase8a_fixture_metadata"
+_FIXTURE_KEY = "phase8a-manuscript-productization"
+_FIXTURE_VERSION = "phase8a-v1"
 
 
 @dataclass(frozen=True)
@@ -291,6 +295,8 @@ async def read_business_fingerprint() -> str:
         )
         for item in tables:
             table = str(item["table_name"])
+            if table == _METADATA_TABLE:
+                continue
             if _SAFE_TABLE.fullmatch(table) is None:
                 raise RuntimeError("Phase8A fixture table inventory is invalid")
             rows = [_fingerprint_value(row) for row in await session.fetchall(f"SELECT * FROM `{table}`")]
@@ -302,6 +308,76 @@ async def read_business_fingerprint() -> str:
         inventory, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
     )
     return sha256(encoded.encode("utf-8")).hexdigest()
+
+
+async def read_fixture_marker() -> dict[str, str] | None:
+    async with connection() as session:
+        exists = await session.fetchone(
+            "SELECT TABLE_NAME AS table_name FROM information_schema.TABLES "
+            "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND TABLE_TYPE='BASE TABLE'",
+            (_METADATA_TABLE,),
+        )
+        if exists is None:
+            return None
+        rows = await session.fetchall(
+            f"SELECT fixture_key,schema_version,business_fingerprint FROM `{_METADATA_TABLE}`"
+        )
+    if len(rows) != 1:
+        return {"invalid": "marker-row-count"}
+    return {key: str(rows[0][key]) for key in (
+        "fixture_key", "schema_version", "business_fingerprint",
+    )}
+
+
+async def business_tables_are_empty() -> bool:
+    async with connection() as session:
+        tables = await session.fetchall(
+            "SELECT TABLE_NAME AS table_name FROM information_schema.TABLES "
+            "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME"
+        )
+        for item in tables:
+            table = str(item["table_name"])
+            if table == _METADATA_TABLE:
+                continue
+            if _SAFE_TABLE.fullmatch(table) is None:
+                return False
+            if table == "application_settings":
+                rows = await session.fetchall("SELECT * FROM application_settings")
+                if rows != [{
+                    "singleton_id": 1, "fallback_provider_id": None,
+                    "revision": 0, "updated_at": 0,
+                }]:
+                    return False
+                continue
+            if table == "schema_metadata":
+                rows = await session.fetchall("SELECT * FROM schema_metadata")
+                if (
+                    len(rows) != 1
+                    or rows[0].get("singleton_id") != 1
+                    or rows[0].get("schema_version") != EXPECTED_SCHEMA_VERSION
+                    or rows[0].get("manifest_hash") != manifest_hash()
+                    or not isinstance(rows[0].get("initialized_at"), int)
+                ):
+                    return False
+                continue
+            if await session.fetchone(f"SELECT 1 AS present FROM `{table}` LIMIT 1") is not None:
+                return False
+    return True
+
+
+async def write_fixture_marker(fingerprint: str) -> None:
+    async with connection() as session:
+        await session.execute(
+            f"""CREATE TABLE `{_METADATA_TABLE}` (
+                fixture_key VARCHAR(64) PRIMARY KEY,
+                schema_version VARCHAR(32) NOT NULL,
+                business_fingerprint CHAR(64) NOT NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"""
+        )
+        await session.execute(
+            f"INSERT INTO `{_METADATA_TABLE}` (fixture_key,schema_version,business_fingerprint) VALUES (%s,%s,%s)",
+            (_FIXTURE_KEY, _FIXTURE_VERSION, fingerprint),
+        )
 
 
 async def read_fixture_signature() -> dict[str, object] | None:
@@ -570,21 +646,24 @@ async def seed_fixture() -> None:
 
 async def prepare(database_name: str) -> None:
     await assert_owned_database(database_name)
+    marker = await read_fixture_marker()
     observed = await read_fixture_signature()
     expected = fixture_signature()
-    if observed is not None:
-        expected_fingerprint = _fixture_fingerprints.get(database_name)
+    if marker is not None:
         if (
             observed == expected
-            and expected_fingerprint is not None
-            and await read_business_fingerprint() == expected_fingerprint
+            and marker.get("fixture_key") == _FIXTURE_KEY
+            and marker.get("schema_version") == _FIXTURE_VERSION
+            and await read_business_fingerprint() == marker.get("business_fingerprint")
         ):
             return
+        raise RuntimeError("Phase8A fixture schema must be empty or exact")
+    if observed is not None or not await business_tables_are_empty():
         raise RuntimeError("Phase8A fixture schema must be empty or exact")
     await seed_fixture()
     if await read_fixture_signature() != expected:
         raise RuntimeError("Phase8A fixture postcondition failed")
-    _fixture_fingerprints[database_name] = await read_business_fingerprint()
+    await write_fixture_marker(await read_business_fingerprint())
 
 
 async def verify_postconditions(database_name: str) -> None:

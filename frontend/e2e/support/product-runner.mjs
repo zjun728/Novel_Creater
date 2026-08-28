@@ -1158,14 +1158,15 @@ async function settleAfterAbort(operationOutcome, primaryError, settleMs) {
     }),
   ])
   clearTimeout(timer)
+  const secondaryError = settled.kind === 'operation'
+    ? (settled.error || settled.value?.error || null) : null
   if (
-    settled.kind === 'operation'
-    && settled.error
-    && settled.error !== primaryError
-    && settled.error?.name !== 'AbortError'
+    secondaryError
+    && secondaryError !== primaryError
+    && secondaryError?.name !== 'AbortError'
   ) {
     throw new AggregateError(
-      [primaryError, settled.error],
+      [primaryError, secondaryError],
       'runner operation and bounded abort both failed',
     )
   }

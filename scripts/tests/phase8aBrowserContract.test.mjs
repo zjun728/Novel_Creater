@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 
 import { assertSafeBrowserGraph, collectBrowserTestDeclarations } from '../browser-source-contract.mjs'
 import { runSuites } from '../run-tests.mjs'
+import { runBoundedOwnedCommand as realBoundedCommand } from '../../frontend/e2e/support/product-runner.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const source = relative => readFileSync(path.join(root, relative), 'utf8')
@@ -217,7 +218,16 @@ function phase8aHarness(scenario) {
     readOwnedText() { return '' },
     async runBoundedOwnedCommand(_command, _args, _options, settings) {
       if (settings.label === 'Phase8A database preparation') resources.schemas += 1
-      if (settings.label === 'Phase8A database cleanup') resources.schemas -= 1
+      if (settings.label === 'Phase8A database cleanup') {
+        if (scenario === 'SIGINT' || scenario === 'SIGTERM') {
+          assert.equal(settings.signal, undefined)
+          await realBoundedCommand(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' }, {
+            label: 'real injected schema cleanup', timeoutMs: 5_000, settleMs: 500,
+            stopTimeoutMs: 1_000,
+          })
+        }
+        resources.schemas -= 1
+      }
       if (settings.label !== 'Phase8A browser test') return { status: 0 }
       if (scenario === 'assertion-failure') throw new Error('browser assertion failed')
       if (scenario === 'SIGINT' || scenario === 'SIGTERM') {

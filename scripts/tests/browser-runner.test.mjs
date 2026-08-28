@@ -261,6 +261,33 @@ test('owned command preserves one abort stop rejection by identity', async () =>
 })
 
 
+test('external abort preserves primary before a resolved process-tree kill failure', async () => {
+  const support = await import('../../frontend/e2e/support/product-runner.mjs')
+  const primary = new Error('external-stop-primary')
+  const killFailure = new Error('process-tree-kill-failed')
+  const controller = new AbortController()
+  setTimeout(() => controller.abort(primary), 20)
+  await assert.rejects(
+    support.runBoundedOwnedCommand('node', ['ignored'], {}, {
+      label: 'external abort kill failure', timeoutMs: 1_000, settleMs: 200,
+      signal: controller.signal,
+      processRunner: {
+        async run(_command, _args, _options, runtime) {
+          await new Promise(resolve => runtime.signal.addEventListener('abort', resolve, { once: true }))
+          return { status: null, error: killFailure, logObserver: null }
+        },
+        start() {}, async stop() {},
+      },
+    }),
+    error => {
+      assert.ok(error instanceof AggregateError)
+      assert.deepEqual(error.errors, [primary, killFailure])
+      return true
+    },
+  )
+})
+
+
 for (const signalName of ['SIGINT', 'SIGTERM']) {
   test(`neutral public helpers propagate ${signalName} external abort promptly`, async () => {
     const support = await import('../../frontend/e2e/support/product-runner.mjs')

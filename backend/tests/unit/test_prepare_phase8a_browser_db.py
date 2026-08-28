@@ -2,13 +2,72 @@ import asyncio
 from copy import deepcopy
 from hashlib import sha256
 import re
+import os
+import subprocess
+import sys
+from uuid import uuid4
 
 import pytest
+import aiomysql
 
 import backend.scripts.prepare_phase8a_browser_db as fixture
 
 
 DATABASE = "novel_creator_test_0123456789abcdef0123456789abcdef"
+
+
+@pytest.fixture(autouse=True)
+def isolated_fixture_marker_boundary(monkeypatch):
+    monkeypatch.setattr(fixture, "read_fixture_marker", lambda: asyncio.sleep(0, result=None))
+    monkeypatch.setattr(fixture, "business_tables_are_empty", lambda: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(fixture, "read_business_fingerprint", lambda: asyncio.sleep(0, result="exact"))
+    monkeypatch.setattr(fixture, "write_fixture_marker", lambda _fingerprint: asyncio.sleep(0))
+
+
+def _mysql_environment(database):
+    return {
+        **os.environ, "MYSQL_HOST": os.environ["TEST_MYSQL_HOST"],
+        "MYSQL_PORT": os.environ["TEST_MYSQL_PORT"], "MYSQL_USER": os.environ["TEST_MYSQL_USER"],
+        "MYSQL_PASSWORD": os.environ["TEST_MYSQL_PASSWORD"], "MYSQL_DB": database,
+        "BROWSER_TEST_DATABASE": database,
+    }
+
+
+def _cli(module, database, *extra):
+    return subprocess.run(
+        [sys.executable, "-m", module, "--database", database, *extra],
+        env=_mysql_environment(database), capture_output=True, text=True, timeout=120,
+    )
+
+
+async def _pollute(database):
+    connection = await aiomysql.connect(
+        host=os.environ["TEST_MYSQL_HOST"], port=int(os.environ["TEST_MYSQL_PORT"]),
+        user=os.environ["TEST_MYSQL_USER"], password=os.environ["TEST_MYSQL_PASSWORD"],
+        db=database, autocommit=True,
+    )
+    try:
+        async with connection.cursor() as cursor:
+            await cursor.execute("CREATE TABLE phase8a_unprojected_probe (id INT PRIMARY KEY)")
+            await cursor.execute("INSERT INTO phase8a_unprojected_probe (id) VALUES (1)")
+    finally:
+        connection.close()
+
+
+def test_fixture_marker_is_cross_process_exact_and_rejects_other_table_pollution():
+    databases = [f"novel_creator_test_{uuid4().hex}" for _ in range(2)]
+    try:
+        for database in databases:
+            assert _cli("backend.scripts.prepare_product_shell_browser_db", database).returncode == 0
+        assert _cli("backend.scripts.prepare_phase8a_browser_db", databases[0]).returncode == 0
+        assert _cli("backend.scripts.prepare_phase8a_browser_db", databases[0]).returncode == 0
+        asyncio.run(_pollute(databases[0]))
+        assert _cli("backend.scripts.prepare_phase8a_browser_db", databases[0]).returncode != 0
+        asyncio.run(_pollute(databases[1]))
+        assert _cli("backend.scripts.prepare_phase8a_browser_db", databases[1]).returncode != 0
+    finally:
+        for database in databases:
+            _cli("backend.scripts.prepare_product_shell_browser_db", database, "--drop")
 
 
 def test_phase8a_fixture_declares_three_deterministic_projects_and_exact_authority():
@@ -110,8 +169,11 @@ async def test_prepare_is_idempotent_only_for_the_same_complete_fixture(monkeypa
     monkeypatch.setattr(fixture, "assert_owned_database", authority)
     monkeypatch.setattr(fixture, "read_fixture_signature", snapshot)
     monkeypatch.setattr(fixture, "seed_fixture", seed)
-    monkeypatch.setattr(fixture, "read_business_fingerprint", lambda: asyncio.sleep(0, result="exact"))
-    monkeypatch.setattr(fixture, "_fixture_fingerprints", {})
+    markers = iter([None, {
+        "fixture_key": fixture._FIXTURE_KEY, "schema_version": fixture._FIXTURE_VERSION,
+        "business_fingerprint": "exact",
+    }])
+    monkeypatch.setattr(fixture, "read_fixture_marker", lambda: asyncio.sleep(0, result=next(markers)))
 
     await fixture.prepare(DATABASE)
     await fixture.prepare(DATABASE)
@@ -127,7 +189,11 @@ async def test_prepare_rejects_unprojected_business_table_pollution(monkeypatch)
     monkeypatch.setattr(fixture, "read_fixture_signature", lambda: asyncio.sleep(0, result=next(snapshots)))
     monkeypatch.setattr(fixture, "read_business_fingerprint", lambda: asyncio.sleep(0, result=next(fingerprints)))
     monkeypatch.setattr(fixture, "seed_fixture", lambda: asyncio.sleep(0))
-    monkeypatch.setattr(fixture, "_fixture_fingerprints", {})
+    markers = iter([None, {
+        "fixture_key": fixture._FIXTURE_KEY, "schema_version": fixture._FIXTURE_VERSION,
+        "business_fingerprint": "baseline",
+    }])
+    monkeypatch.setattr(fixture, "read_fixture_marker", lambda: asyncio.sleep(0, result=next(markers)))
 
     await fixture.prepare(DATABASE)
     with pytest.raises(RuntimeError, match="empty or exact"):

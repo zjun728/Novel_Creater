@@ -213,9 +213,13 @@ export async function runPhase8A({
     MYSQL_USER: environment.TEST_MYSQL_USER, MYSQL_PASSWORD: environment.TEST_MYSQL_PASSWORD,
     MYSQL_DB: database, BROWSER_TEST_DATABASE: database,
   }
-  const ownedCommand = (command, args, cwd, env, label, states = []) => deps.runBoundedOwnedCommand(
+  const bodyCommand = (command, args, cwd, env, label, states = []) => deps.runBoundedOwnedCommand(
     command, args, options(cwd, env),
     { label, timeoutMs: limits.commandMs, stopTimeoutMs: limits.stopMs, states, signal: controller.signal },
+  )
+  const cleanupCommand = (command, args, cwd, env, label) => deps.runBoundedOwnedCommand(
+    command, args, options(cwd, env),
+    { label, timeoutMs: limits.commandMs, stopTimeoutMs: limits.stopMs },
   )
   try {
     await deps.runOwnedProductLifecycle({
@@ -252,9 +256,9 @@ export async function runPhase8A({
           BROWSER_AWAITING_PROJECT_ID: '8a000000-0000-4000-8000-000000000002',
           BROWSER_CORRUPT_PROJECT_ID: '8a000000-0000-4000-8000-000000000003',
         }
-        await ownedCommand(python, ['-m', 'backend.scripts.prepare_product_shell_browser_db', '--database', database], root, mysql, 'Phase8A database preparation')
+        await bodyCommand(python, ['-m', 'backend.scripts.prepare_product_shell_browser_db', '--database', database], root, mysql, 'Phase8A database preparation')
         created = 1
-        await ownedCommand(python, ['-m', 'backend.scripts.prepare_phase8a_browser_db', '--database', database], root, backendEnvironment, 'Phase8A fixture preparation')
+        await bodyCommand(python, ['-m', 'backend.scripts.prepare_phase8a_browser_db', '--database', database], root, backendEnvironment, 'Phase8A fixture preparation')
         await lifecycle.releaseReservation(reservations[0])
         const backend = lifecycle.registerServer(deps.startOwnedServer(python, ['-c', `import runpy; runpy.run_path(${JSON.stringify(roots.backendPath)}, run_name='__main__')`, String(apiPort)], options(root, backendEnvironment), { label: 'Phase8A API' }))
         await deps.waitForOwnedServer(backend, `${apiUrl}/api/health`, { expectedNonce: nonce, timeoutMs: limits.healthMs, signal: controller.signal })
@@ -272,12 +276,12 @@ export async function runPhase8A({
         }
         if (deps.readOwnedText(roots.outboundLedgerPath).trim()) throw new Error('Phase8A Provider request ledger was not zero')
         deniedConnects = assertBrowserDenyLedger(deps.readOwnedText(roots.denyProxyLedgerPath)).deniedConnectCount
-        await ownedCommand(python, ['-m', 'backend.scripts.prepare_phase8a_browser_db', '--database', database, '--verify-postconditions'], root, backendEnvironment, 'Phase8A postcondition verifier', [backend, deny, vite])
+        await bodyCommand(python, ['-m', 'backend.scripts.prepare_phase8a_browser_db', '--database', database, '--verify-postconditions'], root, backendEnvironment, 'Phase8A postcondition verifier', [backend, deny, vite])
       },
       stopServer: server => deps.stopOwnedServer(server, { timeoutMs: limits.stopMs }),
       releaseReservation: reservation => reservation.release(),
       async dropDatabase(name) {
-        await ownedCommand(environment.PYTHON || 'python', ['-m', 'backend.scripts.prepare_product_shell_browser_db', '--database', name, '--drop'], root, mysql, 'Phase8A database cleanup')
+        await cleanupCommand(environment.PYTHON || 'python', ['-m', 'backend.scripts.prepare_product_shell_browser_db', '--database', name, '--drop'], root, mysql, 'Phase8A database cleanup')
         cleaned = 1
       },
       removeRoot: owned => deps.cleanupRoot(owned, roots, ports),
