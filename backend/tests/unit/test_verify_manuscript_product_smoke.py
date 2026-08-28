@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -514,3 +515,47 @@ def test_main_preserves_control_flow_base_exceptions(control_flow_error):
         )
 
     assert raised.value is control_flow_error
+
+
+def test_main_cold_import_failure_uses_fixed_unexpected_receipt(
+    monkeypatch,
+    capsys,
+):
+    from backend.scripts.verify_manuscript_product_smoke import main
+
+    sentinel = "RAW_IMPORT_MUST_NOT_LEAK C:\\private\\machine\\module.py"
+    real_import = builtins.__import__
+
+    def failing_backend_import(name, *args, **kwargs):
+        if name.startswith("backend."):
+            raise ImportError(sentinel)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", failing_backend_import)
+
+    assert main(("--project-id", PROJECT_ID)) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.strip() == (
+        '{"category":"unexpected","projectId":"'
+        + PROJECT_ID
+        + '","status":"failed"}'
+    )
+    assert sentinel not in captured.err
+
+
+def test_failure_category_preserves_known_safe_classifications():
+    from backend.scripts.verify_manuscript_product_smoke import (
+        ReadOnlySqlError,
+        SmokeIntegrityError,
+        _failure_category,
+    )
+    from backend.services.manuscripts import (
+        ManuscriptProjectNotFound,
+        ManuscriptTemporarilyUnavailable,
+    )
+
+    assert _failure_category(SmokeIntegrityError()) == "integrity"
+    assert _failure_category(ManuscriptProjectNotFound()) == "not_found"
+    assert _failure_category(ManuscriptTemporarilyUnavailable()) == "unavailable"
+    assert _failure_category(ReadOnlySqlError()) == "read_only"

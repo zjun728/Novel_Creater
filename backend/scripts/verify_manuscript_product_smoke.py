@@ -309,12 +309,15 @@ def _failure(category: str, project_id: str | None = None) -> str:
 
 
 def _failure_category(error: Exception) -> str:
-    from backend.services.manuscripts import (
-        FinalChapterNotFound,
-        ManuscriptIntegrityFailure,
-        ManuscriptProjectNotFound,
-        ManuscriptTemporarilyUnavailable,
-    )
+    try:
+        from backend.services.manuscripts import (
+            FinalChapterNotFound,
+            ManuscriptIntegrityFailure,
+            ManuscriptProjectNotFound,
+            ManuscriptTemporarilyUnavailable,
+        )
+    except Exception:
+        return "unexpected"
 
     if isinstance(error, (SmokeIntegrityError, ManuscriptIntegrityFailure)):
         return "integrity"
