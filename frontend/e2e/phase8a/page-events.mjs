@@ -28,6 +28,7 @@ function responseRouteTemplate(rawUrl) {
     if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1') return 'not-owned'
     if (/^\/api\/projects\/[^/]+\/manuscript\/chapters\/[^/]+$/u.test(url.pathname)) return 'manuscript-chapter'
     if (/^\/api\/projects\/[^/]+\/manuscript$/u.test(url.pathname)) return 'manuscript-index'
+    if (/^\/api\/projects\/[^/]+\/novel-download\/options$/u.test(url.pathname)) return 'novel-download-options'
     if (/^\/api\/projects\/[^/]+\/novel-download$/u.test(url.pathname)) {
       const scope = url.searchParams.get('scope')
       return `novel-download-${['chapter', 'volume', 'book'].includes(scope) ? scope : 'unknown'}`

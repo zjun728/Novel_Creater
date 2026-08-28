@@ -246,6 +246,15 @@ test('Phase 8A request failure summaries expose only closed safe categories', as
     method: 'OTHER', route: 'novel-download-unknown', stage: 'corrupt', status: 500,
   })
   assert.doesNotMatch(JSON.stringify(response), /8a000000|99|token|never-echo|TRACE|127\.0\.0\.1|43123/iu)
+  const optionsResponse = summarizeResponse({
+    status: () => 503,
+    url: () => `http://127.0.0.1:43123/api/projects/${secret}/novel-download/options?token=never-echo`,
+    request: () => ({ method: () => 'GET' }),
+  }, 'awaiting')
+  assert.deepEqual(optionsResponse, {
+    method: 'GET', route: 'novel-download-options', stage: 'awaiting', status: 503,
+  })
+  assert.doesNotMatch(JSON.stringify(optionsResponse), /8a000000|token|never-echo|127\.0\.0\.1|43123/iu)
 })
 
 test('Phase 8A reduced-motion parser treats infinite iteration as motion', async () => {
