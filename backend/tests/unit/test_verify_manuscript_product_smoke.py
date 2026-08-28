@@ -218,6 +218,9 @@ async def test_guarded_transaction_preserves_read_only_boundary_and_select_reads
         "SELECT `product`.`product_udf`(value) FROM safe_table",
         'SELECT "product_udf"(value) FROM safe_table',
         "SELECT @captured := value FROM safe_table",
+        "SELECT 危险函数(value) FROM safe_table",
+        "SELECT 危险udf(value) FROM safe_table",
+        "SELECT café(value) FROM safe_table",
         "SELECT 1",
     ),
 )
@@ -240,6 +243,17 @@ async def test_sql_guard_rejects_execute_even_for_select():
     with pytest.raises(ReadOnlySqlError):
         await ReadOnlySqlSession(underlying).execute("SELECT 1")
     assert underlying.calls == []
+
+
+@pytest.mark.asyncio
+async def test_sql_guard_allows_unicode_only_inside_single_quoted_literal():
+    from backend.scripts.verify_manuscript_product_smoke import ReadOnlySqlSession
+
+    underlying = Session()
+    sql = "SELECT value FROM safe_table WHERE status='中文值'"
+
+    assert await ReadOnlySqlSession(underlying).fetchone(sql) == {"ok": 1}
+    assert underlying.calls == [("fetchone", sql, None)]
 
 
 @pytest.mark.asyncio

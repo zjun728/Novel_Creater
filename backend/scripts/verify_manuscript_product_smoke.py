@@ -105,7 +105,8 @@ class ReadOnlySqlSession:
             for match in _FUNCTION_CALL.finditer(masked)
         } - _GROUPING_TOKENS
         if (
-            not re.match(r"(?i)^select\b", stripped)
+            not masked.isascii()
+            or not re.match(r"(?i)^select\b", stripped)
             or re.search(r"(?i)\bfrom\b", stripped) is None
             or ";" in sql
             or any(marker in sql for marker in _COMMENT_MARKERS)
