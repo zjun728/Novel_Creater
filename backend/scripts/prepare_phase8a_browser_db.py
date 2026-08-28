@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 from dataclasses import dataclass
+from hashlib import sha256
+import json
 import os
 import re
 import time
@@ -84,11 +86,6 @@ PINNED_OUTLINES = (
 )
 
 
-class ProviderMustNotRun:
-    async def __call__(self, *_args, **_kwargs):
-        raise RuntimeError("Phase8A Provider invocation is forbidden")
-
-
 class _Quality:
     async def audit(self, **_kwargs):
         return ()
@@ -115,16 +112,65 @@ def assert_database_name(value: str) -> str:
     return value
 
 
+def _outline_signature(template: OutlineTemplate) -> dict[str, object]:
+    return {
+        "chapterGoal": template.chapter_goal,
+        "expectedCharacters": list(template.expected_characters),
+        "continuation": list(template.continuation),
+        "plannedTasks": list(template.planned_tasks),
+        "scenes": list(template.scenes),
+        "forbiddenEarlyEvents": list(template.forbidden_early_events),
+    }
+
+
+def _final_signature(kind: str, count: int) -> list[dict[str, object]]:
+    finals = []
+    for chapter in range(1, count + 1):
+        authoritative_content = FINAL_PROSE[chapter - 1]
+        content = authoritative_content
+        title = CHAPTER_TITLES[chapter - 1] if chapter <= 3 else "旧账浮出水面"
+        if kind == "corrupt" and chapter == 3:
+            content += " CORRUPT_BODY_MUST_NEVER_ESCAPE"
+        finals.append({
+            "chapter": chapter, "title": title, "content": content,
+            "storedHash": sha256(authoritative_content.encode("utf-8")).hexdigest(),
+            "hashMatches": not (kind == "corrupt" and chapter == 3),
+        })
+    return finals
+
+
+def _signature(*, postconditions: bool) -> dict[str, object]:
+    counts = [3, 4 if postconditions else 3, 3]
+    return {
+        "projects": [
+            {"id": project_id, "title": PROJECT_TITLES[kind],
+             "lifecycle": "archived" if postconditions and kind == "complete" else "active"}
+            for kind, project_id in PROJECTS.items()
+        ],
+        "finalCounts": counts,
+        "finalChapters": [
+            _final_signature(kind, count)
+            for (kind, _project_id), count in zip(PROJECTS.items(), counts, strict=True)
+        ],
+        "outlineGoals": [[item.chapter_goal for item in PINNED_OUTLINES]] * 3,
+        "outlines": [[_outline_signature(item) for item in PINNED_OUTLINES]] * 3,
+        "authoritativeChapters": [4, 5 if postconditions else 4, 4],
+        "awaitingAuthorReviews": [] if postconditions else [{
+            "projectId": PROJECTS["awaiting-author"], "chapter": 4,
+            "status": "awaiting_author",
+        }],
+        "sentinelCounts": {"working": 3, "candidate": 3},
+        "corruptHashMismatch": True,
+    }
+
+
 def fixture_signature() -> dict[str, object]:
-    return {"projectIds": list(PROJECTS.values()), "finalCounts": [3, 3, 3]}
+    return _signature(postconditions=False)
 
 
 def postcondition_signature() -> dict[str, object]:
-    return {
-        "projectIds": list(PROJECTS.values()),
-        "finalCounts": [3, 4, 3],
-        "lifecycles": ["archived", "active", "active"],
-    }
+    signature = _signature(postconditions=True)
+    return {**signature, "lifecycles": [item["lifecycle"] for item in signature["projects"]]}
 
 
 async def assert_owned_database(database_name: str) -> None:
@@ -139,35 +185,87 @@ async def assert_owned_database(database_name: str) -> None:
 
 async def read_fixture_signature() -> dict[str, object] | None:
     async with connection() as session:
-        rows = await session.fetchall(
-            "SELECT id FROM projects WHERE id IN (%s,%s,%s) ORDER BY id",
-            tuple(PROJECTS.values()),
-        )
-        total = await session.fetchone("SELECT COUNT(*) AS count FROM projects")
-        if int(total["count"] or 0) == 0:
+        rows = await session.fetchall("SELECT id,title,archived_at FROM projects ORDER BY id")
+        if not rows:
             return None
-        counts = []
+        finals_by_project = []
+        outlines_by_project = []
+        authorities = []
         for project_id in PROJECTS.values():
-            row = await session.fetchone(
-                "SELECT COUNT(*) AS count FROM final_chapters WHERE project_id=%s",
+            finals = await session.fetchall(
+                "SELECT chapter_num,title,content,content_hash FROM final_chapters WHERE project_id=%s ORDER BY chapter_num",
                 (project_id,),
             )
-            counts.append(int(row["count"] or 0))
-    return {"projectIds": [row["id"] for row in rows], "finalCounts": counts}
+            finals_by_project.append([{
+                "chapter": int(item["chapter_num"]), "title": item["title"], "content": item["content"],
+                "storedHash": item["content_hash"],
+                "hashMatches": item["content_hash"] == sha256(item["content"].encode("utf-8")).hexdigest(),
+            } for item in finals])
+            outline_rows = await session.fetchall(
+                """SELECT revision.content_json FROM project_chapter_outline_heads head
+                     JOIN chapter_outline_revisions revision
+                       ON revision.project_id=head.project_id AND revision.chapter_num=head.chapter_num
+                      AND revision.id=head.outline_revision_id AND revision.revision=head.revision
+                      AND revision.content_hash=head.content_hash
+                    WHERE head.project_id=%s ORDER BY head.chapter_num""",
+                (project_id,),
+            )
+            outlines = []
+            for item in outline_rows:
+                content = item["content_json"]
+                if isinstance(content, str):
+                    content = json.loads(content)
+                outlines.append({key: content[key] for key in (
+                    "chapterGoal", "expectedCharacters", "continuation", "plannedTasks",
+                    "scenes", "forbiddenEarlyEvents",
+                )})
+            outlines_by_project.append(outlines)
+            active = await session.fetchone(
+                "SELECT chapter_num FROM chapter_sessions WHERE project_id=%s AND status='drafting'",
+                (project_id,),
+            )
+            authorities.append(int(active["chapter_num"]) if active else len(finals) + 1)
+        reviews = await session.fetchall(
+            """SELECT change_set.project_id,chapter.chapter_num,change_set.status
+                 FROM finalization_change_sets change_set
+                 JOIN chapter_sessions chapter
+                   ON chapter.project_id=change_set.project_id AND chapter.id=change_set.chapter_session_id
+                WHERE change_set.status='awaiting_author' AND change_set.active_slot=1
+                ORDER BY change_set.project_id,chapter.chapter_num"""
+        )
+        sentinel = await session.fetchone(
+            """SELECT SUM(content=%s) AS working_count,SUM(content=%s) AS candidate_count
+                 FROM (SELECT content FROM working_drafts UNION ALL SELECT content FROM draft_candidates) values_""",
+            (WORKING_SENTINEL, CANDIDATE_SENTINEL),
+        )
+    counts = [len(items) for items in finals_by_project]
+    return {
+        "projects": [{
+            "id": row["id"], "title": row["title"],
+            "lifecycle": "archived" if row["archived_at"] is not None else "active",
+        } for row in rows],
+        "finalCounts": counts,
+        "finalChapters": finals_by_project,
+        "outlineGoals": [[item["chapterGoal"] for item in outlines] for outlines in outlines_by_project],
+        "outlines": outlines_by_project,
+        "authoritativeChapters": authorities,
+        "awaitingAuthorReviews": [{
+            "projectId": item["project_id"], "chapter": int(item["chapter_num"]),
+            "status": item["status"],
+        } for item in reviews],
+        "sentinelCounts": {
+            "working": int(sentinel["working_count"] or 0),
+            "candidate": int(sentinel["candidate_count"] or 0),
+        },
+        "corruptHashMismatch": bool(finals_by_project[2]) and not finals_by_project[2][-1]["hashMatches"],
+    }
 
 
 async def read_postcondition_signature() -> dict[str, object] | None:
     observed = await read_fixture_signature()
     if observed is None:
         return None
-    lifecycles = []
-    async with connection() as session:
-        for project_id in PROJECTS.values():
-            row = await session.fetchone(
-                "SELECT archived_at FROM projects WHERE id=%s", (project_id,),
-            )
-            lifecycles.append("archived" if row and row["archived_at"] is not None else "active")
-    return {**observed, "lifecycles": lifecycles}
+    return {**observed, "lifecycles": [item["lifecycle"] for item in observed["projects"]]}
 
 
 def _outline(planning, template: OutlineTemplate) -> EditableChapterOutlineContent:
@@ -209,6 +307,11 @@ async def _finalize_third(project_id: str) -> None:
     workspace = await sessions.get(project_id, 3)
     if workspace is None:
         raise RuntimeError("Phase8A chapter three workspace is missing")
+    await sessions.save_candidate(SaveDraftCandidate(
+        project_id, workspace.session.id, workspace.working_draft.revision,
+        workspace.working_draft.content_hash,
+        f"8a100000-0000-4000-8000-00000000000{project_id[-1]}",
+    ))
     saved = await sessions.save_working_draft(SaveWorkingDraft(
         project_id, workspace.session.id, workspace.working_draft.revision,
         workspace.working_draft.content_hash, FINAL_PROSE[2],
@@ -286,6 +389,7 @@ async def _create_fourth(project_id: str, *, awaiting_author: bool) -> None:
 async def _seed_project(kind: str, project_id: str) -> None:
     original_project = base.PROJECT
     original_final_one, original_final_two = base.FINAL_ONE, base.FINAL_TWO
+    original_working, original_candidate = base.WORKING_SENTINEL, base.CANDIDATE_SENTINEL
     original_outline, original_extraction = base._outline_payload, base._Extraction
     outline_index = 0
 
@@ -304,12 +408,14 @@ async def _seed_project(kind: str, project_id: str) -> None:
     try:
         base.PROJECT = project_id
         base.FINAL_ONE, base.FINAL_TWO = FINAL_PROSE[:2]
+        base.WORKING_SENTINEL, base.CANDIDATE_SENTINEL = WORKING_SENTINEL, CANDIDATE_SENTINEL
         base._outline_payload = next_outline
         base._Extraction = ExactExtraction
         await base.prepare(os.environ["MYSQL_DB"])
     finally:
         base.PROJECT = original_project
         base.FINAL_ONE, base.FINAL_TWO = original_final_one, original_final_two
+        base.WORKING_SENTINEL, base.CANDIDATE_SENTINEL = original_working, original_candidate
         base._outline_payload, base._Extraction = original_outline, original_extraction
     async with connection() as session:
         await session.execute(

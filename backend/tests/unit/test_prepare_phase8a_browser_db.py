@@ -1,4 +1,6 @@
 import asyncio
+from copy import deepcopy
+from hashlib import sha256
 import re
 
 import pytest
@@ -24,9 +26,23 @@ def test_phase8a_fixture_declares_three_deterministic_projects_and_exact_authori
     assert all(outline.chapter_goal for outline in fixture.PINNED_OUTLINES)
     assert fixture.WORKING_SENTINEL not in "".join(fixture.FINAL_PROSE)
     assert fixture.CANDIDATE_SENTINEL not in "".join(fixture.FINAL_PROSE)
-    assert fixture.fixture_signature()["finalCounts"] == [3, 3, 3]
-    assert fixture.postcondition_signature()["finalCounts"] == [3, 4, 3]
-    assert fixture.postcondition_signature()["lifecycles"] == ["archived", "active", "active"]
+    expected = fixture.fixture_signature()
+    assert [item["title"] for item in expected["projects"]] == list(fixture.PROJECT_TITLES.values())
+    assert expected["finalCounts"] == [3, 3, 3]
+    assert expected["authoritativeChapters"] == [4, 4, 4]
+    assert expected["outlineGoals"] == [[item.chapter_goal for item in fixture.PINNED_OUTLINES]] * 3
+    assert expected["sentinelCounts"] == {"working": 3, "candidate": 3}
+    assert expected["corruptHashMismatch"] is True
+    assert expected["finalChapters"][2][2]["storedHash"] == sha256(fixture.FINAL_PROSE[2].encode("utf-8")).hexdigest()
+    assert expected["awaitingAuthorReviews"] == [{
+        "projectId": fixture.PROJECTS["awaiting-author"],
+        "chapter": 4,
+        "status": "awaiting_author",
+    }]
+    postcondition = fixture.postcondition_signature()
+    assert postcondition["finalCounts"] == [3, 4, 3]
+    assert postcondition["lifecycles"] == ["archived", "active", "active"]
+    assert postcondition["awaitingAuthorReviews"] == []
 
 
 @pytest.mark.parametrize("name", ["novel_creator", "novel_creater", "../" + DATABASE])
@@ -35,9 +51,11 @@ def test_fixture_rejects_every_non_disposable_schema(name):
         fixture.assert_database_name(name)
 
 
-def test_fixture_source_is_provider_free_and_has_no_schema_ddl():
+def test_fixture_uses_local_deterministic_finalization_and_has_no_schema_ddl():
     source = open(fixture.__file__, encoding="utf-8").read()
-    assert "ProviderMustNotRun" in source
+    assert "ProviderMustNotRun" not in source
+    assert "quality_provider=_Quality()" in source
+    assert "extraction_provider=_Extraction(title)" in source
     assert "prepare_product_shell_browser_db" not in source
     assert not re.search(r"\b(?:CREATE|DROP)\s+(?:DATABASE|SCHEMA)\b", source, re.I)
     assert not re.search(r"ProviderProfileService|httpx|requests|aiohttp", source)
@@ -89,6 +107,26 @@ async def test_prepare_refuses_partially_populated_schema(monkeypatch):
 
     monkeypatch.setattr(fixture, "assert_owned_database", authority)
     monkeypatch.setattr(fixture, "read_fixture_signature", snapshot)
+
+    with pytest.raises(RuntimeError, match="empty or exact"):
+        await fixture.prepare(DATABASE)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["title", "outline", "sentinel", "hash"])
+async def test_prepare_refuses_a_fixture_with_corrupted_authority(monkeypatch, field):
+    observed = deepcopy(fixture.fixture_signature())
+    if field == "title":
+        observed["projects"][0]["title"] = "错误标题"
+    elif field == "outline":
+        observed["outlineGoals"][0][0] = "错误小纲"
+    elif field == "sentinel":
+        observed["sentinelCounts"]["working"] = 0
+    else:
+        observed["corruptHashMismatch"] = False
+
+    monkeypatch.setattr(fixture, "assert_owned_database", lambda _database: asyncio.sleep(0))
+    monkeypatch.setattr(fixture, "read_fixture_signature", lambda: asyncio.sleep(0, result=observed))
 
     with pytest.raises(RuntimeError, match="empty or exact"):
         await fixture.prepare(DATABASE)

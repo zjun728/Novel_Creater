@@ -18,12 +18,12 @@ if (!paths.every(value => typeof value === 'string' && path.isAbsolute(value))) 
 if (![artifactRoot, downloadRoot, browserDownloadsRoot, resultPath].every(value => normalize(path.dirname(value)) === normalize(ownedRoot))) throw new Error('Phase8A output paths must be direct children of the owned root')
 
 const proxy = { server: denyProxyURL, bypass: allowedOrigins.map(value => new URL(value).host).join(',') }
-const common = { browserName: 'chromium', baseURL, proxy, acceptDownloads: true, actionTimeout: 12_000, navigationTimeout: 20_000, reducedMotion: 'reduce', trace: 'off', screenshot: 'off', video: 'off' }
+const common = { browserName: 'chromium', baseURL, proxy, acceptDownloads: true, actionTimeout: 12_000, navigationTimeout: 20_000, contextOptions: { reducedMotion: 'reduce' }, trace: 'off', screenshot: 'off', video: 'off' }
 
 export default defineConfig({
   testDir: '.', outputDir: artifactRoot, preserveOutput: 'never', fullyParallel: false,
   workers: 1, timeout: 300_000, reporter: [['json', { outputFile: resultPath }]],
   projects: [
-    { name: 'chromium-wide-100', use: { ...common, viewport: { width: 1440, height: 900 } } },
+    { name: 'chromium-wide-100', use: { ...common, viewport: { width: 1440, height: 900 }, launchOptions: { downloadsPath: browserDownloadsRoot } } },
   ],
 })

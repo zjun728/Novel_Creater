@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -49,7 +50,7 @@ test('Phase 8A runner owns unique ports, root, browser cache, downloads, and sch
     'runOwnedProductLifecycle', 'stopOwnedServer', 'BROWSER_OUTBOUND_LEDGER_PATH',
     'assertDenyProxyLedger', '1/1 wide-screen point passed', 'owned child processes/ports/temp/downloads/disposable schemas=0',
     'expectedConnectCount: counts.connect',
-    "process.once('SIGINT'", "process.once('SIGTERM'", 'cleanupRoot(owned, roots, ports)',
+    "processTarget.once('SIGINT'", "processTarget.once('SIGTERM'", 'deps.cleanupRoot(owned, roots, ports)',
   ]) assert.equal(runner.includes(marker), true, marker)
   assert.doesNotMatch(runner, /\bmysqld\b|MYSQL_DB:\s*['"]novel_creator['"]/u)
   assert.match(runner, /self\.inner = RealAsyncClient/u)
@@ -74,6 +75,27 @@ test('Phase 8A cleanup removes its owned root even when an audit fails', async (
   assert.equal(existsSync(owned), false)
 })
 
+for (const scenario of ['success', 'assertion-failure', 'SIGINT', 'SIGTERM', 'child-startup-failure']) {
+  test(`Phase 8A injected ${scenario} lifecycle releases every owned resource`, async () => {
+    const runner = await import('../../frontend/e2e/run-phase8a.mjs')
+    const harness = phase8aHarness(scenario)
+    const operation = runner.runPhase8A({
+      environment: harness.environment,
+      dependencies: harness.dependencies,
+      processTarget: harness.processTarget,
+      log: value => harness.logs.push(value),
+    })
+    if (scenario === 'success') assert.equal(await operation, 0)
+    else await assert.rejects(operation)
+    assert.deepEqual(harness.resources, {
+      childProcesses: 0, ports: 0, tempRoots: 0, downloads: 0, schemas: 0,
+    })
+    assert.equal(harness.processTarget.listenerCount('SIGINT'), 0)
+    assert.equal(harness.processTarget.listenerCount('SIGTERM'), 0)
+    assert.equal(harness.logs.length, scenario === 'success' ? 1 : 0)
+  })
+}
+
 test('Phase 8A visible workflow is wide-screen only and mutation safe', () => {
   const entry = 'frontend/e2e/phase8a/manuscript-productization.spec.mjs'
   const spec = source(entry)
@@ -88,12 +110,25 @@ test('Phase 8A visible workflow is wide-screen only and mutation safe', () => {
     '查看本章定稿', '归档', 'waitForEvent', 'download.saveAs',
     'manuscript-chapter-1-download-txt', 'manuscript-chapter-3-download-txt',
   ]) assert.equal(spec.includes(marker), true, marker)
+  assert.match(spec, /mappedChapterFiveAction\.click\(\)/u)
+  assert.equal(spec.includes('/planning/story-blocks$'), true)
+  assert.match(spec, /第 5 章小纲/u)
+  assert.match(spec, /assertFinalSequence\(chapterText, \[0\]\)/u)
+  assert.match(spec, /assertFinalSequence\(volumeText, \[0, 1, 2\]\)/u)
+  assert.match(spec, /assertFinalSequence\(bookText, \[0, 1, 2\]\)/u)
+  assert.match(spec, /expectSafeFailure\(page, \(\) => page\.locator\('#manuscript-chapter-3'\)\.click\(\)\)/u)
+  assert.match(spec, /expectSafeFailure\(page, \(\) => page\.locator\('#manuscript-chapter-3-download-txt'\)\.click\(\)\)/u)
+  assert.match(spec, /PROSE\[2\]/u)
   assert.doesNotMatch(spec, /page\.request|page\.route|\bfetch\s*\(|\baxios\b|route\.fulfill/u)
   const evaluateCalls = [...spec.matchAll(/page\.evaluate\s*\(([^;]+);?/gu)].map(match => match[0])
   assert.ok(evaluateCalls.length > 0)
   assert.doesNotMatch(spec, /page\.evaluate[^\n]*(?:click|value\s*=|dispatchEvent|localStorage|sessionStorage|style\.)/u)
   assert.match(spec, /box\.width >= 44 && box\.height >= 44/u)
-  assert.match(spec, /motion\.transitionDuration/u)
+  assert.match(spec, /FOCUSABLE_SELECTOR/u)
+  assert.match(spec, /assertKeyboardDomOrder/u)
+  assert.match(spec, /expect\(box\)\.not\.toBeNull\(\)/u)
+  assert.match(spec, /getComputedStyle\(element, '::before'\)/u)
+  assert.match(spec, /getComputedStyle\(element, '::after'\)/u)
 })
 
 test('Phase 8A config has one Chromium worker and runner-owned output paths', () => {
@@ -102,6 +137,8 @@ test('Phase 8A config has one Chromium worker and runner-owned output paths', ()
     assert.equal(config.includes(marker), true, marker)
   }
   assert.match(config, /chromium-wide-100/u)
+  assert.match(config, /launchOptions:\s*\{\s*downloadsPath:\s*browserDownloadsRoot\s*\}/u)
+  assert.match(config, /contextOptions:\s*\{\s*reducedMotion:\s*'reduce'\s*\}/u)
   const spec = source('frontend/e2e/phase8a/manuscript-productization.spec.mjs')
 })
 
@@ -134,3 +171,88 @@ test('Phase 8A assertion failures are classified without exposing report content
     rmSync(owned, { recursive: true, force: true })
   }
 })
+
+function phase8aHarness(scenario) {
+  const processTarget = new EventEmitter()
+  const resources = { childProcesses: 0, ports: 0, tempRoots: 0, downloads: 0, schemas: 0 }
+  const environment = {}
+  let port = 42000
+  let serverStarts = 0
+  const roots = {
+    artifactRoot: 'C:\\owned\\artifacts', downloadRoot: 'C:\\owned\\downloads',
+    browserDownloadsRoot: 'C:\\owned\\browser-downloads', backendPath: 'C:\\owned\\backend.py',
+    denyProxyPath: 'C:\\owned\\deny.cjs', viteConfigPath: 'C:\\owned\\vite.mjs',
+    resultPath: 'C:\\owned\\result.json', outboundLedgerPath: 'C:\\owned\\outbound.log',
+    denyProxyLedgerPath: 'C:\\owned\\deny.log',
+  }
+  const dependencies = {
+    validateTestEnvironment() {},
+    createDatabaseName: () => 'novel_creator_test_0123456789abcdef0123456789abcdef',
+    assertDatabaseName() {},
+    createOwnedRoot() { resources.tempRoots += 1; return 'C:\\owned' },
+    createRoots() { resources.downloads += 2; return roots },
+    async reserveLocalPort() {
+      resources.ports += 1
+      const value = port++
+      let released = false
+      return { port: value, async release() { if (!released) { released = true; resources.ports -= 1 } } }
+    },
+    startOwnedServer() {
+      serverStarts += 1
+      if (scenario === 'child-startup-failure' && serverStarts === 1) throw new Error('child startup failed')
+      resources.childProcesses += 1
+      return { child: {}, state: {}, stopped: false }
+    },
+    async stopOwnedServer(server) {
+      if (!server.stopped) { server.stopped = true; resources.childProcesses -= 1 }
+    },
+    async waitForOwnedServer() {},
+    readOwnedText() { return '' },
+    async runBoundedOwnedCommand(_command, _args, _options, settings) {
+      if (settings.label === 'Phase8A database preparation') resources.schemas += 1
+      if (settings.label === 'Phase8A database cleanup') resources.schemas -= 1
+      if (settings.label !== 'Phase8A browser test') return { status: 0 }
+      if (scenario === 'assertion-failure') throw new Error('browser assertion failed')
+      if (scenario === 'SIGINT' || scenario === 'SIGTERM') {
+        processTarget.emit(scenario)
+        assert.equal(settings.signal.aborted, true)
+        throw settings.signal.reason
+      }
+      return { status: 0 }
+    },
+    cleanupRoot() { resources.tempRoots = 0; resources.downloads = 0 },
+    assertDatabaseResidue() {},
+    async runOwnedProductLifecycle(configuration) {
+      const reservations = []
+      const servers = []
+      let root = null
+      let database = null
+      const lifecycle = {
+        setRoot(value) { root = value; return value },
+        setDatabase(value) { database = value; return value },
+        registerReservation(value) { reservations.push(value); return value },
+        registerServer(value) { servers.push(value); return value },
+        async releaseReservation(value) { await configuration.releaseReservation(value) },
+      }
+      let primary = null
+      try { await configuration.body(lifecycle) } catch (error) { primary = error }
+      const cleanup = []
+      for (const server of [...servers].reverse()) {
+        try { await configuration.stopServer(server) } catch (error) { cleanup.push(error) }
+      }
+      for (const reservation of reservations) {
+        try { await configuration.releaseReservation(reservation) } catch (error) { cleanup.push(error) }
+      }
+      if (database) {
+        try { await configuration.dropDatabase(database) } catch (error) { cleanup.push(error) }
+      }
+      if (root) {
+        try { await configuration.removeRoot(root) } catch (error) { cleanup.push(error) }
+      }
+      const failures = [primary, ...cleanup].filter(Boolean)
+      if (failures.length === 1) throw failures[0]
+      if (failures.length > 1) throw new AggregateError(failures)
+    },
+  }
+  return { dependencies, environment, logs: [], processTarget, resources }
+}

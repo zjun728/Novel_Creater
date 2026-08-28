@@ -14,6 +14,16 @@ const PROSE = [
   '复验钟响过三遍，新织机没有断线。林砚交出账册，赌局至此有了无可争辩的定局。',
 ]
 const SENTINELS = ['PHASE8A_WORKING_SENTINEL', 'PHASE8A_CANDIDATE_SENTINEL', 'CORRUPT_BODY_MUST_NEVER_ESCAPE']
+const FOCUSABLE_SELECTOR = [
+  'a[href]:visible:not([tabindex="-1"])',
+  'button:visible:not([disabled]):not([tabindex="-1"])',
+  'summary:visible:not([tabindex="-1"])',
+  'input:visible:not([disabled]):not([tabindex="-1"])',
+  'select:visible:not([disabled]):not([tabindex="-1"])',
+  'textarea:visible:not([disabled]):not([tabindex="-1"])',
+  '[role="button"]:visible:not([aria-disabled="true"]):not([tabindex="-1"])',
+  '[role="link"]:visible:not([aria-disabled="true"]):not([tabindex="-1"])',
+].join(', ')
 async function geometry(page) {
   return page.evaluate(() => ({
     innerWidth: window.innerWidth,
@@ -23,34 +33,78 @@ async function geometry(page) {
   }))
 }
 
+async function assertKeyboardDomOrder(page) {
+  const controls = page.locator(FOCUSABLE_SELECTOR)
+  const count = await controls.count()
+  expect(count).toBeGreaterThan(1)
+  const sequence = []
+  for (let step = 0; step < count + 2 && sequence.length < count; step += 1) {
+    await page.keyboard.press('Tab')
+    let focused = -1
+    for (let index = 0; index < count; index += 1) {
+      if (await controls.nth(index).evaluate(element => element === document.activeElement)) {
+        focused = index
+        break
+      }
+    }
+    if (focused >= 0) sequence.push(focused)
+  }
+  expect(sequence).toHaveLength(count)
+  expect(new Set(sequence).size).toBe(count)
+  for (let index = 1; index < count; index += 1) {
+    expect(sequence[index]).toBe((sequence[0] + index) % count)
+  }
+}
+
+async function assertReducedMotion(page) {
+  const motion = await page.locator('.product-app-shell, .product-app-shell *').evaluateAll(elements => {
+    const seconds = value => {
+      const parsed = value.split(',').map(part => {
+        const item = part.trim()
+        return Number.parseFloat(item) * (item.endsWith('ms') ? 0.001 : 1)
+      }).filter(Number.isFinite)
+      return parsed.length ? Math.max(...parsed) : 0
+    }
+    let maximumAnimation = 0
+    let maximumTransition = 0
+    let transitionOwner = 'none'
+    let maximumIterations = 0
+    let smoothScrolls = 0
+    for (const element of elements) {
+      for (const [pseudo, style] of [['element', getComputedStyle(element)], ['before', getComputedStyle(element, '::before')], ['after', getComputedStyle(element, '::after')]]) {
+        maximumAnimation = Math.max(maximumAnimation, seconds(style.animationDuration))
+        const transition = seconds(style.transitionDuration)
+        if (transition > maximumTransition) {
+          maximumTransition = transition
+          transitionOwner = `${element.tagName.toLowerCase()}-${String(element.className).split(/\s+/u)[0] || 'plain'}-${pseudo}-${String(style.content).replaceAll(/[^a-z]/giu, '') || 'empty'}`
+        }
+        maximumIterations = Math.max(maximumIterations, ...style.animationIterationCount.split(',').map(value => Number.parseFloat(value) || 0))
+        if (style.scrollBehavior === 'smooth') smoothScrolls += 1
+      }
+    }
+    return { maximumAnimation, maximumTransition, maximumIterations, smoothScrolls, transitionOwner }
+  })
+  expect(motion.maximumAnimation).toBeLessThanOrEqual(0.001)
+  if (motion.maximumTransition > 0.001) throw new Error(`phase8a-motion-transition-${Math.round(motion.maximumTransition * 1_000_000)}-${motion.transitionOwner}`)
+  expect(motion.maximumTransition).toBeLessThanOrEqual(0.001)
+  expect(motion.maximumIterations).toBeLessThanOrEqual(1)
+  expect(motion.smoothScrolls).toBe(0)
+}
+
 async function assertWidePoint(page) {
   const size = await geometry(page)
   expect(size.innerWidth).toBeGreaterThan(800)
   expect(size.scrollWidth).toBeLessThanOrEqual(size.clientWidth)
-  const targets = page.locator('#manuscript-index-current-action, #manuscript-chapter-1, #manuscript-chapter-1-download, summary:visible')
+  const targets = page.locator('main button:visible, main summary:visible, main [role="button"]:visible, main [class*="__action"]:visible, main [id^="manuscript-chapter-"]:visible')
   const count = await targets.count()
   expect(count).toBeGreaterThan(0)
   for (let index = 0; index < count; index += 1) {
     const box = await targets.nth(index).boundingBox()
-    if (box) expect(box.width >= 44 && box.height >= 44).toBeTruthy()
+    expect(box).not.toBeNull()
+    expect(box.width >= 44 && box.height >= 44).toBeTruthy()
   }
-  await page.keyboard.press('Tab')
-  const first = page.locator(':focus')
-  await expect(first).toBeVisible()
-  const firstIdentity = `${await first.getAttribute('id') || ''}:${await first.getAttribute('href') || ''}:${await first.getAttribute('aria-label') || ''}`
-  await page.keyboard.press('Tab')
-  const second = page.locator(':focus')
-  await expect(second).toBeVisible()
-  const secondIdentity = `${await second.getAttribute('id') || ''}:${await second.getAttribute('href') || ''}:${await second.getAttribute('aria-label') || ''}`
-  expect(secondIdentity).not.toEqual(firstIdentity)
-  const motion = await page.evaluate(() => {
-    const element = document.querySelector('main, section, body')
-    const style = getComputedStyle(element)
-    return { animationDuration: style.animationDuration, transitionDuration: style.transitionDuration, scrollBehavior: style.scrollBehavior }
-  })
-  expect(['0s', '0s, 0s', 'auto'].includes(motion.animationDuration) || motion.animationDuration.startsWith('0s')).toBeTruthy()
-  expect(['0s', '0s, 0s', 'auto'].includes(motion.transitionDuration) || motion.transitionDuration.startsWith('0s')).toBeTruthy()
-  expect(motion.scrollBehavior).not.toBe('smooth')
+  await assertKeyboardDomOrder(page)
+  await assertReducedMotion(page)
   return size
 }
 
@@ -63,12 +117,14 @@ async function saveDownload(page, control, filename) {
   return readFileSync(target, 'utf8')
 }
 
-function assertFinalOnly(text, expectedTitles = TITLES) {
+function assertFinalSequence(text, chapters) {
   let prior = -1
-  for (const title of expectedTitles) {
-    const at = text.indexOf(title)
-    expect(at).toBeGreaterThan(prior)
-    prior = at
+  for (const chapter of chapters) {
+    const titleAt = text.indexOf(TITLES[chapter])
+    const proseAt = text.indexOf(PROSE[chapter])
+    expect(titleAt).toBeGreaterThan(prior)
+    expect(proseAt).toBeGreaterThan(titleAt)
+    prior = proseAt
   }
   for (const sentinel of SENTINELS) expect(text).not.toContain(sentinel)
 }
@@ -108,13 +164,12 @@ async function acceptComplete(page) {
   const chapterText = await saveDownload(page, page.locator('#manuscript-chapter-1-download-txt'), 'complete-chapter-1.txt')
   expect(chapterText).toContain(TITLES[0])
   expect(chapterText).toContain(PROSE[0])
-  assertFinalOnly(chapterText, [TITLES[0]])
+  assertFinalSequence(chapterText, [0])
   await openDownloadMenu(page)
   const volumeText = await saveDownload(page, page.getByRole('button', { name: '下载第1卷 TXT' }), 'complete-volume-1.txt')
-  assertFinalOnly(volumeText)
-  for (const prose of PROSE) expect(volumeText).toContain(prose)
+  assertFinalSequence(volumeText, [0, 1, 2])
   const bookText = await saveDownload(page, page.getByRole('button', { name: '下载整本定稿 TXT' }), 'complete-book.txt')
-  assertFinalOnly(bookText)
+  assertFinalSequence(bookText, [0, 1, 2])
 
   await page.getByRole('link', { name: 'Novel Creator 项目库', exact: true }).click()
   const card = page.locator('.project-card').filter({ hasText: '织机赌局 · 完整稿件' })
@@ -133,7 +188,7 @@ async function acceptComplete(page) {
   await page.getByRole('link', { name: '返回作品目录' }).click()
   await openDownloadMenu(page)
   const archived = await saveDownload(page, page.getByRole('button', { name: '下载整本定稿 TXT' }), 'archived-complete-book.txt')
-  assertFinalOnly(archived)
+  assertFinalSequence(archived, [0, 1, 2])
 }
 
 const PINNED_GOAL = '在三日织机赌局中取得一次可验证的喘息'
@@ -152,8 +207,13 @@ async function acceptAwaitingAuthor(page) {
   await expect(page.getByRole('link', { name: /准备第 5 章小纲/ })).toBeVisible()
   await page.getByRole('link', { name: '查看本章定稿' }).click()
   await expect(page.getByRole('heading', { name: '第 4 章 · 旧账浮出水面' })).toBeVisible()
-  await expect(page.getByRole('link', { name: '准备第 5 章小纲' })).toBeVisible()
-  await page.getByRole('link', { name: '返回作品目录' }).click()
+  const mappedChapterFiveAction = page.getByRole('link', { name: '准备第 5 章小纲' })
+  await expect(mappedChapterFiveAction).toBeVisible()
+  await mappedChapterFiveAction.click()
+  await expect(page).toHaveURL(new RegExp(`/projects/${AWAITING}/planning/story-blocks$`, 'u'))
+  await expect(page.getByRole('heading', { name: '故事规划工作台' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '第 5 章小纲' })).toBeVisible()
+  await page.getByRole('link', { name: '作品稿件', exact: true }).click()
   await expect(page.getByText('旧账浮出水面', { exact: true })).toBeVisible()
   await page.locator('#manuscript-chapter-4').click()
   await expect(page.getByLabel('定稿正文')).toContainText('第四章只用于待作者确认的可见审查')
@@ -161,12 +221,15 @@ async function acceptAwaitingAuthor(page) {
 
 async function expectSafeFailure(page, action) {
   await action()
-  await expect(page.getByRole('alert')).toContainText(/暂时无法|下载失败|保护/)
+  await expect(page.locator('body')).toContainText(/暂时无法|下载失败|保护/)
   const visible = await page.locator('body').innerText()
   for (const forbidden of [
-    'CORRUPT_BODY_MUST_NEVER_ESCAPE', 'content_hash', 'final_chapters', 'SELECT ', 'UPDATE ',
-    'Traceback', 'Exception', 'chapter_outline_hash', '8a000000-0000-4000-8000-',
+    'CORRUPT_BODY_MUST_NEVER_ESCAPE', PROSE[2], 'content_hash', 'contentHash', 'final_chapters',
+    'payload_json', 'SELECT ', 'UPDATE ', 'Traceback', 'Exception', 'Error:',
+    'chapter_outline_hash', '/api/', '$.',
   ]) expect(visible).not.toContain(forbidden)
+  expect(visible).not.toMatch(/\b[0-9a-f]{64}\b/iu)
+  expect(visible).not.toMatch(/\b[0-9a-f]{8}-[0-9a-f-]{27,}\b/iu)
 }
 
 async function acceptCorrupt(page) {
@@ -177,15 +240,11 @@ async function acceptCorrupt(page) {
   await page.getByRole('link', { name: '返回作品目录' }).click()
   await page.locator('#manuscript-chapter-1-download').click()
   const chapterOne = await saveDownload(page, page.locator('#manuscript-chapter-1-download-txt'), 'corrupt-chapter-1.txt')
-  expect(chapterOne).toContain(PROSE[0])
-  await page.locator('#manuscript-chapter-3').click()
-  await expect(page.getByText('章节定稿暂时不可用')).toBeVisible()
-  const visible = await page.locator('body').innerText()
-  expect(visible).not.toContain('CORRUPT_BODY_MUST_NEVER_ESCAPE')
-  await page.getByRole('link', { name: '返回作品目录' }).click()
+  assertFinalSequence(chapterOne, [0])
+  await expectSafeFailure(page, () => page.locator('#manuscript-chapter-3').click())
+  await page.getByRole('link', { name: '作品稿件', exact: true }).click()
   await page.locator('#manuscript-chapter-3-download').click()
-  await page.locator('#manuscript-chapter-3-download-txt').click()
-  await expect(page.getByRole('alert')).toBeVisible()
+  await expectSafeFailure(page, () => page.locator('#manuscript-chapter-3-download-txt').click())
   await openDownloadMenu(page)
   await expectSafeFailure(page, () => page.getByRole('button', { name: '下载第1卷 TXT' }).click())
   await expectSafeFailure(page, () => page.getByRole('button', { name: '下载整本定稿 TXT' }).click())

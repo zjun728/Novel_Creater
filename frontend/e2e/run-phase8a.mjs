@@ -153,6 +153,8 @@ export function classifyBrowserFailure(resultPath) {
       : null
     const line = error.location?.file?.endsWith('manuscript-productization.spec.mjs') && Number.isInteger(error.location.line)
       ? error.location.line : stackLine || 'unknown'
+    const motionMarker = error.message.match(/phase8a-motion-[a-z0-9_-]+/u)?.[0]
+    if (motionMarker) return `${motionMarker}@${line}`
     const category = /timed out|timeout/iu.test(error.message)
       ? 'timeout' : /locator|strict mode/iu.test(error.message) ? 'locator' : 'assertion'
     return `${category}@${line}`
@@ -173,11 +175,24 @@ export function safeFailureSummary(error) {
   return `Phase8A browser lifecycle failed; browserCause=${browserCause || 'lifecycle'}; cleanup was attempted`
 }
 
-export async function runPhase8A({ environment = process.env, log = console.log, deadlines = {} } = {}) {
-  validateTestEnvironment(environment)
+export async function runPhase8A({
+  environment = process.env,
+  log = console.log,
+  deadlines = {},
+  dependencies = {},
+  processTarget = process,
+} = {}) {
+  const deps = {
+    validateTestEnvironment, createDatabaseName, assertDatabaseName, createOwnedRoot, createRoots,
+    reserveLocalPort, runBoundedOwnedCommand, runOwnedProductLifecycle, startOwnedServer,
+    waitForOwnedServer, stopOwnedServer, cleanupRoot, assertDatabaseResidue,
+    readOwnedText: target => readFileSync(target, 'utf8'),
+    ...dependencies,
+  }
+  deps.validateTestEnvironment(environment)
   const limits = { ...DEFAULT_DEADLINES, ...deadlines }
-  const database = createDatabaseName()
-  assertDatabaseName(database)
+  const database = deps.createDatabaseName()
+  deps.assertDatabaseName(database)
   const base = allowed(environment)
   const ports = []
   let roots
@@ -188,8 +203,8 @@ export async function runPhase8A({ environment = process.env, log = console.log,
   const signalHandler = signal => controller.abort(new Error(`Phase8A interrupted by ${signal}`))
   const onSigint = () => signalHandler('SIGINT')
   const onSigterm = () => signalHandler('SIGTERM')
-  process.once('SIGINT', onSigint)
-  process.once('SIGTERM', onSigterm)
+  processTarget.once('SIGINT', onSigint)
+  processTarget.once('SIGTERM', onSigterm)
   const mysql = {
     ...base,
     TEST_MYSQL_HOST: environment.TEST_MYSQL_HOST, TEST_MYSQL_PORT: environment.TEST_MYSQL_PORT,
@@ -198,19 +213,19 @@ export async function runPhase8A({ environment = process.env, log = console.log,
     MYSQL_USER: environment.TEST_MYSQL_USER, MYSQL_PASSWORD: environment.TEST_MYSQL_PASSWORD,
     MYSQL_DB: database, BROWSER_TEST_DATABASE: database,
   }
-  const ownedCommand = (command, args, cwd, env, label, states = []) => runBoundedOwnedCommand(
+  const ownedCommand = (command, args, cwd, env, label, states = []) => deps.runBoundedOwnedCommand(
     command, args, options(cwd, env),
     { label, timeoutMs: limits.commandMs, stopTimeoutMs: limits.stopMs, states, signal: controller.signal },
   )
   try {
-    await runOwnedProductLifecycle({
+    await deps.runOwnedProductLifecycle({
       async body(lifecycle) {
-        const owned = lifecycle.setRoot(createOwnedRoot(ROOT_PREFIX))
-        roots = createRoots(owned)
+        const owned = lifecycle.setRoot(deps.createOwnedRoot(ROOT_PREFIX))
+        roots = deps.createRoots(owned)
         lifecycle.setDatabase(database)
         const reservations = []
         for (let index = 0; index < 3; index += 1) {
-          const reservation = lifecycle.registerReservation(await reserveLocalPort())
+          const reservation = lifecycle.registerReservation(await deps.reserveLocalPort())
           reservations.push(reservation)
           ports.push(reservation.port)
         }
@@ -241,37 +256,37 @@ export async function runPhase8A({ environment = process.env, log = console.log,
         created = 1
         await ownedCommand(python, ['-m', 'backend.scripts.prepare_phase8a_browser_db', '--database', database], root, backendEnvironment, 'Phase8A fixture preparation')
         await lifecycle.releaseReservation(reservations[0])
-        const backend = lifecycle.registerServer(startOwnedServer(python, ['-c', `import runpy; runpy.run_path(${JSON.stringify(roots.backendPath)}, run_name='__main__')`, String(apiPort)], options(root, backendEnvironment), { label: 'Phase8A API' }))
-        await waitForOwnedServer(backend, `${apiUrl}/api/health`, { expectedNonce: nonce, timeoutMs: limits.healthMs })
+        const backend = lifecycle.registerServer(deps.startOwnedServer(python, ['-c', `import runpy; runpy.run_path(${JSON.stringify(roots.backendPath)}, run_name='__main__')`, String(apiPort)], options(root, backendEnvironment), { label: 'Phase8A API' }))
+        await deps.waitForOwnedServer(backend, `${apiUrl}/api/health`, { expectedNonce: nonce, timeoutMs: limits.healthMs })
         await lifecycle.releaseReservation(reservations[1])
-        const deny = lifecycle.registerServer(startOwnedServer(process.execPath, [roots.denyProxyPath, String(denyPort)], options(root, { ...base, BROWSER_DENY_PROXY_LEDGER_PATH: roots.denyProxyLedgerPath, M2_BROWSER_RUN_NONCE: nonce }), { label: 'Phase8A deny proxy' }))
-        await waitForOwnedServer(deny, `${denyUrl}/health`, { expectedNonce: nonce, timeoutMs: limits.healthMs })
+        const deny = lifecycle.registerServer(deps.startOwnedServer(process.execPath, [roots.denyProxyPath, String(denyPort)], options(root, { ...base, BROWSER_DENY_PROXY_LEDGER_PATH: roots.denyProxyLedgerPath, M2_BROWSER_RUN_NONCE: nonce }), { label: 'Phase8A deny proxy' }))
+        await deps.waitForOwnedServer(deny, `${denyUrl}/health`, { expectedNonce: nonce, timeoutMs: limits.healthMs })
         await lifecycle.releaseReservation(reservations[2])
-        const vite = lifecycle.registerServer(startOwnedServer(process.execPath, [path.join(frontend, 'node_modules', 'vite', 'bin', 'vite.js'), '--config', roots.viteConfigPath, '--host', '127.0.0.1', '--port', String(vitePort), '--strictPort'], options(frontend, { ...base, VITE_API_BASE_URL: `${apiUrl}/api`, M2_BROWSER_RUN_NONCE: nonce }), { label: 'Phase8A Vite' }))
-        await waitForOwnedServer(vite, `${viteUrl}/__m2-browser-owner`, { expectedNonce: nonce, timeoutMs: limits.healthMs })
+        const vite = lifecycle.registerServer(deps.startOwnedServer(process.execPath, [path.join(frontend, 'node_modules', 'vite', 'bin', 'vite.js'), '--config', roots.viteConfigPath, '--host', '127.0.0.1', '--port', String(vitePort), '--strictPort'], options(frontend, { ...base, VITE_API_BASE_URL: `${apiUrl}/api`, M2_BROWSER_RUN_NONCE: nonce }), { label: 'Phase8A Vite' }))
+        await deps.waitForOwnedServer(vite, `${viteUrl}/__m2-browser-owner`, { expectedNonce: nonce, timeoutMs: limits.healthMs })
         try {
-          await runBoundedOwnedCommand(process.execPath, [path.join(frontend, 'node_modules', 'playwright', 'cli.js'), 'test', `e2e/${FORMAL_SPECS[0]}`, '--config', `e2e/${FORMAL_CONFIG}`], options(frontend, browserEnvironment), { label: 'Phase8A browser test', timeoutMs: limits.browserMs, stopTimeoutMs: limits.stopMs, states: [backend, deny, vite], signal: controller.signal })
+          await deps.runBoundedOwnedCommand(process.execPath, [path.join(frontend, 'node_modules', 'playwright', 'cli.js'), 'test', `e2e/${FORMAL_SPECS[0]}`, '--config', `e2e/${FORMAL_CONFIG}`], options(frontend, browserEnvironment), { label: 'Phase8A browser test', timeoutMs: limits.browserMs, stopTimeoutMs: limits.stopMs, states: [backend, deny, vite], signal: controller.signal })
         } catch (error) {
           error.phase8aBrowserCause = classifyBrowserFailure(roots.resultPath)
           throw error
         }
-        if (readFileSync(roots.outboundLedgerPath, 'utf8').trim()) throw new Error('Phase8A Provider request ledger was not zero')
-        deniedConnects = assertBrowserDenyLedger(readFileSync(roots.denyProxyLedgerPath, 'utf8')).deniedConnectCount
+        if (deps.readOwnedText(roots.outboundLedgerPath).trim()) throw new Error('Phase8A Provider request ledger was not zero')
+        deniedConnects = assertBrowserDenyLedger(deps.readOwnedText(roots.denyProxyLedgerPath)).deniedConnectCount
         await ownedCommand(python, ['-m', 'backend.scripts.prepare_phase8a_browser_db', '--database', database, '--verify-postconditions'], root, backendEnvironment, 'Phase8A postcondition verifier', [backend, deny, vite])
       },
-      stopServer: server => stopOwnedServer(server, { timeoutMs: limits.stopMs }),
+      stopServer: server => deps.stopOwnedServer(server, { timeoutMs: limits.stopMs }),
       releaseReservation: reservation => reservation.release(),
       async dropDatabase(name) {
         await ownedCommand(environment.PYTHON || 'python', ['-m', 'backend.scripts.prepare_product_shell_browser_db', '--database', name, '--drop'], root, mysql, 'Phase8A database cleanup')
         cleaned = 1
       },
-      removeRoot: owned => cleanupRoot(owned, roots, ports),
+      removeRoot: owned => deps.cleanupRoot(owned, roots, ports),
     })
   } finally {
-    process.removeListener('SIGINT', onSigint)
-    process.removeListener('SIGTERM', onSigterm)
+    processTarget.removeListener('SIGINT', onSigint)
+    processTarget.removeListener('SIGTERM', onSigterm)
   }
-  assertDatabaseResidue(database, database, { created, cleaned, remaining: 0 })
+  deps.assertDatabaseResidue(database, database, { created, cleaned, remaining: 0 })
   log(`Phase8A browser: 1/1 wide-screen point passed; Provider requests=0; denied Chromium background connects=${deniedConnects}; live website access=0; owned child processes/ports/temp/downloads/disposable schemas=0`)
   return 0
 }

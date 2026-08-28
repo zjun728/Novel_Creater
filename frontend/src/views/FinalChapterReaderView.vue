@@ -168,7 +168,7 @@ onBeforeUnmount(() => {
     <section v-if="status === 'loading' && !data" class="final-reader__sheet"><n-skeleton text :repeat="5" /></section>
     <section v-else-if="status === 'missing-project'" class="final-reader__notice"><p>项目不存在或已被删除。</p><router-link id="final-reader-project-library" to="/projects">返回项目库</router-link></section>
     <section v-else-if="status === 'missing-chapter'" class="final-reader__notice"><p>该章节不属于作品稿件。</p><router-link id="final-reader-missing-directory" :to="manuscriptPath(projectId)">返回作品目录</router-link></section>
-    <n-result v-else-if="status === 'integrity-failure'" class="final-reader__notice" status="error" title="章节定稿暂时不可用" description="为保护定稿内容，当前无法展示正文或小纲。"><template #footer><p v-if="manuscript.content.value.correlationId" class="final-reader__reference">参考编号：{{ manuscript.content.value.correlationId }}</p><n-button id="final-reader-integrity-retry" @click="retryContent">重新读取</n-button></template></n-result>
+    <n-result v-else-if="status === 'integrity-failure'" class="final-reader__notice" status="error" title="章节定稿暂时不可用" description="为保护定稿内容，当前无法展示正文或小纲。"><template #footer><n-button id="final-reader-integrity-retry" @click="retryContent">重新读取</n-button></template></n-result>
     <n-result v-else-if="status === 'invalid-address'" class="final-reader__notice" status="error" title="章节地址无效" description="请从作品目录选择要阅读的定稿章节。"><template #footer><router-link id="final-reader-invalid-directory" :to="manuscriptPath(projectId)">返回作品目录</router-link></template></n-result>
     <section v-else-if="data" class="final-reader__sheet">
       <div class="final-reader__tabs" aria-label="阅读内容"><button id="final-reader-view-text" type="button" :aria-pressed="view === 'text'" @click="setView('text')">正文</button><button id="final-reader-view-outline" type="button" :aria-pressed="view === 'outline'" @click="setView('outline')">本章小纲</button></div>
@@ -194,7 +194,7 @@ onBeforeUnmount(() => {
 .final-reader__sheet, .final-reader__notice, .final-reader__continuation { margin-top: 16px; }
 .final-reader__eyebrow { margin: 0 0 10px; color: var(--nc-vermilion); font: 700 11px Georgia, serif; letter-spacing: .16em; }
 .final-reader h1 { margin: 0; font: 600 clamp(32px, 6vw, 52px) Georgia, 'Noto Serif SC', serif; }
-.final-reader__meta, .final-reader__preparation, .final-reader__reference { color: var(--nc-muted); line-height: 1.75; }
+.final-reader__meta, .final-reader__preparation { color: var(--nc-muted); line-height: 1.75; }
 .final-reader__action { display: inline-flex; min-height: 44px; padding: 0 16px; align-items: center; color: var(--nc-paper); background: var(--nc-ink); text-decoration: none; }
 .final-reader__tabs { display: flex; gap: 8px; margin: 24px 0; }
 .final-reader__tabs button, .final-reader__download summary, .final-reader__download button { min-height: 44px; padding: 0 14px; border: 1px solid var(--nc-border); color: var(--nc-ink); background: var(--nc-paper); cursor: pointer; }
