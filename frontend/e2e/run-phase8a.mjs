@@ -141,27 +141,52 @@ function reportErrors(value, found = []) {
   return found
 }
 
-export function classifyBrowserFailure(resultPath) {
-  try {
-    const errors = reportErrors(JSON.parse(readFileSync(resultPath, 'utf8')))
-    const error = errors.find(item => (
-      item.location?.file?.endsWith('manuscript-productization.spec.mjs')
-      && Number.isInteger(item.location.line)
-    )) || errors[0]
-    if (!error) return 'unclassified'
-    const stackLine = typeof error.stack === 'string'
-      ? error.stack.match(/manuscript-productization\.spec\.mjs:(\d+):\d+/u)?.[1]
-      : null
-    const line = error.location?.file?.endsWith('manuscript-productization.spec.mjs') && Number.isInteger(error.location.line)
-      ? error.location.line : stackLine || 'unknown'
-    const evidenceMarker = error.message.match(/phase8a-(?:motion|page-events)-[a-z0-9_-]+/u)?.[0]
-    if (evidenceMarker) return `${evidenceMarker}@${line}`
-    const category = /timed out|timeout/iu.test(error.message)
-      ? 'timeout' : /locator|strict mode/iu.test(error.message) ? 'locator' : 'assertion'
-    return `${category}@${line}`
-  } catch {
-    return 'unclassified'
+export function classifyBoundedCause(error) {
+  const categories = []
+  const visit = value => {
+    if (!value || typeof value !== 'object') return
+    const message = typeof value.message === 'string' ? value.message : ''
+    if (value.name === 'AbortError' || /interrupted by SIG|\babort(?:ed)?\b/iu.test(message)) categories.push('abort')
+    if (/deadline exceeded/iu.test(message)) categories.push('deadline')
+    if (/log scan|runtime-sensitive/iu.test(message)) categories.push('log-scan')
+    if (/process failed to start/iu.test(message)) categories.push('start')
+    if (/process exited with status/iu.test(message)) categories.push('exit-status')
+    if (/\bservice\b.*exited before requested stop/iu.test(message)) categories.push('service')
+    if (value.cause) visit(value.cause)
+    if (value instanceof AggregateError) value.errors.forEach(visit)
   }
+  visit(error)
+  for (const category of ['abort', 'deadline', 'service', 'log-scan', 'start', 'exit-status']) {
+    if (categories.includes(category)) return category
+  }
+  return 'other'
+}
+
+export function classifyBrowserFailure(resultPath, boundedError) {
+  const boundedCause = classifyBoundedCause(boundedError)
+  if (!existsSync(resultPath)) return `report-missing-bounded-${boundedCause}`
+  let report
+  try { report = JSON.parse(readFileSync(resultPath, 'utf8')) } catch {
+    return `report-invalid-json-bounded-${boundedCause}`
+  }
+  const errors = reportErrors(report)
+  const error = errors.find(item => (
+    item.location?.file?.endsWith('manuscript-productization.spec.mjs')
+    && Number.isInteger(item.location.line)
+  )) || errors[0]
+  if (!error) return `report-no-errors-bounded-${boundedCause}`
+  const stackLine = typeof error.stack === 'string'
+    ? error.stack.match(/manuscript-productization\.spec\.mjs:(\d+):\d+/u)?.[1]
+    : null
+  const locationLine = error.location?.file?.endsWith('manuscript-productization.spec.mjs')
+    && Number.isInteger(error.location.line) ? error.location.line : null
+  const line = locationLine || stackLine || 'unknown'
+  const evidenceMarker = error.message.match(/phase8a-(?:motion|page-events)-[a-z0-9_-]+/u)?.[0]
+  if (evidenceMarker) return `${evidenceMarker}@${line}`
+  if (/timed out|timeout/iu.test(error.message)) return `timeout@${line}`
+  if (/locator|strict mode/iu.test(error.message)) return `locator@${line}`
+  if (locationLine || stackLine) return `assertion@${line}`
+  return `report-unmapped-error-bounded-${boundedCause}`
 }
 
 export function assertPageEventLedger(value) {
@@ -294,7 +319,7 @@ export async function runPhase8A({
         try {
           await deps.runBoundedOwnedCommand(process.execPath, [path.join(frontend, 'node_modules', 'playwright', 'cli.js'), 'test', `e2e/${FORMAL_SPECS[0]}`, '--config', `e2e/${FORMAL_CONFIG}`], options(frontend, browserEnvironment), { label: 'Phase8A browser test', timeoutMs: limits.browserMs, stopTimeoutMs: limits.stopMs, states: [backend, deny, vite], signal: controller.signal })
         } catch (error) {
-          error.phase8aBrowserCause = classifyBrowserFailure(roots.resultPath)
+          error.phase8aBrowserCause = classifyBrowserFailure(roots.resultPath, error)
           throw error
         }
         if (deps.readOwnedText(roots.outboundLedgerPath).trim()) throw new Error('Phase8A Provider request ledger was not zero')

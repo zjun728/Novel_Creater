@@ -242,10 +242,25 @@ test('Phase 8A reduced-motion parser treats infinite iteration as motion', async
 })
 
 test('Phase 8A assertion failures are classified without exposing report content', async () => {
-  const { classifyBrowserFailure } = await import('../../frontend/e2e/run-phase8a.mjs')
+  const { classifyBoundedCause, classifyBrowserFailure } = await import('../../frontend/e2e/run-phase8a.mjs')
   const owned = mkdtempSync(path.join(os.tmpdir(), 'phase8a-report-'))
   const report = path.join(owned, 'result.json')
   try {
+    assert.equal(classifyBrowserFailure(report, new Error('Phase8A browser test process exited with status 1')), 'report-missing-bounded-exit-status')
+    writeFileSync(report, '{invalid')
+    assert.equal(classifyBrowserFailure(report, new Error('Phase8A browser test process failed to start SECRET')), 'report-invalid-json-bounded-start')
+    writeFileSync(report, JSON.stringify({ suites: [] }))
+    assert.equal(classifyBrowserFailure(report, new Error('Phase8A browser test deadline exceeded SECRET')), 'report-no-errors-bounded-deadline')
+    writeFileSync(report, JSON.stringify({ errors: [{ message: 'SECRET opaque reporter failure' }] }))
+    assert.equal(classifyBrowserFailure(report, new Error('SECRET raw bounded failure')), 'report-unmapped-error-bounded-other')
+    assert.deepEqual([
+      new Error('process exited with status 7'), new Error('process failed to start'),
+      new Error('deadline exceeded'), new Error('owned service exited before requested stop'),
+      new Error('process log scan failed'), Object.assign(new Error('cancelled'), { name: 'AbortError' }),
+      new Error('SECRET raw other'),
+    ].map(classifyBoundedCause), [
+      'exit-status', 'start', 'deadline', 'service', 'log-scan', 'abort', 'other',
+    ])
     writeFileSync(report, JSON.stringify({ errors: [{
       message: 'phase8a-page-events-console-1-page-0-request-0-first-resource-status-500',
       location: { file: 'manuscript-productization.spec.mjs', line: 47, column: 4 },
