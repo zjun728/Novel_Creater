@@ -32,6 +32,7 @@ const suiteNames = [
   'browser-phase6b',
   'browser-phase6c',
   'browser-phase7b',
+  'browser-phase8a',
   'browser-phase3',
   'browser-phase2',
 ]
@@ -57,6 +58,7 @@ const mysqlSuites = new Set([
   'browser-phase6a',
   'browser-phase6b',
   'browser-phase6c',
+  'browser-phase8a',
   'browser-phase3',
   'browser-phase2',
 ])
@@ -137,6 +139,9 @@ const phase6cBrowserFiles = [
 const phase7bBrowserFiles = [
   'frontend/e2e/phase7b-product-database-readiness.spec.mjs',
 ]
+const phase8aBrowserFiles = [
+  'frontend/e2e/phase8a/manuscript-productization.spec.mjs',
+]
 const phase3BrowserFiles = [
   'frontend/e2e/phase3-story-planning.spec.ts',
 ]
@@ -176,6 +181,7 @@ function createSuites(rootDirectory, environment) {
   const phase6bBrowserTests = absolute(phase6bBrowserFiles)
   const phase6cBrowserTests = absolute(phase6cBrowserFiles)
   const phase7bBrowserTests = absolute(phase7bBrowserFiles)
+  const phase8aBrowserTests = absolute(phase8aBrowserFiles)
   const phase3BrowserTests = absolute(phase3BrowserFiles)
   const phase2BrowserTests = absolute(phase2BrowserFiles)
   const retainedM1 = [
@@ -233,6 +239,7 @@ function createSuites(rootDirectory, environment) {
   const browserPhase6B = [[node, ['frontend/e2e/run-phase6b.mjs']]]
   const browserPhase6C = [[node, ['frontend/e2e/run-phase6c.mjs']]]
   const browserPhase7B = [[python, ['-m', 'backend.scripts.run_phase7b_browser']]]
+  const browserPhase8A = [[node, ['frontend/e2e/run-phase8a.mjs']]]
   const browserPhase3 = [[node, ['frontend/e2e/run-phase3.mjs']]]
   const browserPhase2 = [[node, ['frontend/e2e/run-phase2.mjs']]]
 
@@ -257,6 +264,7 @@ function createSuites(rootDirectory, environment) {
       'browser-phase6b': browserPhase6B,
       'browser-phase6c': browserPhase6C,
       'browser-phase7b': browserPhase7B,
+      'browser-phase8a': browserPhase8A,
       'browser-phase3': browserPhase3,
       'browser-phase2': browserPhase2,
     },
@@ -311,6 +319,9 @@ function createSuites(rootDirectory, environment) {
       ],
       'browser-phase7b': [
         ['Phase 7B product database readiness Playwright spec', phase7bBrowserTests],
+      ],
+      'browser-phase8a': [
+        ['Phase 8A manuscript productization Playwright spec', phase8aBrowserTests],
       ],
       'browser-phase3': [
         ['Phase 3 Playwright spec', phase3BrowserTests],
