@@ -18,6 +18,8 @@ from backend.config import (
 )
 from backend.domain.chapter_outlines import EditableChapterOutlineContent
 from backend.domain.finalization import FinalizationChangeSet
+from backend.domain.json_contracts import canonical_hash
+from backend.domain.planning import DraftPlanningAggregate, normalize_planning_aggregate
 from backend.repositories.canon import CanonRepository
 from backend.repositories.chapter_outlines import ChapterOutlineRepository
 from backend.repositories.chapter_sessions import ChapterSessionRepository
@@ -112,8 +114,50 @@ def assert_database_name(value: str) -> str:
     return value
 
 
-def _outline_signature(template: OutlineTemplate) -> dict[str, object]:
+def _planning_id(project_id: str, index: int) -> str:
+    return f"8a2{project_id[-1]}0000-0000-4000-8000-{index:012d}"
+
+
+def _planning_id_factory(project_id: str):
+    index = 0
+
+    def next_id() -> str:
+        nonlocal index
+        index += 1
+        return _planning_id(project_id, index)
+
+    return next_id
+
+
+def _pinned_refs(project_id: str) -> dict[str, object]:
+    index = 1  # Planning Draft consumes the first service-issued identity.
+
+    def next_node_id() -> str:
+        nonlocal index
+        index += 1
+        return _planning_id(project_id, index)
+
+    planning = normalize_planning_aggregate(
+        DraftPlanningAggregate.model_validate(base._planning_payload()),
+        previous_confirmed=None,
+        previous_draft=None,
+        id_factory=next_node_id,
+    )
+    volume, block = planning.volumes[0], planning.story_blocks[0]
+    stage, task = block.stages[0], block.stages[0].scene_tasks[0]
+    ref = lambda item: {
+        "id": item.id, "revision": item.revision, "contentHash": item.content_hash,
+    }
     return {
+        "volumeRef": ref(volume), "storyBlockRef": ref(block),
+        "stageRefs": [ref(stage)], "sceneTaskRefs": [ref(task)],
+    }
+
+
+def _outline_signature(project_id: str, template: OutlineTemplate) -> dict[str, object]:
+    content = {
+        "schemaVersion": "chapter-outline-v1",
+        **_pinned_refs(project_id),
         "chapterGoal": template.chapter_goal,
         "expectedCharacters": list(template.expected_characters),
         "continuation": list(template.continuation),
@@ -121,6 +165,12 @@ def _outline_signature(template: OutlineTemplate) -> dict[str, object]:
         "scenes": list(template.scenes),
         "forbiddenEarlyEvents": list(template.forbidden_early_events),
     }
+    return {"schemaVersion": content["schemaVersion"], "content": content, "hashMatches": True}
+
+
+def outline_hash_matches(content: dict[str, object], stored_hash: str) -> bool:
+    hash_payload = {key: value for key, value in content.items() if key != "contentHash"}
+    return content.get("contentHash") == stored_hash and canonical_hash(hash_payload) == stored_hash
 
 
 def _final_signature(kind: str, count: int) -> list[dict[str, object]]:
@@ -153,7 +203,10 @@ def _signature(*, postconditions: bool) -> dict[str, object]:
             for (kind, _project_id), count in zip(PROJECTS.items(), counts, strict=True)
         ],
         "outlineGoals": [[item.chapter_goal for item in PINNED_OUTLINES]] * 3,
-        "outlines": [[_outline_signature(item) for item in PINNED_OUTLINES]] * 3,
+        "outlines": [
+            [_outline_signature(project_id, item) for item in PINNED_OUTLINES]
+            for project_id in PROJECTS.values()
+        ],
         "authoritativeChapters": [4, 5 if postconditions else 4, 4],
         "awaitingAuthorReviews": [] if postconditions else [{
             "projectId": PROJECTS["awaiting-author"], "chapter": 4,
@@ -202,7 +255,7 @@ async def read_fixture_signature() -> dict[str, object] | None:
                 "hashMatches": item["content_hash"] == sha256(item["content"].encode("utf-8")).hexdigest(),
             } for item in finals])
             outline_rows = await session.fetchall(
-                """SELECT revision.content_json FROM project_chapter_outline_heads head
+                """SELECT revision.content_json,revision.content_hash FROM project_chapter_outline_heads head
                      JOIN chapter_outline_revisions revision
                        ON revision.project_id=head.project_id AND revision.chapter_num=head.chapter_num
                       AND revision.id=head.outline_revision_id AND revision.revision=head.revision
@@ -213,12 +266,19 @@ async def read_fixture_signature() -> dict[str, object] | None:
             outlines = []
             for item in outline_rows:
                 content = item["content_json"]
+                if isinstance(content, (bytes, bytearray)):
+                    content = content.decode("utf-8")
                 if isinstance(content, str):
                     content = json.loads(content)
-                outlines.append({key: content[key] for key in (
-                    "chapterGoal", "expectedCharacters", "continuation", "plannedTasks",
-                    "scenes", "forbiddenEarlyEvents",
-                )})
+                exact_content = {key: content[key] for key in (
+                    "schemaVersion", "volumeRef", "storyBlockRef", "stageRefs", "sceneTaskRefs",
+                    "chapterGoal", "expectedCharacters", "continuation", "plannedTasks", "scenes",
+                    "forbiddenEarlyEvents",
+                )}
+                outlines.append({
+                    "schemaVersion": content.get("schemaVersion"), "content": exact_content,
+                    "hashMatches": outline_hash_matches(content, item["content_hash"]),
+                })
             outlines_by_project.append(outlines)
             active = await session.fetchone(
                 "SELECT chapter_num FROM chapter_sessions WHERE project_id=%s AND status='drafting'",
@@ -246,7 +306,7 @@ async def read_fixture_signature() -> dict[str, object] | None:
         } for row in rows],
         "finalCounts": counts,
         "finalChapters": finals_by_project,
-        "outlineGoals": [[item["chapterGoal"] for item in outlines] for outlines in outlines_by_project],
+        "outlineGoals": [[item["content"]["chapterGoal"] for item in outlines] for outlines in outlines_by_project],
         "outlines": outlines_by_project,
         "authoritativeChapters": authorities,
         "awaitingAuthorReviews": [{
@@ -391,6 +451,7 @@ async def _seed_project(kind: str, project_id: str) -> None:
     original_final_one, original_final_two = base.FINAL_ONE, base.FINAL_TWO
     original_working, original_candidate = base.WORKING_SENTINEL, base.CANDIDATE_SENTINEL
     original_outline, original_extraction = base._outline_payload, base._Extraction
+    original_planning_service = base.PlanningService
     outline_index = 0
 
     def next_outline(planning):
@@ -411,12 +472,16 @@ async def _seed_project(kind: str, project_id: str) -> None:
         base.WORKING_SENTINEL, base.CANDIDATE_SENTINEL = WORKING_SENTINEL, CANDIDATE_SENTINEL
         base._outline_payload = next_outline
         base._Extraction = ExactExtraction
+        base.PlanningService = lambda *args, **kwargs: original_planning_service(
+            *args, **kwargs, id_factory=_planning_id_factory(project_id),
+        )
         await base.prepare(os.environ["MYSQL_DB"])
     finally:
         base.PROJECT = original_project
         base.FINAL_ONE, base.FINAL_TWO = original_final_one, original_final_two
         base.WORKING_SENTINEL, base.CANDIDATE_SENTINEL = original_working, original_candidate
         base._outline_payload, base._Extraction = original_outline, original_extraction
+        base.PlanningService = original_planning_service
     async with connection() as session:
         await session.execute(
             "UPDATE projects SET title=%s WHERE id=%s",

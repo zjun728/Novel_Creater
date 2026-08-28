@@ -31,6 +31,15 @@ def test_phase8a_fixture_declares_three_deterministic_projects_and_exact_authori
     assert expected["finalCounts"] == [3, 3, 3]
     assert expected["authoritativeChapters"] == [4, 4, 4]
     assert expected["outlineGoals"] == [[item.chapter_goal for item in fixture.PINNED_OUTLINES]] * 3
+    for project_outlines in expected["outlines"]:
+        for outline in project_outlines:
+            assert outline["schemaVersion"] == "chapter-outline-v1"
+            assert outline["hashMatches"] is True
+            for field in ("volumeRef", "storyBlockRef"):
+                assert set(outline["content"][field]) == {"id", "revision", "contentHash"}
+            for field in ("stageRefs", "sceneTaskRefs"):
+                assert len(outline["content"][field]) == 1
+                assert set(outline["content"][field][0]) == {"id", "revision", "contentHash"}
     assert expected["sentinelCounts"] == {"working": 3, "candidate": 3}
     assert expected["corruptHashMismatch"] is True
     assert expected["finalChapters"][2][2]["storedHash"] == sha256(fixture.FINAL_PROSE[2].encode("utf-8")).hexdigest()
@@ -59,6 +68,16 @@ def test_fixture_uses_local_deterministic_finalization_and_has_no_schema_ddl():
     assert "prepare_product_shell_browser_db" not in source
     assert not re.search(r"\b(?:CREATE|DROP)\s+(?:DATABASE|SCHEMA)\b", source, re.I)
     assert not re.search(r"ProviderProfileService|httpx|requests|aiohttp", source)
+
+
+def test_outline_hash_verifier_rejects_changed_content_with_the_stored_hash_unchanged():
+    payload = deepcopy(fixture.fixture_signature()["outlines"][0][0]["content"])
+    payload.update({"chapterNumber": 1, "canonRevision": 0, "projectionRevision": 0})
+    stored_hash = fixture.canonical_hash(payload)
+    persisted = {**payload, "contentHash": stored_hash}
+    assert fixture.outline_hash_matches(persisted, stored_hash) is True
+    persisted["volumeRef"]["id"] = "tampered-pin"
+    assert fixture.outline_hash_matches(persisted, stored_hash) is False
 
 
 def test_fixture_cli_owns_runtime_configuration_lifecycle():
@@ -113,7 +132,10 @@ async def test_prepare_refuses_partially_populated_schema(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("field", ["title", "outline", "sentinel", "hash"])
+@pytest.mark.parametrize("field", [
+    "title", "outline", "sentinel", "hash", "pin-id", "pin-revision", "pin-hash",
+    "outline-content-with-stale-hash",
+])
 async def test_prepare_refuses_a_fixture_with_corrupted_authority(monkeypatch, field):
     observed = deepcopy(fixture.fixture_signature())
     if field == "title":
@@ -122,8 +144,17 @@ async def test_prepare_refuses_a_fixture_with_corrupted_authority(monkeypatch, f
         observed["outlineGoals"][0][0] = "错误小纲"
     elif field == "sentinel":
         observed["sentinelCounts"]["working"] = 0
-    else:
+    elif field == "hash":
         observed["corruptHashMismatch"] = False
+    elif field == "pin-id":
+        observed["outlines"][0][0]["content"]["volumeRef"]["id"] = "wrong-pin"
+    elif field == "pin-revision":
+        observed["outlines"][1][1]["content"]["storyBlockRef"]["revision"] += 1
+    elif field == "pin-hash":
+        observed["outlines"][2][2]["content"]["stageRefs"][0]["contentHash"] = "0" * 64
+    else:
+        observed["outlines"][0][0]["content"]["chapterGoal"] = "被篡改的小纲"
+        observed["outlines"][0][0]["hashMatches"] = False
 
     monkeypatch.setattr(fixture, "assert_owned_database", lambda _database: asyncio.sleep(0))
     monkeypatch.setattr(fixture, "read_fixture_signature", lambda: asyncio.sleep(0, result=observed))

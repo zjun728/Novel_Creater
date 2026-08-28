@@ -111,6 +111,7 @@ test('Phase 8A visible workflow is wide-screen only and mutation safe', () => {
     'manuscript-chapter-1-download-txt', 'manuscript-chapter-3-download-txt',
   ]) assert.equal(spec.includes(marker), true, marker)
   assert.match(spec, /mappedChapterFiveAction\.click\(\)/u)
+  assert.match(spec, /章节地址与服务端权威不一致/u)
   assert.equal(spec.includes('/planning/story-blocks$'), true)
   assert.match(spec, /第 5 章小纲/u)
   assert.match(spec, /assertFinalSequence\(chapterText, \[0\]\)/u)

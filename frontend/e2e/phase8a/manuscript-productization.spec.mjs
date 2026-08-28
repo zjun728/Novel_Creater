@@ -14,6 +14,10 @@ const PROSE = [
   '复验钟响过三遍，新织机没有断线。林砚交出账册，赌局至此有了无可争辩的定局。',
 ]
 const SENTINELS = ['PHASE8A_WORKING_SENTINEL', 'PHASE8A_CANDIDATE_SENTINEL', 'CORRUPT_BODY_MUST_NEVER_ESCAPE']
+const WRITER_CONFLICT_TEXT = [
+  '章节地址与服务端权威不一致',
+  '当前地址不是服务端确认的权威章节',
+]
 const FOCUSABLE_SELECTOR = [
   'a[href]:visible:not([tabindex="-1"])',
   'button:visible:not([disabled]):not([tabindex="-1"])',
@@ -135,6 +139,10 @@ async function openDownloadMenu(page) {
   await expect(page.getByRole('button', { name: '下载整本定稿 TXT' })).toBeVisible()
 }
 
+async function assertNoWriterConflict(page) {
+  for (const message of WRITER_CONFLICT_TEXT) await expect(page.locator('body')).not.toContainText(message)
+}
+
 async function acceptComplete(page) {
   await page.goto(`/projects/${COMPLETE}/overview`)
   await expect(page.getByRole('heading', { name: '织机赌局 · 完整稿件' })).toBeVisible()
@@ -149,15 +157,20 @@ async function acceptComplete(page) {
   await page.locator('#manuscript-chapter-1').click()
   await expect(page.getByRole('heading', { name: `第 1 章 · ${TITLES[0]}` })).toBeVisible()
   await expect(page.getByLabel('定稿正文')).toContainText(PROSE[0])
+  await assertNoWriterConflict(page)
   await page.getByRole('button', { name: '本章小纲' }).click()
   await expect(page.getByText('在三日织机赌局中取得一次可验证的喘息')).toBeVisible()
+  await assertNoWriterConflict(page)
   await page.locator('#final-reader-next').click()
   await expect(page.getByRole('heading', { name: `第 2 章 · ${TITLES[1]}` })).toBeVisible()
+  await assertNoWriterConflict(page)
   await page.goBack()
   await expect(page.getByRole('heading', { name: `第 1 章 · ${TITLES[0]}` })).toBeVisible()
+  await assertNoWriterConflict(page)
   await page.reload()
   await expect(page.getByRole('button', { name: '本章小纲' })).toHaveAttribute('aria-pressed', 'true')
   await expect(page.getByRole('link', { name: '进入第 4 章写作' })).toBeVisible()
+  await assertNoWriterConflict(page)
   await page.getByRole('link', { name: '返回作品目录' }).click()
 
   await page.locator('#manuscript-chapter-1-download').click()
