@@ -17,11 +17,33 @@ function routeTemplate(rawUrl) {
   }
 }
 
+function safeMethod(value) {
+  const method = typeof value === 'string' ? value.toUpperCase() : ''
+  return METHODS.has(method) ? method : 'OTHER'
+}
+
+function responseRouteTemplate(rawUrl) {
+  try {
+    const url = new URL(rawUrl)
+    if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1') return 'not-owned'
+    if (/^\/api\/projects\/[^/]+\/manuscript\/chapters\/[^/]+$/u.test(url.pathname)) return 'manuscript-chapter'
+    if (/^\/api\/projects\/[^/]+\/manuscript$/u.test(url.pathname)) return 'manuscript-index'
+    if (/^\/api\/projects\/[^/]+\/novel-download$/u.test(url.pathname)) {
+      const scope = url.searchParams.get('scope')
+      return `novel-download-${['chapter', 'volume', 'book'].includes(scope) ? scope : 'unknown'}`
+    }
+    if (url.pathname.startsWith('/api/')) return 'other-api'
+    return 'other-owned'
+  } catch {
+    return 'not-owned'
+  }
+}
+
 function failureType(value) {
   const text = typeof value === 'string' ? value.toUpperCase() : ''
   if (text.includes('ERR_ABORTED')) return 'aborted'
-  if (text.includes('CONNECTION') || text.includes('CONNECTION_RESET')) return 'connection'
   if (text.includes('TIMED_OUT') || text.includes('TIMEOUT')) return 'timeout'
+  if (text.includes('CONNECTION') || text.includes('CONNECTION_RESET')) return 'connection'
   if (text.includes('BLOCKED')) return 'blocked'
   return 'other'
 }
@@ -36,8 +58,26 @@ export function summarizeRequestFailure(request, currentStage) {
   return {
     kind: 'request-failed',
     stage: STAGES.has(currentStage) ? currentStage : 'unknown',
-    method: METHODS.has(method) ? method : 'OTHER',
+    method: safeMethod(method),
     route: routeTemplate(url),
     failureType: failureType(failure?.errorText),
+  }
+}
+
+export function summarizeResponse(response, currentStage) {
+  let method = 'OTHER'
+  let url = ''
+  let status = 0
+  try { method = response.request().method() } catch {}
+  try { url = response.url() } catch {}
+  try {
+    const observed = response.status()
+    if (Number.isInteger(observed) && observed >= 100 && observed <= 599) status = observed
+  } catch {}
+  return {
+    method: safeMethod(method),
+    route: responseRouteTemplate(url),
+    stage: STAGES.has(currentStage) ? currentStage : 'unknown',
+    status,
   }
 }

@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test'
 import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { parseIterationCount } from './accessibility.mjs'
-import { summarizeRequestFailure } from './page-events.mjs'
+import { summarizeRequestFailure, summarizeResponse } from './page-events.mjs'
 
 const COMPLETE = process.env.BROWSER_COMPLETE_PROJECT_ID
 const AWAITING = process.env.BROWSER_AWAITING_PROJECT_ID
@@ -63,14 +63,7 @@ function installPageEventLedger(page) {
   page.on('requestfailed', request => record('requestFailures', summarizeRequestFailure(request, stage)))
   page.on('response', response => {
     if (response.status() < 400) return
-    let route = 'other'
-    try {
-      const parsed = new URL(response.url())
-      if (parsed.pathname.includes('/manuscript/chapters/')) route = 'manuscript-chapter'
-      else if (parsed.pathname.includes('/novel-download')) route = `novel-download-${parsed.searchParams.get('scope') || 'unknown'}`
-      else if (parsed.pathname.startsWith('/api/')) route = 'other-api'
-    } catch {}
-    ledger.responses.push({ method: response.request().method(), route, stage, status: response.status() })
+    ledger.responses.push(summarizeResponse(response, stage))
   })
   return {
     setStage(value) { stage = value },
@@ -177,7 +170,7 @@ async function assertReducedMotion(page) {
     return { maximumAnimation, maximumTransition, maximumIterations, smoothScrolls, transitionOwner }
   }, infiniteIteration)
   expect(motion.maximumAnimation).toBeLessThanOrEqual(0.001)
-  if (motion.maximumTransition > 0.001) throw new Error(`phase8a-motion-transition-${Math.round(motion.maximumTransition * 1_000_000)}-${motion.transitionOwner}`)
+  if (motion.maximumTransition > 0.001) throw new Error(`phase8a-motion-transition-${Math.round(motion.maximumTransition * 1_000_000)}`)
   expect(motion.maximumTransition).toBeLessThanOrEqual(0.001)
   expect(motion.maximumIterations).toBeLessThanOrEqual(1)
   expect(motion.smoothScrolls).toBe(0)

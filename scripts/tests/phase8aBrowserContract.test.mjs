@@ -212,7 +212,7 @@ test('Phase 8A page event ledger accepts only the exact linked corrupt failures 
 })
 
 test('Phase 8A request failure summaries expose only closed safe categories', async () => {
-  const { summarizeRequestFailure } = await import('../../frontend/e2e/phase8a/page-events.mjs')
+  const { summarizeRequestFailure, summarizeResponse } = await import('../../frontend/e2e/phase8a/page-events.mjs')
   const secret = '8a000000-0000-4000-8000-000000000003'
   const request = {
     method: () => 'GET',
@@ -233,6 +233,19 @@ test('Phase 8A request failure summaries expose only closed safe categories', as
     kind: 'request-failed', stage: 'unknown', method: 'OTHER',
     route: 'not-owned', failureType: 'connection',
   })
+  assert.equal(summarizeRequestFailure({
+    method: () => 'GET', url: () => 'http://127.0.0.1:43123/api/health',
+    failure: () => ({ errorText: 'net::ERR_CONNECTION_TIMED_OUT raw-secret' }),
+  }, 'complete').failureType, 'timeout')
+  const response = summarizeResponse({
+    status: () => 500,
+    url: () => `http://127.0.0.1:43123/api/projects/${secret}/novel-download?scope=token-never-echo&chapterNumber=99`,
+    request: () => ({ method: () => 'TRACE' }),
+  }, 'corrupt')
+  assert.deepEqual(response, {
+    method: 'OTHER', route: 'novel-download-unknown', stage: 'corrupt', status: 500,
+  })
+  assert.doesNotMatch(JSON.stringify(response), /8a000000|99|token|never-echo|TRACE|127\.0\.0\.1|43123/iu)
 })
 
 test('Phase 8A reduced-motion parser treats infinite iteration as motion', async () => {
@@ -261,11 +274,22 @@ test('Phase 8A assertion failures are classified without exposing report content
     ].map(classifyBoundedCause), [
       'exit-status', 'start', 'deadline', 'service', 'log-scan', 'abort', 'other',
     ])
+    const validMarker = 'phase8a-page-events-workflow-console-0-page-0-request-1-first-none-other-0-response-none-get-other-0-failed-complete-get-manuscript-index-aborted'
     writeFileSync(report, JSON.stringify({ errors: [{
-      message: 'phase8a-page-events-console-1-page-0-request-0-first-resource-status-500',
+      message: validMarker,
       location: { file: 'manuscript-productization.spec.mjs', line: 47, column: 4 },
     }] }))
-    assert.equal(classifyBrowserFailure(report), 'phase8a-page-events-console-1-page-0-request-0-first-resource-status-500@47')
+    assert.equal(classifyBrowserFailure(report), `${validMarker}@47`)
+    for (const malicious of [
+      `prefix-${validMarker}`, `${validMarker}-8a000000-0000-4000-8000-000000000003`,
+      validMarker.replace('request-1', 'request-999999999999999999999'),
+      validMarker.replace('manuscript-index', 'token-never-echo'),
+    ]) {
+      writeFileSync(report, JSON.stringify({ errors: [{ message: malicious }] }))
+      const classified = classifyBrowserFailure(report, new Error('process exited with status 1'))
+      assert.equal(classified, 'report-unmapped-error-bounded-exit-status')
+      assert.doesNotMatch(classified, /8a000000|token|never-echo|999999/iu)
+    }
     writeFileSync(report, JSON.stringify({ errors: [{ message: 'aggregate failure' }], suites: [{ specs: [{ tests: [{ results: [{ errors: [{
       message: 'SECRET visible manuscript value',
       location: { file: 'manuscript-productization.spec.mjs', line: 123, column: 4 },

@@ -141,6 +141,40 @@ function reportErrors(value, found = []) {
   return found
 }
 
+const PAGE_EVENT_MARKER = /^phase8a-page-events-(?<checkpoint>workflow|complete-reader|complete-downloads|complete-archive)-console-(?<consoleCount>[0-9]{1,2})-page-(?<pageCount>[0-9]{1,2})-request-(?<requestCount>[0-9]{1,2})-first-(?<consoleSource>none|novel-download-(?:chapter|volume|book|unknown)|manuscript-(?:chapter|index)|lifecycle|other-api|frontend-asset|other)-(?<consoleCategory>resource-status|other)-(?<consoleStatus>[0-9]{1,3})-response-(?<responseStage>none|setup|complete|awaiting|corrupt|unknown)-(?<responseMethod>get|post|put|patch|delete|head|options|other)-(?<responseRoute>other|not-owned|manuscript-(?:chapter|index)|novel-download-(?:chapter|volume|book|unknown)|other-api|other-owned)-(?<responseStatus>[0-9]{1,3})-failed-(?<failureStage>none|setup|complete|awaiting|corrupt|unknown)-(?<failureMethod>get|post|put|patch|delete|head|options|other)-(?<failureRoute>not-owned|manuscript-(?:chapter|index)|novel-download|other-api|frontend-asset|frontend-route)-(?<failureType>aborted|connection|timeout|blocked|other)$/u
+
+function validatedEvidenceMarker(message) {
+  if (typeof message !== 'string' || message.length > 512) return null
+  const motion = message.match(/^phase8a-motion-transition-(?<duration>[0-9]{1,9})$/u)
+  if (motion) {
+    const duration = Number(motion.groups.duration)
+    const serialized = `phase8a-motion-transition-${duration}`
+    return duration <= 300_000_000 && serialized === message ? serialized : null
+  }
+  const match = message.match(PAGE_EVENT_MARKER)
+  if (!match) return null
+  const groups = match.groups
+  const consoleCount = Number(groups.consoleCount)
+  const pageCount = Number(groups.pageCount)
+  const requestCount = Number(groups.requestCount)
+  const consoleStatus = Number(groups.consoleStatus)
+  const responseStatus = Number(groups.responseStatus)
+  if (
+    (consoleStatus !== 0 && (consoleStatus < 100 || consoleStatus > 599))
+    || (responseStatus !== 0 && (responseStatus < 400 || responseStatus > 599))
+    || (consoleCount === 0 && `${groups.consoleSource}-${groups.consoleCategory}-${consoleStatus}` !== 'none-other-0')
+    || (consoleCount > 0 && groups.consoleSource === 'none')
+    || (groups.responseStage === 'none'
+      && `${groups.responseMethod}-${groups.responseRoute}-${responseStatus}` !== 'get-other-0')
+    || (groups.responseStage !== 'none' && responseStatus === 0)
+    || (requestCount === 0
+      && `${groups.failureStage}-${groups.failureMethod}-${groups.failureRoute}-${groups.failureType}` !== 'none-get-not-owned-other')
+    || (requestCount > 0 && groups.failureStage === 'none')
+  ) return null
+  const serialized = `phase8a-page-events-${groups.checkpoint}-console-${consoleCount}-page-${pageCount}-request-${requestCount}-first-${groups.consoleSource}-${groups.consoleCategory}-${consoleStatus}-response-${groups.responseStage}-${groups.responseMethod}-${groups.responseRoute}-${responseStatus}-failed-${groups.failureStage}-${groups.failureMethod}-${groups.failureRoute}-${groups.failureType}`
+  return serialized === message ? serialized : null
+}
+
 export function classifyBoundedCause(error) {
   const categories = []
   const visit = value => {
@@ -181,7 +215,7 @@ export function classifyBrowserFailure(resultPath, boundedError) {
   const locationLine = error.location?.file?.endsWith('manuscript-productization.spec.mjs')
     && Number.isInteger(error.location.line) ? error.location.line : null
   const line = locationLine || stackLine || 'unknown'
-  const evidenceMarker = error.message.match(/phase8a-(?:motion|page-events)-[a-z0-9_-]+/u)?.[0]
+  const evidenceMarker = validatedEvidenceMarker(error.message)
   if (evidenceMarker) return `${evidenceMarker}@${line}`
   if (/timed out|timeout/iu.test(error.message)) return `timeout@${line}`
   if (/locator|strict mode/iu.test(error.message)) return `locator@${line}`
