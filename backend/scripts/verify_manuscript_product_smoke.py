@@ -50,6 +50,10 @@ class ReadOnlySqlError(RuntimeError):
     """A query fell outside the verifier's conservative SELECT allowlist."""
 
 
+class RuntimeCleanupFailure(RuntimeError):
+    """The verifier could not safely finish its owned runtime lifecycle."""
+
+
 class _SafeArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         del message
@@ -233,7 +237,6 @@ async def verify_product_smoke(
         )
         detail_identities = tuple(chapter.project_id for chapter in chapters)
         authority = preparation.authoritative_chapter_number
-        outline_status = preparation.outline
     except (AttributeError, TypeError):
         raise SmokeIntegrityError() from None
 
@@ -246,7 +249,6 @@ async def verify_product_smoke(
         or detail_pairs != expected_pairs
         or not all(_outline_is_valid(chapter.outline) for chapter in chapters)
         or authority != _EXPECTED_AUTHORITY_CHAPTER
-        or outline_status != "current"
     ):
         raise SmokeIntegrityError() from None
 
@@ -330,6 +332,52 @@ def _failure_category(error: Exception) -> str:
     return "unexpected"
 
 
+async def _verify_with_owned_runtime(project_id: str) -> dict[str, object]:
+    """Own the standard process-local runtime around default dependencies."""
+
+    from backend.config import (
+        clear_runtime_configuration,
+        install_runtime_configuration,
+        load_runtime_configuration,
+    )
+    from backend.database import close_pool
+
+    snapshot = None
+    installed = False
+    result = None
+    primary_error = None
+    try:
+        snapshot = load_runtime_configuration()
+        install_runtime_configuration(snapshot)
+        installed = True
+        result = await verify_product_smoke(
+            project_id,
+            dependencies=_default_dependencies(),
+        )
+    except BaseException as error:
+        primary_error = error
+
+    cleanup_error = None
+    try:
+        await close_pool()
+    except BaseException as error:
+        cleanup_error = error
+    if installed:
+        try:
+            clear_runtime_configuration(snapshot)
+        except BaseException as error:
+            if cleanup_error is None:
+                cleanup_error = error
+
+    if primary_error is not None:
+        raise primary_error
+    if cleanup_error is not None:
+        if isinstance(cleanup_error, Exception):
+            raise RuntimeCleanupFailure() from None
+        raise cleanup_error
+    return result
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -341,12 +389,12 @@ def main(
         print(_failure("arguments"), file=sys.stderr)
         return 2
     try:
-        summary = asyncio.run(
-            verify_product_smoke(
-                project_id,
-                dependencies=dependencies or _default_dependencies(),
+        if dependencies is None:
+            summary = asyncio.run(_verify_with_owned_runtime(project_id))
+        else:
+            summary = asyncio.run(
+                verify_product_smoke(project_id, dependencies=dependencies)
             )
-        )
     except Exception as error:
         print(_failure(_failure_category(error), project_id), file=sys.stderr)
         return 1

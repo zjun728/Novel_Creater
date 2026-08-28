@@ -126,9 +126,8 @@ async def test_smoke_calls_production_service_contracts_once_and_returns_safe_co
         (ManuscriptService(chapters={1: _chapter(1, outline=False), 2: _chapter(2), 3: _chapter(3)}), PreparationService()),
         (ManuscriptService(directory=_directory(count=4)), PreparationService()),
         (ManuscriptService(), PreparationService(authority=5)),
-        (ManuscriptService(), PreparationService(outline="missing")),
     ),
-    ids=("directory-title", "chapter-title", "pinned-outline", "count", "authority", "current-outline"),
+    ids=("directory-title", "chapter-title", "pinned-outline", "count", "authority"),
 )
 async def test_smoke_fails_closed_on_wrong_authority_title_outline_or_integrity(
     manuscript, preparation,
@@ -143,6 +142,20 @@ async def test_smoke_fails_closed_on_wrong_authority_title_outline_or_integrity(
             PROJECT_ID,
             dependencies=_dependencies(manuscript=manuscript, preparation=preparation),
         )
+
+
+@pytest.mark.asyncio
+async def test_smoke_accepts_authority_four_when_next_outline_is_missing():
+    from backend.scripts.verify_manuscript_product_smoke import verify_product_smoke
+
+    result = await verify_product_smoke(
+        PROJECT_ID,
+        dependencies=_dependencies(
+            preparation=PreparationService(authority=4, outline="missing"),
+        ),
+    )
+
+    assert result["status"] == "passed"
 
 
 class Session:
@@ -495,6 +508,106 @@ def test_main_redacts_invalid_extra_argument(capsys):
     assert code == 2
     assert captured.out == ""
     assert captured.err.strip() == '{"category":"arguments","status":"failed"}'
+    assert SECRET not in captured.err
+
+
+def test_main_default_path_owns_runtime_lifecycle_in_order(monkeypatch, capsys):
+    from backend import config, database
+    from backend.scripts import verify_manuscript_product_smoke as verifier
+
+    events = []
+    snapshot = object()
+    dependencies = _dependencies()
+
+    def load():
+        events.append("load")
+        return snapshot
+
+    def install(value):
+        assert value is snapshot
+        events.append("install")
+
+    def resolve_dependencies():
+        events.append("dependencies")
+        return dependencies
+
+    async def close():
+        events.append("close")
+
+    def clear(value):
+        assert value is snapshot
+        events.append("clear")
+
+    monkeypatch.setattr(config, "load_runtime_configuration", load)
+    monkeypatch.setattr(config, "install_runtime_configuration", install)
+    monkeypatch.setattr(config, "clear_runtime_configuration", clear)
+    monkeypatch.setattr(database, "close_pool", close)
+    monkeypatch.setattr(verifier, "_default_dependencies", resolve_dependencies)
+
+    assert verifier.main(("--project-id", PROJECT_ID)) == 0
+    assert events == ["load", "install", "dependencies", "close", "clear"]
+    assert capsys.readouterr().err == ""
+
+
+def test_main_injected_dependencies_do_not_touch_runtime_lifecycle(monkeypatch):
+    from backend import config, database
+    from backend.scripts import verify_manuscript_product_smoke as verifier
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("injected dependencies must not touch runtime lifecycle")
+
+    async def forbidden_async(*_args, **_kwargs):
+        pytest.fail("injected dependencies must not touch runtime lifecycle")
+
+    monkeypatch.setattr(config, "load_runtime_configuration", forbidden)
+    monkeypatch.setattr(config, "install_runtime_configuration", forbidden)
+    monkeypatch.setattr(config, "clear_runtime_configuration", forbidden)
+    monkeypatch.setattr(database, "close_pool", forbidden_async)
+
+    assert verifier.main(
+        ("--project-id", PROJECT_ID),
+        dependencies=_dependencies(),
+    ) == 0
+
+
+@pytest.mark.parametrize("failed_cleanup", ("close", "clear"))
+def test_main_runtime_cleanup_failure_is_fixed_and_both_cleanup_steps_are_attempted(
+    monkeypatch,
+    capsys,
+    failed_cleanup,
+):
+    from backend import config, database
+    from backend.scripts import verify_manuscript_product_smoke as verifier
+
+    events = []
+    snapshot = object()
+
+    monkeypatch.setattr(config, "load_runtime_configuration", lambda: snapshot)
+    monkeypatch.setattr(config, "install_runtime_configuration", lambda _value: None)
+    monkeypatch.setattr(verifier, "_default_dependencies", _dependencies)
+
+    async def close():
+        events.append("close")
+        if failed_cleanup == "close":
+            raise RuntimeError(SECRET)
+
+    def clear(_value):
+        events.append("clear")
+        if failed_cleanup == "clear":
+            raise RuntimeError(SECRET)
+
+    monkeypatch.setattr(database, "close_pool", close)
+    monkeypatch.setattr(config, "clear_runtime_configuration", clear)
+
+    assert verifier.main(("--project-id", PROJECT_ID)) == 1
+    captured = capsys.readouterr()
+    assert events == ["close", "clear"]
+    assert captured.out == ""
+    assert captured.err.strip() == (
+        '{"category":"unexpected","projectId":"'
+        + PROJECT_ID
+        + '","status":"failed"}'
+    )
     assert SECRET not in captured.err
 
 
