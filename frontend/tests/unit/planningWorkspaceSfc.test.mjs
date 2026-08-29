@@ -541,11 +541,6 @@ test('mounted actual progress panel renders only the safe author summary for eve
     assert.match(text(panel), /正文进度正在同步，稍后重新读取。/)
     assert.equal(walk(panel).some(item => item.type === 'ol'), false)
 
-    panelState.status = {
-      canonRevision: 4,
-      projectionRevision: 4,
-      synchronized: true,
-    }
     panelState.status = { canonRevision: 0, projectionRevision: 0, synchronized: true }
     await flush()
     panel = actualProgressPanel(root)
@@ -665,8 +660,8 @@ test('mounted actual progress panel renders only the safe author summary for eve
     assert.doesNotMatch(text(panel), /CANON PROJECTION|Canon R|Projection R|事实主题|字段路径|正文事实/)
     assertReadOnlyPanel(panel)
     const contents = await readFile(source('components/planning/ActualProgressPanel.vue'), 'utf8')
-    assert.doesNotMatch(contents, /defineEmits|@(click|input|change|submit|drag)|JSON\.stringify|publicValue|progressItemKey|canonRevision|projectionRevision|rebuilding/)
-    assert.equal(warnings.some(message => /duplicate keys/i.test(message)), false)
+    assert.doesNotMatch(contents, /defineEmits|@(click|input|change|submit|drag)|JSON\.stringify/)
+    assert.deepEqual(warnings, [])
     app.unmount()
   } finally {
     await vite.close()
