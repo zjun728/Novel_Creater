@@ -120,6 +120,11 @@ class WorkbenchBootstrap(_StrictValue):
         if self.mode == "historical":
             if self.final_chapter is None or self.outline is None or self.volume is None:
                 raise ValueError("historical mode requires pinned final authorities")
+            historical_blockers = {
+                "project_archived", "canon_projection_unsynchronized",
+            }
+            if set(reason_codes) - historical_blockers:
+                raise ValueError("historical mode has an incompatible blocked reason")
             if self.session is not None:
                 raise ValueError("historical mode cannot expose a drafting session")
             if set(self.available_actions) - {"view_chapter", "view_outline"}:
@@ -153,7 +158,9 @@ class WorkbenchBootstrap(_StrictValue):
                             "project_archived permits read-only session actions"
                         )
                 if "canon_projection_unsynchronized" in reason_codes:
-                    if action_set & {"run_ai_operation", "finalize_candidate"}:
+                    if action_set & {
+                        "run_ai_operation", "audit_candidate", "finalize_candidate",
+                    }:
                         raise ValueError(
                             "canon_projection_unsynchronized blocks head-sensitive "
                             "session actions"
@@ -204,6 +211,12 @@ class WorkbenchBootstrap(_StrictValue):
                 raise ValueError("future mode has no actions")
             if "future_chapter" not in reason_codes:
                 raise ValueError("future mode requires a stable blocked reason")
+            future_blockers = {
+                "future_chapter", "project_archived",
+                "canon_projection_unsynchronized",
+            }
+            if set(reason_codes) - future_blockers:
+                raise ValueError("future mode has an incompatible blocked reason")
         return self
 
 

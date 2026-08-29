@@ -644,7 +644,7 @@ def test_archived_current_session_allows_safe_read_actions() -> None:
 
 @pytest.mark.parametrize(
     "forbidden_action",
-    ("run_ai_operation", "finalize_candidate"),
+    ("run_ai_operation", "audit_candidate", "finalize_candidate"),
 )
 def test_unsynchronized_current_session_rejects_head_sensitive_actions(
     forbidden_action: str,
@@ -676,7 +676,6 @@ def test_unsynchronized_current_session_preserves_pinned_safe_actions() -> None:
         "edit_draft",
         "save_candidate",
         "compare_candidates",
-        "audit_candidate",
     )
     payload.update(
         session=WorkbenchSessionReference(id="session-3", chapter_number=3),
@@ -781,3 +780,153 @@ def test_current_mode_rejects_future_chapter_blocker(changes: dict) -> None:
 
     with pytest.raises(ValidationError, match="future_chapter"):
         WorkbenchBootstrap.model_validate(payload)
+
+
+def historical_bootstrap_payload() -> dict:
+    return {
+        "project_id": "project-1",
+        "requested_chapter": 2,
+        "authoritative_chapter": 3,
+        "mode": "historical",
+        "volume": volume(),
+        "session": None,
+        "final_chapter": WorkbenchFinalChapterReference(
+            id="final-2", chapter_number=2, content_hash=HASH,
+        ),
+        "outline": outline(),
+        "available_actions": ("view_chapter",),
+        "blocked_reasons": (),
+        "canon_revision": 2,
+        "projection_revision": 2,
+        "canon_projection_synchronized": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "block_code",
+    (
+        "future_chapter",
+        "outline_required",
+        "session_not_created",
+        "finalization_in_progress",
+    ),
+)
+def test_historical_mode_rejects_incompatible_blocker(block_code: str) -> None:
+    payload = historical_bootstrap_payload()
+    payload.update(blocked_reasons=(WorkbenchBlockedReason(
+        code=block_code, message="该阻塞原因不适用于历史章节。",
+    ),))
+
+    with pytest.raises(ValidationError, match="historical.*blocked reason"):
+        WorkbenchBootstrap.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("blocked_reasons", "canon_revision", "projection_revision", "synchronized"),
+    (
+        (
+            (WorkbenchBlockedReason(
+                code="project_archived", message="项目已归档。",
+            ),),
+            2, 2, True,
+        ),
+        (
+            (WorkbenchBlockedReason(
+                code="canon_projection_unsynchronized",
+                message="Canon 与当前状态尚未同步。",
+            ),),
+            3, 2, False,
+        ),
+    ),
+)
+def test_historical_mode_accepts_compatible_blockers(
+    blocked_reasons: tuple[WorkbenchBlockedReason, ...],
+    canon_revision: int,
+    projection_revision: int,
+    synchronized: bool,
+) -> None:
+    payload = historical_bootstrap_payload()
+    payload.update(
+        blocked_reasons=blocked_reasons,
+        canon_revision=canon_revision,
+        projection_revision=projection_revision,
+        canon_projection_synchronized=synchronized,
+    )
+
+    value = WorkbenchBootstrap.model_validate(payload)
+
+    assert value.blocked_reasons == blocked_reasons
+
+
+def future_bootstrap_payload() -> dict:
+    return {
+        "project_id": "project-1",
+        "requested_chapter": 5,
+        "authoritative_chapter": 3,
+        "mode": "future",
+        "volume": None,
+        "session": None,
+        "final_chapter": None,
+        "outline": None,
+        "available_actions": (),
+        "blocked_reasons": (WorkbenchBlockedReason(
+            code="future_chapter", message="该章节尚未成为当前权威章节。",
+        ),),
+        "canon_revision": 2,
+        "projection_revision": 2,
+        "canon_projection_synchronized": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "block_code",
+    ("outline_required", "session_not_created", "finalization_in_progress"),
+)
+def test_future_mode_rejects_incompatible_blocker(block_code: str) -> None:
+    payload = future_bootstrap_payload()
+    payload.update(blocked_reasons=(
+        *payload["blocked_reasons"],
+        WorkbenchBlockedReason(
+            code=block_code, message="该阻塞原因不适用于未来章节。",
+        ),
+    ))
+
+    with pytest.raises(ValidationError, match="future.*blocked reason"):
+        WorkbenchBootstrap.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("extra_reason", "canon_revision", "projection_revision", "synchronized"),
+    (
+        (
+            WorkbenchBlockedReason(
+                code="project_archived", message="项目已归档。",
+            ),
+            2, 2, True,
+        ),
+        (
+            WorkbenchBlockedReason(
+                code="canon_projection_unsynchronized",
+                message="Canon 与当前状态尚未同步。",
+            ),
+            3, 2, False,
+        ),
+    ),
+)
+def test_future_mode_accepts_compatible_optional_blocker(
+    extra_reason: WorkbenchBlockedReason,
+    canon_revision: int,
+    projection_revision: int,
+    synchronized: bool,
+) -> None:
+    payload = future_bootstrap_payload()
+    payload.update(
+        blocked_reasons=(*payload["blocked_reasons"], extra_reason),
+        canon_revision=canon_revision,
+        projection_revision=projection_revision,
+        canon_projection_synchronized=synchronized,
+    )
+
+    value = WorkbenchBootstrap.model_validate(payload)
+
+    assert value.blocked_reasons[-1] == extra_reason
