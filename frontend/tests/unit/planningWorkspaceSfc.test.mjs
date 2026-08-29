@@ -461,19 +461,15 @@ async function renderActualProgressPanel(vite) {
   Panel.default.render = await clientRender('components/planning/ActualProgressPanel.vue')
 }
 
-test('mounted actual progress panel separates read-only Canon facts from future planning', async () => {
+test('mounted actual progress panel renders only the safe author summary for every presentation state', async () => {
   const vite = await createPlanningVite()
   try {
     const Panel = await vite.ssrLoadModule('/src/components/planning/ActualProgressPanel.vue')
     Panel.default.render = await clientRender('components/planning/ActualProgressPanel.vue')
     const panelState = reactive({
       items: [],
-      status: {
-        canonRevision: 0,
-        projectionRevision: 0,
-        contentHash: 'a'.repeat(64),
-        synchronized: true,
-      },
+      status: null,
+      planningContent: planningContent(),
     })
     const Harness = defineComponent({
       setup: () => () => h(Panel.default, panelState),
@@ -486,73 +482,110 @@ test('mounted actual progress panel separates read-only Canon facts from future 
     app.mount(root)
     await flush()
 
-    assert.match(text(root), /正文已发生/)
-    assert.match(text(root), /尚无已定稿事实/)
-    assert.doesNotMatch(text(root), /标记完成|同步记忆|手工进度/)
+    assert.match(text(root), /正文进度/)
+    assert.match(text(root), /正文进度状态需要重新读取。/)
 
     panelState.status = {
       canonRevision: 4,
       projectionRevision: 3,
-      contentHash: 'b'.repeat(64),
       synchronized: false,
     }
     await flush()
-    assert.match(text(root), /正文事实正在重建，暂不展示实际进度/)
+    assert.match(text(root), /正文进度正在同步，稍后重新读取。/)
 
     panelState.status = {
       canonRevision: 4,
       projectionRevision: 4,
-      contentHash: 'b'.repeat(64),
       synchronized: true,
     }
-    panelState.items = [{
-      revisionNumber: 4,
+    panelState.status = { canonRevision: 0, projectionRevision: 0, synchronized: true }
+    await flush()
+    assert.match(text(root), /尚无已定稿正文带来的规划进度。/)
+
+    panelState.status = { canonRevision: 4, projectionRevision: 4, synchronized: true }
+    await flush()
+    assert.match(text(root), /定稿事实已同步，当前没有规划项发生变化。/)
+
+    const rawSentinels = [
+      'revisionNumber-sentinel-424242',
+      '424242',
+      '550e8400-e29b-41d4-a716-446655440000',
+      'contentHash-sentinel-a'.repeat(2),
+      'fieldPath-sentinel-7',
+      'subjectKey-sentinel-8',
+      'entityId-sentinel-9',
+      'targetId-sentinel-10',
+      'nested-json-token-11',
+    ]
+    const unrecognized = {
+      revisionNumber: rawSentinels[0],
+      subjectKey: rawSentinels[4],
+      entityId: rawSentinels[5],
+      fieldPath: rawSentinels[3],
+      contentHash: rawSentinels[2],
+      value: { targetId: rawSentinels[6], nested: { token: rawSentinels[7] } },
+    }
+    panelState.items = [unrecognized]
+    await flush()
+    assert.match(text(root), /定稿进度已同步，暂时无法生成作者摘要。共有 1 项暂不能展示。/)
+    assert.equal(walk(root).some(item => item.type === 'ol'), false)
+    const panelTextAndMetadata = walk(root).flatMap(item => [
+      item.text,
+      ...Object.entries(item.props).flatMap(([key, value]) => (
+        /^(aria-label|aria-labelledby|title|id|data-)/.test(key) ? [String(value)] : []
+      )),
+    ]).join('')
+    for (const sentinel of rawSentinels) assert.equal(panelTextAndMetadata.includes(sentinel), false)
+
+    const progress = ({ chapterNumber = 3, targetType = 'story_block', targetId = 'block-1', status = 'started' } = {}) => ({
+      revisionNumber: rawSentinels[0],
       subjectKey: '__global__',
       entityId: null,
-      fieldPath: 'plot.gunpowder',
-      value: { status: 'old', evidence: ['第一章', { chapter: 1 }] },
-      contentHash: 'b'.repeat(64),
-    }]
+      fieldPath: `plot.progress.${targetType}.${targetId}`,
+      contentHash: rawSentinels[2],
+      value: { chapterNumber, targetType, targetId, status },
+    })
+    panelState.items = [progress(), progress({ targetType: 'stage', targetId: 'stage-1', status: 'advanced' })]
     await flush()
-    assert.match(text(root), /Canon R4/)
-    assert.match(text(root), /Projection R4/)
-    assert.match(text(root), /plot\.gunpowder/)
-    assert.match(text(root), /"status":"old"/)
-    assert.match(text(root), /"chapter":1/)
-    panelState.items = [{
-      revisionNumber: 4,
-      subjectKey: 'a:b',
-      entityId: 'c',
-      fieldPath: 'plot.gunpowder',
-      value: { status: 'first' },
-      contentHash: 'b'.repeat(64),
-    }, {
-      revisionNumber: 4,
-      subjectKey: 'a',
-      entityId: 'b:c',
-      fieldPath: 'plot.gunpowder',
-      value: { status: 'second' },
-      contentHash: 'b'.repeat(64),
-    }]
+    assert.match(text(root), /已同步 1 章定稿带来的规划进度。/)
+    const recognizedRows = walk(root).filter(item => item.type === 'li')
+    assert.equal(recognizedRows.length, 2)
+    assert.match(text(recognizedRows[0]), /第 3 章.*故事块.*夜入县衙.*已开始/)
+    assert.match(text(recognizedRows[1]), /第 3 章.*阶段.*夜入县衙 \/ 潜入.*已推进/)
+
+    panelState.items = [progress(), unrecognized]
     await flush()
-    panelState.items = [...panelState.items].reverse()
+    assert.match(text(root), /已同步 1 章定稿带来的规划进度。/)
+    assert.match(text(root), /另有 1 项定稿进度已同步，暂时无法生成作者摘要。/)
+
+    panelState.items = Array.from({ length: 12 }, (_, index) => progress({ chapterNumber: index + 1 }))
     await flush()
-    assert.equal(warnings.some(message => /duplicate keys/i.test(message)), false)
-    assert.match(text(root), /"status":"first"/)
-    assert.match(text(root), /"status":"second"/)
+    const visibleRows = walk(root).filter(item => item.type === 'li')
+    assert.equal(visibleRows.length, 10)
+    assert.match(text(root), /已同步 12 章定稿带来的规划进度。/)
+    assert.match(text(root), /还有 2 项较早进度未展开。/)
+
+    panelState.items = Array.from({ length: 12 }, (_, index) => progress({ chapterNumber: index + 1 })).concat(unrecognized)
+    await flush()
+    const omittedIndex = text(root).indexOf('还有 2 项较早进度未展开。')
+    const mixedIndex = text(root).indexOf('另有 1 项定稿进度已同步，暂时无法生成作者摘要。')
+    assert.ok(omittedIndex >= 0 && mixedIndex > omittedIndex)
+
+    assert.doesNotMatch(text(root), /CANON PROJECTION|Canon R|Projection R|事实主题|字段路径|正文事实/)
     assert.equal(walk(root).some(item => (
       ['button', 'input', 'checkbox', 'textarea', 'select'].includes(item.type)
       || item.props.contenteditable != null
     )), false)
     const contents = await readFile(source('components/planning/ActualProgressPanel.vue'), 'utf8')
-    assert.doesNotMatch(contents, /defineEmits|@(click|input|change|submit|drag)/)
+    assert.doesNotMatch(contents, /defineEmits|@(click|input|change|submit|drag)|JSON\.stringify|publicValue|progressItemKey|canonRevision|projectionRevision|rebuilding/)
+    assert.equal(warnings.some(message => /duplicate keys/i.test(message)), false)
     app.unmount()
   } finally {
     await vite.close()
   }
 })
 
-test('mounted PlanningWorkspace renders future planning and Canon facts in one tree', async () => {
+test('mounted PlanningWorkspace gives each planning tab the same current author progress summary', async () => {
   const vite = await createPlanningVite()
   const originalDocument = global.document
   try {
@@ -561,30 +594,43 @@ test('mounted PlanningWorkspace renders future planning and Canon facts in one t
       activeElement: null,
       querySelector: selector => selector === 'body' ? body : null,
     }
-    const [Workspace, Volume, Plot, Drawer] = await Promise.all([
+    const [Workspace, Volume, Plot, StoryBlock, Drawer] = await Promise.all([
       vite.ssrLoadModule('/src/components/planning/PlanningWorkspace.vue'),
       vite.ssrLoadModule('/src/components/planning/VolumeEditor.vue'),
       vite.ssrLoadModule('/src/components/planning/PlotEditor.vue'),
+      vite.ssrLoadModule('/src/components/planning/StoryBlockEditor.vue'),
       vite.ssrLoadModule('/src/components/planning/PlanningHistoryDrawer.vue'),
     ])
     Workspace.default.render = await clientRender('components/planning/PlanningWorkspace.vue')
     await renderActualProgressPanel(vite)
     Volume.default.render = await clientRender('components/planning/VolumeEditor.vue')
     Plot.default.render = await clientRender('components/planning/PlotEditor.vue')
+    StoryBlock.default.render = await clientRender('components/planning/StoryBlockEditor.vue')
     Drawer.default.render = await clientRender('components/planning/PlanningHistoryDrawer.vue')
-    const store = workspaceStore()
-    const controller = createPlanningWorkspaceController({ store, projectId: () => 'A' })
-    const root = node('root')
-    const app = renderer.createApp(Workspace.default, { store, controller, activeTab: 'volumes' })
-    app.provide(ssrContextKey, { modules: new Set() })
-    app.mount(root)
-    await flush()
+    for (const activeTab of ['volumes', 'plots', 'story-blocks']) {
+      const store = workspaceStore()
+      store.localContent.storyBlocks[0].title = '工作稿中的夜入县衙'
+      store.state.actualProgress = [{
+        revisionNumber: 4,
+        subjectKey: '__global__',
+        entityId: null,
+        fieldPath: 'plot.progress.story_block.block-1',
+        value: { chapterNumber: 6, targetType: 'story_block', targetId: 'block-1', status: 'completed' },
+      }]
+      store.state.canonProjectionStatus = { canonRevision: 4, projectionRevision: 4, synchronized: true }
+      const controller = createPlanningWorkspaceController({ store, projectId: () => 'A' })
+      const root = node('root')
+      const app = renderer.createApp(Workspace.default, { store, controller, activeTab })
+      app.provide(ssrContextKey, { modules: new Set() })
+      app.mount(root)
+      await flush()
 
-    assert.match(text(root), /未来规划/)
-    assert.match(text(root), /正文已发生/)
-    assert.match(text(root), /尚无已定稿事实/)
-    assert.equal(walk(root).filter(item => item.props.class === 'actual-progress-panel').length, 1)
-    app.unmount()
+      assert.match(text(root), /未来规划/)
+      assert.match(text(root), /正文进度/)
+      assert.match(text(root), /第 6 章.*故事块.*工作稿中的夜入县衙.*已完成/)
+      assert.equal(walk(root).filter(item => item.props.class === 'actual-progress-panel').length, 1)
+      app.unmount()
+    }
   } finally {
     global.document = originalDocument
     await vite.close()

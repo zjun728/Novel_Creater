@@ -258,6 +258,7 @@ onBeforeUnmount(() => {
       <actual-progress-panel
         :items="store.state.actualProgress"
         :status="store.state.canonProjectionStatus"
+        :planning-content="planningContent"
       />
 
       <section v-if="!store.state.draft && !controller.readOnly.value" class="paper-panel empty-draft">
