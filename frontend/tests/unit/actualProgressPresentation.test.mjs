@@ -71,23 +71,23 @@ test('maps every recognized kind and progress status to author-facing labels', (
   assert.equal(model.state, 'recognized')
   assert.equal(model.message, '已同步 3 章定稿带来的规划进度。')
   assert.deepEqual(model.rows, [
-    { key: 'progress-row-1', chapterLabel: '第6章', kindLabel: '故事块', hierarchyLabel: '初入江湖', statusLabel: '已开始' },
-    { key: 'progress-row-2', chapterLabel: '第5章', kindLabel: '阶段', hierarchyLabel: '初入江湖 / 初试锋芒', statusLabel: '已推进' },
-    { key: 'progress-row-3', chapterLabel: '第4章', kindLabel: '场景任务', hierarchyLabel: '初入江湖 / 初试锋芒 / 救下故人', statusLabel: '已完成' },
+    { key: 'progress-row-1', chapterLabel: '第 6 章', kindLabel: '故事块', hierarchyLabel: '初入江湖', statusLabel: '已开始' },
+    { key: 'progress-row-2', chapterLabel: '第 5 章', kindLabel: '阶段', hierarchyLabel: '初入江湖 / 初试锋芒', statusLabel: '已推进' },
+    { key: 'progress-row-3', chapterLabel: '第 4 章', kindLabel: '场景任务', hierarchyLabel: '初入江湖 / 初试锋芒 / 救下故人', statusLabel: '已完成' },
   ])
 })
 
 test('covers every kind by status label combination', () => {
   const combinations = [
-    ['story_block', 'started', '故事块', '已开始', 'block-1'],
-    ['story_block', 'advanced', '故事块', '已推进', 'block-1'],
-    ['story_block', 'completed', '故事块', '已完成', 'block-1'],
-    ['stage', 'started', '阶段', '已开始', 'stage-1'],
-    ['stage', 'advanced', '阶段', '已推进', 'stage-1'],
-    ['stage', 'completed', '阶段', '已完成', 'stage-1'],
-    ['scene_task', 'started', '场景任务', '已开始', 'task-1'],
-    ['scene_task', 'advanced', '场景任务', '已推进', 'task-1'],
-    ['scene_task', 'completed', '场景任务', '已完成', 'task-1'],
+    ['story_block', 'started', '故事块', '已开始', 'block-1', '初入江湖'],
+    ['story_block', 'advanced', '故事块', '已推进', 'block-1', '初入江湖'],
+    ['story_block', 'completed', '故事块', '已完成', 'block-1', '初入江湖'],
+    ['stage', 'started', '阶段', '已开始', 'stage-1', '初入江湖 / 初试锋芒'],
+    ['stage', 'advanced', '阶段', '已推进', 'stage-1', '初入江湖 / 初试锋芒'],
+    ['stage', 'completed', '阶段', '已完成', 'stage-1', '初入江湖 / 初试锋芒'],
+    ['scene_task', 'started', '场景任务', '已开始', 'task-1', '初入江湖 / 初试锋芒 / 救下故人'],
+    ['scene_task', 'advanced', '场景任务', '已推进', 'task-1', '初入江湖 / 初试锋芒 / 救下故人'],
+    ['scene_task', 'completed', '场景任务', '已完成', 'task-1', '初入江湖 / 初试锋芒 / 救下故人'],
   ]
   const model = present({ items: combinations.map(([targetType, progressStatus, , , targetId], index) => entry({
     chapterNumber: index + 1,
@@ -95,10 +95,12 @@ test('covers every kind by status label combination', () => {
     progressStatus,
     targetId,
   })) })
-  assert.deepEqual(
-    model.rows.map(row => [row.kindLabel, row.statusLabel]),
-    combinations.slice().reverse().map(([, , kindLabel, statusLabel]) => [kindLabel, statusLabel]),
-  )
+  assert.deepEqual(model.rows.map(row => [row.kindLabel, row.statusLabel, row.hierarchyLabel]),
+    combinations.slice().reverse().map(([, , kindLabel, statusLabel, , hierarchyLabel]) => [kindLabel, statusLabel, hierarchyLabel]))
+  const serialized = JSON.stringify(model)
+  for (const [, , , , targetId] of combinations) assert.equal(serialized.includes(targetId), false)
+  assert.equal(serialized.includes('targetId'), false)
+  assert.equal(serialized.includes('fieldPath'), false)
 })
 
 test('returns each status envelope presentation state with the fixed Chinese message', () => {
@@ -128,9 +130,15 @@ test('treats malformed item containers and throwing status access as safe empty 
   for (const items of [null, {}, 'not-an-array']) {
     expectMessage({ items }, 'empty', '定稿事实已同步，当前没有规划项发生变化。')
   }
+  let statusGetterHits = 0
   const hostileStatus = {}
-  Object.defineProperty(hostileStatus, 'canonRevision', { enumerable: true, get() { throw new Error('secret status') } })
+  Object.defineProperty(hostileStatus, 'canonRevision', { enumerable: true, get() { statusGetterHits += 1; throw new Error('secret status') } })
   expectMessage({ status: hostileStatus, items: [entry()] }, 'invalid', '正文进度状态需要重新读取。')
+  assert.ok(statusGetterHits > 0)
+  let statusProxyHits = 0
+  const statusProxy = new Proxy({}, { get() { statusProxyHits += 1; throw new Error('status proxy secret') } })
+  expectMessage({ status: statusProxy, items: [entry()] }, 'invalid', '正文进度状态需要重新读取。')
+  assert.ok(statusProxyHits > 0)
 })
 
 test('fail-closes malformed entries and value shapes without throwing', () => {
@@ -138,24 +146,58 @@ test('fail-closes malformed entries and value shapes without throwing', () => {
   Object.assign(inheritedValue, { status: 'started', targetId: 'block-1', targetType: 'story_block' })
   const hiddenRequired = { status: 'started', targetId: 'block-1', targetType: 'story_block' }
   Object.defineProperty(hiddenRequired, 'chapterNumber', { value: 3, enumerable: false })
-  const throwingEntry = {}
-  Object.defineProperty(throwingEntry, 'value', { get() { throw new Error('hidden entry secret') } })
-  const throwingProxy = new Proxy({}, { getOwnPropertyDescriptor() { throw new Error('proxy secret') } })
+  let valueGetterHits = 0
+  const throwingEntry = { entityId: null, subjectKey: '__global__', fieldPath: 'plot.progress.story_block.block-1' }
+  Object.defineProperty(throwingEntry, 'value', { get() { valueGetterHits += 1; throw new Error('hidden entry secret') } })
+  let entryProxyHits = 0
+  const throwingProxy = new Proxy({}, { get() { entryProxyHits += 1; throw new Error('proxy secret') } })
+  const symbolExtra = Symbol('extra-enumerable-value-key')
+  const symbolValue = { chapterNumber: 3, status: 'started', targetId: 'block-1', targetType: 'story_block', [symbolExtra]: true }
   const badValues = [
-    null, [], 'value', 3,
+    null, undefined, [], 'value', 3, false, 1n, Symbol('scalar'),
     { chapterNumber: 3, status: 'started', targetId: 'block-1', targetType: 'story_block', extra: true },
-    inheritedValue, hiddenRequired,
+    symbolValue, inheritedValue, hiddenRequired,
     { chapterNumber: 0, status: 'started', targetId: 'block-1', targetType: 'story_block' },
+    { chapterNumber: -1, status: 'started', targetId: 'block-1', targetType: 'story_block' },
+    { chapterNumber: 2.5, status: 'started', targetId: 'block-1', targetType: 'story_block' },
     { chapterNumber: Number.MAX_SAFE_INTEGER + 1, status: 'started', targetId: 'block-1', targetType: 'story_block' },
     { chapterNumber: 3, status: 'wrong', targetId: 'block-1', targetType: 'story_block' },
+    { chapterNumber: 3, status: 1, targetId: 'block-1', targetType: 'story_block' },
     { chapterNumber: 3, status: 'started', targetId: '', targetType: 'story_block' },
+    { chapterNumber: 3, status: 'started', targetId: '   ', targetType: 'story_block' },
+    { chapterNumber: 3, status: 'started', targetId: 1, targetType: 'story_block' },
     { chapterNumber: 3, status: 'started', targetId: 'block-1', targetType: 'volume' },
+    { chapterNumber: 3, status: 'started', targetId: 'block-1', targetType: 'plot' },
+    { chapterNumber: 3, status: 'started', targetId: 'block-1', targetType: 1 },
   ]
-  const model = present({ items: [null, [], 2, throwingEntry, throwingProxy, ...badValues.map(value => entry({ value }))] })
+  assert.equal(present({ items: [entry({ value: symbolValue })] }).state, 'unrecognized')
+  const model = present({ items: [null, [], 2, throwingEntry, throwingProxy, ...badValues.map(value => ({ ...entry(), value }))] })
 
   assert.equal(model.state, 'unrecognized')
-  assert.equal(model.unrecognizedCount, 17)
+  assert.equal(model.unrecognizedCount, 29)
   assert.deepEqual(model.rows, [])
+  assert.ok(valueGetterHits > 0)
+  assert.ok(entryProxyHits > 0)
+  const whitespaceIdContent = content({ storyBlocks: [{ id: '   ', title: '不应匹配', stages: [] }] })
+  assert.equal(present({ planningContent: whitespaceIdContent, items: [entry({ targetId: '   ' })] }).state, 'unrecognized')
+})
+
+test('recognizes a null-prototype value with exactly the allowed enumerable keys', () => {
+  const value = Object.assign(Object.create(null), {
+    chapterNumber: 3,
+    status: 'started',
+    targetId: 'block-1',
+    targetType: 'story_block',
+  })
+  const model = present({ items: [entry({ value })] })
+  assert.equal(model.state, 'recognized')
+  assert.deepEqual(model.rows.map(row => row.chapterLabel), ['第 3 章'])
+})
+
+test('allows extra non-enumerable value keys while rejecting enumerable symbols', () => {
+  const value = { chapterNumber: 3, status: 'started', targetId: 'block-1', targetType: 'story_block' }
+  Object.defineProperty(value, 'privateMetadata', { value: 'not for presentation', enumerable: false })
+  assert.equal(present({ items: [entry({ value })] }).state, 'recognized')
 })
 
 test('requires exact canonical target path and global entity scope', () => {
@@ -184,9 +226,13 @@ test('uses only server ids for hierarchy and rejects malformed planning content 
     storyBlocks: [{ id: 'block-1', title: '有效块', stages: {} }],
   })
   assert.equal(present({ planningContent: malformedNestedCollection, items: [entry()] }).state, 'unrecognized')
+  const sceneTasksNonArray = content({ storyBlocks: [{ id: 'block-1', title: '有效块', stages: [{ id: 'stage-1', title: '阶段', sceneTasks: {} }] }] })
+  assert.equal(present({ planningContent: sceneTasksNonArray, items: [entry()] }).state, 'unrecognized')
+  let hierarchyGetterHits = 0
   const throwingTitle = { id: 'block-1', stages: [] }
-  Object.defineProperty(throwingTitle, 'title', { get() { throw new Error('hierarchy title secret') } })
+  Object.defineProperty(throwingTitle, 'title', { get() { hierarchyGetterHits += 1; throw new Error('hierarchy title secret') } })
   assert.equal(present({ planningContent: content({ storyBlocks: [throwingTitle] }), items: [entry()] }).state, 'unrecognized')
+  assert.ok(hierarchyGetterHits > 0)
 })
 
 test('falls back to the fixed author label when hierarchy titles are blank or non-strings', () => {
@@ -244,7 +290,7 @@ test('limits rows to ten and counts all distinct recognized chapters before trun
   }))
   const model = present({ items })
   assert.equal(model.rows.length, 10)
-  assert.deepEqual(model.rows.map(row => row.chapterLabel), ['第12章', '第11章', '第10章', '第9章', '第8章', '第7章', '第6章', '第5章', '第4章', '第3章'])
+  assert.deepEqual(model.rows.map(row => row.chapterLabel), ['第 12 章', '第 11 章', '第 10 章', '第 9 章', '第 8 章', '第 7 章', '第 6 章', '第 5 章', '第 4 章', '第 3 章'])
   assert.equal(model.omittedRecognizedCount, 2)
   assert.equal(model.message, '已同步 12 章定稿带来的规划进度。')
 })
@@ -255,23 +301,43 @@ test('reports mixed rows and unrecognized entries independently', () => {
   assert.equal(model.rows.length, 1)
   assert.equal(model.unrecognizedCount, 1)
   assert.equal(model.omittedRecognizedCount, 0)
+  assert.equal(JSON.stringify(model).includes('已同步 0 章'), false)
+  assert.equal(JSON.stringify(model).includes('已同步0章'), false)
 })
 
 test('never leaks canonical transport fields or hostile nested values and recursively freezes the display model', () => {
-  const hostile = 'uuid-7c9c1d10-ea3d-4bd3-a68f-transport-hash-path-subject'
+  const hostile = 'raw-value-token-7c9c1d10-ea3d-4bd3-a68f'
+  const sentinels = [
+    'revisionNumber-sentinel-221',
+    '424242',
+    '424242',
+    'entityId-sentinel-224',
+    'subjectKey-sentinel-225',
+    'contentHash-sentinel-226',
+    'fieldPath-sentinel-227',
+    'targetId-sentinel-228',
+    hostile,
+    'exception-message-sentinel-229',
+  ]
+  let errorGetterHits = 0
+  const exceptionItem = { entityId: null, subjectKey: '__global__', fieldPath: 'plot.progress.story_block.block-1' }
+  Object.defineProperty(exceptionItem, 'value', { get() { errorGetterHits += 1; throw new Error(sentinels.at(-1)) } })
   const model = present({ items: [entry({
     value: { chapterNumber: 7, status: 'completed', targetId: 'block-1', targetType: 'story_block' },
     fieldPath: `plot.progress.story_block.block-1.${hostile}`,
-  }), entry({
-    entityId: `${hostile}-entity`,
-    subjectKey: `${hostile}-subject`,
-    fieldPath: `plot.progress.story_block.block-1/${hostile}.json`,
-    value: { chapterNumber: 99, status: 'started', targetId: 'block-1', targetType: 'story_block', nested: { hash: hostile } },
-  }), entry()] })
+  }), {
+    revisionNumber: sentinels[0],
+    entityId: sentinels[3],
+    subjectKey: sentinels[4],
+    contentHash: sentinels[5],
+    fieldPath: sentinels[6],
+    value: { chapterNumber: 99, status: 'started', targetId: sentinels[7], targetType: 'story_block', nested: { raw: hostile } },
+  }, exceptionItem, entry()], status: safeStatus({ canonRevision: Number(sentinels[1]), projectionRevision: Number(sentinels[2]), revisionNumber: sentinels[0] }) })
   const output = JSON.stringify(model)
-  assert.equal(output.includes(hostile), false)
+  for (const sentinel of sentinels) assert.equal(output.includes(sentinel), false)
   assert.equal(output.includes('targetId'), false)
   assert.equal(output.includes('fieldPath'), false)
+  assert.ok(errorGetterHits > 0)
   assertDeepFrozen(model)
   assert.throws(() => { model.rows.push({}) }, TypeError)
 })

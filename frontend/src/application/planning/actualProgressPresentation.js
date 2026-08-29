@@ -56,7 +56,7 @@ export function presentActualProgress({ items, status, planningContent } = {}) {
   const visible = unique.slice(0, MAX_VISIBLE_ROWS)
   const rows = visible.map((record, index) => ({
     key: `progress-row-${index + 1}`,
-    chapterLabel: `第${record.chapterNumber}章`,
+    chapterLabel: `第 ${record.chapterNumber} 章`,
     kindLabel: KIND_LABELS[record.targetType],
     hierarchyLabel: record.hierarchyLabel,
     statusLabel: STATUS_LABELS[record.status],
@@ -113,13 +113,16 @@ function isExactProgressValue(value) {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
     const prototype = Object.getPrototypeOf(value)
     if (prototype !== Object.prototype && prototype !== null) return false
-    const keys = Object.keys(value).sort()
+    const keys = Reflect.ownKeys(value)
+      .filter(key => Object.prototype.propertyIsEnumerable.call(value, key))
+    if (keys.some(key => typeof key !== 'string')) return false
+    keys.sort()
     if (keys.length !== 4 || keys.join(',') !== 'chapterNumber,status,targetId,targetType') return false
     return isSafePositiveInteger(value.chapterNumber)
       && typeof value.status === 'string'
       && Object.hasOwn(STATUS_LABELS, value.status)
       && typeof value.targetId === 'string'
-      && value.targetId.length > 0
+      && value.targetId.trim().length > 0
       && typeof value.targetType === 'string'
       && Object.hasOwn(KIND_LABELS, value.targetType)
   } catch {
@@ -137,7 +140,7 @@ function buildHierarchyIndex(planningContent) {
       if (block === null || typeof block !== 'object' || Array.isArray(block)) continue
       const blockId = block.id
       const blockLabel = labelFor(block.title)
-      if (typeof blockId === 'string' && blockId.length > 0) index.story_block.set(blockId, blockLabel)
+      if (typeof blockId === 'string' && blockId.trim().length > 0) index.story_block.set(blockId, blockLabel)
 
       const stages = block.stages
       if (!Array.isArray(stages)) return emptyHierarchyIndex()
@@ -146,14 +149,14 @@ function buildHierarchyIndex(planningContent) {
         const stageId = stage.id
         const stageLabel = labelFor(stage.title)
         const stageHierarchy = `${blockLabel} / ${stageLabel}`
-        if (typeof stageId === 'string' && stageId.length > 0) index.stage.set(stageId, stageHierarchy)
+        if (typeof stageId === 'string' && stageId.trim().length > 0) index.stage.set(stageId, stageHierarchy)
 
         const tasks = stage.sceneTasks
         if (!Array.isArray(tasks)) return emptyHierarchyIndex()
         for (const task of tasks) {
           if (task === null || typeof task !== 'object' || Array.isArray(task)) continue
           const taskId = task.id
-          if (typeof taskId === 'string' && taskId.length > 0) {
+          if (typeof taskId === 'string' && taskId.trim().length > 0) {
             index.scene_task.set(taskId, `${stageHierarchy} / ${labelFor(task.task)}`)
           }
         }
