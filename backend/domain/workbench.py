@@ -137,6 +137,8 @@ class WorkbenchBootstrap(_StrictValue):
             if self.session is not None:
                 if not has_authority_bundle:
                     raise ValueError("session requires a confirmed authority bundle")
+                if "session_not_created" in reason_codes:
+                    raise ValueError("session_not_created is invalid when a session exists")
                 if self.session.chapter_number != self.requested_chapter:
                     raise ValueError("session differs from request")
                 if "create_session" in self.available_actions:

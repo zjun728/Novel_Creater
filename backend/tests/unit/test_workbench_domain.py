@@ -585,3 +585,17 @@ def test_historical_only_page_may_have_next_cursor() -> None:
     )
 
     assert page.next_cursor == "cursor-1"
+
+
+def test_current_session_rejects_session_not_created_blocker() -> None:
+    payload = current_bootstrap_payload()
+    payload.update(
+        session=WorkbenchSessionReference(id="session-3", chapter_number=3),
+        available_actions=("edit_draft",),
+        blocked_reasons=(WorkbenchBlockedReason(
+            code="session_not_created", message="尚未创建章节会话。",
+        ),),
+    )
+
+    with pytest.raises(ValidationError, match="session_not_created"):
+        WorkbenchBootstrap.model_validate(payload)
