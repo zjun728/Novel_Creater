@@ -1,7 +1,7 @@
 # Author-facing Planning Status Design
 
 **Date:** 2026-08-29
-**Status:** Approved direction; pending written-spec review
+**Status:** Approved
 **Product slice:** Author-facing Canon/Projection and Bible status presentation
 
 ## 1. Purpose
