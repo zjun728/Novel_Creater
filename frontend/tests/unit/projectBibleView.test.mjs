@@ -491,10 +491,10 @@ test('mounted history dialog traps focus, restores its trigger, and ignores Esca
   } finally { global.document = originalDocument; await vite.close() }
 })
 
-test('mounted Bible history restores the captured trigger after the disabled trigger blurs during loading', async () => {
+test('mounted Bible history restores the captured trigger after loading disables and blurs it', async () => {
   const vite = await createProjectBibleViteServer()
   const originalFetch = global.fetch; const originalWindow = global.window; const originalDocument = global.document
-  const body = node('body'); let root; let historyRequests = 0; let writeRequests = 0
+  const body = node('body'); let root; let historyRequests = 0; const requests = []; const historyResponse = deferred()
   const draft = () => ({ projectId: 'focus', lifecycle: 'active', status: 'editable', draftId: 'draft-focus', draftVersion: 1, draft: bible(), canEdit: true, canConfirm: true, canClone: true, reasons: [] })
   const head = () => ({ projectId: 'focus', lifecycle: 'active', status: 'current', revision: 0, bible: null, canClone: false, reasons: [] })
   try {
@@ -503,12 +503,11 @@ test('mounted Bible history restores the captured trigger after the disabled tri
     global.window = { confirm: () => true, addEventListener() {}, removeEventListener() {} }
     global.document = { activeElement: null, querySelector: selector => selector === '#app' ? root : selector === 'body' ? body : null }
     global.fetch = async (url, options = {}) => {
-      const path = String(url)
-      if (options.method && options.method !== 'GET') writeRequests += 1
+      const path = String(url); const method = options.method || 'GET'; requests.push({ path, method })
       if (path.endsWith('/bindings/status')) return new Response(JSON.stringify({ projectId: 'focus', revision: 1, contentHash: 'f'.repeat(64), items: [{ taskKey: 'planning', resolutionStatus: 'bound' }], reasons: [] }), { headers: { 'content-type': 'application/json' } })
       if (path.endsWith('/bible/head')) return new Response(JSON.stringify(head()), { headers: { 'content-type': 'application/json' } })
       if (path.endsWith('/bible/draft')) return new Response(JSON.stringify(draft()), { headers: { 'content-type': 'application/json' } })
-      if (path.includes('/bible/history')) { historyRequests += 1; return new Response(JSON.stringify({ items: [head()], nextBeforeRevision: null }), { headers: { 'content-type': 'application/json' } }) }
+      if (path.includes('/bible/history')) { historyRequests += 1; return historyResponse.promise }
       return new Response(JSON.stringify({ id: 'focus', title: 'focus', archivedAt: null }), { headers: { 'content-type': 'application/json' } })
     }
     const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/projects/:projectId/bible', component: Page.default }] })
@@ -516,12 +515,17 @@ test('mounted Bible history restores the captured trigger after the disabled tri
     await router.push('/projects/focus/bible'); await router.isReady(); root = node('root'); root.parent = body; body.children.push(root); app.mount(root)
     const trigger = await waitFor(() => byText(root, '修订历史'), 'history trigger did not mount')
     global.document.activeElement = trigger; trigger.props.onClick({ currentTarget: trigger })
+    await waitFor(() => historyRequests === 1 && trigger.props.disabled === true, 'history loading did not disable its trigger')
     global.document.activeElement = body
+    historyResponse.resolve(new Response(JSON.stringify({ items: [head()], nextBeforeRevision: null }), { headers: { 'content-type': 'application/json' } }))
     const dialog = await waitFor(() => walk(body).find(value => value.type === 'aside' && value.props.role === 'dialog'), 'history dialog did not mount after loading')
+    await flush(); assert.equal(trigger.props.disabled, false)
     await byText(dialog, '×').props.onClick(); await flush()
     assert.equal(global.document.activeElement, trigger)
+    assert.equal(trigger.isConnected, true)
     assert.equal(historyRequests, 1)
-    assert.equal(writeRequests, 0)
+    assert.ok(requests.every(request => request.method === 'GET'))
+    assert.deepEqual(requests.filter(request => request.path.includes('/bible/history')).map(request => request.method), ['GET'])
   } finally { global.fetch = originalFetch; global.window = originalWindow; global.document = originalDocument; await vite.close() }
 })
 
@@ -564,7 +568,7 @@ test('real Pinia, router, and fetch keep a forced B context clean when A save re
   } finally { global.fetch = originalFetch; global.window = originalWindow; await vite.close() }
 })
 
-test('Bible workspace styles consume the shared canvas, paper, ink, muted, border, and vermilion tokens', async () => {
+test('Bible history basis fields stay visible and use an overflow-wrap unit contract while browser verifies geometry', async () => {
   const values = await Promise.all(['views/ProjectBibleView.vue', 'components/bible/BibleEditor.vue', 'components/bible/BibleHistoryDrawer.vue'].map(path => readFile(source(path), 'utf8')))
   const combined = values.join('\n')
   for (const token of ['--nc-canvas', '--nc-paper', '--nc-ink', '--nc-muted', '--nc-border', '--nc-vermilion']) assert.match(combined, new RegExp(`var\\(${token}`))
@@ -572,5 +576,7 @@ test('Bible workspace styles consume the shared canvas, paper, ink, muted, borde
   assert.doesNotMatch(combined, /rgba\((?:48,42,35|55,39,25|39,28,20|38,25,15)/)
   assert.match(values[0], /@click="retryFailure"/)
   assert.doesNotMatch(values[0], /store\.(?:error|conflict)\?\.message|\berror\.message/)
+  assert.match(values[2], /basisFields/)
+  assert.match(values[2], /<dl>/)
   assert.match(values[2], /\.history-detail\s+dd\s*\{[^}]*overflow-wrap\s*:\s*anywhere/u)
 })

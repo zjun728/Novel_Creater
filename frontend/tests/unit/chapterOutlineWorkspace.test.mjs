@@ -231,9 +231,14 @@ test('outline workspace keeps server authority read-only and closes editing to t
     }))
 
     assert.match(html, /第 3 章/)
-    assert.match(html, /Planning R4/)
-    assert.match(html, /Canon R2/)
-    assert.match(html, /Projection R2/)
+    assert.match(
+      html,
+      /<p class="authority-strip" aria-label="章节小纲状态"[^>]*>章节小纲依据已同步<\/p>/,
+    )
+    assert.doesNotMatch(
+      html,
+      /Planning|Canon|Projection|planning-4|R(?:2|4)\b/,
+    )
     for (const label of [
       '所属分卷',
       '当前故事块',
@@ -397,8 +402,12 @@ test('outline authority and actions remain shrinkable at the narrow breakpoint',
   )
   const narrow = contents.match(/@media\s*\(max-width:760px\)\s*\{([\s\S]*)\}\s*<\/style>/)?.[1] || ''
 
-  assert.match(narrow, /\.authority-strip\s*\{[^}]*flex-wrap:\s*wrap/)
-  assert.match(narrow, /\.authority-strip div\s*\{[^}]*min-width:\s*0/)
+  assert.match(narrow, /\.authority-strip\s*\{[^}]*width:\s*100%/)
+  assert.match(
+    contents,
+    /<p class="authority-strip" aria-label="章节小纲状态">章节小纲依据已同步<\/p>/,
+  )
+  assert.doesNotMatch(contents, /<dl class="authority-strip"|\.authority-strip div/)
   assert.match(narrow, /\.outline-actions\s*\{[^}]*flex-wrap:\s*wrap/)
   assert.match(narrow, /\.outline-actions button\s*\{[^}]*width:\s*100%/)
 })

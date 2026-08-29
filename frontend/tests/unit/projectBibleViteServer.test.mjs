@@ -23,5 +23,5 @@ test('Project Bible view tests create Vite servers only through the cache-safe h
 
   assert.doesNotMatch(suite, /from\s+['"]vite['"]/)
   assert.doesNotMatch(suite, /\bcreateServer\s*\(/)
-  assert.equal(suite.match(/\bcreateProjectBibleViteServer\s*\(\s*\)/g)?.length, 10)
+  assert.equal(suite.match(/\bcreateProjectBibleViteServer\s*\(\s*\)/g)?.length, 11)
 })
