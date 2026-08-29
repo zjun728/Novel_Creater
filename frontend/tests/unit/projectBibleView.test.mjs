@@ -491,6 +491,40 @@ test('mounted history dialog traps focus, restores its trigger, and ignores Esca
   } finally { global.document = originalDocument; await vite.close() }
 })
 
+test('mounted Bible history restores the captured trigger after the disabled trigger blurs during loading', async () => {
+  const vite = await createProjectBibleViteServer()
+  const originalFetch = global.fetch; const originalWindow = global.window; const originalDocument = global.document
+  const body = node('body'); let root; let historyRequests = 0; let writeRequests = 0
+  const draft = () => ({ projectId: 'focus', lifecycle: 'active', status: 'editable', draftId: 'draft-focus', draftVersion: 1, draft: bible(), canEdit: true, canConfirm: true, canClone: true, reasons: [] })
+  const head = () => ({ projectId: 'focus', lifecycle: 'active', status: 'current', revision: 0, bible: null, canClone: false, reasons: [] })
+  try {
+    const [Page, Editor, Drawer] = await Promise.all([vite.ssrLoadModule('/src/views/ProjectBibleView.vue'), vite.ssrLoadModule('/src/components/bible/BibleEditor.vue'), vite.ssrLoadModule('/src/components/bible/BibleHistoryDrawer.vue')])
+    Page.default.render = await clientRender('views/ProjectBibleView.vue'); Editor.default.render = await clientRender('components/bible/BibleEditor.vue'); Drawer.default.render = await clientRender('components/bible/BibleHistoryDrawer.vue')
+    global.window = { confirm: () => true, addEventListener() {}, removeEventListener() {} }
+    global.document = { activeElement: null, querySelector: selector => selector === '#app' ? root : selector === 'body' ? body : null }
+    global.fetch = async (url, options = {}) => {
+      const path = String(url)
+      if (options.method && options.method !== 'GET') writeRequests += 1
+      if (path.endsWith('/bindings/status')) return new Response(JSON.stringify({ projectId: 'focus', revision: 1, contentHash: 'f'.repeat(64), items: [{ taskKey: 'planning', resolutionStatus: 'bound' }], reasons: [] }), { headers: { 'content-type': 'application/json' } })
+      if (path.endsWith('/bible/head')) return new Response(JSON.stringify(head()), { headers: { 'content-type': 'application/json' } })
+      if (path.endsWith('/bible/draft')) return new Response(JSON.stringify(draft()), { headers: { 'content-type': 'application/json' } })
+      if (path.includes('/bible/history')) { historyRequests += 1; return new Response(JSON.stringify({ items: [head()], nextBeforeRevision: null }), { headers: { 'content-type': 'application/json' } }) }
+      return new Response(JSON.stringify({ id: 'focus', title: 'focus', archivedAt: null }), { headers: { 'content-type': 'application/json' } })
+    }
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/projects/:projectId/bible', component: Page.default }] })
+    const app = renderer.createApp({ render: () => h(RouterView) }); app.use(createPinia()); app.use(router); app.provide(ssrContextKey, { modules: new Set() })
+    await router.push('/projects/focus/bible'); await router.isReady(); root = node('root'); root.parent = body; body.children.push(root); app.mount(root)
+    const trigger = await waitFor(() => byText(root, '修订历史'), 'history trigger did not mount')
+    global.document.activeElement = trigger; trigger.props.onClick({ currentTarget: trigger })
+    global.document.activeElement = body
+    const dialog = await waitFor(() => walk(body).find(value => value.type === 'aside' && value.props.role === 'dialog'), 'history dialog did not mount after loading')
+    await byText(dialog, '×').props.onClick(); await flush()
+    assert.equal(global.document.activeElement, trigger)
+    assert.equal(historyRequests, 1)
+    assert.equal(writeRequests, 0)
+  } finally { global.fetch = originalFetch; global.window = originalWindow; global.document = originalDocument; await vite.close() }
+})
+
 test('real Pinia, router, and fetch keep a forced B context clean when A save resolves late', async () => {
   const vite = await createProjectBibleViteServer()
   const originalFetch = global.fetch; const originalWindow = global.window; const pendingA = deferred(); const puts = []
@@ -538,4 +572,5 @@ test('Bible workspace styles consume the shared canvas, paper, ink, muted, borde
   assert.doesNotMatch(combined, /rgba\((?:48,42,35|55,39,25|39,28,20|38,25,15)/)
   assert.match(values[0], /@click="retryFailure"/)
   assert.doesNotMatch(values[0], /store\.(?:error|conflict)\?\.message|\berror\.message/)
+  assert.match(values[2], /\.history-detail\s+dd\s*\{[^}]*overflow-wrap\s*:\s*anywhere/u)
 })

@@ -62,15 +62,6 @@ const sceneTasks = computed(() => stages.value.flatMap(stage => (
 const chapterNumber = computed(() => (
   props.store.outlineState?.authoritativeChapterNumber || '—'
 ))
-const planningRevision = computed(() => (
-  props.store.outlineState?.planningAuthority?.revision ?? '—'
-))
-const canonRevision = computed(() => (
-  props.store.outlineState?.canonProjectionAuthority?.canonRevision ?? '—'
-))
-const projectionRevision = computed(() => (
-  props.store.outlineState?.canonProjectionAuthority?.projectionRevision ?? '—'
-))
 const authorityRefreshFailed = computed(() => (
   props.store.outlineState != null
   && props.store.outlineError?.code === 'ChapterOutlineRefreshFailed'
@@ -295,11 +286,7 @@ onBeforeUnmount(() => confirmFocus.unmount())
         <h2 id="outline-heading">第 {{ chapterNumber }} 章小纲</h2>
         <span>从当前故事块收束本章任务；手工输入只保留在本地，保存时才推进工作稿。</span>
       </div>
-      <dl class="authority-strip" aria-label="章节小纲权威依据">
-        <div :aria-label="`Planning R${planningRevision}`"><dt>Planning</dt><dd>R{{ planningRevision }}</dd></div>
-        <div :aria-label="`Canon R${canonRevision}`"><dt>Canon</dt><dd>R{{ canonRevision }}</dd></div>
-        <div :aria-label="`Projection R${projectionRevision}`"><dt>Projection</dt><dd>R{{ projectionRevision }}</dd></div>
-      </dl>
+      <p class="authority-strip" aria-label="章节小纲状态">章节小纲依据已同步</p>
     </header>
 
     <p
@@ -649,11 +636,7 @@ onBeforeUnmount(() => confirmFocus.unmount())
 .outline-header p,.empty-outline>p,.confirm-panel>p:first-child { margin:0; color:var(--nc-vermilion); font:700 10px Georgia,serif; letter-spacing:.17em; }
 .outline-header h2 { margin:5px 0 6px; font:600 30px Georgia,'Noto Serif SC',serif; }
 .outline-header span,.empty-outline span { color:var(--nc-muted); line-height:1.7; }
-.authority-strip { display:flex; flex:none; margin:0; overflow:hidden; border:1px solid var(--nc-border); border-radius:8px; background:var(--nc-paper); }
-.authority-strip div { min-width:0; padding:9px 12px; }
-.authority-strip div+div { border-left:1px solid var(--nc-border); }
-.authority-strip dt { color:var(--nc-muted); font-size:10px; }
-.authority-strip dd { margin:3px 0 0; font:600 16px Georgia,serif; }
+.authority-strip { flex:none; margin:0; padding:9px 12px; border:1px solid var(--nc-border); border-radius:8px; color:var(--nc-muted); background:var(--nc-paper); font:600 13px Georgia,'Noto Serif SC',serif; }
 .notice,.read-only-note,.recovery-link,.error-summary,.recovery-summary { margin:0; padding:11px 13px; border-left:3px solid var(--nc-vermilion); background:var(--nc-paper); }
 .error-summary,.recovery-summary,.recovery-link { display:flex; align-items:center; gap:12px; border:1px solid var(--nc-border); }
 .error-summary small { color:var(--nc-muted); }
@@ -693,8 +676,7 @@ button:disabled { cursor:not-allowed; opacity:.45; }
 .confirm-panel footer { display:flex; justify-content:flex-end; gap:10px; margin-top:18px; }
 @media(max-width:760px){
   .outline-header{align-items:start;flex-direction:column}
-  .authority-strip{width:100%;flex-wrap:wrap}
-  .authority-strip div{min-width:0;flex:1 1 0}
+  .authority-strip{width:100%}
   .reference-grid,.text-grid,.outline-ai{grid-template-columns:1fr}
   .outline-scroll{max-height:none}
   .outline-actions{flex-wrap:wrap}

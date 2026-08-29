@@ -20,7 +20,9 @@ const errorTarget = ref(null)
 const confirmErrorTarget = ref(null)
 const confirmTarget = ref(null)
 const confirmDialog = ref(null)
+const historyTrigger = ref(null)
 const statusTarget = ref(null)
+let historyRestoreTarget = null
 const teleportEnabled = typeof document !== 'undefined'
 const projectId = computed(() => routeProject.project.value?.id || '')
 const locked = computed(() => routeProject.state.value === 'archived' || store.readOnly)
@@ -84,6 +86,7 @@ async function hydrate() {
 watch(() => [projectId.value, routeProject.state.value], () => {
   notice.value = ''
   authorInstructions.value = ''
+  historyRestoreTarget = null
   void hydrate().catch(() => {})
 }, { immediate: true })
 watch(confirmOpen, async open => {
@@ -106,7 +109,19 @@ async function generate() {
     }
   } catch {}
 }
-function openHistory() { void workspace.openHistory().catch(() => {}) }
+function openHistory(event) {
+  const trigger = event?.currentTarget || historyTrigger.value
+  historyRestoreTarget = trigger?.isConnected !== false ? trigger : null
+  void workspace.openHistory().catch(() => {})
+}
+function closeHistory() {
+  historyOpen.value = false
+  const trigger = historyRestoreTarget
+  historyRestoreTarget = null
+  void nextTick().then(() => {
+    if (trigger?.isConnected !== false) trigger?.focus?.()
+  })
+}
 function showHistoryDetail(revision) { void workspace.showHistoryDetail(revision).catch(() => {}) }
 function loadMoreHistory() { void workspace.loadMoreHistory().catch(() => {}) }
 function confirmHydrateOverwrite() {
@@ -143,7 +158,7 @@ function handleConfirmKeydown(event) {
 onBeforeRouteLeave(() => workspace.requestLeave())
 onBeforeRouteUpdate(() => workspace.requestLeave())
 onMounted(() => window.addEventListener('beforeunload', workspace.beforeUnload))
-onBeforeUnmount(() => { window.removeEventListener('beforeunload', workspace.beforeUnload); confirmFocus.unmount() })
+onBeforeUnmount(() => { historyRestoreTarget = null; window.removeEventListener('beforeunload', workspace.beforeUnload); confirmFocus.unmount() })
 </script>
 
 <template>
@@ -160,7 +175,7 @@ onBeforeUnmount(() => { window.removeEventListener('beforeunload', workspace.bef
     <section v-else-if="routeProject.state.value === 'error'" class="sheet">项目加载失败。<button @click="routeProject.reload">重试</button></section>
     <section v-else class="sheet" :aria-busy="busy || undefined">
       <div class="workspace-content" :inert="busy || undefined">
-        <header><p>CREATION BIBLE · {{ modeLabel }}</p><h1 ref="statusTarget" tabindex="-1">{{ routeProject.project.value?.title }} 的创作圣经</h1><button :disabled="busy" @click="openHistory">修订历史</button></header>
+        <header><p>CREATION BIBLE · {{ modeLabel }}</p><h1 ref="statusTarget" tabindex="-1">{{ routeProject.project.value?.title }} 的创作圣经</h1><button ref="historyTrigger" :disabled="busy" @click="openHistory($event)">修订历史</button></header>
         <aside class="ai-status" aria-label="AI 辅助状态">
           AI 辅助：{{ planningReady ? 'Ready' : 'Not Ready' }}（不影响手动保存与确认）
         </aside>
@@ -190,7 +205,7 @@ onBeforeUnmount(() => { window.removeEventListener('beforeunload', workspace.bef
       </div>
       <div v-if="busy" class="busy-overlay" role="status" aria-live="polite" aria-busy="true">正在处理创作圣经…</div>
     </section>
-    <bible-history-drawer :history="store.history" :history-next-before-revision="store.historyNextBeforeRevision" :history-detail="store.historyDetail" :open="historyOpen" :busy="busy" :error="errorSummary" :retry-label="recoveryLabel" @close="historyOpen = false" @detail="showHistoryDetail" @more="loadMoreHistory" @retry="retryFailure" />
+    <bible-history-drawer :history="store.history" :history-next-before-revision="store.historyNextBeforeRevision" :history-detail="store.historyDetail" :open="historyOpen" :busy="busy" :error="errorSummary" :retry-label="recoveryLabel" @close="closeHistory" @detail="showHistoryDetail" @more="loadMoreHistory" @retry="retryFailure" />
   </section>
 </template>
 

@@ -1864,6 +1864,17 @@ test('mounted outline selectors are locked to the active story hierarchy and cas
     app.mount(root)
     await flush()
 
+    const authorSurface = walk(root).flatMap(item => [
+      item.text,
+      ...Object.entries(item.props)
+        .filter(([key, value]) => (
+          typeof value === 'string'
+          && /^(?:aria-|id$|title$|data-)/u.test(key)
+        ))
+        .map(([, value]) => value),
+    ]).join(' ')
+    assert.doesNotMatch(authorSurface, /Canon|Projection|Planning R|planning-1|R1/u)
+
     let selects = walk(root).filter(item => item.type === 'select')
     assert.equal(selects.length, 2)
     assert.match(text(selects[0]), /活动分卷/)
