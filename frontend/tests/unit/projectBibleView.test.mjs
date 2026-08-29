@@ -302,7 +302,7 @@ test('mounted ProjectBibleView presents every mode label without exposing raw st
         return new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } })
       }
       if (path.endsWith('/bible/draft')) {
-        const value = id === 'first' ? makeDraft(id, { draftId: null, draftVersion: null, status: 'missing', draft: null, canConfirm: false }) : id === 'head' ? makeDraft(id, { draftId: null, draftVersion: null, status: 'missing', draft: null, canConfirm: false, reasons: [] }) : id === 'super' ? makeDraft(id, { draftId: 'draft-super', status: 'superseded', canEdit: false, canConfirm: false, reasons: ['bible_head_changed'] }) : id === 'archived' ? makeDraft(id, { lifecycle: 'archived', draftId: null, draftVersion: null, status: 'missing', draft: null, canEdit: false, canConfirm: false, canClone: false, reasons: ['bible_head_changed'] }) : makeDraft(id)
+        const value = id === 'first' ? makeDraft(id, { draftId: null, draftVersion: null, status: 'missing', draft: null, canConfirm: false }) : id === 'head' ? makeDraft(id, { draftId: null, draftVersion: null, status: 'missing', draft: null, canConfirm: false, reasons: [] }) : id === 'draft' ? makeDraft(id, { reasons: ['bible_confirmed', 'contract_unavailable', 'contract_basis_invalid', 'unknown-current-reason-sentinel'] }) : id === 'super' ? makeDraft(id, { draftId: 'draft-super', status: 'superseded', canEdit: false, canConfirm: false, reasons: ['bible_head_changed'] }) : id === 'archived' ? makeDraft(id, { lifecycle: 'archived', draftId: null, draftVersion: null, status: 'missing', draft: null, canEdit: false, canConfirm: false, canClone: false, reasons: ['bible_head_changed'] }) : makeDraft(id)
         return new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } })
       }
       return new Response(JSON.stringify({ id, title: id, archivedAt: id === 'archived' ? '2026-01-01' : null }), { headers: { 'content-type': 'application/json' } })
@@ -317,6 +317,10 @@ test('mounted ProjectBibleView presents every mode label without exposing raw st
     area.props.onInput({ target: { value: 'dirty again' } }); await flush(); await router.push('/next'); assert.equal(router.currentRoute.value.fullPath, '/projects/first/bible')
     allowLeave = true; await router.push('/next'); assert.equal(router.currentRoute.value.fullPath, '/next')
     await router.push('/projects/draft/bible'); await flush(); assert.equal(text(eyebrow()), 'CREATION BIBLE · 工作草稿')
+    const currentStatusNotes = walk(root).filter(value => value.type === 'p' && value.props.class === 'status-note').map(text)
+    assert.equal(currentStatusNotes.filter(value => value === '请完成或重新签署创作契约。').length, 1)
+    assert.equal(currentStatusNotes.filter(value => value === '创作圣经状态需要重新读取。').length, 1)
+    assert.doesNotMatch(text(root), /bible_confirmed|contract_unavailable|contract_basis_invalid|unknown-current-reason-sentinel/)
     await router.push('/projects/head/bible'); await flush(); assert.equal(text(eyebrow()), 'CREATION BIBLE · 已确认'); assert.match(text(root), /已确认，作为项目永久基线/); area = walk(root).find(value => value.type === 'textarea'); assert.equal(area.props.readonly, true); assert.equal(area.props.disabled, false); assert.equal(byText(root, '调整未来设计'), undefined)
     await router.push('/projects/super/bible'); await flush(); assert.equal(text(eyebrow()), 'CREATION BIBLE · 历史修订'); assert.match(text(root), /此修订已被替代/); assert.equal(byText(root, '调整未来设计'), undefined)
     await router.push('/projects/archived/bible'); await flush(); assert.equal(text(eyebrow()), 'CREATION BIBLE · 只读归档'); assert.match(text(root), /此项目或当前服务端状态为只读/); area = walk(root).find(value => value.type === 'textarea' && value.props.value === 'ARCHIVED HEAD'); assert.ok(area); assert.equal(area.props.readonly, true)

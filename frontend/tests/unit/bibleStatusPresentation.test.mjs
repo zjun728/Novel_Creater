@@ -35,6 +35,28 @@ test('reason presentation is frozen, fail-closed, and never echoes untrusted inp
   assert.deepEqual(presentBibleReasons(['contract_unavailable', unknown, 'contract_basis_invalid']), ['请完成或重新签署创作契约。', expected])
 })
 
+test('status presentation rejects coercible non-strings without touching their conversion hooks', () => {
+  const calls = { reason: 0, mode: 0, history: 0 }
+  const coercible = (key, value) => ({
+    [Symbol.toPrimitive]() { calls[key] += 1; return value },
+    valueOf() { calls[key] += 1; return value },
+    toString() { calls[key] += 1; return value },
+  })
+  assert.equal(bibleReasonLabel(coercible('reason', 'contract_missing')), '创作圣经状态需要重新读取。')
+  assert.equal(bibleModeLabel(coercible('mode', 'head')), '状态待核对')
+  assert.equal(bibleHistoryStatusLabel(coercible('history', 'current')), '状态待核对')
+  assert.deepEqual(calls, { reason: 0, mode: 0, history: 0 })
+  for (const [label, known, fallback] of [[bibleReasonLabel, 'contract_missing', '创作圣经状态需要重新读取。'], [bibleModeLabel, 'head', '状态待核对'], [bibleHistoryStatusLabel, 'current', '状态待核对']]) {
+    let toStringCalls = 0; let valueOfCalls = 0
+    assert.equal(label({ toString() { toStringCalls += 1; return known } }), fallback)
+    assert.equal(label({ toString() { valueOfCalls += 1; return {} }, valueOf() { valueOfCalls += 1; return known } }), fallback)
+    assert.equal(toStringCalls, 0); assert.equal(valueOfCalls, 0)
+  }
+  for (const value of [new String('contract_missing'), 1, [], Symbol('contract_missing'), null]) assert.equal(bibleReasonLabel(value), '创作圣经状态需要重新读取。')
+  for (const value of [new String('head'), 1, [], Symbol('head'), null]) assert.equal(bibleModeLabel(value), '状态待核对')
+  for (const value of [new String('current'), 1, [], Symbol('current'), null]) assert.equal(bibleHistoryStatusLabel(value), '状态待核对')
+})
+
 test('mode and history statuses use closed author-facing labels', () => {
   assert.deepEqual(Object.fromEntries(['first', 'draft', 'head', 'superseded', 'archived'].map(mode => [mode, bibleModeLabel(mode)])), {
     first: '待建立', draft: '工作草稿', head: '已确认', superseded: '历史修订', archived: '只读归档',

@@ -14,6 +14,7 @@ const EMPTY_REASONS = Object.freeze([])
 
 export function bibleReasonLabel(reason) {
   try {
+    if (typeof reason !== 'string') return UNKNOWN_REASON_LABEL
     if (reason === 'bible_confirmed') return null
     return Object.hasOwn(REASON_LABELS, reason) ? REASON_LABELS[reason] : UNKNOWN_REASON_LABEL
   } catch {
@@ -37,6 +38,7 @@ export function presentBibleReasons(reasons) {
 
 export function bibleModeLabel(mode) {
   try {
+    if (typeof mode !== 'string') return UNKNOWN_STATUS_LABEL
     return Object.hasOwn(MODE_LABELS, mode) ? MODE_LABELS[mode] : UNKNOWN_STATUS_LABEL
   } catch {
     return UNKNOWN_STATUS_LABEL
@@ -45,6 +47,7 @@ export function bibleModeLabel(mode) {
 
 export function bibleHistoryStatusLabel(status) {
   try {
+    if (typeof status !== 'string') return UNKNOWN_STATUS_LABEL
     return Object.hasOwn(HISTORY_STATUS_LABELS, status) ? HISTORY_STATUS_LABELS[status] : UNKNOWN_STATUS_LABEL
   } catch {
     return UNKNOWN_STATUS_LABEL
