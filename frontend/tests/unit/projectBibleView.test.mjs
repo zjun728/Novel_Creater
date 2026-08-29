@@ -125,9 +125,13 @@ test('Vite compiles the page through its controller and SSR renders the 11-field
     assert.equal(typeof Page.default.setup, 'function')
     const preview = await renderToString(createSSRApp({ render: () => h(Editor.default, { modelValue: bible(), disabled: true }) }))
     assert.match(preview, /作品承诺/); assert.match(preview, /开放设计问题/); assert.match(preview, /disabled/)
-    const drawer = await renderToString(createSSRApp({ render: () => h(Drawer.default, { open: true, busy: true, history: [{ revision: 3, canClone: true }], historyDetail: { revision: 3, bible: bible(), reasons: ['selection_missing'], basis: { seedId: 'seed-1', policyVersion: 'v1' } } }) }))
+    const drawer = await renderToString(createSSRApp({ render: () => h(Drawer.default, { open: true, busy: true, history: [{ revision: 3, status: 'current' }, { revision: 2, status: 'superseded' }, { revision: 1, status: 'unknown-status' }], historyDetail: { revision: 3, bible: bible(), reasons: ['bible_confirmed', 'contract_unavailable', 'contract_basis_invalid', 'unknown-reason-sentinel'], basis: { seedId: 'seed-1', policyVersion: 'v1' } } }) }))
     assert.match(drawer, /Revision 3/); assert.match(drawer, /查看详情/); assert.match(drawer, /开放设计问题/)
     assert.match(drawer, /<dl/); assert.doesNotMatch(drawer, /\[object Object\]/)
+    assert.match(drawer, /当前修订/); assert.match(drawer, /历史修订/); assert.match(drawer, /状态待核对/)
+    assert.equal((drawer.match(/请完成或重新签署创作契约。/g) || []).length, 1)
+    assert.equal((drawer.match(/创作圣经状态需要重新读取。/g) || []).length, 1)
+    assert.doesNotMatch(drawer, /bible_confirmed|contract_unavailable|contract_basis_invalid|unknown-reason-sentinel|unknown-status/)
   } finally { await vite.close() }
 })
 
@@ -277,7 +281,7 @@ test('outcome-unknown generation renders one assertive reconciliation notice wit
   } finally { global.fetch = originalFetch; global.window = originalWindow; await vite.close() }
 })
 
-test('mounted ProjectBibleView follows first, head-only, superseded, and archived route states through real Pinia/router/fetch', async () => {
+test('mounted ProjectBibleView presents every mode label without exposing raw status values', async () => {
   const vite = await createProjectBibleViteServer()
   const originalFetch = global.fetch; const originalWindow = global.window; const puts = []; let allowLeave = false
   const item = id => [{ id, text: id }]
@@ -294,11 +298,11 @@ test('mounted ProjectBibleView follows first, head-only, superseded, and archive
         return new Response(JSON.stringify(makeDraft(id, { draftVersion: 1 })), { headers: { 'content-type': 'application/json' } })
       }
       if (path.endsWith('/bible/head')) {
-        const value = id === 'first' ? makeHead(id, { revision: 0, bible: null, canClone: false }) : id === 'head' ? makeHead(id, { reasons: ['bible_head_changed'] }) : id === 'archived' ? makeHead(id, { lifecycle: 'archived', canClone: false, bible: { ...bible(), premiseAndPromise: 'ARCHIVED HEAD' }, reasons: ['project_archived'] }) : makeHead(id)
+        const value = id === 'first' || id === 'draft' || id === 'super' ? makeHead(id, { revision: 0, bible: null, canClone: false }) : id === 'head' ? makeHead(id, { reasons: ['bible_head_changed'] }) : id === 'archived' ? makeHead(id, { revision: 0, lifecycle: 'archived', canClone: false, bible: { ...bible(), premiseAndPromise: 'ARCHIVED HEAD' }, reasons: ['project_archived'] }) : makeHead(id)
         return new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } })
       }
       if (path.endsWith('/bible/draft')) {
-        const value = id === 'first' ? makeDraft(id, { draftId: null, draftVersion: null, status: 'missing', draft: null, canConfirm: false }) : id === 'head' ? makeDraft(id, { draftId: null, draftVersion: null, status: 'missing', draft: null, canConfirm: false, reasons: [] }) : id === 'super' ? makeDraft(id, { draftId: 'draft-super', status: 'superseded', canEdit: false, canConfirm: false, reasons: ['bible_head_changed'] }) : makeDraft(id, { lifecycle: 'archived', status: 'superseded', draft: { ...bible(), premiseAndPromise: 'ARCHIVED DRAFT' }, canEdit: false, canConfirm: false, canClone: false, reasons: ['bible_head_changed'] })
+        const value = id === 'first' ? makeDraft(id, { draftId: null, draftVersion: null, status: 'missing', draft: null, canConfirm: false }) : id === 'head' ? makeDraft(id, { draftId: null, draftVersion: null, status: 'missing', draft: null, canConfirm: false, reasons: [] }) : id === 'super' ? makeDraft(id, { draftId: 'draft-super', status: 'superseded', canEdit: false, canConfirm: false, reasons: ['bible_head_changed'] }) : id === 'archived' ? makeDraft(id, { lifecycle: 'archived', draftId: null, draftVersion: null, status: 'missing', draft: null, canEdit: false, canConfirm: false, canClone: false, reasons: ['bible_head_changed'] }) : makeDraft(id)
         return new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } })
       }
       return new Response(JSON.stringify({ id, title: id, archivedAt: id === 'archived' ? '2026-01-01' : null }), { headers: { 'content-type': 'application/json' } })
@@ -306,13 +310,17 @@ test('mounted ProjectBibleView follows first, head-only, superseded, and archive
     const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/projects/:projectId/bible', component: Page.default }, { path: '/next', component: { render: () => h('p', 'next') } }] })
     const app = renderer.createApp({ render: () => h(RouterView) }); app.use(createPinia()); app.use(router); app.provide(ssrContextKey, { modules: new Set() })
     await router.push('/projects/first/bible'); await router.isReady(); const root = node('root'); app.mount(root); await flush()
+    const eyebrow = () => walk(root).find(value => value.type === 'p' && text(value).startsWith('CREATION BIBLE'))
+    assert.equal(text(eyebrow()), 'CREATION BIBLE · 待建立')
     let area = walk(root).find(value => value.type === 'textarea'); assert.equal(area.props.readonly, undefined); assert.equal(area.props.disabled, false)
     area.props.onInput({ target: { value: 'first local' } }); await flush(); await byText(root, '手动保存').props.onClick(); await flush(); assert.equal(puts[0].expectedDraftVersion, 0)
     area.props.onInput({ target: { value: 'dirty again' } }); await flush(); await router.push('/next'); assert.equal(router.currentRoute.value.fullPath, '/projects/first/bible')
     allowLeave = true; await router.push('/next'); assert.equal(router.currentRoute.value.fullPath, '/next')
-    await router.push('/projects/head/bible'); await flush(); assert.match(text(root), /CREATION BIBLE · current/); assert.match(text(root), /已确认，作为项目永久基线/); area = walk(root).find(value => value.type === 'textarea'); assert.equal(area.props.readonly, true); assert.equal(area.props.disabled, false); assert.equal(byText(root, '调整未来设计'), undefined)
-    await router.push('/projects/super/bible'); await flush(); assert.match(text(root), /CREATION BIBLE · current/); assert.match(text(root), /已确认，作为项目永久基线/); assert.equal(byText(root, '调整未来设计'), undefined)
-    await router.push('/projects/archived/bible'); await flush(); assert.match(text(root), /CREATION BIBLE · current/); assert.match(text(root), /已确认，作为项目永久基线/); area = walk(root).find(value => value.type === 'textarea' && value.props.value === 'ARCHIVED HEAD'); assert.ok(area); assert.equal(area.props.readonly, true)
+    await router.push('/projects/draft/bible'); await flush(); assert.equal(text(eyebrow()), 'CREATION BIBLE · 工作草稿')
+    await router.push('/projects/head/bible'); await flush(); assert.equal(text(eyebrow()), 'CREATION BIBLE · 已确认'); assert.match(text(root), /已确认，作为项目永久基线/); area = walk(root).find(value => value.type === 'textarea'); assert.equal(area.props.readonly, true); assert.equal(area.props.disabled, false); assert.equal(byText(root, '调整未来设计'), undefined)
+    await router.push('/projects/super/bible'); await flush(); assert.equal(text(eyebrow()), 'CREATION BIBLE · 历史修订'); assert.match(text(root), /此修订已被替代/); assert.equal(byText(root, '调整未来设计'), undefined)
+    await router.push('/projects/archived/bible'); await flush(); assert.equal(text(eyebrow()), 'CREATION BIBLE · 只读归档'); assert.match(text(root), /此项目或当前服务端状态为只读/); area = walk(root).find(value => value.type === 'textarea' && value.props.value === 'ARCHIVED HEAD'); assert.ok(area); assert.equal(area.props.readonly, true)
+    assert.doesNotMatch(text(eyebrow()), /\b(?:current|head|superseded|archived)\b|bible_confirmed/)
   } finally { global.fetch = originalFetch; global.window = originalWindow; await vite.close() }
 })
 

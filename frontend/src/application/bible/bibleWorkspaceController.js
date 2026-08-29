@@ -1,14 +1,7 @@
 import { computed, nextTick, ref, toRef } from 'vue'
+import { bibleReasonLabel, presentBibleReasons } from './bibleStatusPresentation.js'
 
-const REASON_GROUPS = {
-  selection_missing: '请选择种子后继续。', seed_missing: '请选择种子后继续。',
-  contract_missing: '请完成或重新签署创作契约。', contract_not_ready: '请完成或重新签署创作契约。', contract_revision_replaced: '请完成或重新签署创作契约。',
-  contract_basis_invalid: '请完成或重新签署创作契约。', contract_unavailable: '请完成或重新签署创作契约。',
-  selection_revision_changed: '内容已固定为项目永久基线，请查看历史记录。', seed_identity_changed: '内容已固定为项目永久基线，请查看历史记录。', seed_revision_changed: '内容已固定为项目永久基线，请查看历史记录。', seed_generation_changed: '内容已固定为项目永久基线，请查看历史记录。', contract_revision_changed: '内容已固定为项目永久基线，请查看历史记录。', creation_contract_changed: '内容已固定为项目永久基线，请查看历史记录。', style_contract_changed: '内容已固定为项目永久基线，请查看历史记录。', bible_policy_changed: '内容已固定为项目永久基线，请查看历史记录。', bible_head_changed: '内容已固定为项目永久基线，请查看历史记录。', bible_revision_replaced: '内容已固定为项目永久基线，请查看历史记录。',
-  project_archived: '项目已归档，只能查阅。', bible_read_only: '项目已归档，只能查阅。',
-}
-
-export const bibleReasonLabel = reason => REASON_GROUPS[reason] || `状态需重新核对（${reason}）`
+export { bibleReasonLabel }
 
 const emptyBible = () => ({
   premiseAndPromise: '', powerOrProgressionSystem: '', protagonist: '', toneAndNarrativeBoundaries: '',
@@ -62,7 +55,7 @@ export function createBibleWorkspaceController({
     return ''
   })
   const confirmPreview = computed(() => clone(store.draft?.draft || null))
-  const reasonLabels = computed(() => activeReasons.value.map(bibleReasonLabel))
+  const reasonLabels = computed(() => presentBibleReasons(activeReasons.value))
   function ticket() { return { project: String(projectId() || ''), generation } }
   function current(value) { return value.project === String(projectId() || '') && value.project === activeProject && value.generation === generation }
   function publicFailure(failure) {

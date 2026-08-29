@@ -62,6 +62,8 @@ function controller(store, options = {}) {
 test('the public frontend Bible reason contract maps every supported code intentionally', () => {
   const codes = ['selection_missing', 'seed_missing', 'contract_missing', 'contract_not_ready', 'contract_revision_replaced', 'contract_basis_invalid', 'contract_unavailable', 'selection_revision_changed', 'seed_identity_changed', 'seed_revision_changed', 'seed_generation_changed', 'contract_revision_changed', 'creation_contract_changed', 'style_contract_changed', 'bible_policy_changed', 'bible_head_changed', 'bible_revision_replaced', 'project_archived']
   for (const code of codes) assert.doesNotMatch(bibleReasonLabel(code), new RegExp(`（${code}）`))
+  assert.equal(bibleReasonLabel('bible_confirmed'), null)
+  assert.equal(bibleReasonLabel('unknown_reason'), '创作圣经状态需要重新读取。')
 })
 
 test('late project operations cannot publish working state, errors, focus, or dialogs into a newer hydrate generation', async () => {
@@ -192,7 +194,10 @@ test('active status and reasons are selected from the artifact being displayed',
   assert.deepEqual(workspace.activeReasons.value, ['bible_head_changed'])
   store.head = { ...store.head, status: 'superseded', reasons: ['contract_unavailable', 'contract_basis_invalid'] }
   assert.equal(workspace.activeStatus.value, 'superseded')
-  assert.deepEqual(workspace.reasonLabels.value, ['请完成或重新签署创作契约。', '请完成或重新签署创作契约。'])
+  assert.deepEqual(workspace.reasonLabels.value, ['请完成或重新签署创作契约。'])
+  store.head = { ...store.head, reasons: ['bible_confirmed', 'contract_unavailable', 'contract_basis_invalid', 'unknown_reason_sentinel'] }
+  assert.deepEqual(workspace.reasonLabels.value, ['请完成或重新签署创作契约。', '创作圣经状态需要重新读取。'])
+  assert.doesNotMatch(workspace.reasonLabels.value.join(' '), /bible_confirmed|contract_unavailable|contract_basis_invalid|unknown_reason_sentinel/)
 })
 
 test('state machine displays a head-only Bible as a read-only permanent baseline', async () => {
@@ -283,7 +288,7 @@ test('busy state blocks duplicate actions, every async action focuses errors, an
   await assert.rejects(workspace.save())
   await Promise.resolve()
   assert.equal(focused[0], 'error')
-  assert.deepEqual(workspace.reasonLabels.value, ['请选择种子后继续。', '请完成或重新签署创作契约。', '内容已固定为项目永久基线，请查看历史记录。', '项目已归档，只能查阅。', '状态需重新核对（unknown_reason）'])
+  assert.deepEqual(workspace.reasonLabels.value, ['请选择种子后继续。', '请完成或重新签署创作契约。', '内容已固定为项目永久基线，请查看历史记录。', '项目已归档，只能查阅。', '创作圣经状态需要重新读取。'])
 })
 
 test('AI Not Ready does not override manual permissions and leave protection handles beforeunload', async () => {

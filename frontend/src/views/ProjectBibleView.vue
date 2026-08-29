@@ -1,7 +1,8 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
-import { bibleReasonLabel, createBibleWorkspaceController } from '../application/bible/bibleWorkspaceController.js'
+import { createBibleWorkspaceController } from '../application/bible/bibleWorkspaceController.js'
+import { bibleModeLabel } from '../application/bible/bibleStatusPresentation.js'
 import BibleEditor from '../components/bible/BibleEditor.vue'
 import BibleHistoryDrawer from '../components/bible/BibleHistoryDrawer.vue'
 import { createModalFocusManager } from '../components/common/modalFocusManager.js'
@@ -53,8 +54,9 @@ const workspace = createBibleWorkspaceController({
   focusStatus: () => statusTarget.value?.focus(),
   confirmLeave: () => window.confirm('存在未保存的创作圣经编辑。确定离开吗？'),
 })
-const { working, confirmOpen, historyOpen, errorSummary, recoveryCommand, busy, mode, activeStatus, editable, canSave, canConfirm, canGenerate, generationDisabledReason, confirmPreview, reasonLabels } = workspace
+const { working, confirmOpen, historyOpen, errorSummary, recoveryCommand, busy, mode, editable, canSave, canConfirm, canGenerate, generationDisabledReason, confirmPreview, reasonLabels } = workspace
 const editorDisabled = computed(() => busy.value)
+const modeLabel = computed(() => bibleModeLabel(mode.value))
 const hasConflict = computed(() => errorSummary.value?.status === 409)
 const globalError = computed(() => errorSummary.value && !confirmOpen.value && !historyOpen.value ? errorSummary.value : null)
 const recoveryLabel = computed(() => ({
@@ -158,7 +160,7 @@ onBeforeUnmount(() => { window.removeEventListener('beforeunload', workspace.bef
     <section v-else-if="routeProject.state.value === 'error'" class="sheet">项目加载失败。<button @click="routeProject.reload">重试</button></section>
     <section v-else class="sheet" :aria-busy="busy || undefined">
       <div class="workspace-content" :inert="busy || undefined">
-        <header><p>CREATION BIBLE · {{ activeStatus || mode.toUpperCase() }}</p><h1 ref="statusTarget" tabindex="-1">{{ routeProject.project.value?.title }} 的创作圣经</h1><button :disabled="busy" @click="openHistory">修订历史</button></header>
+        <header><p>CREATION BIBLE · {{ modeLabel }}</p><h1 ref="statusTarget" tabindex="-1">{{ routeProject.project.value?.title }} 的创作圣经</h1><button :disabled="busy" @click="openHistory">修订历史</button></header>
         <aside class="ai-status" aria-label="AI 辅助状态">
           AI 辅助：{{ planningReady ? 'Ready' : 'Not Ready' }}（不影响手动保存与确认）
         </aside>
@@ -188,7 +190,7 @@ onBeforeUnmount(() => { window.removeEventListener('beforeunload', workspace.bef
       </div>
       <div v-if="busy" class="busy-overlay" role="status" aria-live="polite" aria-busy="true">正在处理创作圣经…</div>
     </section>
-    <bible-history-drawer :history="store.history" :history-next-before-revision="store.historyNextBeforeRevision" :history-detail="store.historyDetail" :open="historyOpen" :busy="busy" :error="errorSummary" :retry-label="recoveryLabel" :label-reason="bibleReasonLabel" @close="historyOpen = false" @detail="showHistoryDetail" @more="loadMoreHistory" @retry="retryFailure" />
+    <bible-history-drawer :history="store.history" :history-next-before-revision="store.historyNextBeforeRevision" :history-detail="store.historyDetail" :open="historyOpen" :busy="busy" :error="errorSummary" :retry-label="recoveryLabel" @close="historyOpen = false" @detail="showHistoryDetail" @more="loadMoreHistory" @retry="retryFailure" />
   </section>
 </template>
 
