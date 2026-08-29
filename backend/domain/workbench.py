@@ -112,6 +112,11 @@ class WorkbenchBootstrap(_StrictValue):
         )
         if self.canon_projection_synchronized != synchronized:
             raise ValueError("Canon/Projection synchronization flag is invalid")
+        has_unsynchronized_blocker = (
+            "canon_projection_unsynchronized" in reason_codes
+        )
+        if self.canon_projection_synchronized == has_unsynchronized_blocker:
+            raise ValueError("synchronization blocked reason differs from head state")
         if self.mode == "historical":
             if self.final_chapter is None or self.outline is None or self.volume is None:
                 raise ValueError("historical mode requires pinned final authorities")
@@ -124,13 +129,25 @@ class WorkbenchBootstrap(_StrictValue):
         elif self.mode == "current":
             if self.final_chapter is not None:
                 raise ValueError("current mode cannot expose a final chapter")
+            if (self.volume is None) != (self.outline is None):
+                raise ValueError("current authority bundle requires volume and outline")
             if self.session is not None:
+                if self.volume is None:
+                    raise ValueError("session requires a confirmed authority bundle")
                 if self.session.chapter_number != self.requested_chapter:
                     raise ValueError("session differs from request")
                 if "create_session" in self.available_actions:
                     raise ValueError("create_session is invalid when a session exists")
-            elif set(self.available_actions) - {"view_outline", "create_session"}:
-                raise ValueError("draft actions require a current session")
+            else:
+                if "create_session" in self.available_actions:
+                    if self.volume is None:
+                        raise ValueError(
+                            "create_session requires a confirmed authority bundle"
+                        )
+                    if not self.canon_projection_synchronized:
+                        raise ValueError("create_session requires synchronized heads")
+                if set(self.available_actions) - {"view_outline", "create_session"}:
+                    raise ValueError("draft actions require a current session")
         else:
             if any((self.volume, self.session, self.final_chapter, self.outline)):
                 raise ValueError("future mode cannot expose chapter authorities")
@@ -158,6 +175,17 @@ class WorkbenchVolumeSummary(_StrictValue):
                 raise ValueError("non-empty volume requires a finalized range")
             if self.first_finalized_chapter > self.last_finalized_chapter:
                 raise ValueError("finalized range is reversed")
+            if self.finalized_chapter_count == 1:
+                if self.first_finalized_chapter != self.last_finalized_chapter:
+                    raise ValueError("single finalized chapter requires a single-point range")
+            else:
+                if self.first_finalized_chapter >= self.last_finalized_chapter:
+                    raise ValueError("multiple finalized chapters require a wider range")
+                finalized_span = (
+                    self.last_finalized_chapter - self.first_finalized_chapter + 1
+                )
+                if self.finalized_chapter_count > finalized_span:
+                    raise ValueError("finalized chapter count exceeds its range")
         return self
 
 
@@ -180,9 +208,14 @@ class WorkbenchVolumeSummaryList(_StrictValue):
         located = sum(item.contains_authoritative_chapter for item in self.volumes)
         if located > 1:
             raise ValueError("authoritative chapter can belong to one volume only")
-        if self.unassigned_authoritative_chapter is not None:
+        if self.authoritative_chapter is None:
+            if located or self.unassigned_authoritative_chapter is not None:
+                raise ValueError("authority location requires an authoritative chapter")
+        elif self.unassigned_authoritative_chapter is not None:
             if self.unassigned_authoritative_chapter != self.authoritative_chapter or located:
                 raise ValueError("unassigned authority must not also belong to a volume")
+        elif located != 1:
+            raise ValueError("authority must be located or explicitly unassigned")
         return self
 
 
@@ -235,8 +268,14 @@ class WorkbenchChapterIndexPage(_StrictValue):
         numbers = tuple(item.chapter_number for item in self.chapters)
         if tuple(sorted(numbers)) != numbers or len(set(numbers)) != len(numbers):
             raise ValueError("chapters must be unique and ordered")
-        if sum(item.mode == "current" for item in self.chapters) > 1:
+        current_positions = tuple(
+            index for index, item in enumerate(self.chapters)
+            if item.mode == "current"
+        )
+        if len(current_positions) > 1:
             raise ValueError("page can expose at most one current chapter")
+        if current_positions and current_positions[0] != len(self.chapters) - 1:
+            raise ValueError("current chapter must be last in the page")
         if len(self.chapters) > self.limit:
             raise ValueError("page exceeds its declared limit")
         return self
