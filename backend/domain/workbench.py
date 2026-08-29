@@ -129,6 +129,8 @@ class WorkbenchBootstrap(_StrictValue):
         elif self.mode == "current":
             if self.final_chapter is not None:
                 raise ValueError("current mode cannot expose a final chapter")
+            if "future_chapter" in reason_codes:
+                raise ValueError("future_chapter is invalid in current mode")
             if (self.volume is None) != (self.outline is None):
                 raise ValueError("current authority bundle requires volume and outline")
             has_authority_bundle = self.volume is not None
@@ -141,9 +143,35 @@ class WorkbenchBootstrap(_StrictValue):
                     raise ValueError("session_not_created is invalid when a session exists")
                 if self.session.chapter_number != self.requested_chapter:
                     raise ValueError("session differs from request")
+                action_set = set(self.available_actions)
+                if "project_archived" in reason_codes:
+                    safe_actions = {
+                        "view_chapter", "view_outline", "compare_candidates",
+                    }
+                    if action_set - safe_actions:
+                        raise ValueError(
+                            "project_archived permits read-only session actions"
+                        )
+                if "canon_projection_unsynchronized" in reason_codes:
+                    if action_set & {"run_ai_operation", "finalize_candidate"}:
+                        raise ValueError(
+                            "canon_projection_unsynchronized blocks head-sensitive "
+                            "session actions"
+                        )
+                if (
+                    "finalization_in_progress" in reason_codes
+                    and "audit_candidate" in action_set
+                ):
+                    raise ValueError(
+                        "audit_candidate is invalid during finalization_in_progress"
+                    )
                 if "create_session" in self.available_actions:
                     raise ValueError("create_session is invalid when a session exists")
             else:
+                if "finalization_in_progress" in reason_codes:
+                    raise ValueError(
+                        "finalization_in_progress requires a current session"
+                    )
                 has_create_action = "create_session" in self.available_actions
                 if not has_authority_bundle:
                     if "outline_required" not in reason_codes:

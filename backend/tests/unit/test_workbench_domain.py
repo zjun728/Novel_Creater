@@ -517,7 +517,6 @@ def test_current_session_bundle_rejects_outline_blocker() -> None:
     (
         ("project_archived", 2, 2, True),
         ("canon_projection_unsynchronized", 3, 2, False),
-        ("finalization_in_progress", 2, 2, True),
     ),
 )
 def test_real_creation_blocker_suppresses_create_action(
@@ -598,4 +597,187 @@ def test_current_session_rejects_session_not_created_blocker() -> None:
     )
 
     with pytest.raises(ValidationError, match="session_not_created"):
+        WorkbenchBootstrap.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "forbidden_action",
+    (
+        "edit_draft",
+        "run_ai_operation",
+        "save_candidate",
+        "audit_candidate",
+        "finalize_candidate",
+    ),
+)
+def test_archived_current_session_rejects_mutating_actions(
+    forbidden_action: str,
+) -> None:
+    payload = current_bootstrap_payload()
+    payload.update(
+        session=WorkbenchSessionReference(id="session-3", chapter_number=3),
+        available_actions=(forbidden_action,),
+        blocked_reasons=(WorkbenchBlockedReason(
+            code="project_archived", message="项目已归档。",
+        ),),
+    )
+
+    with pytest.raises(ValidationError, match="project_archived"):
+        WorkbenchBootstrap.model_validate(payload)
+
+
+def test_archived_current_session_allows_safe_read_actions() -> None:
+    payload = current_bootstrap_payload()
+    safe_actions = ("view_chapter", "view_outline", "compare_candidates")
+    payload.update(
+        session=WorkbenchSessionReference(id="session-3", chapter_number=3),
+        available_actions=safe_actions,
+        blocked_reasons=(WorkbenchBlockedReason(
+            code="project_archived", message="项目已归档。",
+        ),),
+    )
+
+    value = WorkbenchBootstrap.model_validate(payload)
+
+    assert value.available_actions == safe_actions
+
+
+@pytest.mark.parametrize(
+    "forbidden_action",
+    ("run_ai_operation", "finalize_candidate"),
+)
+def test_unsynchronized_current_session_rejects_head_sensitive_actions(
+    forbidden_action: str,
+) -> None:
+    payload = current_bootstrap_payload()
+    payload.update(
+        session=WorkbenchSessionReference(id="session-3", chapter_number=3),
+        available_actions=(forbidden_action,),
+        canon_revision=3,
+        projection_revision=2,
+        canon_projection_synchronized=False,
+        blocked_reasons=(WorkbenchBlockedReason(
+            code="canon_projection_unsynchronized",
+            message="Canon 与当前状态尚未同步。",
+        ),),
+    )
+
+    with pytest.raises(
+        ValidationError, match="canon_projection_unsynchronized",
+    ):
+        WorkbenchBootstrap.model_validate(payload)
+
+
+def test_unsynchronized_current_session_preserves_pinned_safe_actions() -> None:
+    payload = current_bootstrap_payload()
+    safe_actions = (
+        "view_chapter",
+        "view_outline",
+        "edit_draft",
+        "save_candidate",
+        "compare_candidates",
+        "audit_candidate",
+    )
+    payload.update(
+        session=WorkbenchSessionReference(id="session-3", chapter_number=3),
+        available_actions=safe_actions,
+        canon_revision=3,
+        projection_revision=2,
+        canon_projection_synchronized=False,
+        blocked_reasons=(WorkbenchBlockedReason(
+            code="canon_projection_unsynchronized",
+            message="Canon 与当前状态尚未同步。",
+        ),),
+    )
+
+    value = WorkbenchBootstrap.model_validate(payload)
+
+    assert value.available_actions == safe_actions
+
+
+def test_finalization_in_progress_requires_current_session() -> None:
+    payload = current_bootstrap_payload()
+    payload.update(blocked_reasons=(WorkbenchBlockedReason(
+        code="finalization_in_progress", message="定稿流程正在进行。",
+    ),))
+
+    with pytest.raises(ValidationError, match="finalization_in_progress"):
+        WorkbenchBootstrap.model_validate(payload)
+
+
+def test_finalization_in_progress_rejects_new_audit_action() -> None:
+    payload = current_bootstrap_payload()
+    payload.update(
+        session=WorkbenchSessionReference(id="session-3", chapter_number=3),
+        available_actions=("audit_candidate",),
+        blocked_reasons=(WorkbenchBlockedReason(
+            code="finalization_in_progress", message="定稿流程正在进行。",
+        ),),
+    )
+
+    with pytest.raises(ValidationError, match="audit_candidate"):
+        WorkbenchBootstrap.model_validate(payload)
+
+
+def test_finalization_in_progress_preserves_existing_session_actions() -> None:
+    payload = current_bootstrap_payload()
+    allowed_actions = (
+        "view_chapter",
+        "view_outline",
+        "edit_draft",
+        "run_ai_operation",
+        "save_candidate",
+        "compare_candidates",
+        "finalize_candidate",
+    )
+    payload.update(
+        session=WorkbenchSessionReference(id="session-3", chapter_number=3),
+        available_actions=allowed_actions,
+        blocked_reasons=(WorkbenchBlockedReason(
+            code="finalization_in_progress", message="定稿流程正在进行。",
+        ),),
+    )
+
+    value = WorkbenchBootstrap.model_validate(payload)
+
+    assert value.available_actions == allowed_actions
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {
+            "available_actions": ("create_session",),
+            "blocked_reasons": (WorkbenchBlockedReason(
+                code="future_chapter", message="该章节尚未成为当前权威章节。",
+            ),),
+        },
+        {
+            "session": WorkbenchSessionReference(
+                id="session-3", chapter_number=3,
+            ),
+            "available_actions": ("edit_draft",),
+            "blocked_reasons": (WorkbenchBlockedReason(
+                code="future_chapter", message="该章节尚未成为当前权威章节。",
+            ),),
+        },
+        {
+            "volume": None,
+            "outline": None,
+            "blocked_reasons": (
+                WorkbenchBlockedReason(
+                    code="outline_required", message="需要先确认章节大纲。",
+                ),
+                WorkbenchBlockedReason(
+                    code="future_chapter", message="该章节尚未成为当前权威章节。",
+                ),
+            ),
+        },
+    ),
+)
+def test_current_mode_rejects_future_chapter_blocker(changes: dict) -> None:
+    payload = current_bootstrap_payload()
+    payload.update(changes)
+
+    with pytest.raises(ValidationError, match="future_chapter"):
         WorkbenchBootstrap.model_validate(payload)
