@@ -456,3 +456,132 @@ def test_volume_summary_allows_gaps_inside_finalized_range() -> None:
     )
 
     assert value.finalized_chapter_count == 2
+
+
+def test_current_without_bundle_requires_outline_blocker() -> None:
+    payload = current_bootstrap_payload()
+    payload.update(volume=None, outline=None)
+
+    with pytest.raises(ValidationError, match="outline_required"):
+        WorkbenchBootstrap.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "blocked_reasons",
+    (
+        (),
+        (WorkbenchBlockedReason(
+            code="session_not_created", message="尚未创建章节会话。",
+        ),),
+    ),
+)
+def test_ready_current_without_session_requires_explicit_create_action(
+    blocked_reasons: tuple[WorkbenchBlockedReason, ...],
+) -> None:
+    payload = current_bootstrap_payload()
+    payload.update(blocked_reasons=blocked_reasons)
+
+    with pytest.raises(ValidationError, match="create_session"):
+        WorkbenchBootstrap.model_validate(payload)
+
+
+def test_current_bundle_rejects_outline_blocker_with_create_action() -> None:
+    payload = current_bootstrap_payload()
+    payload.update(
+        available_actions=("create_session",),
+        blocked_reasons=(WorkbenchBlockedReason(
+            code="outline_required", message="需要先确认章节大纲。",
+        ),),
+    )
+
+    with pytest.raises(ValidationError, match="outline_required"):
+        WorkbenchBootstrap.model_validate(payload)
+
+
+def test_current_session_bundle_rejects_outline_blocker() -> None:
+    payload = current_bootstrap_payload()
+    payload.update(
+        session=WorkbenchSessionReference(id="session-3", chapter_number=3),
+        available_actions=("edit_draft",),
+        blocked_reasons=(WorkbenchBlockedReason(
+            code="outline_required", message="需要先确认章节大纲。",
+        ),),
+    )
+
+    with pytest.raises(ValidationError, match="outline_required"):
+        WorkbenchBootstrap.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("block_code", "canon_revision", "projection_revision", "synchronized"),
+    (
+        ("project_archived", 2, 2, True),
+        ("canon_projection_unsynchronized", 3, 2, False),
+        ("finalization_in_progress", 2, 2, True),
+    ),
+)
+def test_real_creation_blocker_suppresses_create_action(
+    block_code: str,
+    canon_revision: int,
+    projection_revision: int,
+    synchronized: bool,
+) -> None:
+    payload = current_bootstrap_payload()
+    payload.update(
+        canon_revision=canon_revision,
+        projection_revision=projection_revision,
+        canon_projection_synchronized=synchronized,
+        blocked_reasons=(WorkbenchBlockedReason(
+            code=block_code,
+            message="当前状态暂不可创建章节会话。",
+        ),),
+    )
+
+    value = WorkbenchBootstrap.model_validate(payload)
+
+    assert "create_session" not in value.available_actions
+
+
+def test_session_not_created_keeps_create_action_explicit() -> None:
+    payload = current_bootstrap_payload()
+    payload.update(
+        available_actions=("create_session",),
+        blocked_reasons=(WorkbenchBlockedReason(
+            code="session_not_created", message="尚未创建章节会话。",
+        ),),
+    )
+
+    value = WorkbenchBootstrap.model_validate(payload)
+
+    assert "create_session" in value.available_actions
+
+
+def test_current_last_item_cannot_have_next_cursor() -> None:
+    with pytest.raises(ValidationError, match="current.*cursor"):
+        WorkbenchChapterIndexPage(
+            project_id="project-1",
+            volume=volume(),
+            chapters=(WorkbenchChapterIndexItem(
+                chapter_number=2, title="第二章", mode="current",
+                scalar_count=None, finalized_at_ms=None,
+                final_chapter_id=None, session_id="session-2",
+            ),),
+            next_cursor="cursor-2",
+            limit=100,
+        )
+
+
+def test_historical_only_page_may_have_next_cursor() -> None:
+    page = WorkbenchChapterIndexPage(
+        project_id="project-1",
+        volume=volume(),
+        chapters=(WorkbenchChapterIndexItem(
+            chapter_number=1, title="第一章", mode="historical",
+            scalar_count=3200, finalized_at_ms=1000,
+            final_chapter_id="final-1", session_id=None,
+        ),),
+        next_cursor="cursor-1",
+        limit=100,
+    )
+
+    assert page.next_cursor == "cursor-1"

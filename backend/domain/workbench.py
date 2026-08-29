@@ -131,21 +131,40 @@ class WorkbenchBootstrap(_StrictValue):
                 raise ValueError("current mode cannot expose a final chapter")
             if (self.volume is None) != (self.outline is None):
                 raise ValueError("current authority bundle requires volume and outline")
+            has_authority_bundle = self.volume is not None
+            if has_authority_bundle and "outline_required" in reason_codes:
+                raise ValueError("outline_required is invalid with an authority bundle")
             if self.session is not None:
-                if self.volume is None:
+                if not has_authority_bundle:
                     raise ValueError("session requires a confirmed authority bundle")
                 if self.session.chapter_number != self.requested_chapter:
                     raise ValueError("session differs from request")
                 if "create_session" in self.available_actions:
                     raise ValueError("create_session is invalid when a session exists")
             else:
-                if "create_session" in self.available_actions:
-                    if self.volume is None:
+                has_create_action = "create_session" in self.available_actions
+                if not has_authority_bundle:
+                    if "outline_required" not in reason_codes:
+                        raise ValueError(
+                            "current chapter without an authority bundle requires "
+                            "outline_required"
+                        )
+                    if has_create_action:
                         raise ValueError(
                             "create_session requires a confirmed authority bundle"
                         )
-                    if not self.canon_projection_synchronized:
+                else:
+                    creation_blockers = {
+                        "project_archived",
+                        "canon_projection_unsynchronized",
+                        "finalization_in_progress",
+                    } & set(reason_codes)
+                    if has_create_action and not self.canon_projection_synchronized:
                         raise ValueError("create_session requires synchronized heads")
+                    if has_create_action and creation_blockers:
+                        raise ValueError("create_session is invalid while creation is blocked")
+                    if not has_create_action and not creation_blockers:
+                        raise ValueError("ready current chapter requires create_session")
                 if set(self.available_actions) - {"view_outline", "create_session"}:
                     raise ValueError("draft actions require a current session")
         else:
@@ -276,6 +295,8 @@ class WorkbenchChapterIndexPage(_StrictValue):
             raise ValueError("page can expose at most one current chapter")
         if current_positions and current_positions[0] != len(self.chapters) - 1:
             raise ValueError("current chapter must be last in the page")
+        if current_positions and self.next_cursor is not None:
+            raise ValueError("current chapter page cannot expose a next cursor")
         if len(self.chapters) > self.limit:
             raise ValueError("page exceeds its declared limit")
         return self
