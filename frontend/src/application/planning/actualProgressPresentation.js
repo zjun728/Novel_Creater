@@ -17,7 +17,10 @@ const SYNCING_MESSAGE = '正文进度正在同步，稍后重新读取。'
 const NO_CANON_MESSAGE = '尚无已定稿正文带来的规划进度。'
 const EMPTY_MESSAGE = '定稿事实已同步，当前没有规划项发生变化。'
 
-export function presentActualProgress({ items, status, planningContent } = {}) {
+export function presentActualProgress(input) {
+  const root = readRootInput(input)
+  if (!root) return makeModel('invalid', INVALID_MESSAGE)
+  const { items, status, planningContent } = root
   const envelope = readEnvelope(status)
   if (!envelope) return makeModel('invalid', INVALID_MESSAGE)
   if (!envelope.synchronized) return makeModel('syncing', SYNCING_MESSAGE)
@@ -69,6 +72,19 @@ export function presentActualProgress({ items, status, planningContent } = {}) {
   })
 }
 
+function readRootInput(input) {
+  try {
+    if (input === null || typeof input !== 'object' || Array.isArray(input)) return null
+    return {
+      items: input.items,
+      status: input.status,
+      planningContent: input.planningContent,
+    }
+  } catch {
+    return null
+  }
+}
+
 function readEnvelope(status) {
   try {
     if (status === null || typeof status !== 'object' || Array.isArray(status)) return null
@@ -95,8 +111,8 @@ function readRecognizedRecord(item, hierarchy) {
     if (item === null || typeof item !== 'object' || Array.isArray(item)) return null
     if (item.entityId !== null || item.subjectKey !== '__global__') return null
 
-    const value = item.value
-    if (!isExactProgressValue(value)) return null
+    const value = readProgressValue(item.value)
+    if (!value) return null
     const { chapterNumber, status, targetId, targetType } = value
     if (item.fieldPath !== `plot.progress.${targetType}.${targetId}`) return null
 
@@ -108,25 +124,30 @@ function readRecognizedRecord(item, hierarchy) {
   }
 }
 
-function isExactProgressValue(value) {
+function readProgressValue(value) {
   try {
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return null
     const prototype = Object.getPrototypeOf(value)
-    if (prototype !== Object.prototype && prototype !== null) return false
+    if (prototype !== Object.prototype && prototype !== null) return null
     const keys = Reflect.ownKeys(value)
       .filter(key => Object.prototype.propertyIsEnumerable.call(value, key))
-    if (keys.some(key => typeof key !== 'string')) return false
+    if (keys.some(key => typeof key !== 'string')) return null
     keys.sort()
-    if (keys.length !== 4 || keys.join(',') !== 'chapterNumber,status,targetId,targetType') return false
-    return isSafePositiveInteger(value.chapterNumber)
-      && typeof value.status === 'string'
-      && Object.hasOwn(STATUS_LABELS, value.status)
-      && typeof value.targetId === 'string'
-      && value.targetId.trim().length > 0
-      && typeof value.targetType === 'string'
-      && Object.hasOwn(KIND_LABELS, value.targetType)
+    if (keys.length !== 4 || keys.join(',') !== 'chapterNumber,status,targetId,targetType') return null
+    const chapterNumber = value.chapterNumber
+    const status = value.status
+    const targetId = value.targetId
+    const targetType = value.targetType
+    if (!isSafePositiveInteger(chapterNumber)
+      || typeof status !== 'string'
+      || !Object.hasOwn(STATUS_LABELS, status)
+      || typeof targetId !== 'string'
+      || targetId.trim().length === 0
+      || typeof targetType !== 'string'
+      || !Object.hasOwn(KIND_LABELS, targetType)) return null
+    return { chapterNumber, status, targetId, targetType }
   } catch {
-    return false
+    return null
   }
 }
 

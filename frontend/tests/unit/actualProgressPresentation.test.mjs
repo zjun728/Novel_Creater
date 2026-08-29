@@ -134,11 +134,34 @@ test('treats malformed item containers and throwing status access as safe empty 
   const hostileStatus = {}
   Object.defineProperty(hostileStatus, 'canonRevision', { enumerable: true, get() { statusGetterHits += 1; throw new Error('secret status') } })
   expectMessage({ status: hostileStatus, items: [entry()] }, 'invalid', '正文进度状态需要重新读取。')
-  assert.ok(statusGetterHits > 0)
+  assert.equal(statusGetterHits, 1)
   let statusProxyHits = 0
   const statusProxy = new Proxy({}, { get() { statusProxyHits += 1; throw new Error('status proxy secret') } })
   expectMessage({ status: statusProxy, items: [entry()] }, 'invalid', '正文进度状态需要重新读取。')
-  assert.ok(statusProxyHits > 0)
+  assert.equal(statusProxyHits, 1)
+})
+
+test('normalizes hostile root inputs without destructuring before its guard', () => {
+  for (const root of [null, undefined, 3, 'root primitive']) {
+    assert.doesNotThrow(() => {
+      const model = presentActualProgress(root)
+      assert.equal(model.state, 'invalid')
+    })
+  }
+  let proxyHits = 0
+  const hostileRoot = new Proxy({}, { get() { proxyHits += 1; throw new Error('root options secret') } })
+  assert.doesNotThrow(() => {
+    const model = presentActualProgress(hostileRoot)
+    assert.equal(model.state, 'invalid')
+  })
+  assert.equal(proxyHits, 1)
+  const rootHits = { items: 0, status: 0, planningContent: 0 }
+  const root = {}
+  for (const [key, value] of Object.entries({ items: [entry()], status: safeStatus(), planningContent: content() })) {
+    Object.defineProperty(root, key, { enumerable: true, get() { rootHits[key] += 1; return value } })
+  }
+  assert.equal(presentActualProgress(root).state, 'recognized')
+  assert.deepEqual(rootHits, { items: 1, status: 1, planningContent: 1 })
 })
 
 test('fail-closes malformed entries and value shapes without throwing', () => {
@@ -176,8 +199,8 @@ test('fail-closes malformed entries and value shapes without throwing', () => {
   assert.equal(model.state, 'unrecognized')
   assert.equal(model.unrecognizedCount, 29)
   assert.deepEqual(model.rows, [])
-  assert.ok(valueGetterHits > 0)
-  assert.ok(entryProxyHits > 0)
+  assert.equal(valueGetterHits, 1)
+  assert.equal(entryProxyHits, 1)
   const whitespaceIdContent = content({ storyBlocks: [{ id: '   ', title: '不应匹配', stages: [] }] })
   assert.equal(present({ planningContent: whitespaceIdContent, items: [entry({ targetId: '   ' })] }).state, 'unrecognized')
 })
@@ -192,6 +215,32 @@ test('recognizes a null-prototype value with exactly the allowed enumerable keys
   const model = present({ items: [entry({ value })] })
   assert.equal(model.state, 'recognized')
   assert.deepEqual(model.rows.map(row => row.chapterLabel), ['第 3 章'])
+})
+
+test('snapshots each recognized value field once before validation and presentation', () => {
+  const rawSecret = 'RAW-SECRET-never-display'
+  const expected = {
+    chapterNumber: 8,
+    status: 'completed',
+    targetId: 'block-1',
+    targetType: 'story_block',
+  }
+  const hits = { chapterNumber: 0, status: 0, targetId: 0, targetType: 0 }
+  const value = {}
+  for (const [key, firstValue] of Object.entries(expected)) {
+    Object.defineProperty(value, key, {
+      enumerable: true,
+      get() {
+        hits[key] += 1
+        return hits[key] === 1 ? firstValue : rawSecret
+      },
+    })
+  }
+  const model = present({ items: [entry({ chapterNumber: 8, progressStatus: 'completed', value })] })
+  assert.equal(model.state, 'recognized')
+  assert.equal(model.rows[0].chapterLabel, '第 8 章')
+  assert.deepEqual(hits, { chapterNumber: 1, status: 1, targetId: 1, targetType: 1 })
+  assert.equal(JSON.stringify(model).includes(rawSecret), false)
 })
 
 test('allows extra non-enumerable value keys while rejecting enumerable symbols', () => {
@@ -232,7 +281,7 @@ test('uses only server ids for hierarchy and rejects malformed planning content 
   const throwingTitle = { id: 'block-1', stages: [] }
   Object.defineProperty(throwingTitle, 'title', { get() { hierarchyGetterHits += 1; throw new Error('hierarchy title secret') } })
   assert.equal(present({ planningContent: content({ storyBlocks: [throwingTitle] }), items: [entry()] }).state, 'unrecognized')
-  assert.ok(hierarchyGetterHits > 0)
+  assert.equal(hierarchyGetterHits, 1)
 })
 
 test('falls back to the fixed author label when hierarchy titles are blank or non-strings', () => {
@@ -260,7 +309,7 @@ test('keeps duplicate author labels separate but deduplicates only exact interna
   assert.deepEqual(model.rows.map(row => row.hierarchyLabel), ['同名', '同名'])
 })
 
-test('avoids delimiter collisions when deduplicating internal identities', () => {
+test('keeps delimiter-bearing server ids distinct during nested-map deduplication', () => {
   const planningContent = content({ storyBlocks: [
     { id: 'a|b', title: '一', stages: [] },
     { id: 'b', title: '二', stages: [] },
