@@ -164,6 +164,76 @@ test('normalizes hostile root inputs without destructuring before its guard', ()
   assert.deepEqual(rootHits, { items: 1, status: 1, planningContent: 1 })
 })
 
+test('reads status before every other root field and preserves invalid precedence', () => {
+  for (const statusReader of [
+    () => safeStatus({ synchronized: true, canonRevision: 5, projectionRevision: 4 }),
+    () => { throw new Error('throwing status root getter') },
+  ]) {
+    const hits = { status: 0, items: 0, planningContent: 0 }
+    const options = {}
+    Object.defineProperties(options, {
+      status: { enumerable: true, get() { hits.status += 1; return statusReader() } },
+      items: { enumerable: true, get() { hits.items += 1; throw new Error('items must stay unread') } },
+      planningContent: { enumerable: true, get() { hits.planningContent += 1; throw new Error('content must stay unread') } },
+    })
+    const model = presentActualProgress(options)
+    assert.equal(model.state, 'invalid')
+    assert.deepEqual(hits, { status: 1, items: 0, planningContent: 0 })
+  }
+})
+
+test('returns syncing and no-canon before reading root items or planning content', () => {
+  for (const [status, expectedState] of [
+    [safeStatus({ synchronized: false, canonRevision: 5, projectionRevision: 4 }), 'syncing'],
+    [safeStatus({ canonRevision: 0, projectionRevision: 0 }), 'no-canon'],
+  ]) {
+    const hits = { status: 0, items: 0, planningContent: 0 }
+    const options = {}
+    Object.defineProperties(options, {
+      status: { enumerable: true, get() { hits.status += 1; return status } },
+      items: { enumerable: true, get() { hits.items += 1; throw new Error('items must stay unread') } },
+      planningContent: { enumerable: true, get() { hits.planningContent += 1; throw new Error('content must stay unread') } },
+    })
+    const model = presentActualProgress(options)
+    assert.equal(model.state, expectedState)
+    assert.deepEqual(hits, { status: 1, items: 0, planningContent: 0 })
+  }
+})
+
+test('returns empty after reading only items once when synchronized canon has no usable items', () => {
+  for (const itemReader of [
+    () => [],
+    () => null,
+    () => ({}),
+    () => { throw new Error('throwing items root getter') },
+  ]) {
+    const hits = { status: 0, items: 0, planningContent: 0 }
+    const options = {}
+    Object.defineProperties(options, {
+      status: { enumerable: true, get() { hits.status += 1; return safeStatus() } },
+      items: { enumerable: true, get() { hits.items += 1; return itemReader() } },
+      planningContent: { enumerable: true, get() { hits.planningContent += 1; throw new Error('content must stay unread') } },
+    })
+    const model = presentActualProgress(options)
+    assert.equal(model.state, 'empty')
+    assert.deepEqual(hits, { status: 1, items: 1, planningContent: 0 })
+  }
+})
+
+test('reads planning content once only after nonempty items and treats its getter failure as an empty hierarchy', () => {
+  const hits = { status: 0, items: 0, planningContent: 0 }
+  const options = {}
+  Object.defineProperties(options, {
+    status: { enumerable: true, get() { hits.status += 1; return safeStatus() } },
+    items: { enumerable: true, get() { hits.items += 1; return [entry()] } },
+    planningContent: { enumerable: true, get() { hits.planningContent += 1; throw new Error('throwing planning root getter') } },
+  })
+  const model = presentActualProgress(options)
+  assert.equal(model.state, 'unrecognized')
+  assert.equal(model.unrecognizedCount, 1)
+  assert.deepEqual(hits, { status: 1, items: 1, planningContent: 1 })
+})
+
 test('fail-closes malformed entries and value shapes without throwing', () => {
   const inheritedValue = Object.create({ chapterNumber: 3 })
   Object.assign(inheritedValue, { status: 'started', targetId: 'block-1', targetType: 'story_block' })

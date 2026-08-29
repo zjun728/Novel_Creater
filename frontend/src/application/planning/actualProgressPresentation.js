@@ -18,18 +18,20 @@ const NO_CANON_MESSAGE = '尚无已定稿正文带来的规划进度。'
 const EMPTY_MESSAGE = '定稿事实已同步，当前没有规划项发生变化。'
 
 export function presentActualProgress(input) {
-  const root = readRootInput(input)
-  if (!root) return makeModel('invalid', INVALID_MESSAGE)
-  const { items, status, planningContent } = root
-  const envelope = readEnvelope(status)
+  if (!isRootOptions(input)) return makeModel('invalid', INVALID_MESSAGE)
+  const status = readRootField(input, 'status')
+  if (!status.ok) return makeModel('invalid', INVALID_MESSAGE)
+  const envelope = readEnvelope(status.value)
   if (!envelope) return makeModel('invalid', INVALID_MESSAGE)
   if (!envelope.synchronized) return makeModel('syncing', SYNCING_MESSAGE)
   if (envelope.canonRevision === 0) return makeModel('no-canon', NO_CANON_MESSAGE)
 
-  const itemList = safeArray(items)
+  const items = readRootField(input, 'items')
+  const itemList = safeArray(items.ok ? items.value : undefined)
   if (itemList.length === 0) return makeModel('empty', EMPTY_MESSAGE)
 
-  const hierarchy = buildHierarchyIndex(planningContent)
+  const planningContent = readRootField(input, 'planningContent')
+  const hierarchy = buildHierarchyIndex(planningContent.ok ? planningContent.value : undefined)
   const recognized = []
   let unrecognizedCount = 0
   let sequence = 0
@@ -72,16 +74,19 @@ export function presentActualProgress(input) {
   })
 }
 
-function readRootInput(input) {
+function isRootOptions(input) {
   try {
-    if (input === null || typeof input !== 'object' || Array.isArray(input)) return null
-    return {
-      items: input.items,
-      status: input.status,
-      planningContent: input.planningContent,
-    }
+    return input !== null && typeof input === 'object' && !Array.isArray(input)
   } catch {
-    return null
+    return false
+  }
+}
+
+function readRootField(input, field) {
+  try {
+    return { ok: true, value: input[field] }
+  } catch {
+    return { ok: false, value: undefined }
   }
 }
 
