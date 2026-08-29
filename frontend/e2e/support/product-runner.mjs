@@ -981,6 +981,7 @@ export async function runBoundedOwnedCommand(command, args, options, {
   stopTimeoutMs = DEFAULT_RUNNER_DEADLINES.stopMs,
   processRunner = defaultProcessRunner,
   states = [],
+  signal,
 } = {}) {
   positiveDeadline(timeoutMs, 'owned command timeout')
   positiveDeadline(settleMs, 'owned command settle timeout')
@@ -998,6 +999,7 @@ export async function runBoundedOwnedCommand(command, args, options, {
       stopTimeoutMs,
     }),
     lifecycleStates,
+    signal,
   )
   const failure = processFailure(label, result, sensitiveValues)
   if (failure) throw failure
@@ -1034,6 +1036,7 @@ export async function waitForOwnedServer(server, url, {
   settleMs = Math.min(DEFAULT_RUNNER_DEADLINES.settleMs, timeoutMs),
   waitForUrlImpl = waitForOwnedUrl,
   states = [server],
+  signal,
 } = {}) {
   positiveDeadline(timeoutMs, 'owned server health timeout')
   positiveDeadline(settleMs, 'owned server health settle timeout')
@@ -1053,6 +1056,7 @@ export async function waitForOwnedServer(server, url, {
       signal,
     }),
     lifecycleStates,
+    signal,
   )
 }
 
@@ -1154,14 +1158,15 @@ async function settleAfterAbort(operationOutcome, primaryError, settleMs) {
     }),
   ])
   clearTimeout(timer)
+  const secondaryError = settled.kind === 'operation'
+    ? (settled.error || settled.value?.error || null) : null
   if (
-    settled.kind === 'operation'
-    && settled.error
-    && settled.error !== primaryError
-    && settled.error?.name !== 'AbortError'
+    secondaryError
+    && secondaryError !== primaryError
+    && secondaryError?.name !== 'AbortError'
   ) {
     throw new AggregateError(
-      [primaryError, settled.error],
+      [primaryError, secondaryError],
       'runner operation and bounded abort both failed',
     )
   }
@@ -1180,7 +1185,9 @@ function findEarlyServiceFailure(states) {
 }
 
 
-export async function runBoundedOperation(label, timeoutMs, settleMs, operation, states = []) {
+export async function runBoundedOperation(
+  label, timeoutMs, settleMs, operation, states = [], externalSignal,
+) {
   const controller = new AbortController()
   const operationOutcome = Promise.resolve()
     .then(() => operation(controller.signal))
@@ -1199,6 +1206,17 @@ export async function runBoundedOperation(label, timeoutMs, settleMs, operation,
     )
   })
   const contenders = [operationOutcome, deadlineOutcome]
+  let removeExternalAbort = () => {}
+  if (externalSignal) {
+    contenders.push(new Promise(resolve => {
+      const onAbort = () => resolve({ kind: 'external', error: abortReason(externalSignal) })
+      if (externalSignal.aborted) onAbort()
+      else {
+        externalSignal.addEventListener('abort', onAbort, { once: true })
+        removeExternalAbort = () => externalSignal.removeEventListener('abort', onAbort)
+      }
+    }))
+  }
   if (states.length > 0) {
     contenders.push(Promise.race(
       states.map(state => state.failurePromise.then(error => ({
@@ -1210,6 +1228,7 @@ export async function runBoundedOperation(label, timeoutMs, settleMs, operation,
   }
   const outcome = await Promise.race(contenders)
   clearTimeout(deadlineTimer)
+  removeExternalAbort()
   if (outcome.kind === 'operation') {
     if (outcome.error) throw outcome.error
     const earlyFailure = findEarlyServiceFailure(states)

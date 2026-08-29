@@ -239,6 +239,10 @@ test.before(async () => {
     await vite.ssrLoadModule('/src/components/projects/ProjectBackupPanel.vue')
   ).default
   BackupPanel.render = await clientRender('components/projects/ProjectBackupPanel.vue')
+  const ManuscriptSummaryLink = (
+    await vite.ssrLoadModule('/src/components/manuscript/ManuscriptSummaryLink.vue')
+  ).default
+  ManuscriptSummaryLink.render = await clientRender('components/manuscript/ManuscriptSummaryLink.vue')
   ArchivedOverview = (
     await vite.ssrLoadModule('/src/views/ArchivedProjectStatusView.vue')
   ).default
@@ -383,11 +387,11 @@ test('new and recoverable planning states keep the exact server-selected destina
 
 test('outline and writer actions navigate only to the exact server targetPath', async () => {
   const cases = [
-    ['prepare_chapter_outline', '准备下一章小纲', '/server-selected/outline/new'],
-    ['continue_chapter_outline', '继续下一章小纲', '/server-selected/outline/draft'],
-    ['recover_chapter_outline_operation', '核对小纲生成结果', '/server-selected/outline/recovery'],
-    ['start_chapter_session', '进入章节写作', '/server-selected/writer/start'],
-    ['continue_writing', '继续章节写作', '/server-selected/writer/continue'],
+    ['prepare_chapter_outline', '准备第 8 章小纲', '/server-selected/outline/new'],
+    ['continue_chapter_outline', '继续第 8 章小纲', '/server-selected/outline/draft'],
+    ['recover_chapter_outline_operation', '核对第 8 章小纲生成结果', '/server-selected/outline/recovery'],
+    ['start_chapter_session', '进入第 8 章写作', '/server-selected/writer/start'],
+    ['continue_writing', '继续创作第 8 章', '/server-selected/writer/continue'],
   ]
   for (const [nextAction, label, targetPath] of cases) {
     const html = await renderOverview(preparation({
@@ -402,7 +406,7 @@ test('outline and writer actions navigate only to the exact server targetPath', 
   }
 })
 
-test('overview keeps its one primary next action before both secondary download panels', async () => {
+test('overview keeps one manuscript entry before its preparation action and backup', async () => {
   const html = await renderOverview(preparation({
     nextAction: 'continue_contract',
     targetPath: '/projects/project%20%2F%20%E4%B8%80/contract',
@@ -410,10 +414,10 @@ test('overview keeps its one primary next action before both secondary download 
     bible: 'missing',
   }))
   assert.equal((html.match(/class="overview-next-action"/g) || []).length, 1)
-  assert.match(html, /novel-download-panel/)
+  assert.match(html, /manuscript-summary-link/)
   assert.match(html, /project-backup-panel/)
-  assert.ok(html.indexOf('overview-next-action') < html.indexOf('novel-download-panel'))
-  assert.ok(html.indexOf('novel-download-panel') < html.indexOf('project-backup-panel'))
+  assert.ok(html.indexOf('manuscript-summary-link') < html.indexOf('overview-next-action'))
+  assert.ok(html.indexOf('manuscript-summary-link') < html.indexOf('project-backup-panel'))
 })
 
 test('active and archived views pass exact backup authority after the delivery desk', async () => {
@@ -430,15 +434,18 @@ test('active and archived views pass exact backup authority after the delivery d
     'utf8',
   )
   assert.match(overviewSource, /import ProjectBackupPanel/)
-  assert.match(overviewSource, /<novel-download-panel[\s\S]*<project-backup-panel/)
+  assert.match(overviewSource, /<manuscript-summary-link[\s\S]*<project-backup-panel/)
+  assert.match(overviewSource, /import ManuscriptSummaryLink/)
+  assert.doesNotMatch(overviewSource, /NovelDownloadPanel|novel-download-panel/)
   assert.match(overviewSource, /<project-backup-panel[\s\S]*:project-id="routeProject\.project\.value\.id"/)
   assert.match(overviewSource, /:title="routeProject\.project\.value\.title"/)
   assert.match(overviewSource, /:lifecycle-revision="routeProject\.project\.value\.lifecycleRevision"/)
   assert.match(overviewSource, /:archived="false"/)
   assert.match(overviewSource, /:flush-current-draft="flushCurrentDraft"/)
-  assert.match(source, /import NovelDownloadPanel/)
+  assert.match(source, /import ManuscriptSummaryLink/)
   assert.match(source, /import ProjectBackupPanel/)
-  assert.match(source, /<novel-download-panel[\s\S]*<project-backup-panel/)
+  assert.match(source, /<manuscript-summary-link[\s\S]*<project-backup-panel/)
+  assert.doesNotMatch(source, /NovelDownloadPanel|novel-download-panel/)
   assert.match(source, /<project-backup-panel[\s\S]*:project-id="project\.id"/)
   assert.match(source, /:title="project\.title"/)
   assert.match(source, /:lifecycle-revision="project\.lifecycleRevision"/)
@@ -446,7 +453,7 @@ test('active and archived views pass exact backup authority after the delivery d
   assert.doesNotMatch(writerSource, /ProjectBackupPanel|project-backup-panel/)
 })
 
-test('overview depends only on projectStore authority and has no browser joins', async () => {
+test('overview uses the project store for preparation and the manuscript read model for its summary', async () => {
   const source = await readFile(
     new URL('../../src/views/ProjectOverviewView.vue', import.meta.url),
     'utf8',
@@ -454,6 +461,7 @@ test('overview depends only on projectStore authority and has no browser joins',
 
   assert.match(source, /useProjectStore/)
   assert.match(source, /currentPreparation/)
+  assert.match(source, /import ManuscriptSummaryLink/)
   assert.doesNotMatch(
     source,
     /seedStore|creationContractStore|bibleStore|loadSelected|loadContract|loadBible|current_chapter|currentChapter|\+\s*1/,

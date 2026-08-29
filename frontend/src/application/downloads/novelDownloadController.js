@@ -95,23 +95,62 @@ export function createNovelDownloadController({
   const loadingState = ref(false)
   const busyState = ref(false)
   const error = ref('')
+  const optionsProjectId = ref('')
   let loadGeneration = 0
   let downloadGeneration = 0
   let disposed = false
   let inFlight = null
+  let optionsAbort = null
 
   const loading = computed(() => loadingState.value)
   const busy = computed(() => busyState.value)
   const available = computed(() => options.value?.available === true)
 
+  function normalizeProjectId(projectId) { return typeof projectId === 'string' ? projectId.trim() : String(projectId ?? '').trim() }
+  function selectProject(projectId) {
+    const key = normalizeProjectId(projectId)
+    if (key === optionsProjectId.value) return key
+    loadGeneration += 1
+    optionsAbort?.abort()
+    optionsAbort = null
+    optionsProjectId.value = key
+    options.value = null
+    error.value = ''
+    loadingState.value = false
+    if (inFlight?.projectKey !== key) {
+      downloadGeneration += 1
+      const previous = inFlight
+      inFlight = null
+      busyState.value = false
+      previous?.abortController?.abort()
+    }
+    return key
+  }
+
+  function resetTransient() {
+    error.value = ''
+    if (!inFlight) return
+    downloadGeneration += 1
+    const previous = inFlight
+    inFlight = null
+    busyState.value = false
+    try { previous.abortController.abort() } catch {
+      // The request generation is already fenced even if a custom abort implementation fails.
+    }
+  }
+
   async function loadOptions(projectId) {
-    if (disposed || loadingState.value) return false
+    const key = normalizeProjectId(projectId)
+    if (disposed || !key) return false
+    selectProject(key)
+    if (loadingState.value) return false
     const token = ++loadGeneration
-    const active = () => !disposed && token === loadGeneration
+    const active = () => !disposed && token === loadGeneration && optionsProjectId.value === key
+    optionsAbort = abortControllerFactory()
     loadingState.value = true
     error.value = ''
     try {
-      const loaded = safeOptions(await api.novelDownloads.options(projectId))
+      const loaded = safeOptions(await api.novelDownloads.options(key, { signal: optionsAbort.signal }))
       if (!active()) return false
       options.value = loaded
       return loaded
@@ -125,17 +164,18 @@ export function createNovelDownloadController({
   }
 
   async function download(projectId, selector) {
-    if (disposed || inFlight || !available.value) return false
+    const projectKey = normalizeProjectId(projectId)
+    if (disposed || inFlight || !available.value || projectKey !== optionsProjectId.value) return false
     const token = ++downloadGeneration
     const abortController = abortControllerFactory()
     if (!abortController?.signal || typeof abortController.abort !== 'function') {
       throw new TypeError('abortControllerFactory must return an AbortController')
     }
-    const active = () => !disposed && inFlight?.token === token
+    const active = () => !disposed && inFlight?.token === token && optionsProjectId.value === projectKey
     const operationId = operationStore.start({
       label: '正在准备下载', detail: '', blocking: true,
     })
-    inFlight = { token, abortController }
+    inFlight = { token, projectKey, abortController }
     busyState.value = true
     error.value = ''
     let objectUrl = null
@@ -203,15 +243,23 @@ export function createNovelDownloadController({
     loadGeneration += 1
     loadingState.value = false
     busyState.value = false
-    inFlight?.abortController.abort()
+    const optionAbort = optionsAbort
+    const downloadAbort = inFlight?.abortController
+    optionsAbort = null
+    inFlight = null
+    optionAbort?.abort()
+    downloadAbort?.abort()
   }
 
   return {
     options,
+    optionsProjectId,
     loading,
     busy,
     error,
     available,
+    selectProject,
+    resetTransient,
     loadOptions,
     download,
     dispose,

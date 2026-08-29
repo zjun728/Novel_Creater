@@ -76,7 +76,7 @@ onBeforeUnmount(() => (
 </script>
 
 <template>
-  <main class="planning-page">
+  <section class="planning-page">
     <nav
       v-if="['active', 'archived'].includes(routeProject.state.value)"
       class="planning-tabs"
@@ -120,7 +120,7 @@ onBeforeUnmount(() => (
       :controller="controller"
       :active-tab="activeTab"
     />
-  </main>
+  </section>
 </template>
 
 <style scoped>

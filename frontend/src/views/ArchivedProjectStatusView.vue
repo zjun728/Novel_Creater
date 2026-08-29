@@ -3,8 +3,8 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { NAlert, NButton } from 'naive-ui'
 
-import NovelDownloadPanel from '../components/projects/NovelDownloadPanel.vue'
 import ProjectBackupPanel from '../components/projects/ProjectBackupPanel.vue'
+import ManuscriptSummaryLink from '../components/manuscript/ManuscriptSummaryLink.vue'
 import { useProjectStore } from '../stores/projectStore.js'
 import { projectBiblePath, projectContractPath } from '../router/projectRoutes.js'
 
@@ -43,7 +43,7 @@ function returnToLibrary() {
 </script>
 
 <template>
-  <main class="archived-page">
+  <section class="archived-page" aria-labelledby="archived-title">
     <section class="archived-sheet" aria-labelledby="archived-title">
       <p class="eyebrow">ARCHIVED PROJECT</p>
       <span class="status-mark">已归档</span>
@@ -60,11 +60,7 @@ function returnToLibrary() {
         <n-button :loading="restoring" type="primary" @click="restoreProject">恢复项目</n-button>
         <n-button quaternary @click="returnToLibrary">返回项目库</n-button>
       </div>
-      <novel-download-panel
-        :key="String(project.id)"
-        :project-id="project.id"
-        :title="project.title"
-      />
+      <manuscript-summary-link :project-id="project.id" />
       <project-backup-panel
         :key="`backup:${project.id}`"
         :project-id="project.id"
@@ -73,7 +69,7 @@ function returnToLibrary() {
         :archived="true"
       />
     </section>
-  </main>
+  </section>
 </template>
 
 <style scoped>

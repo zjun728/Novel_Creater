@@ -145,7 +145,7 @@ onBeforeUnmount(() => { window.removeEventListener('beforeunload', workspace.bef
 </script>
 
 <template>
-  <main class="bible-page">
+  <section class="bible-page">
     <section v-if="globalError" ref="errorTarget" class="error-summary" tabindex="-1" role="alert" aria-live="assertive">
       <strong>{{ globalError.message }}</strong>
       <span v-if="globalError.correlationId">参考编号：{{ globalError.correlationId }}</span>
@@ -189,7 +189,7 @@ onBeforeUnmount(() => { window.removeEventListener('beforeunload', workspace.bef
       <div v-if="busy" class="busy-overlay" role="status" aria-live="polite" aria-busy="true">正在处理创作圣经…</div>
     </section>
     <bible-history-drawer :history="store.history" :history-next-before-revision="store.historyNextBeforeRevision" :history-detail="store.historyDetail" :open="historyOpen" :busy="busy" :error="errorSummary" :retry-label="recoveryLabel" :label-reason="bibleReasonLabel" @close="historyOpen = false" @detail="showHistoryDetail" @more="loadMoreHistory" @retry="retryFailure" />
-  </main>
+  </section>
 </template>
 
 <style scoped>

@@ -140,9 +140,9 @@ def test_selector_is_strict_frozen_and_closed_to_txt_or_markdown() -> None:
 
 def test_select_chapters_filters_book_volume_and_chapter_in_global_order() -> None:
     snapshot = _snapshot(
-        _chapter(3, volume_id="volume-1"),
+        _chapter(3, volume_id="volume-2", volume_order=2, volume_title="第二卷"),
         _chapter(1, volume_id="volume-1"),
-        _chapter(2, volume_id="volume-2", volume_order=2, volume_title="第二卷"),
+        _chapter(2, volume_id="volume-1"),
     )
 
     assert [chapter.chapter_number for chapter in select_chapters(
@@ -150,7 +150,7 @@ def test_select_chapters_filters_book_volume_and_chapter_in_global_order() -> No
     )] == [1, 2, 3]
     assert [chapter.chapter_number for chapter in select_chapters(
         snapshot, _selector(DownloadScope.VOLUME, volume_id="volume-1"),
-    )] == [1, 3]
+    )] == [1, 2]
     assert [chapter.chapter_number for chapter in select_chapters(
         snapshot, _selector(DownloadScope.CHAPTER, chapter_number=2),
     )] == [2]
@@ -271,6 +271,43 @@ def test_render_fails_closed_when_any_final_prose_hash_does_not_match() -> None:
         match="^final prose hash does not match chapter 1$",
     ):
         render_novel_download(snapshot, _selector(DownloadScope.BOOK))
+
+
+def test_selection_verifies_only_the_selected_final_prose_scope() -> None:
+    chapter_1 = _chapter(1, content="第一章正文")
+    chapter_3 = _chapter(3, content="第三章正文").model_copy(
+        update={"content_hash": "0" * 64},
+    )
+    snapshot = _snapshot(chapter_1, chapter_3)
+    chapter_1_selector = _selector(DownloadScope.CHAPTER, chapter_number=1)
+
+    assert select_chapters(snapshot, chapter_1_selector) == (chapter_1,)
+    assert b"\xe7\xac\xac\xe4\xb8\x80\xe7\xab\xa0\xe6\xad\xa3\xe6\x96\x87" in render_novel_download(
+        snapshot,
+        chapter_1_selector,
+    )
+    with pytest.raises(
+        NovelDownloadIntegrityError,
+        match="^final prose hash does not match chapter 3$",
+    ):
+        select_chapters(
+            snapshot,
+            _selector(DownloadScope.CHAPTER, chapter_number=3),
+        )
+    with pytest.raises(NovelDownloadIntegrityError):
+        select_chapters(snapshot, _selector(DownloadScope.BOOK))
+
+
+def test_snapshot_rejects_a_volume_split_into_non_contiguous_chapter_runs() -> None:
+    with pytest.raises(
+        ValueError,
+        match="finalized chapter volume run is inconsistent",
+    ):
+        _snapshot(
+            _chapter(1, volume_id="volume-1", volume_order=1, volume_title="第一卷"),
+            _chapter(2, volume_id="volume-2", volume_order=2, volume_title="第二卷"),
+            _chapter(3, volume_id="volume-1", volume_order=1, volume_title="第一卷"),
+        )
 
 
 def test_render_rejects_at_the_small_cap_before_normalizing_later_prose(

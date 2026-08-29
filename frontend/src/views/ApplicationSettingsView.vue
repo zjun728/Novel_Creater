@@ -139,7 +139,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <main class="application-route">
+  <section class="application-route">
     <header class="route-heading">
       <p>LOCAL APPLICATION CONTROL</p>
       <h1>应用默认与诊断</h1>
@@ -240,7 +240,7 @@ onMounted(() => {
         </n-spin>
       </article>
     </section>
-  </main>
+  </section>
 </template>
 
 <style scoped>

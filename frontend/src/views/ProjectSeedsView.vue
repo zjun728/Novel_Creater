@@ -303,24 +303,24 @@ async function confirmPermanentDelete() {
 </script>
 
 <template>
-  <main
+  <section
     v-if="routeProject.state.value === 'loading'"
     class="seeds-page seeds-page--loading"
     aria-busy="true"
   >
     <n-skeleton text width="32%" />
     <n-skeleton text :repeat="4" />
-  </main>
+  </section>
 
-  <main v-else-if="routeProject.state.value === 'missing'" class="seeds-page">
+  <section v-else-if="routeProject.state.value === 'missing'" class="seeds-page">
     <n-result
       status="404"
       title="项目不存在或已被删除"
       description="系统不会打开另一个项目作为替代。"
     />
-  </main>
+  </section>
 
-  <main v-else-if="routeProject.state.value === 'error'" class="seeds-page">
+  <section v-else-if="routeProject.state.value === 'error'" class="seeds-page">
     <n-result
       status="error"
       title="项目暂时无法加载"
@@ -330,9 +330,9 @@ async function confirmPermanentDelete() {
         <n-button type="primary" @click="routeProject.reload">重试</n-button>
       </template>
     </n-result>
-  </main>
+  </section>
 
-  <main v-else class="seeds-page">
+  <section v-else class="seeds-page">
     <header class="seeds-page__masthead">
       <div>
         <p>PROJECT SEEDS / EDITORIAL DESK</p>
@@ -591,7 +591,7 @@ async function confirmPermanentDelete() {
         </div>
       </template>
     </n-modal>
-  </main>
+  </section>
 </template>
 
 <style scoped>

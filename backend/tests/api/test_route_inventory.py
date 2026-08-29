@@ -27,6 +27,8 @@ APPROVED_FORMAL_ROUTES = {
     ("GET", "/api/projects/{project_id}"),
     ("GET", "/api/projects/{project_id}/novel-download/options"),
     ("GET", "/api/projects/{project_id}/novel-download"),
+    ("GET", "/api/projects/{project_id}/manuscript"),
+    ("GET", "/api/projects/{project_id}/manuscript/chapters/{chapter_number}"),
     ("POST", "/api/projects/{project_id}/backup"),
     ("POST", "/api/project-imports/preflight"),
     ("POST", "/api/project-imports"),

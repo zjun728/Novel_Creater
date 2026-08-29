@@ -116,6 +116,7 @@ test('reports a diagnostic when a child command cannot start', () => {
 test('uses the injected child process runner', () => {
   const calls = []
   const exitCode = runSuites(['browser'], {
+    environment: requiredIntegrationEnvironment,
     spawnSyncImpl(command, args, options) {
       calls.push({ command, args, options })
       return { status: 0 }

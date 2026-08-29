@@ -53,6 +53,8 @@ test('loads safe options, surfaces a fixed retryable error, and does not expose 
   } } })
   await assert.rejects(() => controller.loadOptions('p'))
   assert.equal(controller.error.value, '下载选项加载失败，请重试。')
+  controller.resetTransient()
+  assert.equal(controller.error.value, '')
   assert.equal(controller.options.value, null)
   assert.equal(controller.loading.value, false)
   assert.deepEqual(await controller.loadOptions('p'), OPTIONS)
@@ -67,6 +69,56 @@ test('invalid option payloads become the same safe retryable loading failure', a
   await assert.rejects(() => controller.loadOptions('p'), TypeError)
   assert.equal(controller.options.value, null)
   assert.equal(controller.error.value, '下载选项加载失败，请重试。')
+})
+
+test('a new project aborts and replaces an older options request', async () => {
+  const first = deferred(); const signals = []
+  const { controller } = harness({ api: { novelDownloads: {
+    options: (projectId, { signal } = {}) => { signals.push(signal); return projectId === 'A' ? first.promise : Promise.resolve({ ...OPTIONS, chapters: [{ number: 2, title: 'B', volumeId: 'v' }] }) },
+    download: async () => { throw new Error('not used') },
+  } } })
+  const old = controller.loadOptions('A'); const next = controller.loadOptions('B')
+  await next; first.resolve(OPTIONS); await old
+  assert.equal(signals[0].aborted, true)
+  assert.equal(controller.optionsProjectId.value, 'B')
+  assert.equal(controller.options.value.chapters[0].number, 2)
+})
+
+test('switching projects fences an old download even when its transport ignores abort', async () => {
+  const pending = deferred(); let signal
+  const { controller, operations, saved, revoked } = harness({ api: { novelDownloads: {
+    options: async () => OPTIONS,
+    download: (_projectId, _selector, request) => { signal = request.signal; return pending.promise },
+  } } })
+  await controller.loadOptions('A')
+  const old = controller.download('A', selector)
+  controller.selectProject('B')
+  pending.resolve({ blob: new Blob(['old']), contentDisposition: 'attachment; filename="old.txt"' })
+  assert.equal(await old, false)
+  assert.equal(signal.aborted, true)
+  assert.deepEqual(saved, [])
+  assert.deepEqual(revoked, [])
+  assert.equal(controller.busy.value, false)
+  assert.deepEqual(operations.filter(item => Array.isArray(item) && item[0] === 'finish'), [['finish', 'op-1']])
+  await controller.loadOptions('B')
+  assert.equal(await controller.download('B', selector), true)
+})
+
+test('resetting transient state fences a same-project late download failure and still finishes its operation', async () => {
+  const pending = deferred(); let signal
+  const { controller, operations } = harness({ api: { novelDownloads: {
+    options: async () => OPTIONS,
+    download: (_projectId, _selector, request) => { signal = request.signal; return pending.promise },
+  } } })
+  await controller.loadOptions('p')
+  const old = controller.download('p', selector)
+  controller.resetTransient()
+  pending.reject(new Error('late chapter failure'))
+  assert.equal(await old, false)
+  assert.equal(signal.aborted, true)
+  assert.equal(controller.error.value, '')
+  assert.equal(controller.busy.value, false)
+  assert.deepEqual(operations.filter(item => Array.isArray(item) && item[0] === 'finish'), [['finish', 'op-1']])
 })
 
 test('only one available download starts, saves, finishes and always revokes', async () => {
@@ -291,7 +343,7 @@ test('disposal aborts an internal request and fences its late result', async () 
   pending.resolve({ blob: new Blob(['book']), contentDisposition: 'attachment; filename="book.txt"' })
   assert.equal(await running, false)
   assert.equal(receivedSignal.aborted, true)
-  assert.equal(aborted, 1)
+  assert.equal(aborted, 2)
   assert.deepEqual(saved, [])
   assert.deepEqual(revoked, [])
 })

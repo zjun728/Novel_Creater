@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from hashlib import sha256
 
 import pytest
+from pydantic import ValidationError
 
 from backend.domain.novel_downloads import (
     DownloadFormat,
@@ -43,8 +44,46 @@ class FakeRepository:
         self.snapshot = snapshot
         self.calls = []
 
-    async def load_finalized_snapshot(self, session, project_id):
+    async def load_finalized_metadata(self, session, project_id):
         self.calls.append((session, project_id))
+        return self.snapshot
+
+    async def load_finalized_snapshot(self, session, project_id, selector):
+        self.calls.append((session, project_id, selector))
+        if self.snapshot is None:
+            return None
+        selected = tuple(
+            chapter
+            for chapter in self.snapshot.chapters
+            if (
+                selector.scope is DownloadScope.BOOK
+                or (
+                    selector.scope is DownloadScope.VOLUME
+                    and chapter.volume_id == selector.volume_id
+                )
+                or (
+                    selector.scope is DownloadScope.CHAPTER
+                    and chapter.chapter_number == selector.chapter_number
+                )
+            )
+        )
+        if self.snapshot.chapters and not selected:
+            raise NovelDownloadScopeNotFoundError()
+        return self.snapshot.model_copy(update={"chapters": selected})
+
+
+class SelectorCapturingRepository:
+    def __init__(self, snapshot):
+        self.snapshot = snapshot
+        self.metadata_calls = []
+        self.snapshot_calls = []
+
+    async def load_finalized_metadata(self, session, project_id):
+        self.metadata_calls.append((session, project_id))
+        return self.snapshot
+
+    async def load_finalized_snapshot(self, session, project_id, selector):
+        self.snapshot_calls.append((session, project_id, selector))
         return self.snapshot
 
 
@@ -67,6 +106,70 @@ def _service(snapshot):
     transactions = TransactionRecorder()
     repository = FakeRepository(snapshot)
     return NovelDownloadService(transactions.transaction, repository), transactions, repository
+
+
+def _selector_service(snapshot):
+    transactions = TransactionRecorder()
+    repository = SelectorCapturingRepository(snapshot)
+    return NovelDownloadService(transactions.transaction, repository), transactions, repository
+
+
+@pytest.mark.asyncio
+async def test_download_passes_validated_selector_to_repository_before_prose_loading():
+    snapshot = _snapshot(_chapter(1, volume_id="v1", order=1, title="卷一"))
+    service, transactions, repository = _selector_service(snapshot)
+    selector = NovelDownloadSelector(
+        scope=DownloadScope.CHAPTER,
+        format=DownloadFormat.TXT,
+        chapter_number=1,
+    )
+
+    await service.download("project-1", selector)
+
+    assert repository.snapshot_calls == [
+        (transactions.session, "project-1", selector),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_download_rejects_an_unvalidated_selector_before_opening_transaction():
+    service, transactions, repository = _selector_service(_snapshot())
+
+    with pytest.raises(TypeError, match="selector must be a NovelDownloadSelector"):
+        await service.download("project-1", object())
+
+    assert transactions.entered == transactions.exited == 0
+    assert repository.snapshot_calls == []
+
+
+@pytest.mark.asyncio
+async def test_download_revalidates_same_type_selector_before_opening_transaction():
+    service, transactions, repository = _selector_service(_snapshot())
+    invalid_selector = NovelDownloadSelector(
+        scope=DownloadScope.BOOK,
+        format=DownloadFormat.TXT,
+    ).model_copy(update={"volume_id": "v1"})
+
+    with pytest.raises(
+        ValidationError,
+        match="book scope must not include volume_id or chapter_number",
+    ):
+        await service.download("project-1", invalid_selector)
+
+    assert transactions.entered == transactions.exited == 0
+    assert repository.snapshot_calls == []
+
+
+@pytest.mark.asyncio
+async def test_options_uses_metadata_projection_without_loading_final_prose():
+    snapshot = _snapshot(_chapter(1, volume_id="v1", order=1, title="卷一"))
+    service, transactions, repository = _selector_service(snapshot)
+
+    options = await service.options("project-1")
+
+    assert options.available is True
+    assert repository.metadata_calls == [(transactions.session, "project-1")]
+    assert repository.snapshot_calls == []
 
 
 @pytest.mark.asyncio

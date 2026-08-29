@@ -14,6 +14,8 @@ import {
   projectContractPath,
   projectBiblePath,
   planningVolumesPath,
+  parsePositiveChapterNumber,
+  manuscriptPath,
   projectModelSettingsPath,
   projectOverviewPath,
   projectSeedsPath,
@@ -95,11 +97,12 @@ function routeTitle(route, project) {
   if (name === 'ProjectModelSettings') {
     return isArchived(project) ? '已归档模型绑定' : '模型绑定'
   }
+  if (name === 'ProjectManuscript') return '作品稿件'
+  if (name === 'FinalChapterReader') {
+    try { return `第 ${parsePositiveChapterNumber(route?.params?.chapterNumber)} 章定稿` } catch { return '章节定稿' }
+  }
   if (name === 'ChapterWriter') {
-    const chapterNumber = Number(route?.params?.chapterNumber)
-    return Number.isInteger(chapterNumber) && chapterNumber > 0
-      ? `第 ${chapterNumber} 章写作`
-      : '写作台'
+    try { return `第 ${parsePositiveChapterNumber(route?.params?.chapterNumber)} 章写作` } catch { return '写作台' }
   }
   if (name === 'NotFound' || name === 'NotFoundFallback') return '页面不存在'
   return String(route?.meta?.shellTitle || 'Novel Creator')
@@ -176,6 +179,13 @@ export function createProductShellModel({
               'ProjectPlanningPlots',
               'ProjectPlanningStoryBlocks',
             ].includes(routeName(route)),
+          },
+          {
+            key: 'manuscript',
+            label: '作品稿件',
+            path: manuscriptPath(project.id),
+            mark: '稿',
+            selected: ['ProjectManuscript', 'FinalChapterReader'].includes(routeName(route)),
           },
           ...(!archived ? [{
             key: 'models',

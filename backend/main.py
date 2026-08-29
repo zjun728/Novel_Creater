@@ -33,6 +33,7 @@ from backend.domain.routers import (
     corpus,
     finalization,
     market_sources,
+    manuscripts,
     model_bindings,
     novel_downloads,
     planning,
@@ -664,6 +665,7 @@ app.add_middleware(
 
 app.include_router(projects.router, prefix="/api")
 app.include_router(novel_downloads.router, prefix="/api")
+app.include_router(manuscripts.router, prefix="/api")
 app.include_router(project_packages.router, prefix="/api")
 app.include_router(project_imports.router, prefix="/api")
 app.include_router(providers.router, prefix="/api")

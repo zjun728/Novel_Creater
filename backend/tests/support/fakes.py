@@ -15,6 +15,8 @@ class FakeCursor:
         self.raw.closed_cursors.append(self)
 
     async def execute(self, sql, args=None):
+        if self.raw.execute_error is not None:
+            raise self.raw.execute_error
         self.raw.executions.append((sql, args))
 
     async def fetchone(self):
@@ -32,6 +34,7 @@ class FakeRawConnection:
         self.begin_error = None
         self.commit_error = None
         self.rollback_error = None
+        self.execute_error = None
         self.rowcount = 1
         self.fetchone_result = {"value": "one"}
         self.fetchall_result = [{"value": "many"}]
@@ -66,9 +69,12 @@ class FakePool:
         self.released = []
         self.close_count = 0
         self.wait_closed_count = 0
+        self.acquire_error = None
 
     async def acquire(self):
         self.acquire_count += 1
+        if self.acquire_error is not None:
+            raise self.acquire_error
         return self.raw
 
     def release(self, raw):

@@ -1,9 +1,52 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
+import { computed, createSSRApp, h, ref, shallowRef } from 'vue'
+import { createMemoryHistory, createRouter } from 'vue-router'
+import { renderToString } from '@vue/server-renderer'
+import vuePlugin from '@vitejs/plugin-vue'
+import { createServer } from 'vite'
 
 
 const source = path => readFile(new URL(`../../src/${path}`, import.meta.url), 'utf8')
+
+const root = fileURLToPath(new URL('../..', import.meta.url))
+const naiveStubId = '\0finalization-panel-naive-stub'
+const naiveStub = {
+  name: 'finalization-panel-naive-stub',
+  enforce: 'pre',
+  resolveId: id => id === 'naive-ui' ? naiveStubId : undefined,
+  load: id => id === naiveStubId ? `
+    import { defineComponent, h } from 'vue'
+    const children = slots => Object.values(slots).flatMap(slot => slot?.() || [])
+    const stub = name => defineComponent({ name, setup(_, { attrs, slots }) { return () => h('div', attrs, children(slots)) } })
+    export const NAlert = stub('NAlert')
+    export const NCard = stub('NCard')
+    export const NInput = stub('NInput')
+    export const NTag = stub('NTag')
+    export const NButton = defineComponent({ name: 'NButton', setup(_, { attrs, slots }) { return () => h('button', attrs, children(slots)) } })
+  ` : undefined,
+}
+
+let vite
+let FinalizationPanel
+test.before(async () => {
+  vite = await createServer({
+    configFile: false,
+    root,
+    appType: 'custom',
+    logLevel: 'error',
+    server: { middlewareMode: true, hmr: false, ws: false },
+    plugins: [vuePlugin(), naiveStub],
+    ssr: { noExternal: ['naive-ui'] },
+    optimizeDeps: { noDiscovery: true },
+  })
+  FinalizationPanel = (await vite.ssrLoadModule(
+    '/src/components/writer/FinalizationPanel.vue',
+  )).default
+})
+test.after(async () => { await vite?.close() })
 
 
 test('Writer embeds one compact author-controlled finalization panel', async () => {
@@ -56,4 +99,103 @@ test('the panel renders evidence without exposing full candidate prose', async (
   assert.match(panel, /startScalar/)
   assert.match(panel, /endScalar/)
   assert.doesNotMatch(panel, /candidate\.content|workingDraft\.content|rawProvider|prompt|apiKey|dsn/i)
+})
+
+
+test('finalized panel stays in place and offers only verified explicit navigation', async () => {
+  const panel = await source('components/writer/FinalizationPanel.vue')
+
+  assert.match(panel, /controller\.postFinalization\.value/)
+  assert.match(panel, /postFinalization\.currentAction\.state === 'available'/)
+  assert.match(panel, /:to="postFinalization\.currentAction\.targetPath"/)
+  assert.match(panel, /\{\{ postFinalization\.currentAction\.label \}\}/)
+  assert.match(panel, /postFinalization\?\.finalizedChapterReadable/)
+  assert.match(panel, /:to="postFinalization\.finalizedChapterPath"/)
+  assert.match(panel, /查看本章定稿/)
+  assert.match(panel, /controller\.refreshPostFinalization/)
+  assert.match(panel, /:disabled="controller\.postBusy\.value"/)
+  assert.match(panel, /v-if="!postFinalization"[\s\S]*正在读取定稿后的创作状态/)
+  assert.match(panel, /currentAction\.state === 'archived'[\s\S]*项目当前为只读状态/)
+  assert.match(panel, /\.panel-intro[^}]*color:\s*#675d51/)
+  assert.match(panel, /\.finalized-action--primary span[^}]*color:\s*#675d51/)
+  assert.match(panel, /\.muted[^}]*color:\s*#6f6559/)
+  assert.doesNotMatch(panel, /未实现内容|router\.push|router\.replace|window\.location/)
+})
+
+
+test('finalized panel renders a loading state while post-commit refresh is pending', async () => {
+  const controller = {
+    review: shallowRef({ status: 'committed' }),
+    result: shallowRef({ chapterNumber: 4 }),
+    postFinalization: shallowRef(null),
+    postBusy: computed(() => false),
+    busy: computed(() => true),
+    error: ref(''),
+    hardBlocks: computed(() => []),
+    finalized: computed(() => true),
+    primaryAction: computed(() => 'done'),
+    refreshPostFinalization: async () => {},
+  }
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/', component: { render: () => h('div') } }],
+  })
+  await router.push('/')
+  await router.isReady()
+  const app = createSSRApp(FinalizationPanel, { controller })
+  app.use(router)
+
+  const html = await renderToString(app)
+
+  assert.match(html, /本章已定稿/)
+  assert.match(html, /正在读取定稿后的创作状态/)
+  assert.doesNotMatch(html, /项目当前为只读状态|重新读取创作状态/)
+})
+
+
+test('initialized post-finalization refresh shows progress until retry is settled', async () => {
+  const controller = {
+    review: shallowRef({ status: 'committed' }),
+    result: shallowRef({ chapterNumber: 4 }),
+    postFinalization: shallowRef({
+      currentAction: {
+        state: 'unavailable',
+        label: '重新读取创作状态',
+      },
+      finalizedChapterReadable: false,
+    }),
+    postBusy: computed(() => true),
+    busy: computed(() => true),
+    error: ref(''),
+    hardBlocks: computed(() => []),
+    finalized: computed(() => true),
+    primaryAction: computed(() => 'done'),
+    refreshPostFinalization: async () => {},
+  }
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/', component: { render: () => h('div') } }],
+  })
+  await router.push('/')
+  await router.isReady()
+  const app = createSSRApp(FinalizationPanel, { controller })
+  app.use(router)
+
+  const html = await renderToString(app)
+
+  assert.match(html, /正在读取创作状态…/)
+  assert.doesNotMatch(html, /重新读取创作状态|项目当前为只读状态/)
+
+  const settledApp = createSSRApp(FinalizationPanel, {
+    controller: {
+      ...controller,
+      postBusy: computed(() => false),
+      busy: computed(() => false),
+    },
+  })
+  settledApp.use(router)
+  const settledHtml = await renderToString(settledApp)
+
+  assert.match(settledHtml, /重新读取创作状态/)
+  assert.doesNotMatch(settledHtml, /正在读取创作状态…/)
 })

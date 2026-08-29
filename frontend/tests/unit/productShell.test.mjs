@@ -55,6 +55,16 @@ function route(name, path, params = {}) {
   return { name, path, params }
 }
 
+function declaredTargetSize(source, selector) {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const block = source.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`))?.[1] || ''
+  const declarations = Object.fromEntries(
+    [...block.matchAll(/([\w-]+)\s*:\s*([^;]+);?/g)].map(([, property, value]) => [property, value.trim()]),
+  )
+  const pixels = property => Number.parseFloat(declarations[property] || '0')
+  return { inline: pixels('min-width'), block: pixels('min-height') }
+}
+
 test('shell model exposes the three frozen global destinations', async () => {
   const {
     createProductShellModel,
@@ -125,6 +135,7 @@ test('active and archived project contexts have different module surfaces', asyn
       ['创作契约', '/projects/project%201/contract', false],
       ['创作圣经', '/projects/project%201/bible', false],
       ['故事规划', '/projects/project%201/planning/volumes', false],
+      ['作品稿件', '/projects/project%201/manuscript', false],
       ['模型绑定', '/projects/project%201/settings/models', false],
     ],
   )
@@ -177,6 +188,7 @@ test('active and archived project contexts have different module surfaces', asyn
       ['创作契约', '/projects/archived-1/contract', false],
       ['创作圣经', '/projects/archived-1/bible', false],
       ['故事规划', '/projects/archived-1/planning/volumes', false],
+      ['作品稿件', '/projects/archived-1/manuscript', false],
     ],
   )
   assert.equal(archived.routeTitle, '已归档项目')
@@ -274,6 +286,48 @@ test('desktop breakpoint collapses navigation without removing the route title',
   assert.equal(desktop.sidebarCollapsed, false)
 })
 
+test('application shell owns the only main landmark and begins with a skip link', async () => {
+  const app = await readFile(new URL('../../src/App.vue', import.meta.url), 'utf8')
+  assert.match(app, /class="skip-link"[^>]*href="#main-content"[^>]*>跳到主内容</)
+  assert.equal((app.match(/<main\b/g) || []).length, 1)
+  assert.match(app, /<main[^>]*id="main-content"[^>]*tabindex="-1"/)
+  assert.match(app, /MobileNavigationDrawer/)
+  assert.match(app, /ref="shellRegion"[\s\S]*class="skip-link"[\s\S]*class="product-app-shell"/)
+})
+
+test('shell CSS preserves touch size, wrapping, mobile layout, and reduced motion', async () => {
+  const [style, sidebar, index, reader] = await Promise.all([
+    readFile(new URL('../../src/style.css', import.meta.url), 'utf8'),
+    readFile(new URL('../../src/components/layout/Sidebar.vue', import.meta.url), 'utf8'),
+    readFile(new URL('../../src/views/ManuscriptIndexView.vue', import.meta.url), 'utf8'),
+    readFile(new URL('../../src/views/FinalChapterReaderView.vue', import.meta.url), 'utf8'),
+  ])
+  assert.match(style, /@media \(max-width: 760px\)/)
+  assert.match(style, /grid-template-columns:\s*minmax\(0, 1fr\)/)
+  assert.match(style, /\.product-mobile-topbar button[\s\S]*?min-height:\s*44px/)
+  assert.match(sidebar, /\.product-sidebar__nav-link,[\s\S]*?min-height:\s*44px/)
+  assert.match(sidebar, /\.product-sidebar__asset-subnav a[\s\S]*?min-height:\s*44px/)
+  const topbar = await readFile(new URL('../../src/components/layout/TopBar.vue', import.meta.url), 'utf8')
+  assert.match(topbar, /\.product-topbar__breadcrumbs a[\s\S]*?min-height:\s*44px/)
+  assert.deepEqual(declaredTargetSize(topbar, '.product-topbar__breadcrumbs a'), { inline: 44, block: 44 })
+  for (const source of [style, sidebar, index, reader]) {
+    assert.match(source, /@media \(prefers-reduced-motion: reduce\)/)
+  }
+  assert.match(index, /\.manuscript-index :is\(a,button,summary\)[^}]*min-height:\s*44px/)
+  assert.match(reader, /\.final-reader :is\(a, button, summary\)[^}]*min-height:\s*44px/)
+  assert.deepEqual(declaredTargetSize(reader, '.final-reader nav a'), { inline: 44, block: 44 })
+})
+
+test('route views never introduce a second main landmark inside the application shell', async () => {
+  const routes = await readFile(new URL('../../src/router/projectRoutes.js', import.meta.url), 'utf8')
+  const names = [...routes.matchAll(/const\s+(\w+View)\s*=\s*\(\)\s*=>\s*import\('\.\.\/views\/([^']+\.vue)'\)/g)]
+  assert.ok(names.length >= 15)
+  for (const [, component, filename] of names) {
+    const source = await readFile(new URL(`../../src/views/${filename}`, import.meta.url), 'utf8')
+    assert.doesNotMatch(source, /<\/?main\b/, `${component} must render inside App's one main landmark`)
+  }
+})
+
 test('forced shell hydration bypasses a matching cached project for lifecycle authority', async () => {
   const { useShellProjectHydration } = await loadShellModule()
   const cached = {
@@ -350,7 +404,7 @@ test.after(async () => {
 
 const Page = defineComponent({
   name: 'TestRoutePage',
-  render: () => h('main', { 'data-route-page': '' }),
+  render: () => h('section', { 'data-route-page': '' }),
 })
 
 const shellRoutes = [
@@ -565,6 +619,15 @@ test('the real project overview consumes shell hydration without a duplicate rea
   const requests = []
   global.fetch = async url => {
     requests.push(String(url))
+    if (String(url).endsWith('/manuscript')) {
+      return new Response(JSON.stringify({
+        projectId: 'project-1',
+        title: '典镇山河',
+        lifecycle: 'active',
+        summary: { finalChapterCount: 0, totalScalarCount: 0 },
+        volumes: [],
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
     return new Response(JSON.stringify({
       id: 'project-1',
       title: '典镇山河',
@@ -628,7 +691,10 @@ test('the real project overview consumes shell hydration without a duplicate rea
     app.use(router)
     const html = await renderToString(app)
 
-    assert.deepEqual(requests, ['http://127.0.0.1:8000/api/projects/project-1'])
+    assert.deepEqual(requests, [
+      'http://127.0.0.1:8000/api/projects/project-1',
+      'http://127.0.0.1:8000/api/projects/project-1/manuscript',
+    ])
     assert.match(html, /class="product-sidebar__project-title"[^>]*>典镇山河</)
   } finally {
     global.fetch = originalFetch
@@ -795,7 +861,9 @@ test('project overview renders one server-authoritative Phase 2 next action', as
   )
 
   assert.match(overview, /useProjectStore/)
-  assert.match(overview, /preparation\.targetPath/)
+  assert.match(overview, /import \{ mapProjectNextAction \}/)
+  assert.match(overview, /computed\(\(\) => mapProjectNextAction\(preparation\.value\)\)/)
+  assert.match(overview, /:to="actionCopy\.targetPath"/)
   assert.equal((overview.match(/class="overview-next-action"/g) || []).length, 1)
   assert.doesNotMatch(overview, /projectContractPath|projectBiblePath/)
   assert.doesNotMatch(overview, /WriterView|\/writer\//)

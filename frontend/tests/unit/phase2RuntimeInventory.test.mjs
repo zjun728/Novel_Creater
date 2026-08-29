@@ -27,6 +27,8 @@ const CANONICAL_ROUTES = [
   ['/projects/:projectId/planning/volumes', 'ProjectPlanningVolumes'],
   ['/projects/:projectId/planning/plots', 'ProjectPlanningPlots'],
   ['/projects/:projectId/planning/story-blocks', 'ProjectPlanningStoryBlocks'],
+  ['/projects/:projectId/manuscript', 'ProjectManuscript'],
+  ['/projects/:projectId/manuscript/chapters/:chapterNumber([1-9]\\d*)', 'FinalChapterReader'],
   ['/projects/:projectId/write/chapters/:chapterNumber([1-9]\\d*)', 'ChapterWriter'],
   ['/settings/providers', 'ProviderSettings'],
   ['/settings/application', 'ApplicationSettings'],
@@ -174,6 +176,8 @@ const CANONICAL_ROUTE_VIEWS = [
   'views/ProjectContractView.vue',
   'views/ProjectBibleView.vue',
   'views/ProjectPlanningView.vue',
+  'views/ManuscriptIndexView.vue',
+  'views/FinalChapterReaderView.vue',
   'views/assets/StyleLibraryView.vue',
   'views/assets/ExperienceLibraryView.vue',
   'views/assets/CorpusLibraryView.vue',
@@ -187,6 +191,7 @@ const CANONICAL_ROUTE_VIEWS = [
 const PRESERVED_FUTURE_RUNTIME = [
   'components/project/ContractHeadSummary.vue',
   'components/project/WriterCoreStateCard.vue',
+  'components/projects/NovelDownloadPanel.vue',
 ]
 
 test('planning foundation keeps one store, one workspace and the active story-block editor without outlines', async () => {

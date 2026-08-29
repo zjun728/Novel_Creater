@@ -22,6 +22,7 @@ import FinalizationPanel from '@/components/writer/FinalizationPanel.vue'
 import { createWorkingDraftAutosave } from '@/application/writer/workingDraftAutosave'
 import { createChapterWriterController } from '@/application/writer/chapterWriterController'
 import { createFinalizationController } from '@/application/writer/finalizationController'
+import { mapProjectNextAction } from '@/application/projects/projectNextAction'
 import { api } from '@/api/db/client'
 import { useChapterSessionStore } from '@/stores/chapterSessionStore'
 import { createLatestRequestGuard } from '@/utils/latestRequest'
@@ -30,6 +31,7 @@ import {
   unicodeScalarLength,
 } from '@/utils/unicodeScalarText'
 import {
+  finalChapterPath,
   planningStoryBlocksPath,
   projectOverviewPath,
 } from '@/router/projectRoutes'
@@ -99,15 +101,31 @@ const finalization = createFinalizationController({
     session.value.id,
     command,
   ),
-  commit: command => api.chapterSessions.commitFinalization(
-    projectId.value,
-    session.value.id,
-    command,
-  ),
-  onCommitted: async () => {
-    const workspace = await chapterSessionStore.reloadCurrentWorkspace(projectId.value)
+  commit: async (command, target) => {
+    const committed = await api.chapterSessions.commitFinalization(
+      target.projectId,
+      target.sessionId,
+      command,
+    )
+    return { ...committed, chapterNumber: target.chapterNumber }
+  },
+  onCommitted: async target => {
+    const workspace = await chapterSessionStore.reloadCurrentWorkspace(target.projectId)
     if (workspace?.workingDraft) autosave.reset(workspace)
   },
+  getProjectId: () => projectId.value,
+  getSessionId: () => session.value?.id,
+  getChapterNumber: () => chapterNumber.value,
+  reloadPreparation: projectId => api.projects.preparation(projectId),
+  readFinalizedChapter: (projectId, chapterNumber) => api.manuscripts.chapter(
+    projectId,
+    chapterNumber,
+  ),
+  mapNextAction: mapProjectNextAction,
+  finalizedChapterPath: (projectId, chapterNumber) => finalChapterPath(
+    projectId,
+    chapterNumber,
+  ),
 })
 const controller = createChapterWriterController({
   autosave,
@@ -438,7 +456,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="writer-shell">
+  <section class="writer-shell">
     <nav class="writer-navigation" aria-label="章节工作台导航">
       <router-link
         :to="storyBlocksPath"
@@ -491,7 +509,10 @@ onBeforeUnmount(() => {
                 <span v-if="session">第 {{ session.chapterNum }} 章 · revision {{ autosave.persistedRevision.value }}</span>
                 <span v-else>第 {{ chapterNumber }} 章 · 尚未创建章节会话</span>
               </div>
-              <n-tag :type="session ? 'success' : 'default'" :bordered="false">{{ session ? 'drafting' : 'not started' }}</n-tag>
+              <n-tag
+                :type="finalization.finalized.value ? 'success' : session ? 'success' : 'default'"
+                :bordered="false"
+              >{{ finalization.finalized.value ? '已定稿' : session ? 'drafting' : 'not started' }}</n-tag>
             </div>
           </template>
 
@@ -639,7 +660,7 @@ onBeforeUnmount(() => {
         </aside>
       </section>
     </template>
-  </main>
+  </section>
 </template>
 
 <style scoped>
