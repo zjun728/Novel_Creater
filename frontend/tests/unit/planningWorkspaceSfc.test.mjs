@@ -461,15 +461,59 @@ async function renderActualProgressPanel(vite) {
   Panel.default.render = await clientRender('components/planning/ActualProgressPanel.vue')
 }
 
+function actualProgressPanel(root) {
+  const panels = walk(root).filter(item => (
+    item.type === 'aside' && item.props.class === 'actual-progress-panel'
+  ))
+  assert.equal(panels.length, 1)
+  const panel = panels[0]
+  assert.equal(panel.type, 'aside')
+  const headingId = panel.props['aria-labelledby']
+  assert.equal(typeof headingId, 'string')
+  const heading = walk(panel).find(item => item.type === 'h2' && item.props.id === headingId)
+  assert.ok(heading)
+  assert.equal(text(heading), '正文进度')
+  return panel
+}
+
+function panelVisibleAndAccessibleMetadata(panel) {
+  return [
+    text(panel),
+    ...walk(panel).flatMap(item => Object.entries(item.props).flatMap(([key, value]) => (
+      /^aria-|^(id|title)$|^data-/.test(key) ? [String(value)] : []
+    ))),
+  ].join('')
+}
+
+function assertReadOnlyPanel(panel) {
+  const forbiddenTags = new Set(['a', 'button', 'input', 'select', 'textarea', 'form', 'summary'])
+  const interactive = walk(panel).filter(item => (
+    forbiddenTags.has(item.type)
+    || ['button', 'link'].includes(String(item.props.role || '').toLowerCase())
+    || item.props.contenteditable != null
+    || item.props.tabindex != null
+    || Object.keys(item.props).some(key => /^on[A-Z]|^on[a-z]/.test(key))
+  ))
+  assert.deepEqual(interactive, [])
+}
+
 test('mounted actual progress panel renders only the safe author summary for every presentation state', async () => {
   const vite = await createPlanningVite()
   try {
     const Panel = await vite.ssrLoadModule('/src/components/planning/ActualProgressPanel.vue')
     Panel.default.render = await clientRender('components/planning/ActualProgressPanel.vue')
+    assert.ok(Panel.default.emits == null)
+    const panelPlanningContent = planningContent()
+    const targetIdSentinel = 'targetId-sentinel-10'
+    panelPlanningContent.storyBlocks.push({
+      id: targetIdSentinel,
+      title: '作者安全层级',
+      stages: [],
+    })
     const panelState = reactive({
       items: [],
       status: null,
-      planningContent: planningContent(),
+      planningContent: panelPlanningContent,
     })
     const Harness = defineComponent({
       setup: () => () => h(Panel.default, panelState),
@@ -482,8 +526,10 @@ test('mounted actual progress panel renders only the safe author summary for eve
     app.mount(root)
     await flush()
 
-    assert.match(text(root), /正文进度/)
-    assert.match(text(root), /正文进度状态需要重新读取。/)
+    let panel = actualProgressPanel(root)
+    assertReadOnlyPanel(panel)
+    assert.match(text(panel), /正文进度状态需要重新读取。/)
+    assert.equal(walk(panel).some(item => item.type === 'ol'), false)
 
     panelState.status = {
       canonRevision: 4,
@@ -491,7 +537,9 @@ test('mounted actual progress panel renders only the safe author summary for eve
       synchronized: false,
     }
     await flush()
-    assert.match(text(root), /正文进度正在同步，稍后重新读取。/)
+    panel = actualProgressPanel(root)
+    assert.match(text(panel), /正文进度正在同步，稍后重新读取。/)
+    assert.equal(walk(panel).some(item => item.type === 'ol'), false)
 
     panelState.status = {
       canonRevision: 4,
@@ -500,82 +548,122 @@ test('mounted actual progress panel renders only the safe author summary for eve
     }
     panelState.status = { canonRevision: 0, projectionRevision: 0, synchronized: true }
     await flush()
-    assert.match(text(root), /尚无已定稿正文带来的规划进度。/)
+    panel = actualProgressPanel(root)
+    assert.match(text(panel), /尚无已定稿正文带来的规划进度。/)
+    assert.equal(walk(panel).some(item => item.type === 'ol'), false)
 
     panelState.status = { canonRevision: 4, projectionRevision: 4, synchronized: true }
     await flush()
-    assert.match(text(root), /定稿事实已同步，当前没有规划项发生变化。/)
+    panel = actualProgressPanel(root)
+    assert.match(text(panel), /定稿事实已同步，当前没有规划项发生变化。/)
+    assert.equal(walk(panel).some(item => item.type === 'ol'), false)
 
+    const revisionNumberSentinel = 424242
+    const uuidSentinel = '550e8400-e29b-41d4-a716-446655440000'
+    const contentHashSentinel = 'contentHash-sentinel-a'.repeat(2)
+    const fieldPathSentinel = 'fieldPath-sentinel-7'
+    const entityIdSentinel = 'entityId-sentinel-9'
+    const nestedJsonSentinel = 'nested-json-token-11'
+    const omittedContentHashSentinel = 'omitted-content-hash-sentinel-12'
+    const subjectKeySentinel = '__global__'
+    const targetTypeSentinel = 'story_block'
+    const statusSentinel = 'started'
+    const recognizedFieldPath = `plot.progress.${targetTypeSentinel}.${targetIdSentinel}`
     const rawSentinels = [
-      'revisionNumber-sentinel-424242',
-      '424242',
-      '550e8400-e29b-41d4-a716-446655440000',
-      'contentHash-sentinel-a'.repeat(2),
-      'fieldPath-sentinel-7',
-      'subjectKey-sentinel-8',
-      'entityId-sentinel-9',
-      'targetId-sentinel-10',
-      'nested-json-token-11',
+      String(revisionNumberSentinel),
+      uuidSentinel,
+      contentHashSentinel,
+      fieldPathSentinel,
+      entityIdSentinel,
+      targetIdSentinel,
+      nestedJsonSentinel,
+      subjectKeySentinel,
+      targetTypeSentinel,
+      statusSentinel,
+      recognizedFieldPath,
     ]
-    const unrecognized = {
-      revisionNumber: rawSentinels[0],
-      subjectKey: rawSentinels[4],
-      entityId: rawSentinels[5],
-      fieldPath: rawSentinels[3],
-      contentHash: rawSentinels[2],
-      value: { targetId: rawSentinels[6], nested: { token: rawSentinels[7] } },
+    const recognized = {
+      revisionNumber: revisionNumberSentinel,
+      subjectKey: subjectKeySentinel,
+      entityId: null,
+      fieldPath: recognizedFieldPath,
+      contentHash: contentHashSentinel,
+      value: { chapterNumber: 3, targetType: targetTypeSentinel, targetId: targetIdSentinel, status: statusSentinel },
     }
+    const unrecognized = {
+      revisionNumber: revisionNumberSentinel,
+      subjectKey: subjectKeySentinel,
+      entityId: entityIdSentinel,
+      fieldPath: fieldPathSentinel,
+      contentHash: contentHashSentinel,
+      value: { nested: { token: nestedJsonSentinel, opaqueId: uuidSentinel } },
+    }
+    const rawInput = JSON.stringify([recognized, unrecognized])
+    for (const sentinel of rawSentinels) assert.ok(rawInput.includes(sentinel))
     panelState.items = [unrecognized]
     await flush()
-    assert.match(text(root), /定稿进度已同步，暂时无法生成作者摘要。共有 1 项暂不能展示。/)
-    assert.equal(walk(root).some(item => item.type === 'ol'), false)
-    const panelTextAndMetadata = walk(root).flatMap(item => [
-      item.text,
-      ...Object.entries(item.props).flatMap(([key, value]) => (
-        /^(aria-label|aria-labelledby|title|id|data-)/.test(key) ? [String(value)] : []
-      )),
-    ]).join('')
-    for (const sentinel of rawSentinels) assert.equal(panelTextAndMetadata.includes(sentinel), false)
+    panel = actualProgressPanel(root)
+    assert.match(text(panel), /定稿进度已同步，暂时无法生成作者摘要。共有 1 项暂不能展示。/)
+    assert.equal(walk(panel).some(item => item.type === 'ol'), false)
+    for (const sentinel of rawSentinels) assert.equal(panelVisibleAndAccessibleMetadata(panel).includes(sentinel), false)
 
-    const progress = ({ chapterNumber = 3, targetType = 'story_block', targetId = 'block-1', status = 'started' } = {}) => ({
-      revisionNumber: rawSentinels[0],
-      subjectKey: '__global__',
+    const progress = ({
+      chapterNumber = 3,
+      targetType = 'story_block',
+      targetId = targetIdSentinel,
+      status = 'started',
+      contentHash = contentHashSentinel,
+    } = {}) => ({
+      revisionNumber: revisionNumberSentinel,
+      subjectKey: subjectKeySentinel,
       entityId: null,
       fieldPath: `plot.progress.${targetType}.${targetId}`,
-      contentHash: rawSentinels[2],
+      contentHash,
       value: { chapterNumber, targetType, targetId, status },
     })
-    panelState.items = [progress(), progress({ targetType: 'stage', targetId: 'stage-1', status: 'advanced' })]
+    panelState.items = [recognized, progress({ targetType: 'stage', targetId: 'stage-1', status: 'advanced' })]
     await flush()
-    assert.match(text(root), /已同步 1 章定稿带来的规划进度。/)
-    const recognizedRows = walk(root).filter(item => item.type === 'li')
+    panel = actualProgressPanel(root)
+    assert.match(text(panel), /已同步 1 章定稿带来的规划进度。/)
+    const recognizedList = walk(panel).find(item => item.type === 'ol')
+    assert.ok(recognizedList)
+    const recognizedRows = walk(recognizedList).filter(item => item.type === 'li')
     assert.equal(recognizedRows.length, 2)
-    assert.match(text(recognizedRows[0]), /第 3 章.*故事块.*夜入县衙.*已开始/)
+    assert.match(text(recognizedRows[0]), /第 3 章.*故事块.*作者安全层级.*已开始/)
     assert.match(text(recognizedRows[1]), /第 3 章.*阶段.*夜入县衙 \/ 潜入.*已推进/)
+    for (const sentinel of rawSentinels) assert.equal(panelVisibleAndAccessibleMetadata(panel).includes(sentinel), false)
 
-    panelState.items = [progress(), unrecognized]
+    panelState.items = [recognized, unrecognized]
     await flush()
-    assert.match(text(root), /已同步 1 章定稿带来的规划进度。/)
-    assert.match(text(root), /另有 1 项定稿进度已同步，暂时无法生成作者摘要。/)
+    panel = actualProgressPanel(root)
+    assert.match(text(panel), /已同步 1 章定稿带来的规划进度。/)
+    assert.match(text(panel), /另有 1 项定稿进度已同步，暂时无法生成作者摘要。/)
+    for (const sentinel of rawSentinels) assert.equal(panelVisibleAndAccessibleMetadata(panel).includes(sentinel), false)
 
-    panelState.items = Array.from({ length: 12 }, (_, index) => progress({ chapterNumber: index + 1 }))
+    const omittedProgress = Array.from({ length: 12 }, (_, index) => progress({
+      chapterNumber: index + 1,
+      contentHash: omittedContentHashSentinel,
+    }))
+    assert.ok(JSON.stringify(omittedProgress).includes(omittedContentHashSentinel))
+    panelState.items = omittedProgress
     await flush()
-    const visibleRows = walk(root).filter(item => item.type === 'li')
+    panel = actualProgressPanel(root)
+    const visibleRows = walk(panel).filter(item => item.type === 'li')
     assert.equal(visibleRows.length, 10)
-    assert.match(text(root), /已同步 12 章定稿带来的规划进度。/)
-    assert.match(text(root), /还有 2 项较早进度未展开。/)
+    assert.match(text(panel), /已同步 12 章定稿带来的规划进度。/)
+    assert.match(text(panel), /还有 2 项较早进度未展开。/)
+    assert.equal(panelVisibleAndAccessibleMetadata(panel).includes(omittedContentHashSentinel), false)
+    for (const sentinel of rawSentinels) assert.equal(panelVisibleAndAccessibleMetadata(panel).includes(sentinel), false)
 
     panelState.items = Array.from({ length: 12 }, (_, index) => progress({ chapterNumber: index + 1 })).concat(unrecognized)
     await flush()
-    const omittedIndex = text(root).indexOf('还有 2 项较早进度未展开。')
-    const mixedIndex = text(root).indexOf('另有 1 项定稿进度已同步，暂时无法生成作者摘要。')
+    panel = actualProgressPanel(root)
+    const omittedIndex = text(panel).indexOf('还有 2 项较早进度未展开。')
+    const mixedIndex = text(panel).indexOf('另有 1 项定稿进度已同步，暂时无法生成作者摘要。')
     assert.ok(omittedIndex >= 0 && mixedIndex > omittedIndex)
 
-    assert.doesNotMatch(text(root), /CANON PROJECTION|Canon R|Projection R|事实主题|字段路径|正文事实/)
-    assert.equal(walk(root).some(item => (
-      ['button', 'input', 'checkbox', 'textarea', 'select'].includes(item.type)
-      || item.props.contenteditable != null
-    )), false)
+    assert.doesNotMatch(text(panel), /CANON PROJECTION|Canon R|Projection R|事实主题|字段路径|正文事实/)
+    assertReadOnlyPanel(panel)
     const contents = await readFile(source('components/planning/ActualProgressPanel.vue'), 'utf8')
     assert.doesNotMatch(contents, /defineEmits|@(click|input|change|submit|drag)|JSON\.stringify|publicValue|progressItemKey|canonRevision|projectionRevision|rebuilding/)
     assert.equal(warnings.some(message => /duplicate keys/i.test(message)), false)
