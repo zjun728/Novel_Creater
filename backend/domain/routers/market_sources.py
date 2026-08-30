@@ -78,17 +78,6 @@ class ManualImportRequest(RefreshRequest):
     snapshot: dict[str, object]
 
 
-class ScheduleRequest(_Request):
-    expectedRevision: int = Field(ge=1)
-    enabled: bool
-    intervalMinutes: int = Field(ge=1, le=525_600)
-    idempotencyKey: str = Field(
-        min_length=64,
-        max_length=64,
-        pattern=r"^[A-Za-z0-9_-]{64}$",
-    )
-
-
 class AnalysisRequest(_Request):
     model_config = ConfigDict(
         strict=True,
@@ -169,15 +158,14 @@ def _source_view(row: dict) -> dict:
         "checkedAt": row["checked_at"],
         "evidenceURL": row["evidence_url"],
         "automaticRefreshAllowed": row["automatic_refresh_allowed"],
+        "canManualImport": row["policy_status"] != "disabled",
+        "canRefresh": row["automatic_refresh_allowed"],
+        "canSchedule": False,
         "refreshStatus": row["refresh_status"],
         "lastAttemptedAt": row["last_attempted_at"],
         "lastSucceededAt": row["last_succeeded_at"],
         "lastSnapshotId": row["last_snapshot_id"],
         "publicErrorCode": row["public_error_code"],
-        "scheduleRevision": row["schedule_revision"],
-        "scheduleEnabled": row["schedule_enabled"],
-        "scheduleIntervalMinutes": row["schedule_interval_minutes"],
-        "scheduleNextRunAt": row["schedule_next_run_at"],
     }
 
 
@@ -213,15 +201,6 @@ def _snapshot_view(row: dict, *, detail: bool) -> dict:
             raise MarketSourceFailure("MARKET_REFRESH_FAILED")
         value["entries"] = [_entry_view(entry) for entry in entries]
     return value
-
-
-def _recovery_reason(value) -> str | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        return MarketSourceFailure(value).code
-    except TypeError:
-        return None
 
 
 def get_market_source_service() -> MarketSourceService:
@@ -351,30 +330,6 @@ async def refresh_market_source(
         raise MarketSourceFailure("MARKET_REFRESH_COMMAND_INVALID")
     result = await service.refresh(source_id, data.idempotency_key)
     return _snapshot_view(result, detail=True)
-
-
-@router.put("/market-sources/{source_id}/schedule")
-async def update_market_source_schedule(
-    source_id: BoundedId,
-    data: ScheduleRequest,
-    service: MarketSourceService = Depends(get_market_source_service),
-):
-    result = await service.update_schedule(
-        source_id,
-        expected_revision=data.expectedRevision,
-        enabled=data.enabled,
-        interval_minutes=data.intervalMinutes,
-        idempotency_key=data.idempotencyKey,
-    )
-    return {
-        "sourceId": result["source_id"],
-        "revision": result["revision"],
-        "enabled": result["enabled"],
-        "intervalMinutes": result["interval_minutes"],
-        "nextRunAt": result["next_run_at"],
-        "policyStatus": result["policy_status"],
-        "recoveryReason": _recovery_reason(result["recovery_reason"]),
-    }
 
 
 @router.post("/projects/{project_id}/market-analyses")

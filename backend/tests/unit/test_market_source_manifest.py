@@ -31,12 +31,28 @@ def test_built_in_manifest_is_hash_bound_and_manual_only():
     package = load_market_source_package(MANIFEST_PATH)
 
     assert package.package_version == "market-sources-v1.0.0"
-    assert {source.adapter_key for source in package.sources} == {
-        "qidian_public_rank",
-        "qq_reading_public_rank",
+    assert {
+        source.stable_key: source.adapter_key for source in package.sources
+    } == {
+        "qidian.newsign": "qidian_public_rank",
+        "qq-reading.male-popular": "qq_reading_public_rank",
+        "fanqie.reading": "fanqie_manual_snapshot",
+        "qimao.public-catalog": "qimao_manual_snapshot",
+        "shuqi.public-catalog": "shuqi_manual_snapshot",
     }
     assert {source.policy.status for source in package.sources} == {"manual_only"}
     assert all(source.policy.enabled is False for source in package.sources)
+    assert all(source.can_manual_import for source in package.sources)
+    assert all(not source.can_refresh for source in package.sources)
+    assert all(not source.can_schedule for source in package.sources)
+    assert all(
+        set(source.public_config) == {"platform", "rankingName", "category"}
+        for source in package.sources
+    )
+    assert "chapter" not in json.dumps(
+        [dict(source.public_config) for source in package.sources],
+        ensure_ascii=False,
+    ).casefold()
     assert all(
         source.policy_hash == source.policy_content_hash()
         for source in package.sources

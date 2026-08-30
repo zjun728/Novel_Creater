@@ -20,6 +20,9 @@ from backend.services.market_scheduler import scheduled_failure_backoff_ms
 _FIXED_SOURCE_URLS = {
     "qidian_public_rank": "https://www.qidian.com/rank/newsign/",
     "qq_reading_public_rank": "https://book.qq.com/book-rank",
+    "fanqie_manual_snapshot": "https://fanqienovel.com/rank/1",
+    "qimao_manual_snapshot": "https://www.qimao.com/shuku/",
+    "shuqi_manual_snapshot": "https://www.shuqi.com/",
 }
 CANCELLATION_CLEANUP_TIMEOUT_SECONDS = 2.0
 

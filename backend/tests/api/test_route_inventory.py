@@ -193,7 +193,6 @@ APPROVED_FORMAL_ROUTES = {
     ("GET", "/api/market-sources/{source_id}/snapshots/{snapshot_id}"),
     ("POST", "/api/market-sources/{source_id}/manual-import"),
     ("POST", "/api/market-sources/{source_id}/refresh"),
-    ("PUT", "/api/market-sources/{source_id}/schedule"),
     ("POST", "/api/projects/{project_id}/market-analyses"),
     ("GET", "/api/projects/{project_id}/market-analyses/{analysis_id}"),
     ("GET", "/api/projects/{project_id}/writer-core/state"),
@@ -230,6 +229,7 @@ FORBIDDEN_LEGACY_PREFIXES = (
 
 FORBIDDEN_LEGACY_PATHS = {
     "/api/market",
+    "/api/market-sources/{source_id}/schedule",
 }
 
 

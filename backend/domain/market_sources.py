@@ -214,9 +214,13 @@ class SourcePolicy(_FrozenModel):
 
 class MarketSourceDefinition(_FrozenModel):
     stable_key: str = Field(alias="stableKey", min_length=1, max_length=160)
-    adapter_key: Literal["qidian_public_rank", "qq_reading_public_rank"] = Field(
-        alias="adapterKey"
-    )
+    adapter_key: Literal[
+        "qidian_public_rank",
+        "qq_reading_public_rank",
+        "fanqie_manual_snapshot",
+        "qimao_manual_snapshot",
+        "shuqi_manual_snapshot",
+    ] = Field(alias="adapterKey")
     display_name: str = Field(alias="displayName", min_length=1, max_length=200)
     public_config: Mapping[str, str] = Field(alias="publicConfig")
     policy: SourcePolicy
@@ -245,6 +249,22 @@ class MarketSourceDefinition(_FrozenModel):
 
     def policy_content_hash(self) -> str:
         return canonical_hash(self.policy)
+
+    @property
+    def can_manual_import(self) -> bool:
+        return self.policy.status != "disabled"
+
+    @property
+    def can_refresh(self) -> bool:
+        return (
+            self.adapter_key
+            in {"qidian_public_rank", "qq_reading_public_rank"}
+            and self.policy.status == "verified_public"
+        )
+
+    @property
+    def can_schedule(self) -> bool:
+        return False
 
 
 class SourceFile(_FrozenModel):

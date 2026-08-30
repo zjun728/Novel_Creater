@@ -232,11 +232,7 @@ async def _application_lifespan(
                 )
         draft_registry_start_attempted = True
         await chapter_sessions.draft_operation_task_registry.start()
-        scheduler_runtime = build_market_scheduler_runtime(
-            enabled=runtime_configuration.market_scheduler_enabled,
-        )
-        app.state.market_scheduler_runtime = scheduler_runtime
-        scheduler_runtime.start()
+        app.state.market_scheduler_runtime = None
         planning_gateway_start_attempted = True
         await planning.planning_provider_gateway.start()
         outline_gateway_start_attempted = True

@@ -24,6 +24,21 @@ _WORK_URL_RULES = {
         "book.qq.com",
         re.compile(r"/book-detail/[1-9][0-9]*"),
     ),
+    "fanqie_manual_snapshot": (
+        "https",
+        "fanqienovel.com",
+        re.compile(r"/page/[1-9][0-9]*"),
+    ),
+    "qimao_manual_snapshot": (
+        "https",
+        "www.qimao.com",
+        re.compile(r"/shuku/[1-9][0-9]*(?:-[1-9][0-9]*)?/"),
+    ),
+    "shuqi_manual_snapshot": (
+        "https",
+        "www.shuqi.com",
+        re.compile(r"/book/[1-9][0-9]*\.html"),
+    ),
 }
 
 

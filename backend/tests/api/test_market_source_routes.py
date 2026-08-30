@@ -66,10 +66,6 @@ class FakeService:
                 "last_succeeded_at": None,
                 "last_snapshot_id": None,
                 "public_error_code": None,
-                "schedule_revision": 3,
-                "schedule_enabled": False,
-                "schedule_interval_minutes": 360,
-                "schedule_next_run_at": None,
                 "public_config": {"private": "CONFIG_SENTINEL"},
                 "source_url": "https://private.example/URL_SENTINEL",
                 "error_detail": "ERROR_SENTINEL",
@@ -98,36 +94,6 @@ class FakeService:
     async def refresh(self, source_id, idempotency_key):
         self.calls.append(("refresh", source_id, idempotency_key))
         return _snapshot()
-
-    async def update_schedule(
-        self,
-        source_id,
-        *,
-        expected_revision,
-        enabled,
-        interval_minutes,
-        idempotency_key,
-    ):
-        self.calls.append(
-            (
-                "update_schedule",
-                source_id,
-                expected_revision,
-                enabled,
-                interval_minutes,
-                idempotency_key,
-            )
-        )
-        return {
-            "source_id": source_id,
-            "revision": expected_revision + 1,
-            "enabled": enabled,
-            "interval_minutes": interval_minutes,
-            "next_run_at": NOW if enabled else None,
-            "policy_status": "verified_public",
-            "recovery_reason": None,
-        }
-
 
 class FakeAnalysisService:
     def __init__(self):
@@ -228,18 +194,9 @@ def test_market_source_routes_expose_only_inventory_status_history_detail_and_co
             f"/api/market-sources/{SOURCE_ID}/refresh",
             json={"idempotencyKey": "r" * 64},
         ),
-        client.put(
-            f"/api/market-sources/{SOURCE_ID}/schedule",
-            json={
-                "expectedRevision": 3,
-                "enabled": True,
-                "intervalMinutes": 360,
-                "idempotencyKey": "s" * 64,
-            },
-        ),
     )
 
-    assert [response.status_code for response in responses] == [200] * 7
+    assert [response.status_code for response in responses] == [200] * 6
     source = responses[0].json()[0]
     assert set(source) == {
         "id",
@@ -254,20 +211,18 @@ def test_market_source_routes_expose_only_inventory_status_history_detail_and_co
         "checkedAt",
         "evidenceURL",
         "automaticRefreshAllowed",
+        "canManualImport",
+        "canRefresh",
+        "canSchedule",
         "refreshStatus",
         "lastAttemptedAt",
         "lastSucceededAt",
         "lastSnapshotId",
         "publicErrorCode",
-        "scheduleRevision",
-        "scheduleEnabled",
-        "scheduleIntervalMinutes",
-        "scheduleNextRunAt",
     }
-    assert source["scheduleRevision"] == 3
-    assert source["scheduleEnabled"] is False
-    assert source["scheduleIntervalMinutes"] == 360
-    assert source["scheduleNextRunAt"] is None
+    assert source["canManualImport"] is True
+    assert source["canRefresh"] is False
+    assert source["canSchedule"] is False
     assert responses[1].json() == source
     rendered_sources = json.dumps(
         [responses[0].json(), responses[1].json()],
@@ -301,15 +256,6 @@ def test_market_source_routes_expose_only_inventory_status_history_detail_and_co
         "workURL",
         "publicMetrics",
     }
-    assert responses[-1].json() == {
-        "sourceId": SOURCE_ID,
-        "revision": 4,
-        "enabled": True,
-        "intervalMinutes": 360,
-        "nextRunAt": NOW,
-        "policyStatus": "verified_public",
-        "recoveryReason": None,
-    }
     methods = {route.path: route.methods for route in market_sources.router.routes}
     assert methods == {
         "/market-sources": {"GET"},
@@ -318,13 +264,12 @@ def test_market_source_routes_expose_only_inventory_status_history_detail_and_co
         "/market-sources/{source_id}/snapshots/{snapshot_id}": {"GET"},
         "/market-sources/{source_id}/manual-import": {"POST"},
         "/market-sources/{source_id}/refresh": {"POST"},
-        "/market-sources/{source_id}/schedule": {"PUT"},
         "/projects/{project_id}/market-analyses": {"POST"},
         "/projects/{project_id}/market-analyses/{analysis_id}": {"GET"},
     }
     assert "url" not in signature(market_sources.refresh_market_source).parameters
     assert "policy" not in signature(market_sources.refresh_market_source).parameters
-    assert len(service.calls) == 8
+    assert len(service.calls) == 7
 
 
 def test_route_identifiers_and_payloads_are_strictly_bounded():
@@ -343,19 +288,9 @@ def test_route_identifiers_and_payloads_are_strictly_bounded():
             f"/api/market-sources/{SOURCE_ID}/manual-import",
             json={"idempotencyKey": "m" * 64, "snapshot": {}, "rawHTML": "secret"},
         ),
-        client.put(
-            f"/api/market-sources/{SOURCE_ID}/schedule",
-            json={
-                "expectedRevision": 1,
-                "enabled": True,
-                "intervalMinutes": 60,
-                "idempotencyKey": "s" * 64,
-                "policy": {"status": "verified_public"},
-            },
-        ),
     )
 
-    assert [response.status_code for response in responses] == [422] * 5
+    assert [response.status_code for response in responses] == [422] * 4
     assert "secret" not in str(responses[-1].json()).casefold()
 
 
@@ -572,18 +507,8 @@ def test_command_response_never_masks_missing_persisted_entries_as_empty_detail(
     assert "entries" not in response.json()
 
 
-def test_schedule_response_never_echoes_unrecognized_recovery_detail():
-    client, service, _, _ = _client()
-    sentinel = "PRIVATE_SCHEDULE_RECOVERY_RAW_ERROR"
-
-    original = service.update_schedule
-
-    async def unsafe_result(*args, **kwargs):
-        result = await original(*args, **kwargs)
-        result["recovery_reason"] = sentinel
-        return result
-
-    service.update_schedule = unsafe_result
+def test_schedule_route_is_retired():
+    client, _, _, _ = _client()
     response = client.put(
         f"/api/market-sources/{SOURCE_ID}/schedule",
         json={
@@ -594,9 +519,7 @@ def test_schedule_response_never_echoes_unrecognized_recovery_detail():
         },
     )
 
-    assert response.status_code == 200
-    assert response.json()["recoveryReason"] is None
-    assert sentinel not in str(response.json())
+    assert response.status_code == 404
 
 
 def test_market_analysis_routes_are_project_scoped_strict_and_secret_free():

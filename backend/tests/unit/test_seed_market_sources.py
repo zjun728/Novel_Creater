@@ -81,10 +81,10 @@ async def test_explicit_seed_is_idempotent_and_never_enables_automatic_refresh()
     first = await service.seed(package)
     replay = await service.seed(package)
 
-    assert (first.inserted, first.replayed) == (2, 0)
-    assert (replay.inserted, replay.replayed) == (0, 2)
+    assert (first.inserted, first.replayed) == (5, 0)
+    assert (replay.inserted, replay.replayed) == (0, 5)
     assert repository.schema_locks == 2
-    assert len(repository.sources) == len(repository.states) == 2
+    assert len(repository.sources) == len(repository.states) == 5
     assert all(policy["policy_status"] == "manual_only" for policy in repository.policies.values())
     assert all(policy["enabled"] == 0 for policy in repository.policies.values())
 
@@ -133,4 +133,4 @@ async def test_validate_only_cli_never_imports_or_opens_database(monkeypatch):
 
     assert result == 0
     assert "package_version=market-sources-v1.0.0" in output[0]
-    assert "source_count=2" in output[0]
+    assert "source_count=5" in output[0]

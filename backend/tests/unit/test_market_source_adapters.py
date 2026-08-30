@@ -537,6 +537,63 @@ def test_manual_adapter_accepts_only_strict_normalized_json():
 
 
 @pytest.mark.parametrize(
+    ("adapter_key", "work_url"),
+    (
+        ("qidian_public_rank", "https://www.qidian.com/book/900000001/"),
+        ("qq_reading_public_rank", "https://book.qq.com/book-detail/900000001"),
+        ("fanqie_manual_snapshot", "https://fanqienovel.com/page/7341119980416550947"),
+        ("qimao_manual_snapshot", "https://www.qimao.com/shuku/1924588-17384585090116/"),
+        ("shuqi_manual_snapshot", "https://www.shuqi.com/book/7446411.html"),
+    ),
+)
+def test_manual_sources_accept_only_their_canonical_public_work_paths(
+    adapter_key,
+    work_url,
+):
+    from backend.domain.market_sources import MarketSourceFailure
+    from backend.gateways.market_sources.manual_snapshot import (
+        ManualSnapshotAdapter,
+    )
+
+    payload = {
+        "platform": "public_metadata",
+        "rankingName": "author_import",
+        "category": "all",
+        "capturedAt": NOW,
+        "sourceURL": "https://evidence.example/public-list",
+        "entries": [
+            {
+                "rank": 1,
+                "title": "公开作品",
+                "author": "公开作者",
+                "category": "公开分类",
+                "workURL": work_url,
+                "publicMetrics": {},
+            }
+        ],
+    }
+
+    snapshot = ManualSnapshotAdapter().parse(
+        payload,
+        adapter_key=adapter_key,
+    )
+    assert snapshot.entries[0].work_url == work_url
+
+    foreign = {
+        **payload,
+        "entries": [
+            {
+                **payload["entries"][0],
+                "workURL": "https://evil.example/book/7446411.html",
+            }
+        ],
+    }
+    with pytest.raises(MarketSourceFailure) as rejected:
+        ManualSnapshotAdapter().parse(foreign, adapter_key=adapter_key)
+    assert rejected.value.code == "MARKET_MANUAL_SNAPSHOT_INVALID"
+
+
+@pytest.mark.parametrize(
     "work_url",
     (
         "https://user@www.qidian.com/book/900000001/",

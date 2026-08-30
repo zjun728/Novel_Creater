@@ -391,6 +391,31 @@ def install_lifespan_fakes(monkeypatch, verify_error=None):
 
 
 @pytest.mark.asyncio
+async def test_lifespan_never_constructs_or_starts_market_scheduler(monkeypatch):
+    events = install_lifespan_fakes(monkeypatch)
+
+    def forbidden_scheduler_build(*, enabled):
+        raise AssertionError(f"market scheduler must stay retired: {enabled}")
+
+    monkeypatch.setattr(
+        main,
+        "build_market_scheduler_runtime",
+        forbidden_scheduler_build,
+    )
+    context = main._application_lifespan(
+        main.app,
+        runtime_configuration(market_scheduler_enabled=True),
+    )
+
+    await context.__aenter__()
+    await context.__aexit__(None, None, None)
+
+    assert "scheduler-build" not in events
+    assert "scheduler-start" not in events
+    assert "scheduler-stop" not in events
+
+
+@pytest.mark.asyncio
 async def test_lifespan_snapshot_is_loaded_inside_lock_and_cleared_before_release(
     monkeypatch,
 ):
@@ -439,7 +464,9 @@ async def test_lifespan_snapshot_is_loaded_inside_lock_and_cleared_before_releas
     assert events.index(("config-install", snapshot)) < events.index("verify")
     assert events.index("close") < events.index(("config-clear", snapshot))
     assert events.index(("config-clear", snapshot)) < events.index("lock-exit")
-    assert events.count(("scheduler-enabled", True)) == 1
+    assert ("scheduler-enabled", True) not in events
+    assert "scheduler-start" not in events
+    assert "scheduler-stop" not in events
 
 
 @pytest.mark.parametrize("failure_phase", ("load", "install"))
@@ -664,7 +691,6 @@ async def test_lifespan_lock_wraps_all_startup_and_shutdown_resources(monkeypatc
     for cleanup in (
         "draft-registry-close",
         "provider-close",
-        "scheduler-stop",
         "close",
     ):
         assert events.index(cleanup) < events.index("lock-exit")
@@ -1487,6 +1513,7 @@ async def test_deferred_application_primary_is_immediately_safe_and_first(
     assert not lifecycle.active
 
 
+@pytest.mark.skip(reason="market scheduler retired from application lifespan")
 @pytest.mark.asyncio
 async def test_lifespan_retains_lock_through_market_shutdown_transfer(
     monkeypatch,
@@ -1539,6 +1566,7 @@ async def test_lifespan_retains_lock_through_market_shutdown_transfer(
     assert not lifecycle.active
 
 
+@pytest.mark.skip(reason="market scheduler retired from application lifespan")
 @pytest.mark.asyncio
 async def test_lifespan_retains_one_lock_through_combined_shutdown_transfer(
     monkeypatch,
@@ -1699,7 +1727,7 @@ async def test_lifespan_runs_one_bounded_project_package_cleanup_before_services
     assert events.count("project-package-stale-cleanup") == 1
     assert events.index("project-package-stale-cleanup") < events.index("verify")
     assert events.index("project-package-stale-cleanup") < events.index(
-        "scheduler-build"
+        "provider-start"
     )
 
 
@@ -1730,7 +1758,9 @@ async def test_lifespan_runs_bounded_project_import_reconciliation_after_schema(
 
     assert events.count("project-import-reconcile") == 1
     assert events.index("verify") < events.index("project-import-reconcile")
-    assert events.index("project-import-reconcile") < events.index("scheduler-build")
+    assert events.index("project-import-reconcile") < events.index(
+        "provider-start"
+    )
 
 
 @pytest.mark.asyncio
@@ -1828,7 +1858,6 @@ async def test_lifespan_starts_planning_then_outline_and_closes_in_reverse(
         for event in events
         if event.endswith(("-start", "-close"))
     ] == [
-        "scheduler-start",
         "planning-start",
         "outline-start",
         "finalization-quality-start",
@@ -1876,11 +1905,10 @@ async def test_outline_start_failure_rolls_back_both_gateways_before_pool(
         await main.lifespan(main.app).__aenter__()
 
     assert caught.value is startup_error
-    assert events[-5:] == [
+    assert events[-4:] == [
         "outline-start",
         "outline-close",
         "planning-close",
-        "scheduler-stop",
         "close",
     ]
 
@@ -1954,11 +1982,10 @@ async def test_lifespan_drains_outline_before_closing_planning_and_pool(
         outline.release.set()
         await asyncio.wait_for(shutdown, timeout=1)
 
-    assert events[-5:] == [
+    assert events[-4:] == [
         "outline-close-start",
         "outline-close-complete",
         "provider-close",
-        "scheduler-stop",
         "close",
     ]
 
@@ -1988,10 +2015,9 @@ async def test_outline_close_failure_is_sanitized_and_planning_still_closes(
         await context.__aexit__(None, None, None)
 
     assert caught.value.args == ("OpenAI JSON transport lifecycle failed",)
-    assert events[-4:] == [
+    assert events[-3:] == [
         "outline-close",
         "provider-close",
-        "scheduler-stop",
         "close",
     ]
     _assert_no_sensitive_error_graph(caught.value, (secret,))
@@ -2039,11 +2065,10 @@ async def test_repeated_cancellation_cannot_interrupt_outline_then_planning_clea
 
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(shutdown, timeout=1)
-    assert events[-5:] == [
+    assert events[-4:] == [
         "outline-close-start",
         "outline-close-complete",
         "provider-close",
-        "scheduler-stop",
         "close",
     ]
     assert shutdown.cancelling() == cancel_count
@@ -2061,8 +2086,6 @@ async def test_lifespan_verifies_once_before_yield_and_closes_after_success(monk
         "connection-enter",
         "verify",
         "connection-exit",
-        "scheduler-build",
-        "scheduler-start",
         "provider-start",
         "app-yielded",
     ]
@@ -2072,12 +2095,9 @@ async def test_lifespan_verifies_once_before_yield_and_closes_after_success(monk
         "connection-enter",
         "verify",
         "connection-exit",
-        "scheduler-build",
-        "scheduler-start",
         "provider-start",
         "app-yielded",
         "provider-close",
-        "scheduler-stop",
         "close",
     ]
 
@@ -2116,15 +2136,13 @@ async def test_lifespan_closes_pool_when_yielded_application_fails(monkeypatch):
         "connection-enter",
         "verify",
         "connection-exit",
-        "scheduler-build",
-        "scheduler-start",
         "provider-start",
         "provider-close",
-        "scheduler-stop",
         "close",
     ]
 
 
+@pytest.mark.skip(reason="market scheduler retired from application lifespan")
 @pytest.mark.asyncio
 async def test_lifespan_aggregates_scheduler_and_pool_cleanup_failures(monkeypatch):
     events = install_lifespan_fakes(monkeypatch)
@@ -2160,6 +2178,7 @@ async def test_lifespan_aggregates_scheduler_and_pool_cleanup_failures(monkeypat
     assert events[-2:] == ["scheduler-stop", "close"]
 
 
+@pytest.mark.skip(reason="market scheduler retired from application lifespan")
 @pytest.mark.asyncio
 async def test_lifespan_preserves_application_error_with_all_cleanup_failures(
     monkeypatch,
@@ -2223,7 +2242,7 @@ async def test_lifespan_preserves_application_error_with_all_cleanup_failures(
     assert provider_error.args == (
         "OpenAI JSON transport lifecycle failed",
     )
-    assert events[-3:] == ["provider-close", "scheduler-stop", "close"]
+    assert events[-2:] == ["provider-close", "close"]
     _assert_no_sensitive_error_graph(
         aggregated.value,
         (provider_secret,),
@@ -2286,7 +2305,7 @@ async def test_lifespan_start_failure_prevents_serving_and_always_closes(
 
     assert raised.value is startup_error
     assert "app-yielded" not in events
-    assert events[-3:] == ["provider-close", "scheduler-stop", "close"]
+    assert events[-2:] == ["provider-close", "close"]
 
 
 @pytest.mark.asyncio
@@ -2327,10 +2346,9 @@ async def test_lifespan_waits_for_provider_calls_to_drain_before_pool_close(
         await asyncio.wait_for(shutdown, timeout=1)
 
     assert gateway.close_completed.is_set()
-    assert events[-4:] == [
+    assert events[-3:] == [
         "provider-close-start",
         "provider-close-complete",
-        "scheduler-stop",
         "close",
     ]
 
@@ -2375,7 +2393,7 @@ async def test_lifespan_sanitizes_provider_close_failure(monkeypatch):
         await context.__aexit__(None, None, None)
 
     assert caught.value.args == ("OpenAI JSON transport lifecycle failed",)
-    assert events[-3:] == ["provider-close", "scheduler-stop", "close"]
+    assert events[-2:] == ["provider-close", "close"]
     _assert_no_sensitive_error_graph(
         caught.value,
         (api_key, base_url, prompt, raw_response, "Authorization"),
@@ -2473,10 +2491,9 @@ async def test_lifespan_repeated_cancellation_cannot_interrupt_provider_cleanup(
         await asyncio.wait_for(shutdown, timeout=1)
 
     assert gateway.close_completed.is_set()
-    assert events[-4:] == [
+    assert events[-3:] == [
         "provider-close-start",
         "provider-close-complete",
-        "scheduler-stop",
         "close",
     ]
     assert caught.value.args == ()
@@ -2538,6 +2555,7 @@ async def test_lifespan_repeated_cancellation_cannot_interrupt_pool_close(
     _assert_no_sensitive_error_graph(caught.value, (cleanup_secret,))
 
 
+@pytest.mark.skip(reason="market scheduler retired from application lifespan")
 @pytest.mark.asyncio
 async def test_lifespan_transfers_stalled_cleanup_before_pool_close(
     monkeypatch,
@@ -2611,6 +2629,7 @@ async def test_lifespan_transfers_stalled_cleanup_before_pool_close(
     assert events[-2:] == ["scheduler-cleaned", "close-after-cleaned"]
 
 
+@pytest.mark.skip(reason="market scheduler retired from application lifespan")
 @pytest.mark.asyncio
 async def test_lifespan_cancellation_during_stop_defers_pool_close(
     monkeypatch,
@@ -2706,10 +2725,8 @@ async def test_lifespan_starts_draft_registry_after_schema_and_drains_it_first(
     await context.__aexit__(None, None, None)
 
     assert events.index("verify") < events.index("draft-registry-start")
-    assert events.index("draft-registry-start") < events.index("scheduler-build")
     assert events.index("draft-registry-start") < events.index("app-yielded")
     assert events.index("draft-registry-close") < events.index("provider-close")
-    assert events.index("draft-registry-close") < events.index("scheduler-stop")
     assert events.index("draft-registry-close") < events.index("close")
 
 
@@ -2869,15 +2886,15 @@ async def test_draft_registry_close_failure_is_fixed_and_other_cleanup_continues
     assert caught.value.args == (
         "Draft operation task registry lifecycle failed",
     )
-    assert events[-3:] == [
+    assert events[-2:] == [
         "draft-registry-close",
         "provider-close",
-        "scheduler-stop",
     ]
     assert "close" not in events
     _assert_no_sensitive_error_graph(caught.value, (cleanup_secret,))
 
 
+@pytest.mark.skip(reason="market scheduler retired from application lifespan")
 @pytest.mark.asyncio
 async def test_generic_draft_failure_blocks_market_transfer_pool_callback(
     monkeypatch,
@@ -3028,6 +3045,7 @@ async def test_draft_registry_pending_drain_transfers_pool_close_safely(
         await asyncio.wait_for(worker_settled.wait(), timeout=1)
 
 
+@pytest.mark.skip(reason="market scheduler retired from application lifespan")
 @pytest.mark.asyncio
 async def test_draft_and_market_pending_drains_share_one_ordered_pool_transfer(
     monkeypatch,
@@ -3316,7 +3334,6 @@ async def test_lifespan_allows_restart_after_successful_market_transfer(
     await context.__aexit__(None, None, None)
 
     assert events.index("verify") < events.index("draft-registry-start")
-    assert events.index("draft-registry-start") < events.index("scheduler-build")
 
 
 @pytest.mark.asyncio

@@ -50,5 +50,83 @@
       "enabled": false
     },
     "policyHash": "5e442987b2332e2fa9cb81a0bbbd3d53dbd8ca72fcba840832076657ac0e26f9"
+  },
+  {
+    "stableKey": "fanqie.reading",
+    "adapterKey": "fanqie_manual_snapshot",
+    "displayName": "番茄小说阅读榜",
+    "publicConfig": {
+      "platform": "fanqie",
+      "rankingName": "reading",
+      "category": "all"
+    },
+    "policy": {
+      "status": "manual_only",
+      "checkedAt": 1721000000000,
+      "evidenceURL": "https://fanqienovel.com/rank/1",
+      "evidenceHash": "37452f8aa38ba4bc04ae983ea2c83cfb7cc2f3f157240aa757878b5e25285d27",
+      "allowedOrigins": [
+        "https://fanqienovel.com"
+      ],
+      "pathPrefixes": [
+        "/rank/1"
+      ],
+      "requestIntervalSeconds": 3600,
+      "policyVersion": "manual-public-metadata-policy-v1",
+      "enabled": false
+    },
+    "policyHash": "22563c1a03e853ccc303e51741422e38189f3d8b43f464eb43b8cdfd10cc5842"
+  },
+  {
+    "stableKey": "qimao.public-catalog",
+    "adapterKey": "qimao_manual_snapshot",
+    "displayName": "七猫公开书库",
+    "publicConfig": {
+      "platform": "qimao",
+      "rankingName": "public_catalog",
+      "category": "all"
+    },
+    "policy": {
+      "status": "manual_only",
+      "checkedAt": 1721000000000,
+      "evidenceURL": "https://www.qimao.com/shuku/",
+      "evidenceHash": "fbd52a36b4520db078b76680de686325152c0fbe44eb53bf2e8ebd1500948c39",
+      "allowedOrigins": [
+        "https://www.qimao.com"
+      ],
+      "pathPrefixes": [
+        "/shuku/"
+      ],
+      "requestIntervalSeconds": 3600,
+      "policyVersion": "manual-public-metadata-policy-v1",
+      "enabled": false
+    },
+    "policyHash": "0587db51a17580d99a7ec8a4844a2ee9208ce9e7d082606348bfd0e820bc9675"
+  },
+  {
+    "stableKey": "shuqi.public-catalog",
+    "adapterKey": "shuqi_manual_snapshot",
+    "displayName": "书旗公开书库",
+    "publicConfig": {
+      "platform": "shuqi",
+      "rankingName": "public_catalog",
+      "category": "all"
+    },
+    "policy": {
+      "status": "manual_only",
+      "checkedAt": 1721000000000,
+      "evidenceURL": "https://www.shuqi.com/",
+      "evidenceHash": "597f8237c2089f824b9f6b2053fe666585576bc2d3c91ef42915d15fa8551858",
+      "allowedOrigins": [
+        "https://www.shuqi.com"
+      ],
+      "pathPrefixes": [
+        "/"
+      ],
+      "requestIntervalSeconds": 3600,
+      "policyVersion": "manual-public-metadata-policy-v1",
+      "enabled": false
+    },
+    "policyHash": "dd5a440911cd741d19d37dcb56fc721ab9636ebde2ef0b174082fbc64709d703"
   }
 ]
