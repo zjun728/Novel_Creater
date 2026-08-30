@@ -156,6 +156,26 @@ test('projects.overview classifies invalid responses without leaking rejected va
   }
 })
 
+test('projects.overview rejects a valid response for a different project without leaking it', async () => {
+  const prior = global.fetch
+  global.fetch = async () => new Response(JSON.stringify(projectOverview({
+    project: {
+      ...projectOverview().project,
+      id: 'project-B-secret',
+    },
+  })))
+  try {
+    await assert.rejects(
+      api.projects.overview('project-A'),
+      error => error.code === 'invalid_response'
+        && error.message === '服务返回了无效响应'
+        && !error.message.includes('project-B-secret'),
+    )
+  } finally {
+    global.fetch = prior
+  }
+})
+
 test('projects.overview forwards caller abort as request_aborted', async () => {
   const prior = global.fetch
   global.fetch = async (_url, options) => new Promise((_resolve, reject) => {

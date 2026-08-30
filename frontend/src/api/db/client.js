@@ -2190,10 +2190,12 @@ export const api = {
     ),
     overview: async (projectId, options = {}) => {
       try {
-        return parseProjectOverview(await request(
+        const overview = parseProjectOverview(await request(
           'GET', `/projects/${segment(projectId)}/overview`, undefined,
           DEFAULT_TIMEOUT, options?.signal,
         ))
+        if (overview.project.id !== String(projectId)) throw new Error('Project overview identity mismatch')
+        return overview
       } catch (error) {
         if (error instanceof ApiError) throw error
         throw new ApiError({
