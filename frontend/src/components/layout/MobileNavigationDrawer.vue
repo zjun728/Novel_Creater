@@ -184,17 +184,33 @@ onBeforeUnmount(() => {
         <p>当前作品</p>
         <h3>{{ shell.projectContext.title }}</h3>
         <span v-if="shell.projectContext.archived">已归档</span>
-        <nav v-if="shell.projectContext.modules.length" aria-label="项目模块">
-          <router-link
-            v-for="module in shell.projectContext.modules"
-            :key="module.key"
-            :to="module.path"
-            :aria-current="module.selected ? 'page' : undefined"
-            @click="navigate"
+        <nav
+          v-if="shell.projectContext.sections.length"
+          class="mobile-navigation-drawer__modules"
+          aria-label="项目模块"
+        >
+          <div
+            v-for="section in shell.projectContext.sections"
+            :key="section.label || 'overview'"
+            class="mobile-navigation-drawer__module-section"
           >
-            <span aria-hidden="true">{{ module.mark }}</span>
-            <span>{{ module.label }}</span>
-          </router-link>
+            <h4
+              class="mobile-navigation-drawer__section-heading"
+              :class="{ 'mobile-navigation-drawer__section-heading--hidden': !section.label }"
+            >
+              {{ section.label || '项目入口' }}
+            </h4>
+            <router-link
+              v-for="module in section.items"
+              :key="module.key"
+              :to="module.path"
+              :aria-current="module.selected ? 'page' : undefined"
+              @click="navigate"
+            >
+              <span aria-hidden="true">{{ module.mark }}</span>
+              <span>{{ module.label }}</span>
+            </router-link>
+          </div>
         </nav>
       </section>
 
@@ -311,6 +327,34 @@ onBeforeUnmount(() => {
   margin-top: 8px;
   color: var(--nc-muted);
   font-size: 13px;
+}
+
+.mobile-navigation-drawer__modules {
+  gap: 12px !important;
+}
+
+.mobile-navigation-drawer__module-section {
+  display: grid;
+  gap: 4px;
+}
+
+.mobile-navigation-drawer__section-heading {
+  margin: 0;
+  padding: 0 12px;
+  color: var(--nc-muted);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: .12em;
+}
+
+.mobile-navigation-drawer__section-heading--hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
 }
 
 .mobile-navigation-drawer__local {

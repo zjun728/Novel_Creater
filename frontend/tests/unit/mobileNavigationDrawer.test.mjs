@@ -112,6 +112,17 @@ test('drawer markup exposes a named modal, visible close and selected navigation
   assert.match(source, /min-(?:width|height):\s*44px/)
 })
 
+test('drawer renders project modules in product order with readable group labels and touch targets', async () => {
+  const source = await readFile(
+    new URL('../../src/components/layout/MobileNavigationDrawer.vue', import.meta.url),
+    'utf8',
+  )
+  assert.match(source, /v-for="section in shell\.projectContext\.sections"/)
+  assert.match(source, /v-for="module in section\.items"/)
+  assert.match(source, /mobile-navigation-drawer__section-heading--hidden/)
+  assert.match(source, /\.mobile-navigation-drawer button,[\s\S]*?\.mobile-navigation-drawer a[\s\S]*?min-height:\s*44px/)
+})
+
 function runtimeNode(type, documentRef) {
   const value = {
     type,
@@ -136,6 +147,9 @@ function runtimeNode(type, documentRef) {
 
 const textOf = node => [node?.text, ...(node?.children || []).map(textOf)].filter(Boolean).join(' ')
 const find = (node, predicate) => node && (predicate(node) ? node : (node.children || []).map(child => find(child, predicate)).find(Boolean))
+const findAll = (node, predicate) => node
+  ? [...(predicate(node) ? [node] : []), ...(node.children || []).flatMap(child => findAll(child, predicate))]
+  : []
 async function flush() { for (let index = 0; index < 8; index += 1) await Promise.resolve(); await nextTick() }
 async function invoke(handler, event) {
   for (const item of Array.isArray(handler) ? handler : [handler]) await item?.(event)
@@ -182,6 +196,9 @@ test('mounted drawer closes by every path and fences stale open continuations', 
     const router = createRouter({ history: createMemoryHistory(), routes: [
       { path: '/projects', component: { render: () => null } },
       { path: '/settings/providers', component: { render: () => null } },
+      { path: '/projects/project-1/overview', component: { render: () => null } },
+      { path: '/projects/project-1/seeds', component: { render: () => null } },
+      { path: '/projects/project-1/manuscript', component: { render: () => null } },
     ] })
     await router.push('/projects'); await router.isReady()
     const open = ref(false)
@@ -192,7 +209,16 @@ test('mounted drawer closes by every path and fences stale open continuations', 
         { key: 'projects', path: '/projects', label: '项目库', mark: '库', selected: true },
         { key: 'settings', path: '/settings/providers', label: '设置', mark: '设', selected: false },
       ],
-      assetNavigation: [], projectContext: null,
+      assetNavigation: [],
+      projectContext: {
+        title: '典镇山河',
+        archived: false,
+        sections: [
+          { label: '', items: [{ key: 'overview', path: '/projects/project-1/overview', label: '项目概览', mark: '概', selected: true }] },
+          { label: '创作基础', items: [{ key: 'seeds', path: '/projects/project-1/seeds', label: '创作种子', mark: '种', selected: false }] },
+          { label: '写作与稿件', items: [{ key: 'manuscript', path: '/projects/project-1/manuscript', label: '作品稿件', mark: '稿', selected: false }] },
+        ],
+      },
     }
     const Root = { setup: () => () => h(Drawer, {
       open: open.value, shell, applicationRegion: region, trigger,
@@ -207,9 +233,24 @@ test('mounted drawer closes by every path and fences stale open continuations', 
 
     open.value = true; await flush()
     assert.equal(region.inert, true)
+    assert.deepEqual(
+      findAll(root, node => node.type === 'h4').map(textOf),
+      ['项目入口', '创作基础', '写作与稿件'],
+    )
+    assert.deepEqual(
+      findAll(root, node => node.type === 'a' && node.props.href?.startsWith('/projects/project-1/')).map(textOf),
+      ['概 项目概览', '种 创作种子', '稿 作品稿件'],
+    )
     const close = find(root, node => node.type === 'button' && /关闭/.test(textOf(node)))
     assert.ok(close, 'visible close button was not rendered')
     await invoke(close.props.onClick)
+    await flush()
+    assert.equal(region.inert, false)
+
+    open.value = true; await flush()
+    const seed = find(root, node => node.type === 'a' && node.props.href === '/projects/project-1/seeds')
+    assert.ok(seed)
+    await invoke(seed.props.onClick, { preventDefault() {}, button: 0 })
     await flush()
     assert.equal(region.inert, false)
     assert.equal(documentRef.activeElement, trigger)

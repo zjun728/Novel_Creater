@@ -330,6 +330,10 @@ test('shell CSS preserves touch size, wrapping, mobile layout, and reduced motio
   assert.match(style, /\.product-mobile-topbar button[\s\S]*?min-height:\s*44px/)
   assert.match(sidebar, /\.product-sidebar__nav-link,[\s\S]*?min-height:\s*44px/)
   assert.match(sidebar, /\.product-sidebar__asset-subnav a[\s\S]*?min-height:\s*44px/)
+  assert.match(
+    sidebar,
+    /\.product-sidebar__section-heading\s*\{[^}]*color:\s*var\(--nc-muted\)[^}]*font-size:\s*11px/s,
+  )
   const topbar = await readFile(new URL('../../src/components/layout/TopBar.vue', import.meta.url), 'utf8')
   assert.match(topbar, /\.product-topbar__breadcrumbs a[\s\S]*?min-height:\s*44px/)
   assert.deepEqual(declaredTargetSize(topbar, '.product-topbar__breadcrumbs a'), { inline: 44, block: 44 })

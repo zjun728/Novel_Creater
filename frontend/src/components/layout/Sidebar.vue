@@ -200,8 +200,8 @@ defineProps({
 .product-sidebar__section-heading {
   margin: 0;
   padding: 0 12px 3px;
-  color: #998878;
-  font-size: 9px;
+  color: var(--nc-muted);
+  font-size: 11px;
   font-weight: 750;
   letter-spacing: .14em;
 }
