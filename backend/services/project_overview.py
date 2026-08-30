@@ -338,6 +338,7 @@ def _achievements(
     latest: OverviewFinalChapter | None,
     *,
     seed_status: OverviewArtifactStatus,
+    planning_status: OverviewArtifactStatus,
 ) -> tuple[OverviewAchievement, ...]:
     candidates: list[tuple[int, int, OverviewAchievement]] = []
 
@@ -373,7 +374,9 @@ def _achievements(
         start=1,
     ):
         row = snapshot.get(field)
-        if _confirmed_revision(row):
+        if _confirmed_revision(row) and (
+            field != "planning" or planning_status == "current"
+        ):
             add(index, kind, label, _achievement_timestamp(row, "updated_at"))
     if latest is not None:
         add(
@@ -460,6 +463,7 @@ def build_project_overview(snapshot: object) -> ProjectOverview:
                 source,
                 latest,
                 seed_status=seed_status,
+                planning_status=planning_status,
             ),
         )
     except ValidationError:

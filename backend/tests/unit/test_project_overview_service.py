@@ -452,6 +452,20 @@ def test_blank_project_copy_uses_fixed_non_factual_author_copy():
     assert project.logline == "一句话创意尚未填写"
 
 
+def test_needs_review_planning_is_not_reported_as_confirmed_achievement():
+    snapshot = _snapshot()
+    snapshot["planning"] = snapshot["planning"] | {"content_json": []}
+
+    result = build_project_overview(snapshot)
+    achievement_kinds = {
+        achievement.kind for achievement in result.recent_achievements
+    }
+
+    assert result.modules.planning == "needs_review"
+    assert "planning" not in achievement_kinds
+    assert {"contract", "bible"} <= achievement_kinds
+
+
 @pytest.mark.parametrize(
     "pinned",
     (

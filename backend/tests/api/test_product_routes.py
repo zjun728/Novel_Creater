@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend import main
+from backend.database import read_only_transaction
 from backend.http_errors import ProjectArchived, ProjectNotFound
 from backend.domain.project_overview import (
     OverviewContinuity,
@@ -36,6 +37,10 @@ from backend.services.project_lifecycle import (
     ProjectResult,
 )
 from backend.services.seeds import SeedResult
+
+
+def test_project_overview_route_uses_database_enforced_read_only_boundary():
+    assert project_overview._service.connection_factory is read_only_transaction
 
 
 def test_project_overview_route_uses_dependency_override_and_decodes_id():

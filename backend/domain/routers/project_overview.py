@@ -6,7 +6,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
-from backend.database import connection
+from backend.database import read_only_transaction
 from backend.repositories.project_overview import ProjectOverviewRepository
 from backend.services.project_overview import ProjectOverviewService
 
@@ -14,7 +14,7 @@ from backend.services.project_overview import ProjectOverviewService
 router = APIRouter(tags=["project-overview"])
 _service = ProjectOverviewService(
     ProjectOverviewRepository(),
-    connection_factory=connection,
+    connection_factory=read_only_transaction,
 )
 
 
