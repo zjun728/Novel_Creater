@@ -53,9 +53,17 @@ test('canonical path builders encode project IDs and require positive chapter nu
     planningVolumesPath,
     projectSeedsPath,
     styleLibraryPath,
+    topicMarketPath,
+    topicDiscussionsPath,
+    topicDirectionsPath,
+    topicCandidatesPath,
   } = await loadRouteModule()
 
   assert.equal(styleLibraryPath(), '/assets/styles')
+  assert.equal(topicMarketPath(), '/topics/market')
+  assert.equal(topicDiscussionsPath(), '/topics/discussions')
+  assert.equal(topicDirectionsPath(), '/topics/directions')
+  assert.equal(topicCandidatesPath(), '/topics/candidates')
   assert.equal(experienceLibraryPath(), '/assets/experience')
   assert.equal(projectOverviewPath('a/b'), '/projects/a%2Fb/overview')
   assert.equal(projectSeedsPath('a/b'), '/projects/a%2Fb/seeds')
@@ -97,6 +105,10 @@ test('formal route registry names only canonical destinations and catches retire
   assert.equal(router.resolve('/settings/application').name, 'ApplicationSettings')
   assert.equal(router.resolve('/assets/styles').name, 'StyleLibrary')
   assert.equal(router.resolve('/assets/experience').name, 'ExperienceLibrary')
+  assert.equal(router.resolve('/topics/market').name, 'TopicMarket')
+  assert.equal(router.resolve('/topics/discussions').name, 'TopicDiscussions')
+  assert.equal(router.resolve('/topics/directions').name, 'TopicDirections')
+  assert.equal(router.resolve('/topics/candidates').name, 'TopicCandidates')
   assert.equal(router.resolve('/projects/project-1/overview').name, 'ProjectOverview')
   assert.equal(router.resolve('/projects/project-1/seeds').name, 'ProjectSeeds')
   assert.equal(

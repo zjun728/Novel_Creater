@@ -271,7 +271,8 @@ const PROVIDER_UPDATE_FIELDS = [
 ]
 const SEED_FIELDS = [
   'title', 'genre', 'logline', 'protagonist', 'desire', 'coreConflict',
-  'worldPressure', 'openingHook', 'differentiation',
+  'worldPressure', 'openingHook', 'differentiation', 'targetAudience',
+  'storyPromise', 'longFormPotential', 'marketBasis',
 ]
 const STORY_ENGINE_FIELDS = [
   'name', 'storyPromise', 'protagonistDesire', 'sustainedPressure',
@@ -2266,19 +2267,6 @@ export const api = {
         expectedSelectionRevision: data.expectedSelectionRevision,
       },
     ),
-    inspiration: (projectId, data) => post(
-      `/projects/${segment(projectId)}/seed-inspiration`,
-      {
-        transcript: Array.isArray(data.transcript)
-          ? data.transcript.map(turn => pickDefined(turn, ['role', 'content']))
-          : data.transcript,
-        snapshotIds: Array.isArray(data.snapshotIds)
-          ? [...data.snapshotIds]
-          : data.snapshotIds,
-        analysisId: data.analysisId,
-        idempotencyKey: data.idempotencyKey,
-      },
-    ),
   },
 
   marketSources: {
@@ -2301,26 +2289,28 @@ export const api = {
       `/market-sources/${segment(sourceId)}/refresh`,
       { idempotencyKey },
     ),
-    schedule: (sourceId, data) => put(
-      `/market-sources/${segment(sourceId)}/schedule`,
-      pickDefined(data, [
-        'expectedRevision', 'enabled', 'intervalMinutes', 'idempotencyKey',
-      ]),
-    ),
   },
 
-  marketAnalyses: {
-    create: (projectId, data) => post(
-      `/projects/${segment(projectId)}/market-analyses`,
-      {
-        snapshotIds: Array.isArray(data.snapshotIds)
-          ? [...data.snapshotIds]
-          : data.snapshotIds,
-        idempotencyKey: data.idempotencyKey,
-      },
+  topics: {
+    listDiscussions: (offset = 0, limit = 50) => get(`/topic-discussions?offset=${offset}&limit=${limit}`),
+    getDiscussion: discussionId => get(`/topic-discussions/${segment(discussionId)}`),
+    createDiscussion: title => post('/topic-discussions', { title }),
+    sendMessage: (discussionId, data) => post(
+      `/topic-discussions/${segment(discussionId)}/messages`, data, 210_000,
     ),
-    get: (projectId, analysisId) => get(
-      `/projects/${segment(projectId)}/market-analyses/${segment(analysisId)}`,
+    listDirections: (offset = 0, limit = 50) => get(`/topic-directions?offset=${offset}&limit=${limit}`),
+    getDirection: directionId => get(`/topic-directions/${segment(directionId)}`),
+    saveDirection: (discussionId, data) => post(`/topic-discussions/${segment(discussionId)}/directions`, data),
+    listCandidates: (status = 'active', offset = 0, limit = 50) => get(
+      `/topic-candidates?status=${encodeURIComponent(status)}&offset=${offset}&limit=${limit}`,
+    ),
+    getCandidate: candidateId => get(`/topic-candidates/${segment(candidateId)}`),
+    saveCandidate: (discussionId, data) => post(`/topic-discussions/${segment(discussionId)}/candidates`, data),
+    archiveCandidate: (candidateId, expectedVersion) => post(
+      `/topic-candidates/${segment(candidateId)}/archive`, { expectedVersion },
+    ),
+    handoff: (candidateId, version, data) => post(
+      `/topic-candidates/${segment(candidateId)}/versions/${version}/projects`, data,
     ),
   },
 

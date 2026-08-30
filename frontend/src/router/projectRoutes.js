@@ -1,4 +1,5 @@
 const ProjectLibraryView = () => import('../views/ProjectLibraryView.vue')
+const TopicCenterView = () => import('../views/TopicCenterView.vue')
 const ArchivedProjectsView = () => import('../views/ArchivedProjectsView.vue')
 const ProjectOverviewView = () => import('../views/ProjectOverviewView.vue')
 const ProjectSeedsView = () => import('../views/ProjectSeedsView.vue')
@@ -46,6 +47,11 @@ export function experienceLibraryPath() {
 export function corpusLibraryPath() {
   return '/assets/corpus'
 }
+
+export function topicMarketPath() { return '/topics/market' }
+export function topicDiscussionsPath() { return '/topics/discussions' }
+export function topicDirectionsPath() { return '/topics/directions' }
+export function topicCandidatesPath() { return '/topics/candidates' }
 
 export function parsePositiveChapterNumber(value) {
   if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return value
@@ -119,6 +125,30 @@ export const projectRoutes = Object.freeze([
     path: '/projects',
     name: 'ProjectLibrary',
     component: ProjectLibraryView,
+  },
+  {
+    path: '/topics/market',
+    name: 'TopicMarket',
+    component: TopicCenterView,
+    props: { activeSection: 'market' },
+  },
+  {
+    path: '/topics/discussions',
+    name: 'TopicDiscussions',
+    component: TopicCenterView,
+    props: { activeSection: 'discussions' },
+  },
+  {
+    path: '/topics/directions',
+    name: 'TopicDirections',
+    component: TopicCenterView,
+    props: { activeSection: 'directions' },
+  },
+  {
+    path: '/topics/candidates',
+    name: 'TopicCandidates',
+    component: TopicCenterView,
+    props: { activeSection: 'candidates' },
   },
   {
     path: '/projects/archived',

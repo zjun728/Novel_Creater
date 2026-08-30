@@ -174,175 +174,19 @@ test('snapshot success and later failure both reload authoritative source freshn
   })
 })
 
-test('schedule CAS conflict reloads the authoritative source and never invents enabled state', async () => {
+test('global market state does not expose removed project analysis or scheduling operations', () => {
   setActivePinia(createPinia())
   const store = useMarketSourceStore()
-  store.$patch({ sources: [source] })
-  const requests = []
-
-  await withFetch(async (url, options) => {
-    requests.push({ url: String(url), method: options.method })
-    if (options.method === 'PUT') {
-      return response({
-        error: { code: 'MARKET_SOURCE_CONFLICT', message: 'changed' },
-      }, 409)
-    }
-    return response({ ...source, scheduleRevision: 4, scheduleEnabled: false })
-  }, async () => {
-    await assert.rejects(
-      store.updateSchedule('qidian', {
-        expectedRevision: 3,
-        enabled: true,
-        intervalMinutes: 120,
-        idempotencyKey: 's'.repeat(64),
-      }),
-      error => error.status === 409,
-    )
-  })
-
-  assert.deepEqual(requests.map(item => item.method), ['PUT', 'GET'])
-  assert.equal(store.sources[0].scheduleRevision, 4)
-  assert.equal(store.sources[0].scheduleEnabled, false)
-  assert.equal(store.scheduleConflictSourceId, 'qidian')
-})
-
-test('manual-only policy explains disabled schedule before any write', async () => {
-  setActivePinia(createPinia())
-  const store = useMarketSourceStore()
-  store.$patch({
-    sources: [{
-      ...source,
-      id: 'qq',
-      policyStatus: 'manual_only',
-      automaticRefreshAllowed: false,
-    }],
-  })
-  let calls = 0
-  await withFetch(async () => {
-    calls += 1
-    return response({})
-  }, async () => {
-    await assert.rejects(
-      store.updateSchedule('qq', {
-        expectedRevision: 1,
-        enabled: true,
-        intervalMinutes: 60,
-        idempotencyKey: 'x'.repeat(64),
-      }),
-      /仅支持手动导入/,
-    )
-  })
-  assert.equal(calls, 0)
-  assert.match(store.scheduleExplanation('qq'), /手动导入/)
-})
-
-test('analysis exposes success, not-ready and failed states without a fabricated result', async () => {
-  setActivePinia(createPinia())
-  const store = useMarketSourceStore()
-  const queue = [
-    response({
-      id: 'analysis-1',
-      status: 'succeeded',
-      analysis: {
-        currentHeat: [],
-        growthDirections: [],
-        crowding: [],
-        opportunities: [],
-        uncertainties: [],
-        sourceCoverage: { snapshotIds: ['snapshot-1'], summary: '单源覆盖' },
-      },
-      resultHash: 'd'.repeat(64),
-    }),
-    response({
-      error: {
-        code: 'MARKET_ANALYSIS_NOT_READY',
-        message: 'Market analysis prerequisites are unavailable',
-      },
-    }, 422),
-    response({
-      id: 'analysis-3',
-      status: 'failed',
-      analysis: null,
-      publicErrorCode: 'MARKET_ANALYSIS_PROVIDER_FAILED',
-    }),
-  ]
-
-  await withFetch(async () => queue.shift(), async () => {
-    await store.analyze('p1', {
-      snapshotIds: ['snapshot-1'],
-      idempotencyKey: 'a'.repeat(64),
-    })
-    assert.equal(store.analysisState.status, 'available')
-    assert.equal(store.analysisState.result.id, 'analysis-1')
-
-    await assert.rejects(
-      store.analyze('p1', {
-        snapshotIds: ['snapshot-1'],
-        idempotencyKey: 'b'.repeat(64),
-      }),
-      error => error.status === 422,
-    )
-    assert.deepEqual(store.analysisState, {
-      status: 'not-ready',
-      result: null,
-      publicErrorCode: 'MARKET_ANALYSIS_NOT_READY',
-    })
-
-    await store.analyze('p1', {
-      snapshotIds: ['snapshot-1'],
-      idempotencyKey: 'c'.repeat(64),
-    })
-    assert.equal(store.analysisState.status, 'failed')
-    assert.equal(store.analysisState.result, null)
-  })
-})
-
-test('analysis state is project-scoped and a late old-project result cannot enter the new project', async () => {
-  setActivePinia(createPinia())
-  const store = useMarketSourceStore()
-  let release
-  const pending = new Promise(resolve => {
-    release = resolve
-  })
-
-  await withFetch(async () => pending, async () => {
-    const oldRequest = store.analyze('p1', {
-      snapshotIds: ['snapshot-1'],
-      idempotencyKey: 'p'.repeat(64),
-    })
-    await Promise.resolve()
-    assert.equal(store.analysisLoading, true)
-
-    store.activateProject('p2')
-    assert.deepEqual(store.analysisState, {
-      status: 'idle',
-      result: null,
-      publicErrorCode: null,
-    })
-    assert.equal(store.analysisLoading, false)
-
-    release(response({
-      id: 'analysis-p1',
-      projectId: 'p1',
-      status: 'succeeded',
-      analysis: {
-        currentHeat: [],
-        growthDirections: [],
-        crowding: [],
-        opportunities: [],
-        uncertainties: [],
-        sourceCoverage: { snapshotIds: ['snapshot-1'], summary: 'P1' },
-      },
-      resultHash: 'f'.repeat(64),
-    }))
-    await oldRequest
-
-    assert.equal(store.analysisProjectId, 'p2')
-    assert.deepEqual(store.analysisState, {
-      status: 'idle',
-      result: null,
-      publicErrorCode: null,
-    })
-    assert.equal(store.analysisLoading, false)
-  })
+  for (const property of [
+    'updateSchedule',
+    'scheduleExplanation',
+    'scheduleConflictSourceId',
+    'analyze',
+    'activateProject',
+    'analysisState',
+    'analysisProjectId',
+    'analysisLoading',
+  ]) {
+    assert.equal(property in store, false, `${property} should not be public`)
+  }
 })

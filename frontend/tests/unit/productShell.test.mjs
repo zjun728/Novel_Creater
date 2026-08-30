@@ -65,7 +65,7 @@ function declaredTargetSize(source, selector) {
   return { inline: pixels('min-width'), block: pixels('min-height') }
 }
 
-test('shell model exposes the three frozen global destinations', async () => {
+test('shell model exposes topic center as the first global destination', async () => {
   const {
     createProductShellModel,
     GLOBAL_SHELL_DESTINATIONS,
@@ -79,6 +79,7 @@ test('shell model exposes the three frozen global destinations', async () => {
   assert.deepEqual(
     GLOBAL_SHELL_DESTINATIONS.map(item => [item.label, item.path]),
     [
+      ['选题中心', '/topics/market'],
       ['项目库', '/projects'],
       ['创作资产', '/assets/styles'],
       ['设置', '/settings/providers'],
@@ -87,6 +88,7 @@ test('shell model exposes the three frozen global destinations', async () => {
   assert.deepEqual(
     shell.globalNavigation.map(item => [item.label, item.path, item.selected]),
     [
+      ['选题中心', '/topics/market', false],
       ['项目库', '/projects', true],
       ['创作资产', '/assets/styles', false],
       ['设置', '/settings/providers', false],

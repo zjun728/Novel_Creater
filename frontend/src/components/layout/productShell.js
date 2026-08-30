@@ -24,12 +24,19 @@ import {
   projectSeedsPath,
   providerSettingsPath,
   styleLibraryPath,
+  topicMarketPath,
 } from '../../router/projectRoutes.js'
 
 export const DESKTOP_SIDEBAR_BREAKPOINT = 1120
 export const SHELL_PROJECT_CONTEXT = Symbol('shell-project-context')
 
 export const GLOBAL_SHELL_DESTINATIONS = Object.freeze([
+  Object.freeze({
+    key: 'topics',
+    label: '选题中心',
+    path: topicMarketPath(),
+    mark: '题',
+  }),
   Object.freeze({
     key: 'projects',
     label: '项目库',
@@ -70,6 +77,10 @@ function isMissingProject(error) {
 function routeTitle(route, project) {
   const name = routeName(route)
   if (name === 'ProjectLibrary') return '项目库'
+  if (name === 'TopicMarket') return '市场发现'
+  if (name === 'TopicDiscussions') return '选题讨论'
+  if (name === 'TopicDirections') return '方向库'
+  if (name === 'TopicCandidates') return '候选种子库'
   if (name === 'ArchivedProjects') return '已归档项目'
   if (name === 'ProviderSettings') return 'Provider 与模型'
   if (name === 'ApplicationSettings') return '应用默认与诊断'
@@ -116,6 +127,7 @@ function routeTitle(route, project) {
 
 function globalSelected(item, route) {
   const name = routeName(route)
+  if (item.key === 'topics') return name.startsWith('Topic')
   if (item.key === 'assets') {
     return ['StyleLibrary', 'ExperienceLibrary', 'CorpusLibrary'].includes(name)
   }
