@@ -249,6 +249,29 @@ class Harness:
 
 
 @pytest.mark.asyncio
+async def test_create_in_session_inserts_unselected_candidate_without_project_lock():
+    harness = Harness()
+    provenance = None
+    session = object()
+
+    result = await harness.service.create_in_session(
+        session,
+        project_id="p1",
+        seed_id="seed-topic-1",
+        revision_id="seed-revision-topic-1",
+        payload=payload("主题种子"),
+        provenance=provenance,
+        now=1234,
+    )
+
+    assert result.id == "seed-topic-1"
+    assert result.is_selected is False
+    assert result.selection_revision == 0
+    assert harness.repo.events == ["identity", "revision", "head"]
+    assert harness.repo.selections == {}
+
+
+@pytest.mark.asyncio
 async def test_ai_chat_provenance_uses_attempt_first_global_lock_order():
     domain = importlib.import_module("backend.domain.seeds")
 
@@ -354,7 +377,9 @@ async def test_dependency_count_includes_immutable_selection_history():
 
     assert await SeedRepository().dependency_count(session, "p1", "seed-a") == 1
     assert "FROM project_seed_selection_revisions" in session.sql
+    assert "FROM topic_project_handoffs" in session.sql
     assert session.args == (
+        "p1", "seed-a",
         "p1", "seed-a",
         "p1", "seed-a",
         "p1", "seed-a",

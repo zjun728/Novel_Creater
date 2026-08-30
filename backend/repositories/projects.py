@@ -19,6 +19,7 @@ from backend.repositories.project_lifecycle import (
 
 
 _PROJECT_OWNED_DELETE_ORDER = (
+    "topic_project_handoffs",
     "reference_uses",
     "final_chapters",
     "finalization_records",

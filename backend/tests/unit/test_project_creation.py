@@ -201,6 +201,29 @@ async def test_create_builds_foundations_and_binding_in_one_transaction():
 
 
 @pytest.mark.asyncio
+async def test_create_in_session_reuses_exact_foundation_writes_without_transaction():
+    repository = FakeProjectRepository()
+    bindings = FakeBindingService(repository.calls)
+    transactions = FakeTransactionFactory()
+    service = ProjectLifecycleService(
+        repository,
+        transactions,
+        model_binding_service=bindings,
+    )
+    session = object()
+
+    result = await service.create_in_session(
+        session,
+        CreateProject(id="p1", title="新项目"),
+    )
+
+    assert repository.calls == list(FakeProjectRepository.STEPS)
+    assert all(item is session for item in repository.sessions)
+    assert transactions.enter_count == 0
+    assert result.id == "p1"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failed_step", FakeProjectRepository.STEPS)
 async def test_create_rolls_back_every_foundation_failure(failed_step):
     repository = FakeProjectRepository()

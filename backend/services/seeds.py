@@ -446,34 +446,81 @@ class SeedService:
                         has_final_chapters=has_final_chapters,
                         selection_confirmed=False,
                     )
-            revision_id = self.id_factory()
-            now = self.clock()
-            payload_json = canonical_json(
-                seed_revision_document(command.payload, provenance)
+            result = await self.create_in_session(
+                session,
+                project_id=command.project_id,
+                seed_id=seed_id,
+                revision_id=self.id_factory(),
+                payload=command.payload,
+                provenance=provenance,
+                now=self.clock(),
+                selection_revision=selection_revision,
+                has_final_chapters=has_final_chapters,
             )
-            content_hash = canonical_hash(command.payload)
-            identity = {
-                "id": seed_id, "project_id": command.project_id,
-                "status": "candidate", "created_at": now, "updated_at": now,
-            }
-            revision = {
-                "id": revision_id, "project_id": command.project_id,
-                "seed_id": seed_id, "revision": 1,
-                "payload_json": payload_json, "content_hash": content_hash,
+        return result
+
+    async def create_in_session(
+        self,
+        session,
+        *,
+        project_id: str,
+        seed_id: str,
+        revision_id: str,
+        payload: SeedPayload,
+        provenance: SeedProvenance | None,
+        now: int,
+        selection_revision: int = 0,
+        has_final_chapters: bool = False,
+    ) -> SeedResult:
+        """Insert one candidate Seed in a caller-owned transaction."""
+
+        if not isinstance(payload, SeedPayload) or (
+            provenance is not None and not isinstance(provenance, SeedProvenance)
+        ):
+            raise TypeError("validated seed values are required")
+        payload_json = canonical_json(seed_revision_document(payload, provenance))
+        content_hash = canonical_hash(payload)
+        await self.repository.insert_identity(
+            session,
+            {
+                "id": seed_id,
+                "project_id": project_id,
+                "status": "candidate",
                 "created_at": now,
-            }
-            head = {
-                "seed_id": seed_id, "revision_id": revision_id,
-                "revision": 1, "content_hash": content_hash,
                 "updated_at": now,
-            }
-            await self.repository.insert_identity(session, identity)
-            await self.repository.insert_revision(session, revision)
-            await self.repository.insert_head(session, head)
+            },
+        )
+        await self.repository.insert_revision(
+            session,
+            {
+                "id": revision_id,
+                "project_id": project_id,
+                "seed_id": seed_id,
+                "revision": 1,
+                "payload_json": payload_json,
+                "content_hash": content_hash,
+                "created_at": now,
+            },
+        )
+        await self.repository.insert_head(
+            session,
+            {
+                "seed_id": seed_id,
+                "revision_id": revision_id,
+                "revision": 1,
+                "content_hash": content_hash,
+                "updated_at": now,
+            },
+        )
         return SeedResult(
-            id=seed_id, project_id=command.project_id, status="candidate",
-            revision=1, revision_id=revision_id, content_hash=content_hash,
-            payload=command.payload, is_selected=False,
+            id=seed_id,
+            project_id=project_id,
+            status="candidate",
+            revision=1,
+            revision_id=revision_id,
+            content_hash=content_hash,
+            payload=payload,
+            is_selected=False,
             provenance=provenance,
             selection_revision=selection_revision,
             capabilities=self._capabilities(

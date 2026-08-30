@@ -75,7 +75,7 @@ class SeedInspirationFailure(PublicDomainError):
 
 
 class SeedPayload(BaseModel):
-    """The exact nine-field creative seed contract."""
+    """Creative seed contract; four newer fields default for old revisions."""
 
     model_config = ConfigDict(
         strict=True,
@@ -93,6 +93,10 @@ class SeedPayload(BaseModel):
     worldPressure: str = Field(min_length=1, max_length=SEED_FIELD_MAX_LENGTH)
     openingHook: str = Field(min_length=1, max_length=SEED_FIELD_MAX_LENGTH)
     differentiation: str = Field(min_length=1, max_length=SEED_FIELD_MAX_LENGTH)
+    targetAudience: str = Field(default="", max_length=SEED_FIELD_MAX_LENGTH)
+    storyPromise: str = Field(default="", max_length=SEED_FIELD_MAX_LENGTH)
+    longFormPotential: str = Field(default="", max_length=SEED_FIELD_MAX_LENGTH)
+    marketBasis: str = Field(default="", max_length=SEED_FIELD_MAX_LENGTH)
 
 
 class _FrozenSeedModel(BaseModel):
@@ -241,14 +245,30 @@ class SeedInspirationProvenance(_FrozenSeedModel):
     result_hash: str = Field(alias="resultHash", pattern=r"^[0-9a-f]{64}$")
 
 
+class SeedTopicCandidateProvenance(_FrozenSeedModel):
+    id: str = Field(min_length=1, max_length=36)
+    version: int = Field(gt=0)
+    hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class SeedProvenance(_FrozenSeedModel):
-    kind: Literal["manual", "market_snapshot", "market_analysis", "ai_chat"]
+    kind: Literal[
+        "manual",
+        "market_snapshot",
+        "market_analysis",
+        "ai_chat",
+        "topic_candidate",
+    ]
     snapshots: tuple[SeedSnapshotProvenance, ...] = Field(
         max_length=MAX_SEED_PROVENANCE_SNAPSHOTS
     )
     analysis: SeedAnalysisProvenance | None
     inspiration_attempt: SeedInspirationProvenance | None = Field(
         alias="inspirationAttempt"
+    )
+    topic_candidate: SeedTopicCandidateProvenance | None = Field(
+        default=None,
+        alias="topicCandidate",
     )
     public_notes: tuple[str, ...] = Field(
         alias="publicNotes",
@@ -279,24 +299,34 @@ class SeedProvenance(_FrozenSeedModel):
                 not self.snapshots
                 and self.analysis is None
                 and self.inspiration_attempt is None
+                and self.topic_candidate is None
             )
         elif self.kind == "market_snapshot":
             valid = (
                 bool(self.snapshots)
                 and self.analysis is None
                 and self.inspiration_attempt is None
+                and self.topic_candidate is None
             )
         elif self.kind == "market_analysis":
             valid = (
                 bool(self.snapshots)
                 and self.analysis is not None
                 and self.inspiration_attempt is None
+                and self.topic_candidate is None
             )
-        else:
+        elif self.kind == "ai_chat":
             valid = (
                 bool(self.snapshots)
                 and self.analysis is not None
                 and self.inspiration_attempt is not None
+                and self.topic_candidate is None
+            )
+        else:
+            valid = (
+                self.analysis is None
+                and self.inspiration_attempt is None
+                and self.topic_candidate is not None
             )
         if not valid:
             raise ValueError("provenance does not match kind")
@@ -310,6 +340,7 @@ def build_seed_provenance(
     analysis: SeedAnalysisProvenance | None,
     inspiration_attempt: SeedInspirationProvenance | None,
     public_notes: tuple[str, ...],
+    topic_candidate: SeedTopicCandidateProvenance | None = None,
 ) -> SeedProvenance:
     document = {
         "kind": kind,
@@ -328,6 +359,8 @@ def build_seed_provenance(
         ),
         "publicNotes": tuple(public_notes),
     }
+    if topic_candidate is not None:
+        document["topicCandidate"] = topic_candidate.model_dump(mode="json")
     return SeedProvenance.model_validate(
         {**document, "provenanceHash": canonical_hash(document)},
         strict=True,
@@ -367,6 +400,8 @@ def decode_seed_revision(
         by_alias=True,
         exclude={"provenance_hash"},
     )
+    if facts.get("topicCandidate") is None:
+        facts.pop("topicCandidate", None)
     if canonical_hash(facts) != provenance.provenance_hash:
         raise ValueError("seed provenance hash mismatch")
     return payload, provenance

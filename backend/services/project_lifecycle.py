@@ -174,29 +174,36 @@ class ProjectLifecycleService:
         return sha256(f"{project_id}/revision-0".encode("utf-8")).hexdigest()
 
     async def create(self, command: CreateProject) -> ProjectResult:
-        empty_hash = build_projection_bundle(0, ()).content_hash
         async with self.transaction_factory() as session:
-            if self.model_binding_service is None:
-                raise RuntimeError("model binding service is not configured")
-            await self.model_binding_service.lock_project_creation(session)
-            await self.repository.insert_project(session, command)
-            await self.repository.insert_bootstrap_revision(
-                session,
-                command.id,
-                content_hash=empty_hash,
-                idempotency_key=self.bootstrap_idempotency_key(command.id),
-            )
-            await self.repository.insert_projection_head(
-                session,
-                command.id,
-                content_hash=empty_hash,
-            )
-            await self.repository.insert_contract_head0(session, command.id)
-            await self.repository.insert_bible_head0(session, command.id)
-            await self.repository.insert_planning_head0(session, command.id)
-            await self.model_binding_service.initialize_project(
-                session, command.id
-            )
+            return await self.create_in_session(session, command)
+
+    async def create_in_session(
+        self,
+        session,
+        command: CreateProject,
+    ) -> ProjectResult:
+        """Create the standard project foundation in a caller-owned transaction."""
+
+        if self.model_binding_service is None:
+            raise RuntimeError("model binding service is not configured")
+        empty_hash = build_projection_bundle(0, ()).content_hash
+        await self.model_binding_service.lock_project_creation(session)
+        await self.repository.insert_project(session, command)
+        await self.repository.insert_bootstrap_revision(
+            session,
+            command.id,
+            content_hash=empty_hash,
+            idempotency_key=self.bootstrap_idempotency_key(command.id),
+        )
+        await self.repository.insert_projection_head(
+            session,
+            command.id,
+            content_hash=empty_hash,
+        )
+        await self.repository.insert_contract_head0(session, command.id)
+        await self.repository.insert_bible_head0(session, command.id)
+        await self.repository.insert_planning_head0(session, command.id)
+        await self.model_binding_service.initialize_project(session, command.id)
         return ProjectResult.from_command(command)
 
     def _connection(self):

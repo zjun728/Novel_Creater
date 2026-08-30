@@ -27,7 +27,7 @@ def make_seed(**overrides: object) -> SeedPayload:
     return SeedPayload(**values)
 
 
-def test_seed_payload_has_exactly_the_nine_contract_fields():
+def test_seed_payload_has_backward_compatible_thirteen_contract_fields():
     payload = make_seed()
 
     assert tuple(type(payload).model_fields) == (
@@ -40,10 +40,48 @@ def test_seed_payload_has_exactly_the_nine_contract_fields():
         "worldPressure",
         "openingHook",
         "differentiation",
+        "targetAudience",
+        "storyPromise",
+        "longFormPotential",
+        "marketBasis",
     )
 
     with pytest.raises(ValidationError):
         SeedPayload(**SEED_VALUES, legacyField="legacy")
+
+
+def test_old_nine_field_revision_decodes_with_empty_new_fields_without_rehash():
+    stored_hash = canonical_hash(dict(SEED_VALUES))
+
+    payload, provenance = seed_domain.decode_seed_revision(dict(SEED_VALUES))
+
+    assert payload.targetAudience == ""
+    assert payload.storyPromise == ""
+    assert payload.longFormPotential == ""
+    assert payload.marketBasis == ""
+    assert provenance is None
+    assert stored_hash != canonical_hash(payload)
+
+
+def test_topic_candidate_provenance_is_internal_and_hash_valid():
+    candidate = seed_domain.SeedTopicCandidateProvenance(
+        id="candidate-1",
+        version=2,
+        hash="c" * 64,
+    )
+    provenance = seed_domain.build_seed_provenance(
+        kind="topic_candidate",
+        snapshots=(),
+        analysis=None,
+        inspiration_attempt=None,
+        public_notes=(),
+        topic_candidate=candidate,
+    )
+
+    assert provenance.kind == "topic_candidate"
+    assert provenance.topic_candidate == candidate
+    with pytest.raises(ValidationError):
+        seed_domain.SeedProvenanceSelection(kind="topic_candidate")
 
 
 @pytest.mark.parametrize("field_name", tuple(SEED_VALUES))
