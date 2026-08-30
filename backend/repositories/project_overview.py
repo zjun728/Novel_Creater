@@ -126,7 +126,41 @@ class ProjectOverviewRepository:
             project_id,
             authoritative_chapter_number,
         )
-        outline = self._outline_fact(outline_head, outline_draft is not None)
+        pinned_planning = None
+        if (
+            outline_head is not None
+            and int(outline_head.get("revision") or 0) > 0
+        ):
+            planning_revision_id = outline_head.get("planning_revision_id")
+            planning_revision = outline_head.get("planning_revision")
+            planning_hash = outline_head.get("planning_hash")
+            if all(
+                value is not None
+                for value in (
+                    planning_revision_id,
+                    planning_revision,
+                    planning_hash,
+                )
+            ):
+                pinned_planning = await session.fetchone(
+                    """SELECT pinned.content_json
+                         FROM planning_revisions pinned
+                        WHERE pinned.project_id=%s
+                          AND pinned.id=%s
+                          AND pinned.revision=%s
+                          AND pinned.content_hash=%s""",
+                    (
+                        project_id,
+                        planning_revision_id,
+                        planning_revision,
+                        planning_hash,
+                    ),
+                )
+        outline = self._outline_fact(
+            outline_head,
+            outline_draft is not None,
+            pinned_planning,
+        )
 
         writer_core = await session.fetchone(
             """SELECT canon_revision_number AS canon_revision,
@@ -178,12 +212,17 @@ class ProjectOverviewRepository:
     def _outline_fact(
         head: Mapping[str, object] | None,
         has_draft: bool,
+        pinned_planning: Mapping[str, object] | None,
     ) -> dict[str, object]:
         if head is None:
             return {
                 "revision": None,
                 "updated_at": None,
                 "content_json": None,
+                "planning_revision_id": None,
+                "planning_revision": None,
+                "planning_hash": None,
+                "pinned_planning_content_json": None,
                 "has_draft": has_draft,
             }
         content = head.get("content_json", head.get("content"))
@@ -191,6 +230,14 @@ class ProjectOverviewRepository:
             "revision": head.get("revision"),
             "updated_at": head.get("updated_at"),
             "content_json": content,
+            "planning_revision_id": head.get("planning_revision_id"),
+            "planning_revision": head.get("planning_revision"),
+            "planning_hash": head.get("planning_hash"),
+            "pinned_planning_content_json": (
+                pinned_planning.get("content_json")
+                if pinned_planning is not None
+                else None
+            ),
             "has_draft": has_draft,
         }
 
