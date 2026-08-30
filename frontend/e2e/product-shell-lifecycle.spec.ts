@@ -10,6 +10,7 @@ import {
 
 const PROJECT_TITLE = '典镇山河'
 const RENAMED_TITLE = '典镇山河·修订稿'
+const OVERVIEW_LOGLINE = '以山河典册镇压乱世妖祟。'
 
 
 function apiPath(response: Response) {
@@ -19,6 +20,11 @@ function apiPath(response: Response) {
 
 function projectOverviewPath(projectId: string) {
   return `/projects/${encodeURIComponent(projectId)}/overview`
+}
+
+
+function projectOverviewSurface(page: Page) {
+  return page.locator('.overview-ledger').filter({ hasText: 'MANUSCRIPT LEDGER' })
 }
 
 
@@ -178,7 +184,7 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
     await expect(page).toHaveURL(new RegExp(`${overviewPath.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}$`, 'u'))
     await waitForRouteReady(
       page,
-      page.locator('.overview-sheet').filter({ hasText: 'PROJECT OVERVIEW' }),
+      projectOverviewSurface(page),
     )
 
     await page.goto('/projects')
@@ -191,14 +197,14 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
     await expect(page).toHaveURL(new RegExp(`${overviewPath.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}$`, 'u'))
     await waitForRouteReady(
       page,
-      page.locator('.overview-sheet').filter({ hasText: 'PROJECT OVERVIEW' }),
+      projectOverviewSurface(page),
     )
     await expect(page.getByRole('heading', { name: PROJECT_TITLE, exact: true })).toBeVisible()
 
     await page.reload()
     await waitForRouteReady(
       page,
-      page.locator('.overview-sheet').filter({ hasText: 'PROJECT OVERVIEW' }),
+      projectOverviewSurface(page),
     )
     await expect(page.getByRole('heading', { name: PROJECT_TITLE, exact: true })).toBeVisible()
     await expect(page.locator('.product-sidebar__project-title')).toHaveText(PROJECT_TITLE)
@@ -229,7 +235,7 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
       .getByRole('button', { name: '打开项目', exact: true }).click()
     await waitForRouteReady(
       page,
-      page.locator('.overview-sheet').filter({ hasText: 'PROJECT OVERVIEW' }),
+      projectOverviewSurface(page),
     )
     await expect(page.getByRole('heading', { name: renamedProject.title, exact: true })).toBeVisible()
 
@@ -248,17 +254,38 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
     const secondArchived = await archiveFromLibrary(page, RENAMED_TITLE)
     expect(secondArchived.lifecycleRevision).toBeGreaterThan(firstArchived.lifecycleRevision)
     await page.goto(overviewPath)
-    await expect(page.locator('.archived-sheet .status-mark')).toHaveText('已归档')
+    await waitForRouteReady(page, projectOverviewSurface(page))
+    await expect(page.locator('.project-page-header__archive')).toHaveText('已归档 · 只读')
     await expect(page.getByRole('heading', { name: RENAMED_TITLE, exact: true })).toBeVisible()
-    await expect(page.getByText('项目内容仍完整保留，但当前为只读状态。恢复后可继续原来的工作稿。')).toBeVisible()
-    await expect(page.locator('.product-sidebar__module-link')).toHaveCount(0)
+    await expect(page.locator('.product-sidebar').getByRole('link', {
+      name: '导出与备份',
+      exact: true,
+    })).toBeVisible()
+    await expect(page.locator('.product-sidebar').getByRole('link', {
+      name: '创作种子',
+      exact: true,
+    })).toHaveCount(0)
+    await expect(page.locator('.product-sidebar').getByRole('link', {
+      name: '模型绑定',
+      exact: true,
+    })).toHaveCount(0)
+    const archivedForRestoreResponsePromise = page.waitForResponse(response => (
+      response.request().method() === 'GET'
+      && apiPath(response) === '/api/projects/archived'
+    ))
+    await page.goto('/projects/archived')
+    await archivedForRestoreResponsePromise
+    const archivedForRestore = page.locator('.project-card--archived').filter({
+      hasText: RENAMED_TITLE,
+    })
     const directRestoreResponsePromise = waitForProjectMutation(page, 'POST', '/restore')
-    await page.getByRole('button', { name: '恢复项目', exact: true }).click()
+    await archivedForRestore.getByRole('button', { name: '恢复', exact: true }).click()
     const directRestoreResponse = await directRestoreResponsePromise
     expect(directRestoreResponse.ok()).toBe(true)
+    await page.goto(overviewPath)
     await waitForRouteReady(
       page,
-      page.locator('.overview-sheet').filter({ hasText: 'PROJECT OVERVIEW' }),
+      projectOverviewSurface(page),
     )
     await expect(page.getByRole('heading', { name: RENAMED_TITLE, exact: true })).toBeVisible()
 
@@ -603,6 +630,168 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
       throw new AggregateError(
         [bodyError, auditError],
         'Product-shell browser behavior and runtime audit both failed',
+      )
+    }
+    if (bodyError) throw bodyError
+    if (auditError) throw auditError
+  }
+})
+
+
+test('project overview supports the complete manual product flow across desktop and mobile', async ({ page }) => {
+  const runtimeObserver = observeRuntime(page)
+  let bodyError: unknown
+  let auditError: unknown
+  let projectId = ''
+
+  try {
+    await page.setViewportSize({ width: 1440, height: 720 })
+    await page.goto('/projects')
+    await page.locator('.project-library-heading__actions')
+      .getByRole('button', { name: '新建项目', exact: true })
+      .click()
+    const dialog = page.getByRole('dialog', { name: '新建项目' })
+    const createResponsePromise = page.waitForResponse(response => (
+      response.request().method() === 'POST'
+      && apiPath(response) === '/api/projects'
+    ))
+    await dialog.getByRole('textbox', { name: '项目名称' }).fill(PROJECT_TITLE)
+    await dialog.getByRole('button', { name: '创建并打开' }).click()
+    const createResponse = await createResponsePromise
+    expect(createResponse.ok()).toBe(true)
+    projectId = String((await createResponse.json()).id)
+    const overviewPath = projectOverviewPath(projectId)
+    const overviewApiPath = `/api${overviewPath}`
+
+    await page.route(`**${overviewApiPath}`, async route => {
+      if (route.request().method() !== 'GET') {
+        await route.continue()
+        return
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          project: {
+            id: projectId,
+            title: PROJECT_TITLE,
+            genre: '东方玄幻',
+            logline: OVERVIEW_LOGLINE,
+            targetWords: 2_400_000,
+            targetChapters: 800,
+            updatedAtMs: 1_777_777_777_000,
+            lifecycle: 'active',
+          },
+          progress: {
+            authoritativeChapterNumber: 4,
+            currentVolume: { id: 'volume-1', order: 1, title: '山河初醒' },
+            latestFinalChapter: {
+              number: 3,
+              title: '城隍夜巡',
+              finalizedAtMs: 1_777_777_770_000,
+            },
+            finalizedChapterCount: 3,
+            finalizedScalarCount: 18_600,
+          },
+          modules: {
+            seed: 'current',
+            contract: 'current',
+            bible: 'needs_review',
+            planning: 'current',
+            outline: 'pending_confirmation',
+            writing: 'working_draft',
+          },
+          writerCore: {
+            canonRevision: 3,
+            projectionRevision: 3,
+            synchronized: true,
+          },
+          continuity: { availability: 'pending_module', pendingCount: null },
+          recentAchievements: [
+            { kind: 'final_chapter', label: '第 3 章已定稿', occurredAtMs: 1_777_777_770_000 },
+            { kind: 'planning', label: '故事规划已确认', occurredAtMs: 1_777_777_760_000 },
+          ],
+        }),
+      })
+    })
+
+    await page.goto(overviewPath)
+    const overview = page.locator('.overview-ledger')
+    await expect(overview).toBeVisible()
+    await expect(overview.getByRole('heading', { name: PROJECT_TITLE, exact: true })).toBeVisible()
+    await expect(overview.getByText(OVERVIEW_LOGLINE, { exact: true })).toBeVisible()
+    await expect(overview.getByText('2,400,000 字', { exact: true })).toBeVisible()
+    await expect(overview.getByText('18,600 字', { exact: true })).toBeVisible()
+    await expect(overview.getByText('第 1 卷 · 山河初醒', { exact: true })).toBeVisible()
+    await expect(overview.getByText('当前权威：第 4 章', { exact: true })).toBeVisible()
+    await expect(overview.getByText('第 3 章 · 城隍夜巡', { exact: true })).toBeVisible()
+    await expect(overview.getByRole('link', { name: /下一步/u })).toHaveCount(0)
+    await expect(overview.getByRole('button', { name: /下一步/u })).toHaveCount(0)
+
+    await overview.locator('.overview-module').filter({ hasText: '创作种子' }).click()
+    await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/seeds$`, 'u'))
+    await page.waitForLoadState('networkidle')
+
+    await page.goto(overviewPath)
+    await waitForRouteReady(page, overview)
+    const desktopNavigation = page.locator('.product-sidebar')
+    await expect(desktopNavigation).toBeVisible()
+    await desktopNavigation.getByRole('link', { name: '导出与备份', exact: true }).click()
+    await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/settings/export$`, 'u'))
+    await expect(page.getByRole('heading', { name: '导出与备份', exact: true })).toBeVisible()
+    await page.waitForLoadState('networkidle')
+
+    await page.goto(overviewPath)
+    await waitForRouteReady(page, overview)
+    const mainContent = page.locator('.product-app-shell__content')
+    await mainContent.evaluate(element => { element.scrollTop = 0 })
+    const overviewBox = await overview.boundingBox()
+    expect(overviewBox).not.toBeNull()
+    await page.mouse.move(
+      overviewBox!.x + Math.min(overviewBox!.width / 2, 300),
+      overviewBox!.y + Math.min(overviewBox!.height / 2, 300),
+    )
+    await page.mouse.wheel(0, 700)
+    await expect.poll(() => mainContent.evaluate(element => element.scrollTop)).toBeGreaterThan(0)
+
+    await page.setViewportSize({ width: 760, height: 900 })
+    await expect(page.locator('.product-app-shell')).toHaveAttribute('data-navigation-mode', 'mobile')
+    const menuButton = page.getByRole('button', { name: '菜单', exact: true })
+    await expect(menuButton).toBeVisible()
+    await menuButton.click()
+    const mobileNavigation = page.getByRole('dialog', { name: '作品导航' })
+    await expect(mobileNavigation).toBeVisible()
+    await mobileNavigation.getByRole('link', { name: '导出与备份', exact: true }).click()
+    await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/settings/export$`, 'u'))
+    await expect(mobileNavigation).toHaveCount(0)
+    await expect(page.getByRole('heading', { name: '导出与备份', exact: true })).toBeVisible()
+    await page.waitForLoadState('networkidle')
+  } catch (error) {
+    bodyError = error
+  } finally {
+    try {
+      const evidence = await runtimeObserver.finish()
+      assertExactWrites(evidence, [{
+        method: 'POST',
+        path: '/api/projects',
+        statuses: [200],
+        count: 1,
+      }])
+      expect(evidence.consoleErrors, 'browser console errors must stay empty').toEqual([])
+      expect(evidence.pageErrors, 'page errors must stay empty').toEqual([])
+      expect(evidence.requestFailures, 'request failures must stay empty').toEqual([])
+      expect(evidence.responseFailures, 'response failures must stay empty').toEqual([])
+      const scan = scanRuntimeEvidence(evidence, runtimeSensitiveValues(process.env))
+      if (scan.matchCount !== 0) {
+        throw new Error('Project-overview browser evidence contained a runtime-sensitive value')
+      }
+    } catch (error) {
+      auditError = error
+    }
+    if (bodyError && auditError) {
+      throw new AggregateError(
+        [bodyError, auditError],
+        'Project-overview browser behavior and runtime audit both failed',
       )
     }
     if (bodyError) throw bodyError
