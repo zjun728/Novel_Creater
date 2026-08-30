@@ -25,7 +25,7 @@ APPROVED_FORMAL_ROUTES = {
     ("GET", "/api/projects/archived"),
     ("POST", "/api/projects"),
     ("GET", "/api/projects/{project_id}"),
-    ("GET", "/api/projects/{project_id}/overview"),
+    ("GET", "/api/projects/{project_id:path}/overview"),
     ("GET", "/api/projects/{project_id}/novel-download/options"),
     ("GET", "/api/projects/{project_id}/novel-download"),
     ("GET", "/api/projects/{project_id}/manuscript"),
@@ -286,7 +286,7 @@ def test_project_overview_has_one_exact_read_only_route():
     overview_routes = [
         route
         for route in main.app.routes
-        if route.path == "/api/projects/{project_id}/overview"
+        if route.path == "/api/projects/{project_id:path}/overview"
     ]
 
     assert len(overview_routes) == 1

@@ -92,13 +92,13 @@ def test_project_overview_route_uses_dependency_override_and_decodes_id():
     client = TestClient(app)
 
     response = client.get(
-        "/api/projects/project%20%25%20%E4%B8%80/overview"
+        "/api/projects/project%20%2F%20%E4%B8%80/overview"
     )
 
     assert response.status_code == 200
-    assert service.calls == ["project % 一"]
+    assert service.calls == ["project / 一"]
     assert response.json()["project"] == {
-        "id": "project % 一",
+        "id": "project / 一",
         "title": "典镇山河",
         "genre": "东方奇幻",
         "logline": "少年以县志镇压黑潮。",

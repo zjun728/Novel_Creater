@@ -22,7 +22,7 @@ def get_project_overview_service() -> ProjectOverviewService:
     return _service
 
 
-@router.get("/projects/{project_id}/overview")
+@router.get("/projects/{project_id:path}/overview")
 async def get_project_overview(
     project_id: str,
     service: Annotated[
