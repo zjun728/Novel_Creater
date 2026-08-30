@@ -30,6 +30,7 @@ async function flushCurrentDraft() {
 
   <section v-else-if="routeProject.state.value === 'error'" class="project-export-page">
     <n-result
+      role="alert"
       status="error"
       title="导出与备份暂时无法打开"
       description="项目身份读取失败，请稍后重试。"

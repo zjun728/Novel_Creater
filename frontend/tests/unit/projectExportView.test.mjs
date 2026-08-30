@@ -24,3 +24,14 @@ test('export page composes existing delivery and backup capabilities without dup
   assert.match(source, /:lifecycle-revision="routeProject\.project\.value\.lifecycleRevision"/)
   assert.doesNotMatch(source, /api\.|createNovelDownloadController|createProjectBackupController/)
 })
+
+test('export page exposes its asynchronous route failure as an alert', async () => {
+  const source = await readFile(
+    new URL('../../src/views/ProjectExportView.vue', import.meta.url),
+    'utf8',
+  )
+  assert.match(
+    source,
+    /v-else-if="routeProject\.state\.value === 'error'"[\s\S]*?<n-result[\s\S]*?role="alert"/,
+  )
+})

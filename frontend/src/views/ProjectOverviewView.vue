@@ -95,13 +95,7 @@ async function loadProjectOverview({ force = false } = {}) {
   if (
     !force
     && projectStore.overviewProjectId === projectId
-    && (
-      ['loading', 'error'].includes(projectStore.overviewStatus)
-      || (
-        projectStore.overviewStatus === 'ready'
-        && projectStore.currentOverview?.project?.id === projectId
-      )
-    )
+    && projectStore.overviewStatus === 'loading'
   ) return
   try {
     await projectStore.loadOverview(projectId)
@@ -142,6 +136,7 @@ watch(
 
   <section v-else-if="routeProject.state.value === 'error'" class="overview-page">
     <n-result
+      role="alert"
       status="error"
       title="项目概览暂时无法加载"
       description="项目身份读取失败，请稍后重试。"
@@ -157,6 +152,7 @@ watch(
     class="overview-page"
   >
     <n-result
+      role="alert"
       status="error"
       title="项目概览暂时无法加载"
       description="已保留当前项目，请重新读取服务端概览。"

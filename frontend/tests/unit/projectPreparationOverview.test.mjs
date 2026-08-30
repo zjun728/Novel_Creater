@@ -118,10 +118,11 @@ async function renderOverview({
   shellState = 'active',
   overviewState = 'ready',
   overviewError = null,
+  requests = [],
 } = {}) {
   const originalFetch = global.fetch
   global.fetch = async url => {
-    throw new Error(`unexpected request during cached overview render: ${url}`)
+    throw new Error(`unexpected transport request during overview component render: ${url}`)
   }
   try {
     const pinia = createPinia()
@@ -132,6 +133,11 @@ async function renderOverview({
       store.currentOverview = overviewState === 'ready' ? payload : null
       store.overviewStatus = overviewState
       store.overviewError = overviewError
+    }
+    store.loadOverview = async projectId => {
+      requests.push(String(projectId))
+      if (overviewState === 'error') throw new Error('overview unavailable')
+      return payload
     }
     const router = createRouter({
       history: createMemoryHistory(),
@@ -178,6 +184,12 @@ test('overview presents project identity, long-form progress, authority and late
   assert.match(html, /第 3 章 · 城隍夜巡/)
 })
 
+test('re-entering a ready overview refreshes the same project authority', async () => {
+  const requests = []
+  await renderOverview({ requests })
+  assert.deepEqual(requests, ['project / 一'])
+})
+
 test('overview renders six manual module links with Chinese authority labels and no next-step authority', async () => {
   const html = await renderOverview()
   for (const label of ['创作种子', '创作契约', '创作圣经', '故事规划', '本章小纲', '正文写作']) {
@@ -211,6 +223,7 @@ test('overview explicitly renders archived, missing, loading, retryable error an
     overviewError: new Error('internal provider identity'),
   })
   assert.match(failed, /项目概览暂时无法加载/)
+  assert.match(failed, /role="alert"/)
   assert.equal((failed.match(/>重试</g) || []).length, 1)
   assert.doesNotMatch(failed, /internal provider identity/)
   const stale = await renderOverview({ routeProjectId: 'project-B' })

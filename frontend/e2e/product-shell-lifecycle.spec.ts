@@ -655,20 +655,20 @@ test('project overview supports the complete manual product flow across desktop 
             lifecycle: 'active',
           },
           progress: {
-            authoritativeChapterNumber: 4,
+            authoritativeChapterNumber: overviewGetCount >= 3 ? 5 : 4,
             currentVolume: { id: 'volume-1', order: 1, title: '山河初醒' },
             latestFinalChapter: {
-              number: 3,
-              title: '城隍夜巡',
+              number: overviewGetCount >= 3 ? 4 : 3,
+              title: overviewGetCount >= 3 ? '典册新章' : '城隍夜巡',
               finalizedAtMs: 1_777_777_770_000,
             },
-            finalizedChapterCount: 3,
-            finalizedScalarCount: 18_600,
+            finalizedChapterCount: overviewGetCount >= 3 ? 4 : 3,
+            finalizedScalarCount: overviewGetCount >= 3 ? 24_300 : 18_600,
           },
           modules: {
             seed: 'current',
             contract: 'current',
-            bible: 'needs_review',
+            bible: overviewGetCount >= 3 ? 'current' : 'needs_review',
             planning: 'current',
             outline: 'pending_confirmation',
             writing: 'working_draft',
@@ -680,7 +680,11 @@ test('project overview supports the complete manual product flow across desktop 
           },
           continuity: { availability: 'pending_module', pendingCount: null },
           recentAchievements: [
-            { kind: 'final_chapter', label: '第 3 章已定稿', occurredAtMs: 1_777_777_770_000 },
+            {
+              kind: 'final_chapter',
+              label: overviewGetCount >= 3 ? '第 4 章已定稿' : '第 3 章已定稿',
+              occurredAtMs: 1_777_777_770_000,
+            },
             { kind: 'planning', label: '故事规划已确认', occurredAtMs: 1_777_777_760_000 },
           ],
         }),
@@ -724,8 +728,15 @@ test('project overview supports the complete manual product flow across desktop 
     await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/seeds$`, 'u'))
     await page.waitForLoadState('networkidle')
 
-    await page.goto(overviewPath)
+    await page.locator('.product-sidebar')
+      .getByRole('link', { name: '项目概览', exact: true })
+      .click()
     await waitForRouteReady(page, overview)
+    await expect.poll(() => overviewGetCount).toBe(3)
+    await expect(overview.getByText('24,300 字', { exact: true })).toBeVisible()
+    await expect(overview.getByText('当前权威：第 5 章', { exact: true })).toBeVisible()
+    await expect(overview.getByText('当前正式版', { exact: true })).toHaveCount(4)
+    await expect(overview.getByText('第 4 章已定稿', { exact: true })).toBeVisible()
     const desktopNavigation = page.locator('.product-sidebar')
     await expect(desktopNavigation).toBeVisible()
     await desktopNavigation.getByRole('link', { name: '导出与备份', exact: true }).click()
@@ -733,8 +744,9 @@ test('project overview supports the complete manual product flow across desktop 
     await expect(page.getByRole('heading', { name: '导出与备份', exact: true })).toBeVisible()
     await page.waitForLoadState('networkidle')
 
-    await page.goto(overviewPath)
+    await desktopNavigation.getByRole('link', { name: '项目概览', exact: true }).click()
     await waitForRouteReady(page, overview)
+    await expect.poll(() => overviewGetCount).toBe(4)
     const mainContent = page.locator('.product-app-shell__content')
     await mainContent.evaluate(element => { element.scrollTop = 0 })
     const overviewBox = await overview.boundingBox()
@@ -758,6 +770,11 @@ test('project overview supports the complete manual product flow across desktop 
     await expect(mobileNavigation).toHaveCount(0)
     await expect(page.getByRole('heading', { name: '导出与备份', exact: true })).toBeVisible()
     await page.waitForLoadState('networkidle')
+    await menuButton.click()
+    const returnNavigation = page.getByRole('dialog', { name: '作品导航' })
+    await returnNavigation.getByRole('link', { name: '项目概览', exact: true }).click()
+    await waitForRouteReady(page, overview)
+    await expect.poll(() => overviewGetCount).toBe(5)
   } catch (error) {
     bodyError = error
   } finally {
