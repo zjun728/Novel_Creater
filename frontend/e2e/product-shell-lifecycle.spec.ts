@@ -392,12 +392,13 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
       page,
       page.locator('.route-state-page').filter({ hasText: '项目不存在或已被删除' }),
     )
-    await expect(page.getByText('项目暂时无法加载', { exact: true })).toHaveCount(0)
+    await expect(page.getByText('项目概览暂时无法加载', { exact: true })).toHaveCount(0)
 
-    let detailFailureInjected = false
-    await page.route(`**/api/projects/${recoverableId}`, async route => {
-      if (!detailFailureInjected && route.request().method() === 'GET') {
-        detailFailureInjected = true
+    let overviewFailureInjected = false
+    const recoverableOverviewRoute = `**/api/projects/${recoverableId}/overview`
+    await page.route(recoverableOverviewRoute, async route => {
+      if (!overviewFailureInjected && route.request().method() === 'GET') {
+        overviewFailureInjected = true
         await route.fulfill({
           status: 500,
           contentType: 'application/json',
@@ -413,7 +414,7 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
       await route.continue()
     })
     await page.goto(projectOverviewPath(recoverableId))
-    await expect(page.getByText('项目暂时无法加载', { exact: true })).toBeVisible()
+    await expect(page.getByText('项目概览暂时无法加载', { exact: true })).toBeVisible()
     const retry = page.getByRole('button', { name: '重试', exact: true })
     await expect(retry).toBeVisible()
     await retry.click()
@@ -421,7 +422,7 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
       page,
       page.locator('.route-state-page').filter({ hasText: '项目不存在或已被删除' }),
     )
-    await page.unroute(`**/api/projects/${recoverableId}`)
+    await page.unroute(recoverableOverviewRoute)
 
     await page.goto('/projects')
     await waitForRouteReady(page, page.locator('.project-library-page'))
@@ -616,8 +617,8 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
         'only the deliberately injected 404/500 responses are allowed',
       ).toEqual([
         `404 GET /api/projects/${projectId}`,
-        `404 GET /api/projects/${recoverableId}`,
-        `500 GET /api/projects/${recoverableId}`,
+        `404 GET /api/projects/${recoverableId}/overview`,
+        `500 GET /api/projects/${recoverableId}/overview`,
       ].sort())
       const scan = scanRuntimeEvidence(evidence, runtimeSensitiveValues(process.env))
       if (scan.matchCount !== 0) {
