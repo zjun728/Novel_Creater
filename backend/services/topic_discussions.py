@@ -117,6 +117,24 @@ class TopicDiscussionService:
             await self._repository.insert_discussion(session, row)
         return dict(row)
 
+    async def list(self, *, offset: int = 0, limit: int = 50):
+        async with self._connection() as session:
+            return await self._repository.list_discussions(
+                session,
+                offset=offset,
+                limit=limit,
+            )
+
+    async def read(self, discussion_id: str):
+        async with self._connection() as session:
+            value = await self._repository.read_discussion(
+                session,
+                discussion_id,
+            )
+        if value is None:
+            raise TopicFailure("TOPIC_NOT_FOUND")
+        return value
+
     @staticmethod
     def _request_hash(command: DiscussTopic) -> str:
         return canonical_hash(

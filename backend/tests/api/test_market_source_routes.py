@@ -149,9 +149,9 @@ def _client():
     app = FastAPI()
     app.include_router(market_sources.router, prefix="/api")
     app.dependency_overrides[market_sources.get_market_source_service] = lambda: service
-    app.dependency_overrides[
-        market_sources.get_market_analysis_service
-    ] = lambda: analysis_service
+    dependency = getattr(market_sources, "get_market_analysis_service", None)
+    if dependency is not None:
+        app.dependency_overrides[dependency] = lambda: analysis_service
     install_error_handlers(app)
     return (
         TestClient(app, raise_server_exceptions=False),
@@ -264,8 +264,6 @@ def test_market_source_routes_expose_only_inventory_status_history_detail_and_co
         "/market-sources/{source_id}/snapshots/{snapshot_id}": {"GET"},
         "/market-sources/{source_id}/manual-import": {"POST"},
         "/market-sources/{source_id}/refresh": {"POST"},
-        "/projects/{project_id}/market-analyses": {"POST"},
-        "/projects/{project_id}/market-analyses/{analysis_id}": {"GET"},
     }
     assert "url" not in signature(market_sources.refresh_market_source).parameters
     assert "policy" not in signature(market_sources.refresh_market_source).parameters
@@ -522,7 +520,7 @@ def test_schedule_route_is_retired():
     assert response.status_code == 404
 
 
-def test_market_analysis_routes_are_project_scoped_strict_and_secret_free():
+def test_project_bound_market_analysis_routes_are_retired():
     client, _, analysis_service, _ = _client()
 
     created = client.post(
@@ -536,44 +534,8 @@ def test_market_analysis_routes_are_project_scoped_strict_and_secret_free():
         f"/api/projects/{PROJECT_ID}/market-analyses/{ANALYSIS_ID}"
     )
 
-    assert created.status_code == 200
-    assert loaded.status_code == 200
-    expected_keys = {
-        "id",
-        "projectId",
-        "inputManifestHash",
-        "promptPolicyVersion",
-        "status",
-        "analysis",
-        "resultHash",
-        "publicErrorCode",
-        "createdAt",
-        "completedAt",
-    }
-    assert set(created.json()) == expected_keys
-    assert set(loaded.json()) == expected_keys
-    assert set(created.json()["analysis"]) == {
-        "currentHeat",
-        "growthDirections",
-        "crowding",
-        "opportunities",
-        "uncertainties",
-        "sourceCoverage",
-    }
-    rendered = json.dumps([created.json(), loaded.json()])
-    for sentinel in (
-        "PRIVATE_PROVIDER_SENTINEL",
-        "PRIVATE_BASE_URL_SENTINEL",
-        "PRIVATE_API_KEY_SENTINEL",
-        "PRIVATE_RAW_RESPONSE_SENTINEL",
-        "PRIVATE_ERROR_DETAIL_SENTINEL",
-    ):
-        assert sentinel not in rendered
-    assert [call[0] for call in analysis_service.calls] == [
-        "analyze",
-        "get",
-        "analyze",
-    ]
+    assert created.status_code == loaded.status_code == 404
+    assert analysis_service.calls == []
 
 
 def test_market_analysis_request_rejects_duplicates_bounds_and_extra_fields():
@@ -605,7 +567,7 @@ def test_market_analysis_request_rejects_duplicates_bounds_and_extra_fields():
             },
         ),
     )
-    assert [response.status_code for response in responses] == [422, 422, 422]
+    assert [response.status_code for response in responses] == [404, 404, 404]
     assert "PRIVATE_BROWSER_PROVIDER" not in json.dumps(
         [response.json() for response in responses]
     )

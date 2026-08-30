@@ -2,23 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Annotated
-
-from fastapi import APIRouter, Depends, Path
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel, ConfigDict, Field
 
 from backend.database import connection, transaction
-from backend.domain.seeds import (
-    SeedChatTurn,
-    SeedPayload,
-    SeedProvenanceSelection,
-)
-from backend.gateways.seed_provider import SeedProviderGateway
+from backend.domain.seeds import SeedPayload, SeedProvenanceSelection
 from backend.repositories.seeds import SeedRepository
-from backend.services.seed_generation import (
-    GenerateSeedInspiration,
-    SeedGenerationService,
-)
 from backend.services.seeds import (
     ArchiveSeed,
     CreateSeed,
@@ -37,20 +26,10 @@ _service = SeedService(
     SeedRepository(), transaction_factory=transaction,
     connection_factory=connection,
 )
-_generation_service = SeedGenerationService(
-    SeedRepository(),
-    transaction_factory=transaction,
-    connection_factory=connection,
-    provider_gateway=SeedProviderGateway(),
-)
 
 
 def get_seed_service() -> SeedService:
     return _service
-
-
-def get_seed_generation_service() -> SeedGenerationService:
-    return _generation_service
 
 
 class _StrictBody(BaseModel):
@@ -83,31 +62,6 @@ class SelectSeedBody(_StrictBody):
     seedId: str = Field(min_length=1)
     expectedSeedRevision: int = Field(gt=0)
     expectedSelectionRevision: int = Field(ge=0)
-
-
-class SeedInspirationBody(_StrictBody):
-    transcript: tuple[SeedChatTurn, ...] = Field(min_length=1, max_length=12)
-    snapshotIds: tuple[str, ...] = Field(min_length=1, max_length=4)
-    analysisId: str = Field(min_length=1, max_length=36)
-    idempotencyKey: str = Field(
-        min_length=64,
-        max_length=64,
-        pattern=r"^[A-Za-z0-9_-]{64}$",
-    )
-
-    @field_validator("transcript", "snapshotIds", mode="before")
-    @classmethod
-    def freeze_sequences(cls, value):
-        return tuple(value) if isinstance(value, list) else value
-
-    @field_validator("snapshotIds")
-    @classmethod
-    def validate_snapshot_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if len(value) != len(set(value)):
-            raise ValueError("snapshot IDs must be unique")
-        if any(not item or len(item) > 36 for item in value):
-            raise ValueError("snapshot ID is invalid")
-        return value
 
 
 def _public_seed(result: SeedResult) -> dict:
@@ -172,39 +126,6 @@ async def create_seed(
             )
         )
     )
-
-
-def _inspiration_value(result, name: str):
-    return result.get(name) if isinstance(result, dict) else getattr(result, name)
-
-
-@router.post("/projects/{pid}/seed-inspiration")
-async def generate_seed_inspiration(
-    pid: Annotated[str, Path(min_length=1, max_length=36)],
-    body: SeedInspirationBody,
-    service: SeedGenerationService = Depends(get_seed_generation_service),
-):
-    result = await service.generate(
-        GenerateSeedInspiration(
-            project_id=pid,
-            transcript=body.transcript,
-            snapshot_ids=body.snapshotIds,
-            analysis_id=body.analysisId,
-            idempotency_key=body.idempotencyKey,
-        )
-    )
-    assistant = _inspiration_value(result, "assistant_turn")
-    if assistant is not None and not isinstance(assistant, dict):
-        assistant = assistant.model_dump(mode="json")
-    return {
-        "attemptId": _inspiration_value(result, "attempt_id"),
-        "status": _inspiration_value(result, "status"),
-        "assistantTurn": assistant,
-        "resultHash": _inspiration_value(result, "result_hash"),
-        "publicErrorCode": _inspiration_value(result, "public_error_code"),
-        "createdAt": _inspiration_value(result, "created_at"),
-        "completedAt": _inspiration_value(result, "completed_at"),
-    }
 
 
 @router.put("/projects/{pid}/seeds/{seed_id}")

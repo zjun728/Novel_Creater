@@ -10,16 +10,10 @@ from pydantic import (
     ConfigDict,
     Field,
     ValidationError,
-    field_validator,
-    model_validator,
 )
 
 from backend.database import connection, transaction
-from backend.domain.market_analysis import MarketAnalysisFailure
 from backend.domain.market_sources import MarketSourceFailure
-from backend.gateways.market_analysis_provider import (
-    MarketAnalysisProviderGateway,
-)
 from backend.gateways.market_sources.base import HttpxMarketTransport
 from backend.gateways.market_sources.manual_snapshot import (
     MAX_MANUAL_SNAPSHOT_BYTES,
@@ -33,7 +27,6 @@ from backend.gateways.market_sources.qq_reading_public_rank import (
 )
 from backend.repositories.market import MarketRepository
 from backend.services.market_snapshots import MarketSnapshotService
-from backend.services.market_analysis import AnalyzeMarket, MarketAnalysisService
 from backend.services.market_sources import MarketSourceService
 
 
@@ -76,34 +69,6 @@ class ManualImportRequest(RefreshRequest):
         hide_input_in_errors=True,
     )
     snapshot: dict[str, object]
-
-
-class AnalysisRequest(_Request):
-    model_config = ConfigDict(
-        strict=True,
-        extra="allow",
-        populate_by_name=True,
-        hide_input_in_errors=True,
-    )
-    snapshotIds: tuple[str, ...] = Field(min_length=1, max_length=4)
-    idempotencyKey: str = Field(
-        min_length=64,
-        max_length=64,
-        pattern=r"^[A-Za-z0-9_-]{64}$",
-    )
-
-    @field_validator("snapshotIds", mode="before")
-    @classmethod
-    def freeze_snapshot_ids(cls, value):
-        return tuple(value) if isinstance(value, list) else value
-
-    @model_validator(mode="after")
-    def unique_snapshot_ids(self):
-        if len(self.snapshotIds) != len(set(self.snapshotIds)):
-            raise ValueError("snapshot IDs must be unique")
-        if any(not item or len(item) > 36 for item in self.snapshotIds):
-            raise ValueError("snapshot ID is invalid")
-        return self
 
 
 async def _read_manual_body(request: Request) -> bytes:
@@ -224,48 +189,6 @@ def get_market_source_service() -> MarketSourceService:
     )
 
 
-def get_market_analysis_service() -> MarketAnalysisService:
-    return MarketAnalysisService(
-        MarketRepository(),
-        transaction_factory=transaction,
-        connection_factory=connection,
-        provider_gateway=MarketAnalysisProviderGateway(),
-    )
-
-
-def _analysis_view(result) -> dict:
-    def value(name: str):
-        return (
-            result.get(name)
-            if isinstance(result, dict)
-            else getattr(result, name)
-        )
-
-    analysis = value("analysis")
-    if analysis is not None and not isinstance(analysis, dict):
-        analysis = analysis.model_dump(mode="json", by_alias=True)
-    public_error_code = value("public_error_code")
-    if public_error_code not in {
-        "MARKET_ANALYSIS_CANCELLED",
-        "MARKET_ANALYSIS_PROVIDER_FAILED",
-        "MARKET_ANALYSIS_INVALID_RESPONSE",
-        "MARKET_ANALYSIS_INPUT_CHANGED",
-    }:
-        public_error_code = None
-    return {
-        "id": value("id"),
-        "projectId": value("project_id"),
-        "inputManifestHash": value("input_manifest_hash"),
-        "promptPolicyVersion": value("policy_version"),
-        "status": value("status"),
-        "analysis": analysis,
-        "resultHash": value("result_hash"),
-        "publicErrorCode": public_error_code,
-        "createdAt": value("created_at"),
-        "completedAt": value("completed_at"),
-    }
-
-
 @router.get("/market-sources")
 async def list_market_sources(
     service: MarketSourceService = Depends(get_market_source_service),
@@ -319,7 +242,6 @@ async def import_manual_market_snapshot(
     )
     return _snapshot_view(result, detail=True)
 
-
 @router.post("/market-sources/{source_id}/refresh")
 async def refresh_market_source(
     source_id: BoundedId,
@@ -332,28 +254,6 @@ async def refresh_market_source(
     return _snapshot_view(result, detail=True)
 
 
-@router.post("/projects/{project_id}/market-analyses")
-async def analyze_market_snapshots(
-    project_id: BoundedId,
-    data: AnalysisRequest,
-    service: MarketAnalysisService = Depends(get_market_analysis_service),
-):
-    if data.__pydantic_extra__:
-        raise MarketAnalysisFailure("MARKET_ANALYSIS_INVALID_REQUEST")
-    result = await service.analyze(
-        AnalyzeMarket(
-            project_id=project_id,
-            snapshot_ids=data.snapshotIds,
-            idempotency_key=data.idempotencyKey,
-        )
-    )
-    return _analysis_view(result)
+__all__ = ("get_market_source_service", "router")
 
-
-@router.get("/projects/{project_id}/market-analyses/{analysis_id}")
-async def get_market_analysis(
-    project_id: BoundedId,
-    analysis_id: BoundedId,
-    service: MarketAnalysisService = Depends(get_market_analysis_service),
-):
-    return _analysis_view(await service.get(project_id, analysis_id))
+# This module intentionally exposes only the manual market evidence boundary.

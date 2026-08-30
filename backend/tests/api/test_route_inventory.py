@@ -53,7 +53,6 @@ APPROVED_FORMAL_ROUTES = {
     ("PUT", "/api/projects/{pid}/bindings"),
     ("GET", "/api/projects/{pid}/seeds"),
     ("POST", "/api/projects/{pid}/seeds"),
-    ("POST", "/api/projects/{pid}/seed-inspiration"),
     ("PUT", "/api/projects/{pid}/seeds/{seed_id}"),
     ("DELETE", "/api/projects/{pid}/seeds/{seed_id}"),
     ("POST", "/api/projects/{pid}/seeds/{seed_id}/archive"),
@@ -193,8 +192,21 @@ APPROVED_FORMAL_ROUTES = {
     ("GET", "/api/market-sources/{source_id}/snapshots/{snapshot_id}"),
     ("POST", "/api/market-sources/{source_id}/manual-import"),
     ("POST", "/api/market-sources/{source_id}/refresh"),
-    ("POST", "/api/projects/{project_id}/market-analyses"),
-    ("GET", "/api/projects/{project_id}/market-analyses/{analysis_id}"),
+    ("GET", "/api/topic-discussions"),
+    ("GET", "/api/topic-discussions/{discussion_id}"),
+    ("POST", "/api/topic-discussions"),
+    ("POST", "/api/topic-discussions/{discussion_id}/messages"),
+    ("GET", "/api/topic-directions"),
+    ("GET", "/api/topic-directions/{direction_id}"),
+    ("POST", "/api/topic-discussions/{discussion_id}/directions"),
+    ("GET", "/api/topic-candidates"),
+    ("GET", "/api/topic-candidates/{candidate_id}"),
+    ("POST", "/api/topic-discussions/{discussion_id}/candidates"),
+    ("POST", "/api/topic-candidates/{candidate_id}/archive"),
+    (
+        "POST",
+        "/api/topic-candidates/{candidate_id}/versions/{version}/projects",
+    ),
     ("GET", "/api/projects/{project_id}/writer-core/state"),
     ("GET", "/api/projects/{project_id}/canon/head"),
     ("GET", "/api/projects/{project_id}/canon/revisions"),
@@ -230,6 +242,9 @@ FORBIDDEN_LEGACY_PREFIXES = (
 FORBIDDEN_LEGACY_PATHS = {
     "/api/market",
     "/api/market-sources/{source_id}/schedule",
+    "/api/projects/{project_id}/market-analyses",
+    "/api/projects/{project_id}/market-analyses/{analysis_id}",
+    "/api/projects/{pid}/seed-inspiration",
 }
 
 

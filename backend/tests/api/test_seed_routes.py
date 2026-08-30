@@ -165,7 +165,13 @@ def test_seed_routes_use_service_dependency_and_return_camel_case_public_dto():
     assert listed.json()[0] == {
         "id": "seed-1", "projectId": "p1", "status": "candidate",
         "revision": 1, "revisionId": "revision-1", "contentHash": "1" * 64,
-        "payload": PAYLOAD, "isSelected": False, "selectionRevision": 0,
+        "payload": {
+            **PAYLOAD,
+            "targetAudience": "",
+            "storyPromise": "",
+            "longFormPotential": "",
+            "marketBasis": "",
+        }, "isSelected": False, "selectionRevision": 0,
         "capabilities": {
             "referenced": False, "hasFinalChapters": False,
             "canEdit": True, "canSelect": True, "canArchive": True,
@@ -249,7 +255,7 @@ def test_selected_seed_unknown_project_returns_exact_public_404():
     assert body["correlationId"]
 
 
-def test_seed_inspiration_accepts_only_bounded_server_resolved_contract_and_never_creates_seed():
+def test_project_bound_seed_inspiration_route_is_retired():
     client, seed_service, inspiration = make_client()
 
     response = client.post(
@@ -264,22 +270,8 @@ def test_seed_inspiration_accepts_only_bounded_server_resolved_contract_and_neve
         },
     )
 
-    assert response.status_code == 200
-    assert response.json() == {
-        "attemptId": "attempt-1",
-        "status": "succeeded",
-        "assistantTurn": {
-            "role": "assistant",
-            "content": "把知识优势拆成三次递进兑现。",
-        },
-        "resultHash": "a" * 64,
-        "publicErrorCode": None,
-        "createdAt": 1,
-        "completedAt": 2,
-    }
-    assert len(inspiration.calls) == 1
-    assert inspiration.calls[0].project_id == "p1"
-    assert inspiration.calls[0].snapshot_ids == ("snapshot-1", "snapshot-2")
+    assert response.status_code == 404
+    assert inspiration.calls == []
     assert not [
         call for call in seed_service.calls if call[0] == "create"
     ]
@@ -295,7 +287,7 @@ def test_seed_inspiration_accepts_only_bounded_server_resolved_contract_and_neve
             "model": "forged-model",
         },
     )
-    assert forged.status_code == 422
+    assert forged.status_code == 404
     rendered = forged.text
     assert "forged-provider" not in rendered
     assert "forged-model" not in rendered
@@ -326,7 +318,7 @@ def test_seed_inspiration_rejects_invalid_snapshot_ids_at_the_http_boundary(
         },
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 404
     assert inspiration.calls == []
 
 
@@ -343,7 +335,7 @@ def test_seed_inspiration_rejects_invalid_project_id_at_the_http_boundary():
         },
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 404
     assert inspiration.calls == []
 
 
@@ -403,7 +395,7 @@ def test_seed_validation_never_echoes_oversized_transcript_or_source_url():
             "idempotencyKey": "i" * 64,
         },
     )
-    assert response.status_code == 422
+    assert response.status_code == 404
     assert "TRANSCRIPT_SENTINEL_" not in response.text
     assert '"input"' not in response.text
 

@@ -46,6 +46,7 @@ from backend.domain.routers import (
     seeds,
     style_trials,
     story_engines,
+    topics,
 )
 from backend.runtime.draft_operation_tasks import DraftOperationTasksDrainPending
 from backend.runtime.market_scheduler import build_market_scheduler_runtime
@@ -692,6 +693,7 @@ app.include_router(project_imports.router, prefix="/api")
 app.include_router(providers.router, prefix="/api")
 app.include_router(application_settings.router, prefix="/api")
 app.include_router(model_bindings.router, prefix="/api")
+app.include_router(topics.router, prefix="/api")
 app.include_router(seeds.router, prefix="/api")
 app.include_router(story_engines.router, prefix="/api")
 app.include_router(style_trials.router, prefix="/api")
