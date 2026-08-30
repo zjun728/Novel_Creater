@@ -281,6 +281,16 @@ def test_empty_progress_accepts_no_latest_final_chapter():
     assert progress.latest_final_chapter is None
 
 
+def test_zero_finalized_chapters_require_zero_finalized_scalars():
+    with pytest.raises(ValidationError):
+        _progress(
+            authoritative_chapter_number=1,
+            latest_final_chapter=None,
+            finalized_chapter_count=0,
+            finalized_scalar_count=1,
+        )
+
+
 def test_overview_rejects_more_than_five_recent_achievements():
     achievements = tuple(
         _achievement(label=f"Achievement {index}", occurred_at_ms=index)
@@ -314,10 +324,16 @@ def test_same_kind_and_time_with_a_different_label_is_not_a_duplicate():
         lambda: _project(updated_at_ms=-1),
         lambda: OverviewVolume(id="v", order=0, title="Volume"),
         lambda: OverviewFinalChapter(number=0, title="Chapter", finalized_at_ms=0),
+        lambda: OverviewFinalChapter(number=1, title="Chapter", finalized_at_ms=-1),
         lambda: OverviewWriterCore(
             canon_revision=-1,
+            projection_revision=0,
+            synchronized=False,
+        ),
+        lambda: OverviewWriterCore(
+            canon_revision=0,
             projection_revision=-1,
-            synchronized=True,
+            synchronized=False,
         ),
         lambda: OverviewContinuity(availability="available", pending_count=-1),
         lambda: _achievement(occurred_at_ms=-1),

@@ -82,6 +82,8 @@ class OverviewProgress(_StrictOverviewValue):
         has_final_chapter = self.latest_final_chapter is not None
         if (self.finalized_chapter_count > 0) != has_final_chapter:
             raise ValueError("finalized chapter count and latest chapter disagree")
+        if self.finalized_chapter_count == 0 and self.finalized_scalar_count != 0:
+            raise ValueError("zero finalized chapters require zero finalized scalars")
         if self.latest_final_chapter is not None:
             if self.latest_final_chapter.number >= self.authoritative_chapter_number:
                 raise ValueError("latest final chapter must precede authoritative chapter")
