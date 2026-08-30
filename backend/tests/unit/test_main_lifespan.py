@@ -16,6 +16,9 @@ from backend.gateways.openai_json_transport import (
     OpenAIJSONTransportLifecycleError,
 )
 from backend.gateways.planning_provider import PlanningProviderGateway
+from backend.gateways.topic_discussion_provider import (
+    TopicDiscussionProviderGateway,
+)
 from backend.gateways.chapter_outline_provider import (
     ChapterOutlineProviderGateway,
 )
@@ -370,6 +373,12 @@ def install_lifespan_fakes(monkeypatch, verify_error=None):
         main.planning,
         "planning_provider_gateway",
         FakePlanningProviderGateway(events),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        main.topic_discussion_provider,
+        "topic_discussion_provider_gateway",
+        FakePlanningProviderGateway([]),
         raising=False,
     )
     monkeypatch.setattr(
@@ -1839,6 +1848,12 @@ async def test_lifespan_starts_planning_then_outline_and_closes_in_reverse(
         raising=False,
     )
     monkeypatch.setattr(
+        main.topic_discussion_provider,
+        "topic_discussion_provider_gateway",
+        NamedGateway(events, "topic"),
+        raising=False,
+    )
+    monkeypatch.setattr(
         main.finalization,
         "finalization_quality_gateway",
         NamedGateway(events, "finalization-quality"),
@@ -1859,14 +1874,47 @@ async def test_lifespan_starts_planning_then_outline_and_closes_in_reverse(
         if event.endswith(("-start", "-close"))
     ] == [
         "planning-start",
+        "topic-start",
         "outline-start",
         "finalization-quality-start",
         "finalization-extraction-start",
         "finalization-extraction-close",
         "finalization-quality-close",
         "outline-close",
+        "topic-close",
         "planning-close",
     ]
+
+
+@pytest.mark.asyncio
+async def test_lifespan_restarts_topic_gateway_with_a_new_client(monkeypatch):
+    install_lifespan_fakes(monkeypatch)
+    gateway = TopicDiscussionProviderGateway(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(500, request=request)
+        )
+    )
+    monkeypatch.setattr(
+        main.topic_discussion_provider,
+        "topic_discussion_provider_gateway",
+        gateway,
+        raising=False,
+    )
+
+    first_context = main.lifespan(main.app)
+    await first_context.__aenter__()
+    first_client = gateway._resource._client
+    assert first_client is not None
+    await first_context.__aexit__(None, None, None)
+
+    second_context = main.lifespan(main.app)
+    await second_context.__aenter__()
+    second_client = gateway._resource._client
+    assert second_client is not None
+    assert second_client is not first_client
+    assert first_client.is_closed is True
+    await second_context.__aexit__(None, None, None)
+    assert second_client.is_closed is True
 
 
 @pytest.mark.asyncio

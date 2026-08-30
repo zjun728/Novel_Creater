@@ -22,6 +22,7 @@ from backend.config import (
 from backend.gateways.openai_json_transport import (
     OpenAIJSONTransportLifecycleError,
 )
+from backend.gateways import topic_discussion_provider
 from backend.domain.routers import (
     application_settings,
     assets,
@@ -203,6 +204,7 @@ async def _application_lifespan(
     scheduler_runtime = None
     application_error = None
     planning_gateway_start_attempted = False
+    topic_gateway_start_attempted = False
     outline_gateway_start_attempted = False
     finalization_quality_start_attempted = False
     finalization_extraction_start_attempted = False
@@ -235,6 +237,8 @@ async def _application_lifespan(
         app.state.market_scheduler_runtime = None
         planning_gateway_start_attempted = True
         await planning.planning_provider_gateway.start()
+        topic_gateway_start_attempted = True
+        await topic_discussion_provider.topic_discussion_provider_gateway.start()
         outline_gateway_start_attempted = True
         await chapter_outlines.chapter_outline_provider_gateway.start()
         finalization_quality_start_attempted = True
@@ -322,6 +326,25 @@ async def _application_lifespan(
             shutdown_cancellations += observed_cancellations
             observed_cancellations = 0
             if not outline_close_succeeded:
+                cleanup_errors.append(
+                    OpenAIJSONTransportLifecycleError(
+                        "OpenAI JSON transport lifecycle failed"
+                    )
+                )
+        if topic_gateway_start_attempted:
+            topic_cleanup = asyncio.create_task(
+                _close_planning_provider_gateway(
+                    topic_discussion_provider.topic_discussion_provider_gateway
+                ),
+                name="topic-discussion-provider-gateway-close",
+            )
+            topic_close_succeeded, observed_cancellations = (
+                await _settle_independent_cleanup(topic_cleanup)
+            )
+            topic_cleanup = None
+            shutdown_cancellations += observed_cancellations
+            observed_cancellations = 0
+            if not topic_close_succeeded:
                 cleanup_errors.append(
                     OpenAIJSONTransportLifecycleError(
                         "OpenAI JSON transport lifecycle failed"

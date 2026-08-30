@@ -217,6 +217,37 @@ class TopicRepository:
             (discussion_id, message_id),
         )
 
+    async def list_messages_for_prompt(
+        self,
+        session,
+        discussion_id: str,
+        *,
+        limit: int,
+    ):
+        bounded = min(24, max(1, int(limit)))
+        rows = await session.fetchall(
+            """SELECT role,content_text
+               FROM (
+                 SELECT sequence_number,role,content_text
+                 FROM topic_discussion_messages
+                 WHERE discussion_id=%s
+                 ORDER BY sequence_number DESC
+                 LIMIT %s
+               ) recent
+               ORDER BY sequence_number ASC""",
+            (discussion_id, bounded),
+        )
+        return tuple(dict(row) for row in rows)
+
+    async def next_message_sequence(self, session, discussion_id: str) -> int:
+        row = await session.fetchone(
+            """SELECT COALESCE(MAX(sequence_number),0)+1 AS next_sequence
+               FROM topic_discussion_messages
+               WHERE discussion_id=%s FOR UPDATE""",
+            (discussion_id,),
+        )
+        return int(row["next_sequence"])
+
     async def lock_direction(self, session, direction_id: str):
         return await session.fetchone(
             """SELECT id,current_version,created_at,updated_at
