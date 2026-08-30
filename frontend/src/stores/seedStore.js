@@ -54,11 +54,9 @@ export const useSeedStore = defineStore('seed', () => {
   const loading = ref(false)
   const refreshing = ref(false)
   const mutationBusy = ref(false)
-  const inspirationBusy = ref(false)
   const error = ref(null)
   const loadGuard = createLatestRequestGuard()
   const writeGuard = createLatestRequestGuard()
-  const inspirationGuard = createLatestRequestGuard()
   let activeProjectId = ''
   const mutationTokens = new Set()
 
@@ -78,7 +76,6 @@ export const useSeedStore = defineStore('seed', () => {
     activeProjectId = key
     loadGuard.invalidate()
     writeGuard.invalidate()
-    inspirationGuard.invalidate()
     seeds.value = []
     activeSelection.value = null
     selectionHydrated.value = false
@@ -87,7 +84,6 @@ export const useSeedStore = defineStore('seed', () => {
     refreshing.value = false
     mutationTokens.clear()
     mutationBusy.value = false
-    inspirationBusy.value = false
     error.value = null
     return key
   }
@@ -311,28 +307,6 @@ export const useSeedStore = defineStore('seed', () => {
 
   const deleteSeed = permanentlyDeleteSeed
 
-  async function requestInspiration(projectId, data) {
-    let projectKey
-    try { projectKey = assertHydrated(projectId) } catch (failure) { return Promise.reject(failure) }
-    const generation = inspirationGuard.begin()
-    inspirationBusy.value = true
-    error.value = null
-    try {
-      return await api.seeds.inspiration(projectId, data)
-    } catch (failure) {
-      if (
-        activeProjectId === projectKey
-        && inspirationGuard.isCurrent(generation)
-      ) error.value = failure
-      throw failure
-    } finally {
-      if (
-        activeProjectId === projectKey
-        && inspirationGuard.isCurrent(generation)
-      ) inspirationBusy.value = false
-    }
-  }
-
   function invalidateLoadSeeds() {
     loadGuard.invalidate()
     seeds.value = []
@@ -354,7 +328,6 @@ export const useSeedStore = defineStore('seed', () => {
     selectedLoading: loading,
     refreshing,
     mutationBusy,
-    inspirationBusy,
     error,
     activateProject: activate,
     loadSeeds,
@@ -367,7 +340,6 @@ export const useSeedStore = defineStore('seed', () => {
     restoreSeed,
     permanentlyDeleteSeed,
     deleteSeed,
-    requestInspiration,
     invalidateLoadSeeds,
   }
 })

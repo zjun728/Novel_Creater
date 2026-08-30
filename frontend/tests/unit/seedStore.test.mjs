@@ -8,7 +8,6 @@ test('seed store names the one-time confirmation action', async () => {
   const source = await readFile(new URL('../../src/stores/seedStore.js', import.meta.url), 'utf8')
   assert.match(source, /确认这个种子并进入创作契约/)
 })
-
 test('unknown seed hydration and a confirmed selection fail closed before transport', async () => {
   setActivePinia(createPinia())
   const store = useSeedStore()
@@ -21,7 +20,6 @@ test('unknown seed hydration and a confirmed selection fail closed before transp
       () => store.archiveSeed('p1', 'A', {}),
       () => store.restoreSeed('p1', 'A', {}),
       () => store.permanentlyDeleteSeed('p1', 'A', {}),
-      () => store.requestInspiration('p1', {}),
     ]) await assert.rejects(action)
     assert.equal(calls, 0)
   })
@@ -64,7 +62,6 @@ for (const failure of [
         () => store.archiveSeed('p1', 'A', {}),
         () => store.restoreSeed('p1', 'A', {}),
         () => store.permanentlyDeleteSeed('p1', 'A', {}),
-        () => store.requestInspiration('p1', {}),
       ]) await assert.rejects(action)
       assert.equal(writes, 0)
 
@@ -271,65 +268,6 @@ test('confirmation does not replace a selected seed when server capabilities den
   assert.ok(calls[0].path.endsWith('/projects/p1/selected-seed'))
 })
 
-test('inspiration remains transient until an explicit Save as Seed command', async () => {
-  setActivePinia(createPinia())
-  const store = useSeedStore()
-  const requests = []
-
-  await withFetch(async (url, options) => {
-    const path = String(url).replace('http://127.0.0.1:8000/api', '')
-    const body = JSON.parse(options.body)
-    requests.push({ path, method: options.method, body })
-    if (path.endsWith('/seed-inspiration')) {
-      return jsonResponse({
-        attemptId: 'attempt-1',
-        status: 'succeeded',
-        assistantTurn: { role: 'assistant', content: '让典籍知识每次救人都产生新的政治债。' },
-        resultHash: 'b'.repeat(64),
-        publicErrorCode: null,
-      })
-    }
-    return jsonResponse(seed('saved', 0, {
-      provenance: {
-        kind: 'ai_chat',
-        snapshots: [],
-        analysis: null,
-        inspirationAttempt: null,
-      },
-    }))
-  }, async () => {
-    store.activateProject('p1')
-    store.$patch({ selectionHydrated: true })
-    const proposal = await store.requestInspiration('p1', {
-      transcript: [{ role: 'user', content: '如何增强人物冲突？' }],
-      snapshotIds: ['snapshot-1'],
-      analysisId: 'analysis-1',
-      idempotencyKey: 'i'.repeat(64),
-    })
-    assert.equal(proposal.assistantTurn.role, 'assistant')
-    assert.equal(store.seeds.length, 0, 'proposal must not create a seed')
-
-    await store.createSeed('p1', PAYLOAD, {
-      provenance: {
-        kind: 'ai_chat',
-        snapshotIds: ['snapshot-1'],
-        analysisId: 'analysis-1',
-        inspirationAttemptId: 'attempt-1',
-        publicNotes: [],
-      },
-      idempotencyKey: 's'.repeat(64),
-    })
-  })
-
-  assert.deepEqual(requests.map(item => item.path), [
-    '/projects/p1/seed-inspiration',
-    '/projects/p1/seeds',
-  ])
-  assert.equal(requests[1].body.payload.title, '典镇山河')
-  assert.equal(requests[1].body.provenance.kind, 'ai_chat')
-  assert.equal(requests[1].body.idempotencyKey, 's'.repeat(64))
-})
-
 test('edit, archive, restore and eligible permanent delete are explicit writes only', async () => {
   setActivePinia(createPinia())
   const store = useSeedStore()
@@ -420,36 +358,5 @@ test('a refresh in flight keeps mutations fail-closed until its authoritative se
     releaseList(jsonResponse([]))
     await refresh
     assert.deepEqual(store.seeds.map(item => item.id), [])
-  })
-})
-
-test('late inspiration completion cannot set error or busy state in a newer project', async () => {
-  setActivePinia(createPinia())
-  const store = useSeedStore()
-  let rejectOld
-  const pending = new Promise((_resolve, reject) => {
-    rejectOld = reject
-  })
-
-  await withFetch(async () => pending, async () => {
-    store.activateProject('p1')
-    store.$patch({ selectionHydrated: true })
-    const oldRequest = store.requestInspiration('p1', {
-      transcript: [{ role: 'user', content: 'P1 灵感' }],
-      snapshotIds: ['snapshot-1'],
-      analysisId: 'analysis-1',
-      idempotencyKey: 'i'.repeat(64),
-    })
-    await Promise.resolve()
-    assert.equal(store.inspirationBusy, true)
-
-    store.activateProject('p2')
-    assert.equal(store.inspirationBusy, false)
-    assert.equal(store.error, null)
-
-    rejectOld(new Error('old project failed'))
-    await assert.rejects(oldRequest)
-    assert.equal(store.inspirationBusy, false)
-    assert.equal(store.error, null)
   })
 })

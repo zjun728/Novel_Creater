@@ -15,12 +15,16 @@ const fields = Object.freeze([
   { key: 'title', label: '种子标题', hint: '能辨认本书方向的工作标题', rows: 1 },
   { key: 'genre', label: '题材类型', hint: '例如：历史穿越、玄幻修仙、高武', rows: 1 },
   { key: 'logline', label: '一句话故事', hint: '谁在何种处境下，为什么必须做成什么事', rows: 2 },
+  { key: 'targetAudience', label: '目标读者', hint: '最希望持续追读这部长篇小说的读者', rows: 2, optional: true },
   { key: 'protagonist', label: '主角底色', hint: '身份、性格矛盾与真正擅长的事', rows: 2 },
   { key: 'desire', label: '核心欲望', hint: '主角长期不会轻易放弃的目标', rows: 2 },
   { key: 'coreConflict', label: '核心冲突', hint: '欲望与阻力如何持续互相加码', rows: 2 },
   { key: 'worldPressure', label: '世界压力', hint: '环境、规则与势力怎样逼迫人物选择', rows: 2 },
   { key: 'openingHook', label: '开篇抓手', hint: '最早使读者产生问题的具体事件', rows: 2 },
   { key: 'differentiation', label: '差异化支点', hint: '和同类故事最不一样、最值得展开之处', rows: 2 },
+  { key: 'storyPromise', label: '故事承诺', hint: '读者长期跟读能稳定获得什么体验', rows: 2, optional: true },
+  { key: 'longFormPotential', label: '长篇发展空间', hint: '人物、地图、势力和冲突如何支撑二百万字以上', rows: 2, optional: true },
+  { key: 'marketBasis', label: '市场依据', hint: '来自公开证据或作者判断的选题依据', rows: 2, optional: true },
 ])
 
 const form = reactive(Object.fromEntries(fields.map(field => [field.key, ''])))
@@ -39,7 +43,7 @@ function save() {
     field.key,
     String(form[field.key] || '').trim(),
   ]))
-  const missing = fields.find(field => !payload[field.key])
+  const missing = fields.find(field => !field.optional && !payload[field.key])
   if (missing) {
     emit('save', { error: `请填写“${missing.label}”` })
     return
@@ -49,10 +53,10 @@ function save() {
 </script>
 
 <template>
-  <section class="seed-editor" aria-label="种子九字段编辑器">
+  <section class="seed-editor" aria-label="种子完整字段编辑器">
     <header>
       <div>
-        <p>SEED RECORD / 9 FIELDS</p>
+        <p>SEED RECORD / 13 FIELDS</p>
         <h2>{{ seed ? '校订创作种子' : '登记候选种子' }}</h2>
       </div>
       <span aria-hidden="true">审</span>
@@ -63,7 +67,7 @@ function save() {
         :key="field.key"
         :class="{ 'seed-editor__wide': field.rows > 1 }"
       >
-        <strong>{{ field.label }}</strong>
+        <strong>{{ field.label }}<small v-if="field.optional">（可选）</small></strong>
         <n-input
           v-model:value="form[field.key]"
           :type="field.rows > 1 ? 'textarea' : 'text'"

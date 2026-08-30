@@ -19,6 +19,9 @@ const emit = defineEmits([
 const payload = computed(() => props.seed.payload || {})
 const capabilities = computed(() => props.seed.capabilities || {})
 const disabled = computed(() => props.readOnly || props.busy)
+const topicCandidateVersion = computed(() => props.seed.provenance?.kind === 'topic_candidate'
+  ? props.seed.provenance.topicCandidate?.version
+  : null)
 </script>
 
 <template>
@@ -38,35 +41,36 @@ const disabled = computed(() => props.readOnly || props.busy)
         </div>
         <n-tag v-if="seed.isSelected" type="success" round>当前选定</n-tag>
         <n-tag v-else-if="seed.status === 'archived'" round>已归档</n-tag>
-        <n-tag v-else :bordered="false">候选</n-tag>
+        <n-tag v-else :bordered="false" type="warning">待确认</n-tag>
       </header>
 
       <p class="seed-record__logline">
         {{ payload.logline || '尚未写下一句话故事。' }}
       </p>
       <dl>
+        <div><dt>目标读者</dt><dd>{{ payload.targetAudience || '待补充' }}</dd></div>
         <div><dt>主角</dt><dd>{{ payload.protagonist }}</dd></div>
-        <div><dt>欲望</dt><dd>{{ payload.desire }}</dd></div>
-        <div><dt>压力</dt><dd>{{ payload.worldPressure }}</dd></div>
-        <div><dt>差异</dt><dd>{{ payload.differentiation }}</dd></div>
+        <div><dt>核心欲望</dt><dd>{{ payload.desire }}</dd></div>
+        <div><dt>核心冲突</dt><dd>{{ payload.coreConflict }}</dd></div>
+        <div><dt>世界压力</dt><dd>{{ payload.worldPressure }}</dd></div>
+        <div><dt>开篇钩子</dt><dd>{{ payload.openingHook }}</dd></div>
+        <div><dt>差异化</dt><dd>{{ payload.differentiation }}</dd></div>
+        <div><dt>故事承诺</dt><dd>{{ payload.storyPromise || '待补充' }}</dd></div>
+        <div><dt>长篇空间</dt><dd>{{ payload.longFormPotential || '待补充' }}</dd></div>
+        <div><dt>市场依据</dt><dd>{{ payload.marketBasis || '待补充' }}</dd></div>
       </dl>
 
-      <p v-if="seed.provenance" class="seed-record__provenance">
-        来源留痕 ·
-        {{
-          seed.provenance.kind === 'ai_chat'
-            ? '灵感讨论'
-            : seed.provenance.kind === 'market_analysis'
-              ? '市场分析'
-              : seed.provenance.kind === 'market_snapshot'
-                ? '市场快照'
-                : '作者手动'
-        }}
+      <p v-if="topicCandidateVersion" class="seed-record__provenance">
+        来源：选题中心候选《{{ payload.title || '未命名种子' }}》版本 {{ topicCandidateVersion }}
+      </p>
+      <p v-else-if="seed.provenance" class="seed-record__provenance">
+        来源：{{ seed.provenance.kind === 'manual' ? '作者手动创建' : '历史来源记录' }}
       </p>
     </div>
 
     <footer>
       <n-button
+        v-if="capabilities.canEdit"
         size="small"
         :disabled="disabled || !capabilities.canEdit"
         @click="emit('edit', seed)"
@@ -150,10 +154,10 @@ header { display: flex; align-items: flex-start; justify-content: space-between;
 header p { margin: 0 0 5px; color: #963f32; font-size: 12px; font-weight: 750; letter-spacing: .08em; }
 h3 { margin: 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: 20px; }
 .seed-record__logline { margin: 10px 0 14px; color: #5e554a; font-size: 13px; line-height: 1.75; }
-dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 18px; margin: 0; }
-dl div { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 8px; }
+dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px 18px; margin: 0; }
+dl div { display: grid; gap: 4px; min-width: 0; }
 dt { color: #963f32; font-size: 12px; font-weight: 750; }
-dd { margin: 0; overflow: hidden; color: #796e60; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+dd { margin: 0; color: #796e60; font-size: 12px; line-height: 1.6; }
 .seed-record__provenance { margin: 14px 0 0; color: #8b7e6d; font-size: 12px; }
 footer { display: flex; grid-column: 1 / -1; justify-content: flex-end; gap: 6px; padding: 10px 18px; border-top: 1px solid rgba(215, 201, 179, .72); background: rgba(244, 237, 223, .48); }
 @media (max-width: 560px) {
