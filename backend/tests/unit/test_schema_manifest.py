@@ -20,6 +20,7 @@ EXPECTED_FRAGMENTS = (
     "12_application.sql",
     "15_assets.sql",
     "18_market.sql",
+    "19_topics.sql",
     "20_contracts.sql",
     "25_bible.sql",
     "30_planning.sql",
@@ -67,6 +68,14 @@ EXPECTED_TABLES = {
     "market_analyses",
     "seed_inspiration_attempts",
     "seed_inspiration_requests",
+    "topic_discussions",
+    "topic_discussion_messages",
+    "topic_discussion_requests",
+    "topic_directions",
+    "topic_direction_versions",
+    "topic_candidates",
+    "topic_candidate_versions",
+    "topic_project_handoffs",
     "asset_recommendation_attempts",
     "asset_recommendation_requests",
     "style_trial_attempts",
@@ -150,7 +159,7 @@ def _raw_table_statement(table_name: str) -> str:
 def test_manifest_has_exact_ordered_fragments_and_tables():
     assert FRAGMENTS == EXPECTED_FRAGMENTS
     assert set(created_table_names()) == EXPECTED_TABLES
-    assert len(created_table_names()) == len(EXPECTED_TABLES) == 91
+    assert len(created_table_names()) == len(EXPECTED_TABLES) == 99
     assert set(created_table_names()).isdisjoint(
         {"task_model_bindings", "task_model_binding_items", "contract_asset_refs"}
     )
@@ -394,6 +403,65 @@ def test_application_settings_is_a_single_revision_zero_manifest_row():
         "(singleton_id, fallback_provider_id, revision, updated_at) "
         "values (1, null, 0, 0)"
     ]
+
+
+def test_topic_center_tables_keep_one_global_authority_and_atomic_handoff():
+    topic_tables = {
+        "topic_discussions",
+        "topic_discussion_messages",
+        "topic_discussion_requests",
+        "topic_directions",
+        "topic_direction_versions",
+        "topic_candidates",
+        "topic_candidate_versions",
+        "topic_project_handoffs",
+    }
+    forbidden_owners = (
+        "creation_contract",
+        "bible",
+        "planning",
+        "chapter_session",
+        "finalization",
+        "canon_",
+        "projection",
+    )
+    for table_name in topic_tables:
+        statement = _table_statement(table_name)
+        assert all(owner not in statement for owner in forbidden_owners)
+
+    messages = _table_statement("topic_discussion_messages")
+    assert "unique key uq_topic_message_sequence (discussion_id, sequence_number)" in messages
+    assert "unique key uq_topic_message_owner (discussion_id, id)" in messages
+    assert "check (role in ('user','assistant'))" in messages
+    assert "foreign key (discussion_id) references topic_discussions(id) on delete restrict" in messages
+
+    requests = _table_statement("topic_discussion_requests")
+    assert "unique key uq_topic_request_idempotency (discussion_id, idempotency_key)" in requests
+    assert "foreign key (provider_id) references provider_profiles(id) on delete restrict" in requests
+    assert "check (status in ('reserved','running','succeeded','failed','outcome_unknown'))" in requests
+    assert "provider_api_key" not in requests
+    assert "base_url" not in requests
+
+    directions = _table_statement("topic_directions")
+    candidates = _table_statement("topic_candidates")
+    assert "current_version int not null" in directions
+    assert "current_version int not null" in candidates
+    assert "check (status in ('active','archived'))" in candidates
+
+    direction_versions = _table_statement("topic_direction_versions")
+    candidate_versions = _table_statement("topic_candidate_versions")
+    assert "unique key uq_topic_direction_version (direction_id, version)" in direction_versions
+    assert "unique key uq_topic_candidate_version (candidate_id, version)" in candidate_versions
+    assert "unique key uq_topic_candidate_version_fact (candidate_id, version, content_hash)" in candidate_versions
+    assert "foreign key (discussion_id) references topic_discussions(id) on delete restrict" in direction_versions
+    assert "foreign key (discussion_id) references topic_discussions(id) on delete restrict" in candidate_versions
+
+    handoffs = _table_statement("topic_project_handoffs")
+    assert "unique key uq_topic_handoff_idempotency (idempotency_key)" in handoffs
+    assert "foreign key (candidate_id, candidate_version, candidate_hash) references topic_candidate_versions(candidate_id, version, content_hash) on delete restrict" in handoffs
+    assert "foreign key (project_id, seed_id, seed_revision_id, seed_hash) references creative_seed_revisions(project_id, seed_id, id, content_hash) on delete restrict" in handoffs
+    assert "check (seed_revision > 0)" in handoffs
+    assert "project_selected_seeds" not in handoffs
 
 
 def test_market_and_generation_ledgers_freeze_safe_identities():

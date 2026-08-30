@@ -97,7 +97,7 @@ def _schema_foreign_key_edges() -> dict[tuple[str, str], tuple[str, str]]:
 def test_explicit_ownership_inventory_closes_over_every_create_only_schema_table() -> None:
     schema_tables = _schema_tables()
 
-    assert len(schema_tables) == 91
+    assert len(schema_tables) == 99
     assert PROJECT_OWNED_TABLES | SHARED_EXCLUDED_TABLES | INTERNAL_NON_PACKAGE_TABLES == schema_tables
     assert PROJECT_OWNED_TABLES.isdisjoint(SHARED_EXCLUDED_TABLES)
     assert PROJECT_OWNED_TABLES.isdisjoint(INTERNAL_NON_PACKAGE_TABLES)
@@ -110,6 +110,10 @@ def test_key_tables_are_classified_by_authority_not_by_name() -> None:
         "provider_profiles", "provider_profile_mutation_requests", "application_settings",
         "style_template_heads", "experience_card_heads", "market_sources", "market_refresh_requests",
         "corpus_source_heads", "corpus_import_runs", "corpus_source_deletions",
+        "topic_discussions", "topic_discussion_messages",
+        "topic_discussion_requests", "topic_directions",
+        "topic_direction_versions", "topic_candidates",
+        "topic_candidate_versions", "topic_project_handoffs",
     } <= SHARED_EXCLUDED_TABLES
     assert {
         "schema_metadata", "current_state_projections", "memory_views", "arc_projections",

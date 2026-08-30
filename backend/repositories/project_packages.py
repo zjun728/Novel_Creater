@@ -58,7 +58,10 @@ SHARED_EXCLUDED_TABLES = frozenset({
     "corpus_source_revisions", "corpus_source_heads", "corpus_chapters", "corpus_fragments",
     "corpus_import_runs", "corpus_source_deletions", "market_sources", "market_source_policy_revisions",
     "market_source_policy_heads", "market_snapshots", "market_snapshot_entries", "market_snapshot_manifests",
-    "market_source_refresh_states", "market_refresh_requests",
+    "market_source_refresh_states", "market_refresh_requests", "topic_discussions",
+    "topic_discussion_messages", "topic_discussion_requests", "topic_directions",
+    "topic_direction_versions", "topic_candidates", "topic_candidate_versions",
+    "topic_project_handoffs",
 })
 
 INTERNAL_NON_PACKAGE_TABLES = frozenset({

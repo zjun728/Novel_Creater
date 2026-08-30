@@ -24,7 +24,7 @@ def _statement(table_name: str) -> str:
 
 def test_import_schema_is_registered_and_advances_one_version():
     assert FRAGMENTS[-1] == "80_project_imports.sql"
-    assert EXPECTED_SCHEMA_VERSION == "writer-core-v1.13.0"
+    assert EXPECTED_SCHEMA_VERSION == "writer-core-v1.14.0"
     assert created_table_names()[-2:] == (
         "project_package_import_commands",
         "project_import_provenance",

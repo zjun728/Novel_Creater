@@ -14,6 +14,7 @@ FRAGMENTS = (
     "12_application.sql",
     "15_assets.sql",
     "18_market.sql",
+    "19_topics.sql",
     "20_contracts.sql",
     "25_bible.sql",
     "30_planning.sql",

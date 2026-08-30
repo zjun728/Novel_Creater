@@ -450,7 +450,7 @@ async def test_current_bootstrap_and_official_seed_replay_are_exact():
         assert observed.schema_version == EXPECTED_SCHEMA_VERSION
         assert observed.manifest_hash == manifest_hash()
         assert observed.table_names == tuple(sorted(created_table_names()))
-        assert len(observed.table_names) == 91
+        assert len(observed.table_names) == 99
         counts = dict(observed.row_counts)
         assert {
             name: counts[name]
