@@ -75,7 +75,6 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
   let bodyError: unknown
   let auditError: unknown
   let projectId = ''
-  const recoverableId = 'recoverable-error-project'
   let createRequests = 0
   let deleteRequests = 0
   const countWrites = (request: { method(): string, url(): string }) => {
@@ -394,36 +393,6 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
     )
     await expect(page.getByText('项目概览暂时无法加载', { exact: true })).toHaveCount(0)
 
-    let overviewFailureInjected = false
-    const recoverableOverviewRoute = `**/api/projects/${recoverableId}/overview`
-    await page.route(recoverableOverviewRoute, async route => {
-      if (!overviewFailureInjected && route.request().method() === 'GET') {
-        overviewFailureInjected = true
-        await route.fulfill({
-          status: 500,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            error: {
-              code: 'synthetic_browser_error',
-              message: '浏览器验收注入的可恢复错误',
-            },
-          }),
-        })
-        return
-      }
-      await route.continue()
-    })
-    await page.goto(projectOverviewPath(recoverableId))
-    await expect(page.getByText('项目概览暂时无法加载', { exact: true })).toBeVisible()
-    const retry = page.getByRole('button', { name: '重试', exact: true })
-    await expect(retry).toBeVisible()
-    await retry.click()
-    await waitForRouteReady(
-      page,
-      page.locator('.route-state-page').filter({ hasText: '项目不存在或已被删除' }),
-    )
-    await page.unroute(recoverableOverviewRoute)
-
     await page.goto('/projects')
     await waitForRouteReady(page, page.locator('.project-library-page'))
     await page.evaluate(async () => {
@@ -604,22 +573,18 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
       ])
       expect(
         evidence.consoleErrors.sort(),
-        'only console errors caused by the deliberate 404/500 responses are allowed',
+        'the deliberate 404/500 suite audit permits only this lifecycle deleted project 404',
       ).toEqual([
         'error: Failed to load resource: the server responded with a status of 404 (Not Found)',
-        'error: Failed to load resource: the server responded with a status of 404 (Not Found)',
-        'error: Failed to load resource: the server responded with a status of 500 (Internal Server Error)',
-      ].sort())
+      ])
       expect(evidence.pageErrors, 'page errors must stay empty').toEqual([])
       expect(evidence.requestFailures, 'request failures must stay empty').toEqual([])
       expect(
         evidence.responseFailures.map(normalizedResponseFailure).sort(),
-        'only the deliberately injected 404/500 responses are allowed',
+        'only the deleted project detail 404 is allowed',
       ).toEqual([
         `404 GET /api/projects/${projectId}`,
-        `404 GET /api/projects/${recoverableId}/overview`,
-        `500 GET /api/projects/${recoverableId}/overview`,
-      ].sort())
+      ])
       const scan = scanRuntimeEvidence(evidence, runtimeSensitiveValues(process.env))
       if (scan.matchCount !== 0) {
         throw new Error('Product-shell browser evidence contained a runtime-sensitive value')
@@ -644,37 +609,43 @@ test('project overview supports the complete manual product flow across desktop 
   let bodyError: unknown
   let auditError: unknown
   let projectId = ''
+  let routedProjectId = ''
+  let overviewGetCount = 0
 
   try {
     await page.setViewportSize({ width: 1440, height: 720 })
-    await page.goto('/projects')
-    await page.locator('.project-library-heading__actions')
-      .getByRole('button', { name: '新建项目', exact: true })
-      .click()
-    const dialog = page.getByRole('dialog', { name: '新建项目' })
-    const createResponsePromise = page.waitForResponse(response => (
-      response.request().method() === 'POST'
-      && apiPath(response) === '/api/projects'
-    ))
-    await dialog.getByRole('textbox', { name: '项目名称' }).fill(PROJECT_TITLE)
-    await dialog.getByRole('button', { name: '创建并打开' }).click()
-    const createResponse = await createResponsePromise
-    expect(createResponse.ok()).toBe(true)
-    projectId = String((await createResponse.json()).id)
-    const overviewPath = projectOverviewPath(projectId)
-    const overviewApiPath = `/api${overviewPath}`
-
-    await page.route(`**${overviewApiPath}`, async route => {
-      if (route.request().method() !== 'GET') {
+    await page.route('**/api/projects/*/overview', async route => {
+      const request = route.request()
+      const match = /^\/api\/projects\/(?<projectId>[^/]+)\/overview$/u.exec(
+        new URL(request.url()).pathname,
+      )
+      if (request.method() !== 'GET' || !match?.groups) {
         await route.continue()
         return
       }
+
+      routedProjectId = decodeURIComponent(match.groups.projectId)
+      overviewGetCount += 1
+      if (overviewGetCount === 1) {
+        await route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            error: {
+              code: 'synthetic_browser_error',
+              message: '浏览器验收注入的可恢复错误',
+            },
+          }),
+        })
+        return
+      }
+
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
           project: {
-            id: projectId,
+            id: routedProjectId,
             title: PROJECT_TITLE,
             genre: '东方玄幻',
             logline: OVERVIEW_LOGLINE,
@@ -715,8 +686,28 @@ test('project overview supports the complete manual product flow across desktop 
         }),
       })
     })
-
-    await page.goto(overviewPath)
+    await page.goto('/projects')
+    await page.locator('.project-library-heading__actions')
+      .getByRole('button', { name: '新建项目', exact: true })
+      .click()
+    const dialog = page.getByRole('dialog', { name: '新建项目' })
+    const createResponsePromise = page.waitForResponse(response => (
+      response.request().method() === 'POST'
+      && apiPath(response) === '/api/projects'
+    ))
+    await dialog.getByRole('textbox', { name: '项目名称' }).fill(PROJECT_TITLE)
+    await dialog.getByRole('button', { name: '创建并打开' }).click()
+    const createResponse = await createResponsePromise
+    expect(createResponse.ok()).toBe(true)
+    projectId = String((await createResponse.json()).id)
+    const overviewPath = projectOverviewPath(projectId)
+    await expect.poll(() => routedProjectId).toBe(projectId)
+    await expect(page).toHaveURL(new RegExp(`${overviewPath.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}$`, 'u'))
+    await expect(page.getByText('项目概览暂时无法加载', { exact: true })).toBeVisible()
+    const retry = page.getByRole('button', { name: '重试', exact: true })
+    await expect(retry).toBeVisible()
+    await retry.click()
+    await expect.poll(() => overviewGetCount).toBe(2)
     const overview = page.locator('.overview-ledger')
     await expect(overview).toBeVisible()
     await expect(overview.getByRole('heading', { name: PROJECT_TITLE, exact: true })).toBeVisible()
@@ -778,10 +769,20 @@ test('project overview supports the complete manual product flow across desktop 
         statuses: [200],
         count: 1,
       }])
-      expect(evidence.consoleErrors, 'browser console errors must stay empty').toEqual([])
+      expect(
+        evidence.consoleErrors,
+        'only the console error caused by the deliberate overview 500 is allowed',
+      ).toEqual([
+        'error: Failed to load resource: the server responded with a status of 500 (Internal Server Error)',
+      ])
       expect(evidence.pageErrors, 'page errors must stay empty').toEqual([])
       expect(evidence.requestFailures, 'request failures must stay empty').toEqual([])
-      expect(evidence.responseFailures, 'response failures must stay empty').toEqual([])
+      expect(
+        evidence.responseFailures.map(normalizedResponseFailure),
+        'only the deliberately injected overview 500 is allowed',
+      ).toEqual([
+        `500 GET /api/projects/${projectId}/overview`,
+      ])
       const scan = scanRuntimeEvidence(evidence, runtimeSensitiveValues(process.env))
       if (scan.matchCount !== 0) {
         throw new Error('Project-overview browser evidence contained a runtime-sensitive value')
