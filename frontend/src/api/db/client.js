@@ -2,6 +2,7 @@
 
 import { ApiError, parseApiError } from './api-error.js'
 import { unicodeScalarLength } from '../../utils/unicodeScalarText.js'
+import { parseProjectOverview } from '../../application/projects/projectOverview.js'
 
 const BASE = (import.meta.env?.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api').replace(/\/+$/, '')
 const DEFAULT_TIMEOUT = 30000
@@ -2187,6 +2188,20 @@ export const api = {
     preparation: (projectId, options = {}) => request(
       'GET', `/projects/${segment(projectId)}/preparation`, undefined, DEFAULT_TIMEOUT, options?.signal,
     ),
+    overview: async (projectId, options = {}) => {
+      try {
+        return parseProjectOverview(await request(
+          'GET', `/projects/${segment(projectId)}/overview`, undefined,
+          DEFAULT_TIMEOUT, options?.signal,
+        ))
+      } catch (error) {
+        if (error instanceof ApiError) throw error
+        throw new ApiError({
+          code: 'invalid_response',
+          message: '服务返回了无效响应',
+        })
+      }
+    },
     rename: (projectId, { title }) => put(
       `/projects/${segment(projectId)}`,
       { title },

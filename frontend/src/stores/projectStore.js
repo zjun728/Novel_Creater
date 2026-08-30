@@ -20,8 +20,13 @@ export function createProjectStore(projectApi = api.projects, storeId = 'project
     const preparationProjectId = ref('')
     const preparationStatus = ref('idle')
     const preparationError = ref(null)
+    const currentOverview = ref(null)
+    const overviewProjectId = ref('')
+    const overviewStatus = ref('idle')
+    const overviewError = ref(null)
     const projectGuard = createLatestRequestGuard()
     const preparationGuard = createLatestRequestGuard()
+    const overviewGuard = createLatestRequestGuard()
     const activeListGuard = createLatestRequestGuard()
     const archivedListGuard = createLatestRequestGuard()
     const mutationTails = new Map()
@@ -103,6 +108,39 @@ export function createProjectStore(projectApi = api.projects, storeId = 'project
       preparationError.value = null
     }
 
+    async function loadOverview(projectId) {
+      const targetProjectId = String(projectId)
+      if (overviewProjectId.value !== targetProjectId) currentOverview.value = null
+      overviewProjectId.value = targetProjectId
+      overviewStatus.value = 'loading'
+      overviewError.value = null
+      const generation = overviewGuard.begin()
+      try {
+        const overview = await projectApi.overview(projectId)
+        if (overviewGuard.isCurrent(generation)) {
+          currentOverview.value = overview
+          overviewStatus.value = 'ready'
+        }
+        return overview
+      } catch (failure) {
+        if (overviewGuard.isCurrent(generation)) {
+          currentOverview.value = null
+          overviewStatus.value = 'error'
+          overviewError.value = failure
+        }
+        throw failure
+      }
+    }
+
+    function clearOverview(projectId) {
+      if (overviewProjectId.value !== String(projectId)) return
+      overviewGuard.invalidate()
+      currentOverview.value = null
+      overviewProjectId.value = ''
+      overviewStatus.value = 'idle'
+      overviewError.value = null
+    }
+
     async function createProject(title) {
       const created = await projectApi.create({ title })
       activeListGuard.invalidate()
@@ -137,6 +175,7 @@ export function createProjectStore(projectApi = api.projects, storeId = 'project
           currentProject.value = archived
         }
         clearPreparation(projectId)
+        clearOverview(projectId)
         return archived
       })
     }
@@ -153,6 +192,7 @@ export function createProjectStore(projectApi = api.projects, storeId = 'project
           currentProject.value = restored
         }
         clearPreparation(projectId)
+        clearOverview(projectId)
         return restored
       })
     }
@@ -167,6 +207,7 @@ export function createProjectStore(projectApi = api.projects, storeId = 'project
           currentProject.value = null
         }
         clearPreparation(projectId)
+        clearOverview(projectId)
       })
     }
 
@@ -178,10 +219,16 @@ export function createProjectStore(projectApi = api.projects, storeId = 'project
       preparationProjectId,
       preparationStatus,
       preparationError,
+      currentOverview,
+      overviewProjectId,
+      overviewStatus,
+      overviewError,
       loadActiveProjects,
       loadArchivedProjects,
       loadProject,
       loadPreparation,
+      loadOverview,
+      clearOverview,
       createProject,
       renameProject,
       archiveProject,

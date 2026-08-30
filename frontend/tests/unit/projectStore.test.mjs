@@ -136,3 +136,106 @@ test('a lifecycle mutation clears the preparation authority identity before relo
   assert.equal(store.preparationStatus, 'idle')
   assert.equal(store.preparationError, null)
 })
+
+test('overview has an independent current-project generation and rejects late A responses', async () => {
+  const pendingA = deferred()
+  const overviewB = projectOverview({ project: { ...projectOverview().project, id: 'B', title: '项目 B' } })
+  const store = createStore({
+    overview: projectId => (projectId === 'A' ? pendingA.promise : Promise.resolve(overviewB)),
+  })
+
+  const oldLoad = store.loadOverview('A')
+  await store.loadOverview('B')
+  pendingA.resolve(projectOverview({ project: { ...projectOverview().project, id: 'A', title: '项目 A' } }))
+  await oldLoad
+
+  assert.deepEqual(store.currentOverview, overviewB)
+  assert.equal(store.overviewProjectId, 'B')
+  assert.equal(store.overviewStatus, 'ready')
+  assert.equal(store.overviewError, null)
+})
+
+test('overview retry retains the active project identity and replaces the retryable error', async () => {
+  let attempts = 0
+  const overviewB = projectOverview({ project: { ...projectOverview().project, id: 'B', title: '项目 B' } })
+  const store = createStore({
+    overview: async projectId => {
+      assert.equal(projectId, 'B')
+      attempts += 1
+      if (attempts === 1) throw new Error('overview unavailable')
+      return overviewB
+    },
+  })
+
+  await assert.rejects(store.loadOverview('B'), /overview unavailable/)
+  assert.equal(store.currentOverview, null)
+  assert.equal(store.overviewProjectId, 'B')
+  assert.equal(store.overviewStatus, 'error')
+  assert.match(store.overviewError.message, /unavailable/)
+
+  await store.loadOverview(store.overviewProjectId)
+  assert.deepEqual(store.currentOverview, overviewB)
+  assert.equal(store.overviewProjectId, 'B')
+  assert.equal(store.overviewStatus, 'ready')
+  assert.equal(store.overviewError, null)
+})
+
+test('overview request guard is independent from preparation requests', async () => {
+  const pendingOverview = deferred()
+  const overviewA = projectOverview({ project: { ...projectOverview().project, id: 'A' } })
+  const store = createStore({
+    overview: () => pendingOverview.promise,
+    preparation: async () => preparation('continue_contract', '/projects/A/contract'),
+  })
+
+  const loading = store.loadOverview('A')
+  await store.loadPreparation('A')
+  pendingOverview.resolve(overviewA)
+  await loading
+
+  assert.deepEqual(store.currentOverview, overviewA)
+  assert.equal(store.overviewStatus, 'ready')
+})
+
+test('clearOverview only clears the matching overview identity', async () => {
+  const overviewA = projectOverview({ project: { ...projectOverview().project, id: 'A' } })
+  const store = createStore({ overview: async () => overviewA })
+  await store.loadOverview('A')
+
+  store.clearOverview('B')
+  assert.deepEqual(store.currentOverview, overviewA)
+  store.clearOverview('A')
+  assert.equal(store.currentOverview, null)
+  assert.equal(store.overviewProjectId, '')
+  assert.equal(store.overviewStatus, 'idle')
+  assert.equal(store.overviewError, null)
+})
+
+for (const [name, mutation, projectApi] of [
+  ['archive', store => store.archiveProject('A', 0), { archive: async id => ({ id, lifecycleRevision: 1 }) }],
+  ['restore', store => store.restoreProject('A', 1), { restore: async id => ({ id, lifecycleRevision: 2 }) }],
+  ['permanent delete', store => store.permanentlyDeleteProject('A', 2), { permanentlyDelete: async () => null }],
+]) {
+  test(`${name} lifecycle mutation clears overview authority`, async () => {
+    const overviewA = projectOverview({ project: { ...projectOverview().project, id: 'A' } })
+    const store = createStore({ overview: async () => overviewA, ...projectApi })
+    await store.loadOverview('A')
+    await mutation(store)
+
+    assert.equal(store.currentOverview, null)
+    assert.equal(store.overviewProjectId, '')
+    assert.equal(store.overviewStatus, 'idle')
+    assert.equal(store.overviewError, null)
+  })
+}
+
+function projectOverview(overrides = {}) {
+  return Object.assign({
+    project: { id: 'A', title: '典镇山河' },
+    progress: {},
+    modules: {},
+    writerCore: {},
+    continuity: {},
+    recentAchievements: [],
+  }, overrides)
+}
