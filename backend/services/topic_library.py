@@ -174,9 +174,20 @@ class TopicLibraryService:
         )
         if message is None:
             raise TopicFailure("TOPIC_NOT_FOUND")
+        request = await self._repository.lock_succeeded_request_by_assistant_message(
+            session,
+            discussion_id=command.discussion_id,
+            message_id=command.message_id,
+        )
+        if request is None:
+            raise TopicFailure("TOPIC_NOT_FOUND")
+        pinned_evidence = tuple(
+            TopicEvidenceRef.model_validate(item)
+            for item in request["input_manifest"].get("evidence", ())
+        )
         evidence = await self._repository.lock_snapshot_evidence(
             session,
-            command.evidence,
+            pinned_evidence,
         )
         return self._basis(message, evidence)
 

@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 import aiomysql
 import pytest
 
+from backend import http_errors
 from backend.domain.topics import TopicAssistantResult, TopicFailure
 from backend.repositories.chapter_outlines import ChapterOutlineRepository
 from backend.repositories.chapter_sessions import ChapterSessionRepository
@@ -284,3 +285,15 @@ async def test_topic_center_atomicity_versioning_archive_and_handoff(disposable_
         "preserved_handoff": 1,
         "candidate_status": "archived",
     }
+
+    await service._projects.archive(handed["projectId"], 0)
+    with pytest.raises(http_errors.ProjectLifecycleConflict):
+        await service._projects.permanently_delete(handed["projectId"], 1)
+    assert await service.create_project(handoff_command) == handed
+    preserved = await disposable_mysql.session.fetchone(
+        """SELECT
+             (SELECT COUNT(*) FROM topic_project_handoffs WHERE project_id=%s) AS receipts,
+             (SELECT COUNT(*) FROM projects WHERE id=%s) AS projects""",
+        (handed["projectId"], handed["projectId"]),
+    )
+    assert preserved == {"receipts": 1, "projects": 1}

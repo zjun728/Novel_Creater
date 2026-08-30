@@ -43,6 +43,8 @@ test('market and discussion surfaces preserve explicit evidence and explicit sav
   assert.match(discussion, /保存为候选种子/)
   assert.match(discussion, /@keydown\.enter\.exact\.prevent/)
   assert.match(discussion, /Shift \+ Enter 换行/)
+  assert.match(discussion, /request\.basis\?\.evidence/)
+  assert.doesNotMatch(discussion, /evidence:\s*evidencePayload\(\),\s*\n\s*idempotencyKey:\s*commandKey\(\)/)
   assert.doesNotMatch(discussion, /已自动保存|Provider|模型选择|raw JSON/)
 })
 
@@ -61,6 +63,10 @@ test('direction and candidate detail show author fields, version history, and gu
   assert.match(dialog, /指定版本/)
   assert.match(dialog, /项目种子仍为“待确认”/)
   assert.match(dialog, /role="dialog"/)
+  assert.match(dialog, /handoffAttempt/)
+  assert.match(dialog, /fingerprint/)
+  assert.match(dialog, /handoffKeyFor\(title\)/)
+  assert.doesNotMatch(dialog, /idempotencyKey:\s*commandKey\(\)/)
 })
 
 test('topic panels own independent scrolling and responsive layout without page overflow', async () => {

@@ -19,7 +19,6 @@ from backend.repositories.project_lifecycle import (
 
 
 _PROJECT_OWNED_DELETE_ORDER = (
-    "topic_project_handoffs",
     "reference_uses",
     "final_chapters",
     "finalization_records",
@@ -385,8 +384,11 @@ class ProjectRepository:
                WHERE id=%s
                  AND archived_at IS NOT NULL
                  AND lifecycle_revision=%s
+                 AND NOT EXISTS (
+                     SELECT 1 FROM topic_project_handoffs WHERE project_id=%s
+                 )
                FOR UPDATE""",
-            (project_id, expected_revision),
+            (project_id, expected_revision, project_id),
         )
         if eligible is None:
             return False

@@ -288,9 +288,11 @@ async def test_permanent_delete_guards_then_deletes_owned_graph_in_order(
     assert session.calls[0] == (
         "fetchone",
         "SELECT id FROM projects WHERE id=%s AND archived_at IS NOT NULL "
-        "AND lifecycle_revision=%s FOR UPDATE",
-        ("p1", 9),
+        "AND lifecycle_revision=%s AND NOT EXISTS ( SELECT 1 FROM "
+        "topic_project_handoffs WHERE project_id=%s ) FOR UPDATE",
+        ("p1", 9, "p1"),
     )
+    assert "topic_project_handoffs" not in projects._PROJECT_OWNED_DELETE_ORDER
     direct_deletes = session.calls[1:1 + len(projects._PROJECT_OWNED_DELETE_ORDER)]
     assert direct_deletes == [
         (
@@ -347,8 +349,9 @@ async def test_permanent_delete_guard_failure_does_not_touch_owned_rows():
     assert session.calls == [(
         "fetchone",
         "SELECT id FROM projects WHERE id=%s AND archived_at IS NOT NULL "
-        "AND lifecycle_revision=%s FOR UPDATE",
-        ("p1", 9),
+        "AND lifecycle_revision=%s AND NOT EXISTS ( SELECT 1 FROM "
+        "topic_project_handoffs WHERE project_id=%s ) FOR UPDATE",
+        ("p1", 9, "p1"),
     )]
 
 

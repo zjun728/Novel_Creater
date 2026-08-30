@@ -13,8 +13,15 @@ const emit = defineEmits(['close', 'created'])
 const topics = useTopicCenterStore()
 const projectTitle = ref('')
 const error = ref('')
+const handoffAttempt = ref(null)
 
-watch(() => [props.show, props.version], () => {
+watch(() => [
+  props.show,
+  props.candidate?.id,
+  props.version?.version,
+  props.version?.contentHash,
+], () => {
+  handoffAttempt.value = null
   if (props.show) {
     projectTitle.value = props.version?.payload?.title || ''
     error.value = ''
@@ -27,6 +34,19 @@ function commandKey() {
   return Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('')
 }
 
+function handoffKeyFor(title) {
+  const fingerprint = [
+    props.candidate?.id,
+    props.version?.version,
+    props.version?.contentHash,
+    title,
+  ].join('\u0000')
+  if (handoffAttempt.value?.fingerprint !== fingerprint) {
+    handoffAttempt.value = { fingerprint, key: commandKey() }
+  }
+  return handoffAttempt.value.key
+}
+
 async function createProject() {
   const title = projectTitle.value.trim()
   if (!props.candidate || !props.version || !title) return
@@ -35,7 +55,7 @@ async function createProject() {
     const handoff = await topics.handoff(props.candidate.id, props.version.version, {
       candidateHash: props.version.contentHash,
       projectTitle: title,
-      idempotencyKey: commandKey(),
+      idempotencyKey: handoffKeyFor(title),
     })
     emit('created', handoff)
   } catch (failure) {

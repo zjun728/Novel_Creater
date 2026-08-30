@@ -52,7 +52,18 @@ class FakeDiscussions:
                           "sequence_number": 1, "role": "user",
                           "content_text": "我想写地方治理。", "content_hash": "a" * 64,
                           "created_at": 1},),
-            "requests": (),
+            "requests": ({
+                "id": "request-1", "status": "succeeded",
+                "user_message_id": "message-1",
+                "assistant_message_id": "message-2", "result": None,
+                "result_hash": None, "public_error_code": None,
+                "input_manifest": {
+                    "evidence": [{"snapshotId": "snapshot-1", "contentHash": "a" * 64}],
+                    "subject": None,
+                    "provider": {"providerId": "must-not-cross"},
+                },
+                "created_at": 1, "completed_at": 2,
+            },),
         }
 
     async def create(self, title):
@@ -161,6 +172,11 @@ def test_topic_queries_are_bounded_camel_case_and_decode_path_ids():
         "createdAt": 1, "updatedAt": 2,
     }
     assert responses[1].json()["messages"][0]["content"] == "我想写地方治理。"
+    assert responses[1].json()["requests"][0]["basis"] == {
+        "evidence": [{"snapshotId": "snapshot-1", "contentHash": "a" * 64}],
+        "subject": None,
+    }
+    assert "must-not-cross" not in responses[1].text
     assert discussions.calls[:2] == [("list", 2, 20), ("read", "discussion one")]
     assert library.calls[1] == ("read-direction", "direction one")
     assert library.calls[3] == ("read-candidate", "candidate one")

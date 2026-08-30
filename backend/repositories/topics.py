@@ -436,6 +436,28 @@ class TopicRepository:
             )
         )
 
+    async def lock_succeeded_request_by_assistant_message(
+        self,
+        session,
+        *,
+        discussion_id: str,
+        message_id: str,
+    ):
+        row = await session.fetchone(
+            """SELECT id,input_manifest_json
+               FROM topic_discussion_requests
+               WHERE discussion_id=%s
+                 AND assistant_message_id=%s
+                 AND status='succeeded'
+               FOR UPDATE""",
+            (discussion_id, message_id),
+        )
+        return (
+            None
+            if row is None
+            else _decode_json_fields(row, "input_manifest_json")
+        )
+
     async def insert_request(self, session, row: Mapping) -> None:
         await session.execute(
             """INSERT INTO topic_discussion_requests

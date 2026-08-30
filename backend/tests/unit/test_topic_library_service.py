@@ -51,6 +51,18 @@ class FakeRepository:
                 "content_hash": "m" * 64,
             }
         }
+        self.requests = {
+            ("discussion-1", "message-1"): {
+                "status": "succeeded",
+                "input_manifest": {
+                    "evidence": [{
+                        "snapshotId": "snapshot-1",
+                        "contentHash": "a" * 64,
+                    }],
+                    "subject": None,
+                },
+            }
+        }
         self.directions = {}
         self.direction_versions = []
         self.candidates = {}
@@ -62,6 +74,11 @@ class FakeRepository:
 
     async def lock_message(self, session, *, discussion_id, message_id):
         return self.messages.get((discussion_id, message_id))
+
+    async def lock_succeeded_request_by_assistant_message(
+        self, session, *, discussion_id, message_id,
+    ):
+        return self.requests.get((discussion_id, message_id))
 
     async def lock_snapshot_evidence(self, session, refs):
         return tuple(
@@ -272,6 +289,22 @@ async def test_new_direction_locks_explicit_message_and_freezes_evidence_basis()
         "sourceId": "source-1",
     }]
     assert repository.events == ["transaction-enter", "transaction-commit"]
+
+
+@pytest.mark.asyncio
+async def test_save_basis_uses_the_generating_request_not_mutable_caller_evidence():
+    service, _ = _service()
+
+    result = await service.save_direction(_direction_command(evidence=[{
+        "snapshotId": "snapshot-2",
+        "contentHash": "b" * 64,
+    }]))
+
+    assert result["basis"]["evidence"] == [{
+        "snapshotId": "snapshot-1",
+        "contentHash": "a" * 64,
+        "sourceId": "source-1",
+    }]
 
 
 @pytest.mark.asyncio

@@ -224,6 +224,31 @@ def _discussion_view(row: Mapping) -> dict:
     }
 
 
+def _discussion_request_basis(row: Mapping) -> dict:
+    manifest = row.get("input_manifest") or {}
+    evidence = manifest.get("evidence") or ()
+    subject = manifest.get("subject")
+    return {
+        "evidence": [
+            {
+                "snapshotId": item["snapshotId"],
+                "contentHash": item["contentHash"],
+            }
+            for item in evidence
+        ],
+        "subject": (
+            None
+            if subject is None
+            else {
+                "kind": subject["kind"],
+                "id": subject["id"],
+                "version": int(subject["version"]),
+                "contentHash": subject["contentHash"],
+            }
+        ),
+    }
+
+
 def _discussion_detail_view(value: Mapping) -> dict:
     return {
         "discussion": _discussion_view(value["discussion"]),
@@ -246,6 +271,7 @@ def _discussion_detail_view(value: Mapping) -> dict:
                 "assistantMessageId": row.get("assistant_message_id"),
                 "result": row.get("result"),
                 "resultHash": row.get("result_hash"),
+                "basis": _discussion_request_basis(row),
                 "publicErrorCode": row.get("public_error_code"),
                 "createdAt": int(row["created_at"]),
                 "completedAt": row.get("completed_at"),

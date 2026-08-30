@@ -88,12 +88,15 @@ async function saveSuggestion(kind, request, payload, index) {
   const data = {
     messageId: request.assistantMessageId,
     payload,
-    evidence: evidencePayload(),
+    evidence: (request.basis?.evidence || []).map(
+      ({ snapshotId, contentHash }) => ({ snapshotId, contentHash }),
+    ),
     idempotencyKey: commandKey(),
   }
-  if (props.subject?.kind === kind) {
-    data[`${kind}Id`] = props.subject.id
-    data.expectedVersion = props.subject.version
+  const requestSubject = request.basis?.subject
+  if (requestSubject?.kind === kind) {
+    data[`${kind}Id`] = requestSubject.id
+    data.expectedVersion = requestSubject.version
   }
   try {
     if (kind === 'direction') await topics.saveDirection(discussionId, data)

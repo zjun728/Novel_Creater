@@ -118,6 +118,29 @@ async def test_discussion_detail_orders_immutable_messages_and_decodes_requests(
 
 
 @pytest.mark.asyncio
+async def test_assistant_message_locks_its_succeeded_request_manifest():
+    from backend.repositories.topics import TopicRepository
+
+    session = ScriptedSession(rows=({
+        "id": "request-1",
+        "input_manifest_json": '{"evidence":[{"snapshotId":"snapshot-1","contentHash":"' + "a" * 64 + '"}]}',
+    },))
+
+    result = await TopicRepository().lock_succeeded_request_by_assistant_message(
+        session,
+        discussion_id="discussion-1",
+        message_id="message-2",
+    )
+
+    assert result["input_manifest"]["evidence"][0]["snapshotId"] == "snapshot-1"
+    _, sql, args = session.calls[0]
+    assert "status='succeeded'" in _compact(sql)
+    assert "assistant_message_id=%s" in _compact(sql)
+    assert "for update" in _compact(sql)
+    assert args == ("discussion-1", "message-2")
+
+
+@pytest.mark.asyncio
 async def test_json_decode_is_fail_closed():
     from backend.repositories.topics import TopicRepository
 
