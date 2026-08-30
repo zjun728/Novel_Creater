@@ -37,6 +37,7 @@ from backend.domain.routers import (
     model_bindings,
     novel_downloads,
     planning,
+    project_overview,
     project_packages,
     project_imports,
     projects,
@@ -664,6 +665,7 @@ app.add_middleware(
 )
 
 app.include_router(projects.router, prefix="/api")
+app.include_router(project_overview.router, prefix="/api")
 app.include_router(novel_downloads.router, prefix="/api")
 app.include_router(manuscripts.router, prefix="/api")
 app.include_router(project_packages.router, prefix="/api")

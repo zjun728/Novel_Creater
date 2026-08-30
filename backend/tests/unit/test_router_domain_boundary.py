@@ -40,6 +40,7 @@ EXPECTED_ROUTER_FILES = {
     "novel_downloads.py",
     "planning.py",
     "project_imports.py",
+    "project_overview.py",
     "project_packages.py",
     "projects.py",
     "providers.py",

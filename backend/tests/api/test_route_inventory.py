@@ -25,6 +25,7 @@ APPROVED_FORMAL_ROUTES = {
     ("GET", "/api/projects/archived"),
     ("POST", "/api/projects"),
     ("GET", "/api/projects/{project_id}"),
+    ("GET", "/api/projects/{project_id}/overview"),
     ("GET", "/api/projects/{project_id}/novel-download/options"),
     ("GET", "/api/projects/{project_id}/novel-download"),
     ("GET", "/api/projects/{project_id}/manuscript"),
@@ -279,6 +280,17 @@ def test_only_approved_seed_paths_write_and_canon_remains_read_only():
     ]
     assert canon_routes
     assert all(route.methods <= {"GET", "HEAD"} for route in canon_routes)
+
+
+def test_project_overview_has_one_exact_read_only_route():
+    overview_routes = [
+        route
+        for route in main.app.routes
+        if route.path == "/api/projects/{project_id}/overview"
+    ]
+
+    assert len(overview_routes) == 1
+    assert overview_routes[0].methods == {"GET"}
 
 
 def test_incompatible_router_files_are_physically_absent():

@@ -7,8 +7,24 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend import main
-from backend.http_errors import ProjectArchived
-from backend.domain.routers import assets, contracts, corpus, projects, seeds, story_engines
+from backend.http_errors import ProjectArchived, ProjectNotFound
+from backend.domain.project_overview import (
+    OverviewContinuity,
+    OverviewModuleStates,
+    OverviewProgress,
+    OverviewProject,
+    OverviewWriterCore,
+    ProjectOverview,
+)
+from backend.domain.routers import (
+    assets,
+    contracts,
+    corpus,
+    project_overview,
+    projects,
+    seeds,
+    story_engines,
+)
 from backend.domain.seeds import SeedMutationCapabilities, SeedPayload
 from backend.security.redaction import install_error_handlers
 from backend.services.project_lifecycle import (
@@ -20,6 +36,119 @@ from backend.services.project_lifecycle import (
     ProjectResult,
 )
 from backend.services.seeds import SeedResult
+
+
+def test_project_overview_route_uses_dependency_override_and_decodes_id():
+    class FakeOverviewService:
+        def __init__(self):
+            self.calls = []
+
+        async def get(self, project_id):
+            self.calls.append(project_id)
+            return ProjectOverview(
+                project=OverviewProject(
+                    id=project_id,
+                    title="典镇山河",
+                    genre="东方奇幻",
+                    logline="少年以县志镇压黑潮。",
+                    target_words=2_400_000,
+                    target_chapters=720,
+                    updated_at_ms=100,
+                    lifecycle="archived",
+                ),
+                progress=OverviewProgress(
+                    authoritative_chapter_number=1,
+                    current_volume=None,
+                    latest_final_chapter=None,
+                    finalized_chapter_count=0,
+                    finalized_scalar_count=0,
+                ),
+                modules=OverviewModuleStates(
+                    seed="current",
+                    contract="missing",
+                    bible="missing",
+                    planning="missing",
+                    outline="missing",
+                    writing="missing",
+                ),
+                writer_core=OverviewWriterCore(
+                    canon_revision=0,
+                    projection_revision=0,
+                    synchronized=True,
+                ),
+                continuity=OverviewContinuity(
+                    availability="pending_module",
+                    pending_count=None,
+                ),
+                recent_achievements=(),
+            )
+
+    service = FakeOverviewService()
+    app = FastAPI()
+    app.include_router(project_overview.router, prefix="/api")
+    app.dependency_overrides[
+        project_overview.get_project_overview_service
+    ] = lambda: service
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/projects/project%20%25%20%E4%B8%80/overview"
+    )
+
+    assert response.status_code == 200
+    assert service.calls == ["project % 一"]
+    assert response.json()["project"] == {
+        "id": "project % 一",
+        "title": "典镇山河",
+        "genre": "东方奇幻",
+        "logline": "少年以县志镇压黑潮。",
+        "targetWords": 2_400_000,
+        "targetChapters": 720,
+        "updatedAtMs": 100,
+        "lifecycle": "archived",
+    }
+    forbidden = {
+        "nextAction",
+        "targetPath",
+        "rawJson",
+        "contentHash",
+        "planningJson",
+        "canonEvents",
+    }
+
+    def all_keys(value):
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                yield key
+                yield from all_keys(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                yield from all_keys(nested)
+
+    assert forbidden.isdisjoint(all_keys(response.json()))
+
+
+def test_project_overview_missing_project_uses_existing_public_404():
+    class MissingOverviewService:
+        async def get(self, project_id):
+            assert project_id == "missing-project"
+            raise ProjectNotFound()
+
+    app = FastAPI()
+    app.include_router(project_overview.router, prefix="/api")
+    app.dependency_overrides[
+        project_overview.get_project_overview_service
+    ] = lambda: MissingOverviewService()
+    install_error_handlers(app)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.get("/api/projects/missing-project/overview")
+
+    assert response.status_code == 404
+    assert set(response.json()) == {"code", "message", "correlationId"}
+    assert response.json()["code"] == "ProjectNotFound"
+    assert response.json()["message"] == ProjectNotFound.message
+    assert response.json()["correlationId"]
 
 
 def test_joined_m2_routes_expose_public_behavior_through_dependencies():
