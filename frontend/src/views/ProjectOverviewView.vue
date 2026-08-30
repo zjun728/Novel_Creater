@@ -1,122 +1,138 @@
 <script setup>
-import { computed, onMounted, watch } from 'vue'
+import { computed, watch } from 'vue'
 import { NButton, NResult, NSkeleton } from 'naive-ui'
+import { useRoute } from 'vue-router'
 
-import ArchivedProjectStatusView from './ArchivedProjectStatusView.vue'
 import NotFoundView from './NotFoundView.vue'
-import ProjectBackupPanel from '../components/projects/ProjectBackupPanel.vue'
-import ManuscriptSummaryLink from '../components/manuscript/ManuscriptSummaryLink.vue'
+import ProjectPageHeader from '../components/projects/ProjectPageHeader.vue'
+import { artifactStatusLabel, continuitySummary } from '../application/projects/projectOverview.js'
 import { useRouteProject } from '../composables/useRouteProject.js'
+import {
+  manuscriptPath,
+  planningStoryBlocksPath,
+  planningVolumesPath,
+  projectBiblePath,
+  projectContractPath,
+  projectSeedsPath,
+} from '../router/projectRoutes.js'
 import { useProjectStore } from '../stores/projectStore.js'
-import { mapProjectNextAction } from '../application/projects/projectNextAction.js'
 
+const route = useRoute()
 const routeProject = useRouteProject()
 const projectStore = useProjectStore()
-let mounted = false
-let reconciledArchivedProjectId = ''
 
-const preparation = computed(() => (
-  projectStore.preparationProjectId
-    === String(routeProject.project.value?.id || '')
-    ? projectStore.currentPreparation
+const routeProjectId = computed(() => String(route.params.projectId || ''))
+const overview = computed(() => {
+  const value = projectStore.currentOverview
+  return projectStore.overviewStatus === 'ready'
+    && projectStore.overviewProjectId === routeProjectId.value
+    && value?.project?.id === routeProjectId.value
+    ? value
     : null
-))
+})
+const overviewState = computed(() => {
+  if (projectStore.overviewProjectId !== routeProjectId.value) return 'stale'
+  return projectStore.overviewStatus
+})
 
-const actionCopy = computed(() => mapProjectNextAction(preparation.value))
+const number = value => new Intl.NumberFormat('zh-CN').format(value)
+const date = value => new Intl.DateTimeFormat('zh-CN', {
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+}).format(new Date(value))
 
-const statusItems = computed(() => {
-  const value = preparation.value
-  if (!value) return []
-  const labels = {
-    activeSelection: { missing: '未选择', current: '已选择' },
-    contract: {
-      missing: '未建立',
-      draft: '草稿',
-      current: '已确认',
-      superseded: '需重新确认',
-    },
-    bible: {
-      missing: '未建立',
-      draft: '草稿',
-      current: '已确认',
-      superseded: '需重新确认',
-    },
-  }
-  const planning = value.modelTasks?.find(item => item.taskKey === 'planning')
+const progressItems = computed(() => {
+  if (!overview.value) return []
+  const { project, progress } = overview.value
   return [
-    ['种子', labels.activeSelection[value.activeSelection] || '未知'],
-    ['创作契约', labels.contract[value.contract] || '未知'],
-    ['创作圣经', labels.bible[value.bible] || '未知'],
-    ['规划模型', planning?.readiness === 'ready' ? '可用' : '不可用'],
+    { label: '全书目标', value: `${number(project.targetWords)} 字`, note: `预计 ${number(project.targetChapters)} 章` },
+    { label: '已定稿', value: `${number(progress.finalizedScalarCount)} 字`, note: `共 ${number(progress.finalizedChapterCount)} 章` },
+    {
+      label: '当前分卷',
+      value: progress.currentVolume
+        ? `第 ${number(progress.currentVolume.order)} 卷 · ${progress.currentVolume.title}`
+        : '尚未确认分卷',
+      note: `当前权威：第 ${number(progress.authoritativeChapterNumber)} 章`,
+    },
+    {
+      label: '最近定稿',
+      value: progress.latestFinalChapter
+        ? `第 ${number(progress.latestFinalChapter.number)} 章 · ${progress.latestFinalChapter.title}`
+        : '尚无定稿章节',
+      note: progress.latestFinalChapter
+        ? date(progress.latestFinalChapter.finalizedAtMs)
+        : '从当前权威章节开始创作',
+    },
   ]
 })
 
-async function refreshPreparation() {
-  const projectId = routeProject.project.value?.id
-  if (routeProject.state.value !== 'active' || !projectId) return
+const moduleItems = computed(() => {
+  if (!overview.value) return []
+  const id = overview.value.project.id
+  const status = overview.value.modules
+  return [
+    { key: 'seed', label: '创作种子', description: '题材、核心创意与作品方向', path: projectSeedsPath(id), status: status.seed },
+    { key: 'contract', label: '创作契约', description: '全书目标与创作边界', path: projectContractPath(id), status: status.contract },
+    { key: 'bible', label: '创作圣经', description: '世界、人物与长期设定', path: projectBiblePath(id), status: status.bible },
+    { key: 'planning', label: '故事规划', description: '分卷、情节线与故事块', path: planningVolumesPath(id), status: status.planning },
+    { key: 'outline', label: '本章小纲', description: '当前权威章节的写作依据', path: planningStoryBlocksPath(id), status: status.outline },
+    { key: 'writing', label: '正文写作', description: '工作稿与已定稿章节', path: manuscriptPath(id), status: status.writing },
+  ]
+})
+
+const writerCoreSummary = computed(() => {
+  const core = overview.value?.writerCore
+  if (!core) return ''
+  return core.synchronized
+    ? `创作核心已同步至第 ${number(core.canonRevision)} 版`
+    : `创作核心尚未同步：正典第 ${number(core.canonRevision)} 版，写作投影第 ${number(core.projectionRevision)} 版`
+})
+
+async function loadProjectOverview({ force = false } = {}) {
+  const projectId = routeProjectId.value
+  if (!projectId || !['active', 'archived'].includes(routeProject.state.value)) return
+  if (
+    !force
+    && projectStore.overviewProjectId === projectId
+    && (
+      ['loading', 'error'].includes(projectStore.overviewStatus)
+      || (
+        projectStore.overviewStatus === 'ready'
+        && projectStore.currentOverview?.project?.id === projectId
+      )
+    )
+  ) return
   try {
-    const authority = await projectStore.loadPreparation(projectId)
-    if (
-      routeProject.state.value !== 'active'
-      || String(routeProject.project.value?.id || '') !== String(projectId)
-    ) {
-      return
-    }
-    if (authority.lifecycle === 'archived') {
-      if (reconciledArchivedProjectId !== String(projectId)) {
-        reconciledArchivedProjectId = String(projectId)
-        await routeProject.reload({ force: true })
-      }
-    } else if (authority.lifecycle === 'active') {
-      reconciledArchivedProjectId = ''
-    }
+    await projectStore.loadOverview(projectId)
   } catch {
-    // The Store retains a safe retryable state; raw transport details are not rendered.
+    // Store keeps the fixed retryable state; transport details are never rendered.
   }
 }
 
-
-async function retryRouteProject() {
-  const projectId = String(
-    projectStore.preparationProjectId
-    || routeProject.project.value?.id
-    || '',
-  )
-  reconciledArchivedProjectId = projectId
-  await routeProject.reload({ force: true })
+async function retryOverview() {
+  if (routeProject.state.value === 'error') await routeProject.reload({ force: true })
+  await loadProjectOverview({ force: true })
 }
-
-async function flushCurrentDraft() {
-  // Writer route navigation already awaits its controller flush before Overview is entered.
-  return true
-}
-
-onMounted(() => {
-  mounted = true
-  void refreshPreparation()
-})
 
 watch(
-  () => [routeProject.state.value, routeProject.project.value?.id],
-  () => {
-    if (mounted) void refreshPreparation()
-  },
+  () => [routeProjectId.value, routeProject.state.value],
+  () => { void loadProjectOverview() },
+  { immediate: true },
 )
 </script>
 
 <template>
-  <section v-if="routeProject.state.value === 'loading'" class="overview-page" aria-busy="true">
-    <section class="overview-sheet">
-      <n-skeleton text width="28%" />
-      <n-skeleton text :repeat="3" />
-    </section>
+  <section
+    v-if="routeProject.state.value === 'loading'"
+    class="overview-page"
+    aria-busy="true"
+  >
+    <div class="overview-state" role="status" aria-live="polite">
+      <p>正在读取项目身份</p>
+      <n-skeleton text :repeat="4" />
+    </div>
   </section>
-
-  <archived-project-status-view
-    v-else-if="routeProject.state.value === 'archived'"
-    :project="routeProject.project.value"
-    @restored="routeProject.reload"
-  />
 
   <not-found-view
     v-else-if="routeProject.state.value === 'missing'"
@@ -127,205 +143,379 @@ watch(
   <section v-else-if="routeProject.state.value === 'error'" class="overview-page">
     <n-result
       status="error"
-      title="项目暂时无法加载"
-      :description="routeProject.error.value?.message || '请稍后重试'"
+      title="项目概览暂时无法加载"
+      description="项目身份读取失败，请稍后重试。"
     >
       <template #footer>
-        <n-button type="primary" @click="retryRouteProject">重试</n-button>
+        <n-button type="primary" @click="retryOverview">重试</n-button>
       </template>
     </n-result>
   </section>
 
   <section
-    v-else-if="preparation?.lifecycle === 'archived'"
+    v-else-if="overviewState === 'error'"
     class="overview-page"
-    aria-live="polite"
   >
     <n-result
-      status="info"
-      title="项目已归档"
-      description="正在同步项目权威状态，完成后可查看只读内容或恢复项目。"
+      status="error"
+      title="项目概览暂时无法加载"
+      description="已保留当前项目，请重新读取服务端概览。"
     >
       <template #footer>
-        <n-button type="primary" @click="retryRouteProject">重新同步</n-button>
+        <n-button type="primary" @click="retryOverview">重试</n-button>
       </template>
     </n-result>
   </section>
 
-  <section v-else-if="routeProject.state.value === 'active'" class="overview-page">
-    <section class="overview-sheet" aria-labelledby="project-overview-title">
-      <p class="eyebrow">PROJECT OVERVIEW</p>
-      <h1 id="project-overview-title">{{ routeProject.project.value.title }}</h1>
-      <p>这里汇总服务端已经持久化的创作准备事实，并只给出一个当前下一步。</p>
-      <manuscript-summary-link :project-id="routeProject.project.value.id" />
+  <section
+    v-else-if="overviewState === 'loading' || overviewState === 'idle'"
+    class="overview-page"
+    aria-busy="true"
+  >
+    <div class="overview-state" role="status" aria-live="polite">
+      <p>正在读取当前项目概览</p>
+      <n-skeleton text :repeat="5" />
+    </div>
+  </section>
 
-      <n-result
-        v-if="projectStore.preparationStatus === 'error'"
-        status="error"
-        title="创作准备状态暂时无法加载"
-        description="已保留当前项目，请重新读取服务端状态。"
-      >
-        <template #footer>
-          <n-button type="primary" @click="refreshPreparation">重新读取</n-button>
-        </template>
-      </n-result>
+  <section
+    v-else-if="overviewState === 'stale' || !overview"
+    class="overview-page"
+    aria-busy="true"
+  >
+    <div class="overview-state" role="status" aria-live="polite">
+      <p>正在读取当前项目概览</p>
+      <n-skeleton text :repeat="5" />
+    </div>
+  </section>
 
-      <div
-        v-else-if="projectStore.preparationStatus === 'loading' || !preparation"
-        class="preparation-loading"
-        aria-live="polite"
-      >
-        <n-skeleton text :repeat="3" />
+  <article v-else class="overview-page overview-ledger">
+    <project-page-header
+      kicker="MANUSCRIPT LEDGER · 作品总览"
+      :title="overview.project.title"
+      :description="overview.project.logline"
+      :genre="overview.project.genre"
+      :archived="overview.project.lifecycle === 'archived'"
+    />
+
+    <section class="overview-progress" aria-labelledby="overview-progress-title">
+      <div class="overview-section-heading">
+        <p>PRODUCTION POSITION</p>
+        <h2 id="overview-progress-title">创作进度</h2>
       </div>
+      <dl>
+        <div v-for="item in progressItems" :key="item.label">
+          <dt>{{ item.label }}</dt>
+          <dd>{{ item.value }}</dd>
+          <small>{{ item.note }}</small>
+        </div>
+      </dl>
+    </section>
 
-      <template v-else>
-        <dl class="preparation-summary" aria-label="创作准备状态">
-          <div v-for="[label, value] in statusItems" :key="label">
-            <dt>{{ label }}</dt>
-            <dd>{{ value }}</dd>
+    <section class="overview-modules" aria-labelledby="overview-modules-title">
+      <div class="overview-section-heading">
+        <p>AUTHORITIES</p>
+        <h2 id="overview-modules-title">创作模块</h2>
+        <span>按你的创作习惯手动进入，不代替确认与决策。</span>
+      </div>
+      <div class="overview-module-list">
+        <router-link
+          v-for="(item, index) in moduleItems"
+          :key="item.key"
+          class="overview-module"
+          :to="item.path"
+        >
+          <span class="overview-module__index" aria-hidden="true">0{{ index + 1 }}</span>
+          <span class="overview-module__copy">
+            <strong>{{ item.label }}</strong>
+            <small>{{ item.description }}</small>
+          </span>
+          <span class="overview-module__status">{{ artifactStatusLabel(item.status) }}</span>
+        </router-link>
+      </div>
+    </section>
+
+    <div class="overview-lower-grid">
+      <section class="overview-core" aria-labelledby="overview-core-title">
+        <div class="overview-section-heading">
+          <p>STORY MEMORY</p>
+          <h2 id="overview-core-title">长篇一致性</h2>
+        </div>
+        <dl>
+          <div>
+            <dt>创作核心</dt>
+            <dd>{{ writerCoreSummary }}</dd>
+          </div>
+          <div>
+            <dt>连续性检查</dt>
+            <dd>{{ continuitySummary(overview.continuity) }}</dd>
           </div>
         </dl>
+      </section>
 
-        <router-link
-          v-if="actionCopy.state === 'available'"
-          class="overview-next-action"
-          :to="actionCopy.targetPath"
-        >
-          <span>{{ actionCopy.eyebrow }}</span>
-          <strong>{{ actionCopy.label }}</strong>
-          <small>{{ actionCopy.description }}</small>
-        </router-link>
-
-        <n-result
-          v-else
-          status="warning"
-          title="创作准备状态需要重新读取"
-          description="当前下一步不完整，系统不会推断或跳转到其他模块。"
-        >
-          <template #footer>
-            <n-button type="primary" @click="refreshPreparation">重新读取</n-button>
-          </template>
-        </n-result>
-
-        <p
-          v-if="preparation.reasons.includes('planning_model_not_ready')"
-          class="model-note"
-        >
-          规划模型不可用；手工契约与圣经仍可继续，只有 AI 生成被停用。
-        </p>
-
-        <project-backup-panel
-          :key="`backup:${routeProject.project.value.id}`"
-          :project-id="routeProject.project.value.id"
-          :title="routeProject.project.value.title"
-          :lifecycle-revision="routeProject.project.value.lifecycleRevision"
-          :archived="false"
-          :flush-current-draft="flushCurrentDraft"
-        />
-      </template>
-    </section>
-  </section>
+      <section class="overview-achievements" aria-labelledby="overview-achievements-title">
+        <div class="overview-section-heading">
+          <p>RECENT MILESTONES</p>
+          <h2 id="overview-achievements-title">最近完成</h2>
+        </div>
+        <ol v-if="overview.recentAchievements.length">
+          <li
+            v-for="achievement in overview.recentAchievements.slice(0, 5)"
+            :key="`${achievement.kind}:${achievement.occurredAtMs}:${achievement.label}`"
+            class="overview-achievement"
+          >
+            <span>{{ achievement.label }}</span>
+            <time :datetime="new Date(achievement.occurredAtMs).toISOString()">
+              {{ date(achievement.occurredAtMs) }}
+            </time>
+          </li>
+        </ol>
+        <p v-else class="overview-achievements__empty">完成首个创作确认后，这里会留下里程碑。</p>
+      </section>
+    </div>
+  </article>
 </template>
 
 <style scoped>
 .overview-page {
   min-height: 100%;
-  padding: clamp(24px, 5vw, 64px);
+  padding: clamp(22px, 4vw, 56px);
   color: var(--nc-ink);
   background: var(--nc-canvas);
 }
-.overview-sheet {
-  width: min(980px, 100%);
-  min-height: 260px;
+
+.overview-ledger,
+.overview-state {
+  width: min(1180px, 100%);
   margin-inline: auto;
-  padding: clamp(28px, 5vw, 54px);
   border: 1px solid var(--nc-border);
-  border-radius: 14px;
+  border-radius: 10px;
   background: var(--nc-paper);
-  box-shadow: 0 24px 64px rgba(58, 43, 27, .07);
+  box-shadow: 0 24px 64px rgba(58, 43, 27, .065);
 }
-.eyebrow {
-  margin: 0 0 12px;
+
+.overview-ledger {
+  padding: clamp(26px, 4vw, 48px);
+}
+
+.overview-state {
+  min-height: 280px;
+  padding: clamp(28px, 5vw, 54px);
+}
+
+.overview-state > p {
+  margin: 0 0 18px;
+  color: var(--nc-muted);
+}
+
+.overview-section-heading p {
+  margin: 0 0 6px;
   color: var(--nc-vermilion);
-  font: 700 11px Georgia, serif;
-  letter-spacing: .16em;
+  font: 700 9px Georgia, 'Noto Serif SC', serif;
+  letter-spacing: .18em;
 }
-h1 {
+
+.overview-section-heading h2 {
   margin: 0;
-  font-family: Georgia, 'Noto Serif SC', serif;
-  font-size: clamp(34px, 6vw, 58px);
+  font-family: Georgia, 'Noto Serif SC', 'Songti SC', serif;
+  font-size: 24px;
   font-weight: 600;
 }
-.overview-sheet > p:not(.eyebrow) {
-  max-width: 60ch;
-  margin: 18px 0 0;
-  color: var(--nc-muted);
-  line-height: 1.8;
-}
-.preparation-loading {
-  margin-top: 28px;
-}
-.preparation-summary {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-  margin: 28px 0 0;
-}
-.preparation-summary div {
-  padding: 14px 16px;
-  border: 1px solid var(--nc-border);
-  border-radius: 8px;
-}
-.preparation-summary dt {
+
+.overview-section-heading > span {
+  display: block;
+  margin-top: 7px;
   color: var(--nc-muted);
   font-size: 12px;
 }
-.preparation-summary dd {
-  margin: 6px 0 0;
-  font-weight: 700;
+
+.overview-progress,
+.overview-modules,
+.overview-lower-grid {
+  margin-top: 34px;
 }
-.overview-next-action {
+
+.overview-progress dl {
   display: grid;
-  width: min(560px, 100%);
-  gap: 6px;
-  margin-top: 30px;
-  padding: 20px 22px;
-  border: 1px solid var(--nc-border);
-  border-radius: 9px;
-  color: var(--nc-ink);
-  background: var(--nc-paper);
+  grid-template-columns: 1fr 1fr 1.35fr 1.35fr;
+  margin: 20px 0 0;
+  border-block: 1px solid var(--nc-border);
+}
+
+.overview-progress dl > div {
+  min-width: 0;
+  padding: 18px 18px 17px 0;
+}
+
+.overview-progress dl > div + div {
+  padding-left: 18px;
+  border-left: 1px solid var(--nc-border);
+}
+
+.overview-progress dt,
+.overview-core dt {
+  color: var(--nc-muted);
+  font-size: 11px;
+  letter-spacing: .06em;
+}
+
+.overview-progress dd {
+  margin: 7px 0 0;
+  overflow-wrap: anywhere;
+  font-family: Georgia, 'Noto Serif SC', 'Songti SC', serif;
+  font-size: clamp(17px, 2vw, 21px);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.45;
+}
+
+.overview-progress small {
+  display: block;
+  margin-top: 6px;
+  color: var(--nc-muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.overview-module-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 18px;
+  border-top: 1px solid var(--nc-border);
+}
+
+.overview-module {
+  display: grid;
+  min-height: 88px;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  gap: 13px;
+  align-items: center;
+  padding: 15px 18px 15px 0;
+  border-bottom: 1px solid var(--nc-border);
+  color: inherit;
   text-decoration: none;
-  transition: border-color .15s ease, transform .15s ease;
 }
-.overview-next-action:hover {
-  border-color: var(--nc-vermilion);
-  transform: translateY(-2px);
+
+.overview-module:nth-child(even) {
+  padding-left: 18px;
+  border-left: 1px solid var(--nc-border);
 }
-.overview-next-action span {
+
+.overview-module:hover .overview-module__copy strong {
   color: var(--nc-vermilion);
+}
+
+.overview-module:focus-visible {
+  outline: 3px solid rgba(143, 61, 50, .25);
+  outline-offset: -3px;
+}
+
+.overview-module__index {
+  color: #a78d77;
+  font: 600 13px Georgia, serif;
+}
+
+.overview-module__copy {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.overview-module__copy strong {
+  font-family: Georgia, 'Noto Serif SC', 'Songti SC', serif;
+  font-size: 17px;
+  transition: color .14s ease;
+}
+
+.overview-module__copy small {
+  color: var(--nc-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.overview-module__status {
+  padding: 5px 8px;
+  border: 1px solid var(--nc-border);
+  border-radius: 999px;
+  color: var(--nc-muted);
+  background: var(--nc-wash);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.overview-lower-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(280px, .75fr);
+  gap: 34px;
+  padding-top: 32px;
+  border-top: 1px solid var(--nc-border);
+}
+
+.overview-core dl {
+  display: grid;
+  gap: 0;
+  margin: 16px 0 0;
+}
+
+.overview-core dl > div {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 14px;
+  padding: 13px 0;
+  border-top: 1px solid rgba(216, 203, 183, .72);
+}
+
+.overview-core dd {
+  margin: 0;
+  line-height: 1.7;
+}
+
+.overview-achievements ol {
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.overview-achievement {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 0;
+  border-top: 1px solid rgba(216, 203, 183, .72);
+  font-family: Georgia, 'Noto Serif SC', 'Songti SC', serif;
+  font-size: 13px;
+}
+
+.overview-achievement time {
+  flex: 0 0 auto;
+  color: var(--nc-muted);
+  font-family: 'Noto Sans SC', sans-serif;
   font-size: 10px;
-  font-weight: 750;
-  letter-spacing: .15em;
 }
-.overview-next-action strong {
-  font-family: Georgia, 'Noto Serif SC', serif;
-  font-size: 20px;
-}
-.overview-next-action small {
+
+.overview-achievements__empty {
   color: var(--nc-muted);
   line-height: 1.7;
 }
-.model-note {
-  color: var(--nc-muted);
-  line-height: 1.7;
+
+@media (max-width: 900px) {
+  .overview-progress dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .overview-progress dl > div:nth-child(3) { border-left: 0; }
+  .overview-lower-grid { grid-template-columns: 1fr; }
 }
-.model-note {
-  margin-top: 14px;
+
+@media (max-width: 620px) {
+  .overview-progress dl,
+  .overview-module-list { grid-template-columns: 1fr; }
+  .overview-progress dl > div,
+  .overview-progress dl > div + div { padding-inline: 0; border-left: 0; }
+  .overview-module,
+  .overview-module:nth-child(even) { padding-inline: 0; border-left: 0; }
+  .overview-module { grid-template-columns: 28px minmax(0, 1fr); }
+  .overview-module__status { grid-column: 2; width: fit-content; }
 }
-@media (max-width: 760px) {
-  .preparation-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
+
 @media (prefers-reduced-motion: reduce) {
-  .overview-next-action { transition: none; }
+  .overview-module__copy strong { transition: none; }
 }
 </style>

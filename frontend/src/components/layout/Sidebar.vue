@@ -76,22 +76,34 @@ defineProps({
       </div>
 
       <nav
-        v-if="shell.projectContext.modules.length"
+        v-if="shell.projectContext.sections.length"
         class="product-sidebar__modules"
         aria-label="项目模块"
       >
-        <router-link
-          v-for="module in shell.projectContext.modules"
-          :key="module.key"
-          class="product-sidebar__module-link"
-          :class="{ 'product-sidebar__module-link--selected': module.selected }"
-          :to="module.path"
-          :aria-label="module.label"
-          :aria-current="module.selected ? 'page' : undefined"
+        <div
+          v-for="section in shell.projectContext.sections"
+          :key="section.label || 'overview'"
+          class="product-sidebar__module-section"
         >
-          <span aria-hidden="true">{{ module.mark }}</span>
-          <span>{{ module.label }}</span>
-        </router-link>
+          <h4
+            class="product-sidebar__section-heading"
+            :class="{ 'product-sidebar__section-heading--hidden': !section.label }"
+          >
+            {{ section.label || '项目入口' }}
+          </h4>
+          <router-link
+            v-for="module in section.items"
+            :key="module.key"
+            class="product-sidebar__module-link"
+            :class="{ 'product-sidebar__module-link--selected': module.selected }"
+            :to="module.path"
+            :aria-label="module.label"
+            :aria-current="module.selected ? 'page' : undefined"
+          >
+            <span aria-hidden="true">{{ module.mark }}</span>
+            <span>{{ module.label }}</span>
+          </router-link>
+        </div>
       </nav>
 
       <p v-else class="product-sidebar__archive-note">
@@ -174,6 +186,34 @@ defineProps({
 .product-sidebar__modules {
   display: grid;
   gap: 4px;
+}
+
+.product-sidebar__modules {
+  gap: 12px;
+}
+
+.product-sidebar__module-section {
+  display: grid;
+  gap: 3px;
+}
+
+.product-sidebar__section-heading {
+  margin: 0;
+  padding: 0 12px 3px;
+  color: #998878;
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: .14em;
+}
+
+.product-sidebar__section-heading--hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
 }
 
 .product-sidebar__global {
@@ -347,6 +387,7 @@ defineProps({
 .product-sidebar--collapsed .product-sidebar__nav-label,
 .product-sidebar--collapsed .product-sidebar__project-kicker,
 .product-sidebar--collapsed .product-sidebar__project-title,
+.product-sidebar--collapsed .product-sidebar__section-heading,
 .product-sidebar--collapsed .product-sidebar__archive-note,
 .product-sidebar--collapsed .product-sidebar__local-note span:last-child {
   position: absolute;

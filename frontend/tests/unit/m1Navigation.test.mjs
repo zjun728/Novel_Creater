@@ -18,23 +18,26 @@ test('the active router delegates only to the canonical project route registry',
   assert.doesNotMatch(router, /path:\s*['"]\/project\/|path:\s*['"]\/writer\/|path:\s*['"]\/settings['"]/)
 })
 
-test('project overview renders explicit route hydration states', async () => {
-  const [overview, archived, missing, context] = await Promise.all([
+test('project overview renders explicit route and read-only archive states', async () => {
+  const [overview, header, missing, context] = await Promise.all([
     readSource('views/ProjectOverviewView.vue'),
-    readSource('views/ArchivedProjectStatusView.vue'),
+    readSource('components/projects/ProjectPageHeader.vue'),
     readSource('views/NotFoundView.vue'),
     readSource('composables/useRouteProject.js'),
   ])
 
   assert.match(overview, /useRouteProject/)
-  assert.match(overview, /ArchivedProjectStatusView/)
+  assert.match(overview, /loadOverview/)
+  assert.match(overview, /overview\.project\.lifecycle === 'archived'/)
   assert.match(overview, /NotFoundView/)
-  for (const state of ['loading', 'active', 'archived', 'missing', 'error']) {
+  for (const state of ['loading', 'archived', 'missing', 'error', 'stale']) {
     assert.match(overview, new RegExp(`['"]${state}['"]`))
   }
-  assert.match(archived, /恢复项目/)
-  assert.match(archived, /返回项目库/)
-  assert.match(archived, /expectedLifecycleRevision|lifecycleRevision/)
+  assert.match(header, /已归档 · 只读/)
+  assert.match(overview, /正在读取当前项目概览/)
+  assert.match(overview, /项目概览暂时无法加载/)
+  assert.match(overview, /项目不存在或已被删除/)
+  assert.doesNotMatch(overview, /ArchivedProjectStatusView|ProjectBackupPanel/)
   assert.match(missing, /返回项目库/)
   assert.match(context, /route\.params\.projectId/)
   assert.doesNotMatch(context, /onBeforeUnmount|currentProject\s*=\s*null|invalidateOpenProject/)

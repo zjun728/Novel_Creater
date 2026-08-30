@@ -134,9 +134,25 @@ test('active and archived project contexts have different module surfaces', asyn
       ['创作种子', '/projects/project%201/seeds', false],
       ['创作契约', '/projects/project%201/contract', false],
       ['创作圣经', '/projects/project%201/bible', false],
-      ['故事规划', '/projects/project%201/planning/volumes', false],
+      ['分卷规划', '/projects/project%201/planning/volumes', false],
+      ['情节线', '/projects/project%201/planning/plots', false],
+      ['故事块', '/projects/project%201/planning/story-blocks', false],
       ['作品稿件', '/projects/project%201/manuscript', false],
       ['模型绑定', '/projects/project%201/settings/models', false],
+      ['导出与备份', '/projects/project%201/settings/export', false],
+    ],
+  )
+  assert.deepEqual(
+    active.projectContext.sections.map(section => [
+      section.label,
+      section.items.map(item => item.label),
+    ]),
+    [
+      ['', ['项目概览']],
+      ['创作基础', ['创作种子', '创作契约', '创作圣经']],
+      ['故事规划', ['分卷规划', '情节线', '故事块']],
+      ['写作与稿件', ['作品稿件']],
+      ['项目配置', ['模型绑定', '导出与备份']],
     ],
   )
   const seeds = createProductShellModel({
@@ -187,8 +203,11 @@ test('active and archived project contexts have different module surfaces', asyn
       ['项目概览', '/projects/archived-1/overview', true],
       ['创作契约', '/projects/archived-1/contract', false],
       ['创作圣经', '/projects/archived-1/bible', false],
-      ['故事规划', '/projects/archived-1/planning/volumes', false],
+      ['分卷规划', '/projects/archived-1/planning/volumes', false],
+      ['情节线', '/projects/archived-1/planning/plots', false],
+      ['故事块', '/projects/archived-1/planning/story-blocks', false],
       ['作品稿件', '/projects/archived-1/manuscript', false],
+      ['导出与备份', '/projects/archived-1/settings/export', false],
     ],
   )
   assert.equal(archived.routeTitle, '已归档项目')
@@ -216,7 +235,7 @@ test('active and archived project contexts have different module surfaces', asyn
   )
 })
 
-test('all planning tabs select one shared project module and keep archive copy truthful', async () => {
+test('each planning tab selects its own truthful grouped navigation item', async () => {
   const { createProductShellModel } = await loadShellModule()
   const titles = {
     ProjectPlanningVolumes: '分卷规划',
@@ -230,9 +249,13 @@ test('all planning tabs select one shared project module and keep archive copy t
       }),
       project: { id: 'project-1', title: '典镇山河', archivedAt: null },
     })
-    const planning = shell.projectContext.modules.find(item => item.key === 'planning')
+    const planning = shell.projectContext.modules.find(item => item.selected)
     assert.equal(planning.selected, true)
-    assert.equal(planning.path, '/projects/project-1/planning/volumes')
+    assert.equal(planning.path, {
+      ProjectPlanningVolumes: '/projects/project-1/planning/volumes',
+      ProjectPlanningPlots: '/projects/project-1/planning/plots',
+      ProjectPlanningStoryBlocks: '/projects/project-1/planning/story-blocks',
+    }[name])
     assert.equal(shell.routeTitle, titles[name])
   }
 
@@ -242,7 +265,7 @@ test('all planning tabs select one shared project module and keep archive copy t
     }),
     project: { id: 'old', title: '旧稿', archivedAt: 1 },
   })
-  assert.equal(archived.projectContext.modules.find(item => item.key === 'planning').selected, true)
+  assert.equal(archived.projectContext.modules.find(item => item.key === 'plots').selected, true)
   assert.equal(archived.routeTitle, '已归档情节线规划')
 
   const archivedStoryBlocks = createProductShellModel({
@@ -252,7 +275,7 @@ test('all planning tabs select one shared project module and keep archive copy t
     project: { id: 'old', title: '旧稿', archivedAt: 1 },
   })
   assert.equal(
-    archivedStoryBlocks.projectContext.modules.find(item => item.key === 'planning').selected,
+    archivedStoryBlocks.projectContext.modules.find(item => item.key === 'story-blocks').selected,
     true,
   )
   assert.equal(archivedStoryBlocks.routeTitle, '已归档故事块规划')
@@ -444,8 +467,23 @@ const shellRoutes = [
     component: Page,
   },
   {
+    path: '/projects/:projectId/planning/story-blocks',
+    name: 'ProjectPlanningStoryBlocks',
+    component: Page,
+  },
+  {
+    path: '/projects/:projectId/manuscript',
+    name: 'ProjectManuscript',
+    component: Page,
+  },
+  {
     path: '/projects/:projectId/settings/models',
     name: 'ProjectModelSettings',
+    component: Page,
+  },
+  {
+    path: '/projects/:projectId/settings/export',
+    name: 'ProjectExport',
     component: Page,
   },
   {
@@ -619,13 +657,24 @@ test('the real project overview consumes shell hydration without a duplicate rea
   const requests = []
   global.fetch = async url => {
     requests.push(String(url))
-    if (String(url).endsWith('/manuscript')) {
+    if (String(url).endsWith('/overview')) {
       return new Response(JSON.stringify({
-        projectId: 'project-1',
-        title: '典镇山河',
-        lifecycle: 'active',
-        summary: { finalChapterCount: 0, totalScalarCount: 0 },
-        volumes: [],
+        project: {
+          id: 'project-1', title: '典镇山河', genre: '东方玄幻',
+          logline: '山河待定。', targetWords: 2_400_000, targetChapters: 800,
+          updatedAtMs: 1, lifecycle: 'active',
+        },
+        progress: {
+          authoritativeChapterNumber: 1, currentVolume: null,
+          latestFinalChapter: null, finalizedChapterCount: 0, finalizedScalarCount: 0,
+        },
+        modules: {
+          seed: 'missing', contract: 'missing', bible: 'missing',
+          planning: 'missing', outline: 'missing', writing: 'missing',
+        },
+        writerCore: { canonRevision: 0, projectionRevision: 0, synchronized: true },
+        continuity: { availability: 'pending_module', pendingCount: null },
+        recentAchievements: [],
       }), { status: 200, headers: { 'content-type': 'application/json' } })
     }
     return new Response(JSON.stringify({
@@ -678,8 +727,23 @@ test('the real project overview consumes shell hydration without a duplicate rea
           component: Page,
         },
         {
+          path: '/projects/:projectId/planning/story-blocks',
+          name: 'ProjectPlanningStoryBlocks',
+          component: Page,
+        },
+        {
+          path: '/projects/:projectId/manuscript',
+          name: 'ProjectManuscript',
+          component: Page,
+        },
+        {
           path: '/projects/:projectId/settings/models',
           name: 'ProjectModelSettings',
+          component: Page,
+        },
+        {
+          path: '/projects/:projectId/settings/export',
+          name: 'ProjectExport',
           component: Page,
         },
       ],
@@ -693,7 +757,7 @@ test('the real project overview consumes shell hydration without a duplicate rea
 
     assert.deepEqual(requests, [
       'http://127.0.0.1:8000/api/projects/project-1',
-      'http://127.0.0.1:8000/api/projects/project-1/manuscript',
+      'http://127.0.0.1:8000/api/projects/project-1/overview',
     ])
     assert.match(html, /class="product-sidebar__project-title"[^>]*>典镇山河</)
   } finally {
@@ -854,18 +918,16 @@ test('provider settings route wraps only the safe Provider and model surface', a
   assert.equal(retiredSettings, '')
 })
 
-test('project overview renders one server-authoritative Phase 2 next action', async () => {
+test('project overview renders manual module links without server-selected navigation authority', async () => {
   const overview = await readFile(
     new URL('../../src/views/ProjectOverviewView.vue', import.meta.url),
     'utf8',
   )
 
   assert.match(overview, /useProjectStore/)
-  assert.match(overview, /import \{ mapProjectNextAction \}/)
-  assert.match(overview, /computed\(\(\) => mapProjectNextAction\(preparation\.value\)\)/)
-  assert.match(overview, /:to="actionCopy\.targetPath"/)
-  assert.equal((overview.match(/class="overview-next-action"/g) || []).length, 1)
-  assert.doesNotMatch(overview, /projectContractPath|projectBiblePath/)
+  assert.match(overview, /projectContractPath|projectBiblePath/)
+  assert.match(overview, /class="overview-module"/)
+  assert.doesNotMatch(overview, /mapProjectNextAction|actionCopy|overview-next-action/)
   assert.doesNotMatch(overview, /WriterView|\/writer\//)
 })
 

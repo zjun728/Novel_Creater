@@ -14,6 +14,7 @@ const FinalChapterReaderView = () => import('../views/FinalChapterReaderView.vue
 const ProviderSettingsView = () => import('../views/ProviderSettingsView.vue')
 const ApplicationSettingsView = () => import('../views/ApplicationSettingsView.vue')
 const ProjectModelSettingsView = () => import('../views/ProjectModelSettingsView.vue')
+const ProjectExportView = () => import('../views/ProjectExportView.vue')
 const NotFoundView = () => import('../views/NotFoundView.vue')
 
 const segment = value => encodeURIComponent(String(value))
@@ -93,6 +94,10 @@ export function projectModelSettingsPath(projectId) {
   return `/projects/${segment(projectId)}/settings/models`
 }
 
+export function projectExportPath(projectId) {
+  return `/projects/${segment(projectId)}/settings/export`
+}
+
 export function chapterWriterPath(projectId, chapterNumber) {
   return `/projects/${segment(projectId)}/write/chapters/${positiveChapterNumber(chapterNumber)}`
 }
@@ -145,6 +150,12 @@ export const projectRoutes = Object.freeze([
     path: '/projects/:projectId/settings/models',
     name: 'ProjectModelSettings',
     component: ProjectModelSettingsView,
+    props: true,
+  },
+  {
+    path: '/projects/:projectId/settings/export',
+    name: 'ProjectExport',
+    component: ProjectExportView,
     props: true,
   },
   {

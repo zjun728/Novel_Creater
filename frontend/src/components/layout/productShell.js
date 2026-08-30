@@ -14,9 +14,12 @@ import {
   projectContractPath,
   projectBiblePath,
   planningVolumesPath,
+  planningPlotsPath,
+  planningStoryBlocksPath,
   parsePositiveChapterNumber,
   manuscriptPath,
   projectModelSettingsPath,
+  projectExportPath,
   projectOverviewPath,
   projectSeedsPath,
   providerSettingsPath,
@@ -97,6 +100,9 @@ function routeTitle(route, project) {
   if (name === 'ProjectModelSettings') {
     return isArchived(project) ? '已归档模型绑定' : '模型绑定'
   }
+  if (name === 'ProjectExport') {
+    return isArchived(project) ? '已归档项目导出与备份' : '导出与备份'
+  }
   if (name === 'ProjectManuscript') return '作品稿件'
   if (name === 'FinalChapterReader') {
     try { return `第 ${parsePositiveChapterNumber(route?.params?.chapterNumber)} 章定稿` } catch { return '章节定稿' }
@@ -134,69 +140,57 @@ export function createProductShellModel({
   const overviewPath = hasMatchingProject
     ? projectOverviewPath(project.id)
     : null
-  const projectContext = hasMatchingProject
-    ? {
+  let projectContext = null
+  if (hasMatchingProject) {
+    const section = (label, items) => ({ label, items })
+    const item = (key, label, path, mark, routeNames) => ({
+      key,
+      label,
+      path,
+      mark,
+      selected: routeNames.includes(routeName(route)),
+    })
+    const sections = [
+      section('', [
+        item('overview', '项目概览', overviewPath, '概', ['ProjectOverview']),
+      ]),
+      section('创作基础', [
+        ...(!archived ? [
+          item('seeds', '创作种子', projectSeedsPath(project.id), '种', ['ProjectSeeds']),
+        ] : []),
+        item('contract', '创作契约', projectContractPath(project.id), '契', ['ProjectContract']),
+        item('bible', '创作圣经', projectBiblePath(project.id), '圣', ['ProjectBible']),
+      ]),
+      section('故事规划', [
+        item('volumes', '分卷规划', planningVolumesPath(project.id), '卷', ['ProjectPlanningVolumes']),
+        item('plots', '情节线', planningPlotsPath(project.id), '线', ['ProjectPlanningPlots']),
+        item('story-blocks', '故事块', planningStoryBlocksPath(project.id), '块', ['ProjectPlanningStoryBlocks']),
+      ]),
+      section('写作与稿件', [
+        item(
+          'manuscript',
+          '作品稿件',
+          manuscriptPath(project.id),
+          '稿',
+          ['ProjectManuscript', 'FinalChapterReader', 'ChapterWriter'],
+        ),
+      ]),
+      section('项目配置', [
+        ...(!archived ? [
+          item('models', '模型绑定', projectModelSettingsPath(project.id), '模', ['ProjectModelSettings']),
+        ] : []),
+        item('export', '导出与备份', projectExportPath(project.id), '存', ['ProjectExport']),
+      ]),
+    ]
+    projectContext = {
         id: String(project.id),
         title: String(project.title || '未命名项目'),
         archived,
         statusLabel: archived ? '已归档' : '',
-        modules: [
-          {
-            key: 'overview',
-            label: '项目概览',
-            path: overviewPath,
-            mark: '概',
-            selected: routeName(route) === 'ProjectOverview',
-          },
-          ...(!archived ? [{
-            key: 'seeds',
-            label: '创作种子',
-            path: projectSeedsPath(project.id),
-            mark: '种',
-            selected: routeName(route) === 'ProjectSeeds',
-          }] : []),
-          {
-            key: 'contract',
-            label: '创作契约',
-            path: projectContractPath(project.id),
-            mark: '契',
-            selected: routeName(route) === 'ProjectContract',
-          },
-          {
-            key: 'bible',
-            label: '创作圣经',
-            path: projectBiblePath(project.id),
-            mark: '圣',
-            selected: routeName(route) === 'ProjectBible',
-          },
-          {
-            key: 'planning',
-            label: '故事规划',
-            path: planningVolumesPath(project.id),
-            mark: '规',
-            selected: [
-              'ProjectPlanningVolumes',
-              'ProjectPlanningPlots',
-              'ProjectPlanningStoryBlocks',
-            ].includes(routeName(route)),
-          },
-          {
-            key: 'manuscript',
-            label: '作品稿件',
-            path: manuscriptPath(project.id),
-            mark: '稿',
-            selected: ['ProjectManuscript', 'FinalChapterReader'].includes(routeName(route)),
-          },
-          ...(!archived ? [{
-            key: 'models',
-            label: '模型绑定',
-            path: projectModelSettingsPath(project.id),
-            mark: '模',
-            selected: routeName(route) === 'ProjectModelSettings',
-          }] : []),
-        ],
+        sections,
+        modules: sections.flatMap(group => group.items),
       }
-    : null
+  }
 
   const assetBreadcrumbs = routeName(route) === 'StyleLibrary'
     ? [
