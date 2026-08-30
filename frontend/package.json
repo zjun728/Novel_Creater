@@ -10,6 +10,8 @@
     "test:unit": "node ../scripts/run-tests.mjs frontend-unit",
     "test:e2e:m1": "node e2e/run-milestone1.mjs",
     "test:e2e:product-shell": "node e2e/run-product-shell.mjs",
+    "test:e2e:p0-c": "node e2e/run-p0-c.mjs",
+    "test:browser:p0-c": "node ../scripts/run-tests.mjs browser-p0-c",
     "test:e2e:phase2a": "node e2e/run-phase2a.mjs",
     "test:e2e:phase2b": "node e2e/run-phase2b.mjs",
     "test:e2e:phase2c": "node e2e/run-phase2c.mjs",
