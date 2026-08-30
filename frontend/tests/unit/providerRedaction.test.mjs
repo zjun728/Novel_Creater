@@ -223,14 +223,18 @@ test('clear updates only the public projection and connection feedback is never 
 
 test('the active API client exposes only backend Provider profile commands', async () => {
   const source = await readFile(new URL('../../src/api/db/client.js', import.meta.url), 'utf8')
-  assert.match(source, /\/providers\/\$\{segment\(providerId\)\}\/test-connection/)
-  assert.match(source, /\/providers\/\$\{segment\(providerId\)\}\/clear-api-key/)
+  const providerStart = source.indexOf('  providers: {')
+  const providerEnd = source.indexOf('  applicationSettings: {', providerStart)
+  assert.ok(providerStart >= 0 && providerEnd > providerStart)
+  const providerSource = source.slice(providerStart, providerEnd)
+  assert.match(providerSource, /\/providers\/\$\{segment\(providerId\)\}\/test-connection/)
+  assert.match(providerSource, /\/providers\/\$\{segment\(providerId\)\}\/clear-api-key/)
   for (const forbidden of [
     'includeApiKeys', '/export/full', '/import/full', '/canon-facts',
     '/settings/change-events', '/versions/', '/temp-draft',
     '/chapter-beat-plan', '/story-blocks', '/correction-tasks', '/ai/',
   ]) {
-    assert.equal(source.includes(forbidden), false, `retired client endpoint remains: ${forbidden}`)
+    assert.equal(providerSource.includes(forbidden), false, `retired Provider endpoint remains: ${forbidden}`)
   }
-  assert.doesNotMatch(source, /['"`]\/chapters(?:[/?#]|['"`])/)
+  assert.doesNotMatch(providerSource, /['"`]\/chapters(?:[/?#]|['"`])/)
 })

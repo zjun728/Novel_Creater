@@ -632,8 +632,9 @@ def _authority_hash(entity_type: str, data: dict[str, object]) -> str | None:
     if not isinstance(payload, dict):
         return None
     if entity_type == "creative-seed-revision":
-        from backend.domain.seeds import SeedPayload
-        return canonical_hash(SeedPayload.model_validate(payload, strict=False))
+        from backend.domain.seeds import decode_seed_revision, seed_payload_hash
+        seed, _provenance = decode_seed_revision(payload)
+        return seed_payload_hash(seed)
     if entity_type == "story-engine-option":
         from backend.domain.story_engines import StoryEngineOption
         return canonical_hash(StoryEngineOption.model_validate(payload, strict=False))
@@ -984,17 +985,16 @@ def _validate_publication_references(package: VerifiedProjectPackage) -> None:
 
 def _validate_source_hashes(package: VerifiedProjectPackage) -> None:
     from backend.domain.json_contracts import canonical_hash
-    from backend.domain.seeds import SeedPayload, decode_seed_revision
+    from backend.domain.seeds import SeedPayload, decode_seed_revision, seed_payload_hash
     from backend.domain.story_engines import StoryEngineOption
     try:
         for record in package.graph_index.values():
             if record.entity_type == "creative-seed-revision":
                 raw = record.data.get("payload")
-                try:
-                    payload = SeedPayload.model_validate(thaw_json_value(raw), strict=False)
-                except Exception:
-                    payload, _provenance = decode_seed_revision(canonical_line(raw).decode("utf-8"))
-                if record.data.get("contentHash") != canonical_hash(payload):
+                payload, _provenance = decode_seed_revision(
+                    canonical_line(raw).decode("utf-8")
+                )
+                if record.data.get("contentHash") != seed_payload_hash(payload):
                     raise ValueError
             elif record.entity_type == "story-engine-option":
                 raw = record.data.get("payload")
@@ -1763,17 +1763,16 @@ def _validate_graph(records: tuple[PackageRecord, ...]) -> dict[tuple[str, str],
         if set(by_task) != set(TASK_KEYS) or len(by_task) != len(TASK_KEYS) or len({item.logical_id for item in items}) != len(TASK_KEYS):
             raise _invalid()
     from backend.domain.json_contracts import canonical_hash
-    from backend.domain.seeds import SeedPayload, decode_seed_revision
+    from backend.domain.seeds import SeedPayload, decode_seed_revision, seed_payload_hash
     for revision in (record for record in records if record.entity_type == "creative-seed-revision"):
         try:
             raw_payload = revision.data.get("payload")
-            try:
-                payload = SeedPayload.model_validate(raw_payload, strict=True)
-            except Exception:
-                payload, _provenance = decode_seed_revision(canonical_line(raw_payload).decode("utf-8"))
+            payload, _provenance = decode_seed_revision(
+                canonical_line(raw_payload).decode("utf-8")
+            )
         except Exception:
             raise _invalid() from None
-        if revision.data.get("contentHash") != canonical_hash(payload):
+        if revision.data.get("contentHash") != seed_payload_hash(payload):
             raise _invalid()
     for record in records:
         if record.entity_type == "corpus-revision":

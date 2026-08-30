@@ -82,7 +82,25 @@ async def run_cli(
             )
         output(_format_package(package))
         return 0
-    if connection_config is None:
+    runtime_snapshot = None
+    if transaction_factory is None:
+        from backend.config import (
+            clear_runtime_configuration,
+            install_runtime_configuration,
+            load_runtime_configuration,
+        )
+
+        runtime_snapshot = load_runtime_configuration()
+        runtime_connection = runtime_snapshot.mysql_pool_options()
+        if (
+            connection_config is not None
+            and dict(connection_config) != runtime_connection
+        ):
+            raise MarketSourceSeedCommandError(
+                "Injected configuration does not match runtime configuration."
+            )
+        connection_config = runtime_connection
+    elif connection_config is None:
         from backend.config import require_mysql_config
 
         connection_config = require_mysql_config()
@@ -96,6 +114,8 @@ async def run_cli(
         raise MarketSourceSeedCommandError(
             "Database and confirmation must exactly match configuration."
         )
+    if runtime_snapshot is not None:
+        install_runtime_configuration(runtime_snapshot)
     closer = None
     if transaction_factory is None:
         from backend.database import close_pool as closer
@@ -107,8 +127,12 @@ async def run_cli(
         ).seed(package)
         output(_format_report(report))
     finally:
-        if closer is not None:
-            await closer()
+        try:
+            if closer is not None:
+                await closer()
+        finally:
+            if runtime_snapshot is not None:
+                clear_runtime_configuration(runtime_snapshot)
     return 0
 
 

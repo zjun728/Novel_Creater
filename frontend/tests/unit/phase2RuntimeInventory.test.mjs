@@ -15,6 +15,10 @@ const sourceRoot = path.join(frontendRoot, 'src')
 const CANONICAL_ROUTES = [
   ['/', undefined],
   ['/projects', 'ProjectLibrary'],
+  ['/topics/market', 'TopicMarket'],
+  ['/topics/discussions', 'TopicDiscussions'],
+  ['/topics/directions', 'TopicDirections'],
+  ['/topics/candidates', 'TopicCandidates'],
   ['/projects/archived', 'ArchivedProjects'],
   ['/assets/styles', 'StyleLibrary'],
   ['/assets/experience', 'ExperienceLibrary'],
@@ -172,6 +176,7 @@ const CANONICAL_RUNTIME = [
 
 const CANONICAL_ROUTE_VIEWS = [
   'views/ProjectLibraryView.vue',
+  'views/TopicCenterView.vue',
   'views/ArchivedProjectsView.vue',
   'views/ProjectOverviewView.vue',
   'views/ProjectSeedsView.vue',

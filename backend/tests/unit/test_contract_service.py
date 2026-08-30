@@ -13,6 +13,7 @@ from backend.domain.model_bindings import BindingItem, BindingRevision
 from backend.domain.seeds import (
     SeedPayload,
     build_seed_provenance,
+    decode_seed_revision,
     seed_revision_document,
 )
 from backend.http_errors import ProjectArchived
@@ -52,7 +53,7 @@ def add_seed_provenance(harness):
         public_notes=("作者手动保存。",),
     )
     payload_json = canonical_json(
-        seed_revision_document(SeedPayload(**SEED_PAYLOAD), provenance)
+        seed_revision_document(decode_seed_revision(SEED_PAYLOAD)[0], provenance)
     )
     harness.repository.selected_seeds["p1"]["payload_json"] = payload_json
     harness.repository.seed_revisions["seed-revision-1"][

@@ -60,7 +60,21 @@ def test_old_nine_field_revision_decodes_with_empty_new_fields_without_rehash():
     assert payload.longFormPotential == ""
     assert payload.marketBasis == ""
     assert provenance is None
-    assert stored_hash != canonical_hash(payload)
+    assert canonical_hash(payload) == stored_hash
+    assert seed_domain.seed_payload_hash(payload) == stored_hash
+
+
+def test_new_thirteen_field_seed_hash_includes_explicit_optional_fields():
+    payload = make_seed(
+        targetAudience="长篇玄幻读者",
+        storyPromise="持续升级秩序",
+        longFormPotential="支撑二百万字",
+        marketBasis="公开榜单证据",
+    )
+
+    assert seed_domain.seed_payload_hash(payload) == canonical_hash(
+        payload.model_dump(mode="json")
+    )
 
 
 def test_topic_candidate_provenance_is_internal_and_hash_valid():

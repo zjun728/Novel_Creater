@@ -6,7 +6,11 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.database import connection, transaction
-from backend.domain.seeds import SeedPayload, SeedProvenanceSelection
+from backend.domain.seeds import (
+    SeedPayload,
+    SeedProvenanceSelection,
+    seed_payload_public_document,
+)
 from backend.repositories.seeds import SeedRepository
 from backend.services.seeds import (
     ArchiveSeed,
@@ -72,7 +76,7 @@ def _public_seed(result: SeedResult) -> dict:
         "revision": result.revision,
         "revisionId": result.revision_id,
         "contentHash": result.content_hash,
-        "payload": result.payload.model_dump(mode="json"),
+        "payload": seed_payload_public_document(result.payload),
         "isSelected": result.is_selected,
         "selectionRevision": result.selection_revision,
         "capabilities": result.capabilities.model_dump(mode="json"),

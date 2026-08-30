@@ -11,8 +11,10 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PrivateAttr,
     ValidationError,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -97,6 +99,20 @@ class SeedPayload(BaseModel):
     storyPromise: str = Field(default="", max_length=SEED_FIELD_MAX_LENGTH)
     longFormPotential: str = Field(default="", max_length=SEED_FIELD_MAX_LENGTH)
     marketBasis: str = Field(default="", max_length=SEED_FIELD_MAX_LENGTH)
+    _revision_fields: frozenset[str] | None = PrivateAttr(default=None)
+
+    @model_serializer(mode="wrap")
+    def preserve_revision_shape(self, handler):
+        """Do not materialize newer defaults into immutable old revisions."""
+
+        document = handler(self)
+        if self._revision_fields is None:
+            return document
+        return {
+            key: value
+            for key, value in document.items()
+            if key in self._revision_fields
+        }
 
 
 class _FrozenSeedModel(BaseModel):
@@ -370,14 +386,44 @@ def build_seed_provenance(
 def seed_revision_document(
     payload: SeedPayload,
     provenance: SeedProvenance | None,
+    *,
+    materialize_defaults: bool = False,
 ) -> dict[str, object]:
-    document = payload.model_dump(mode="json")
+    document = (
+        seed_payload_public_document(payload)
+        if materialize_defaults
+        else payload.model_dump(mode="json")
+    )
     if provenance is not None:
         document[SEED_PROVENANCE_KEY] = provenance.model_dump(
             mode="json",
             by_alias=True,
         )
     return document
+
+
+def seed_payload_public_document(payload: SeedPayload) -> dict[str, str]:
+    """Expose all current author fields without altering stored authority."""
+
+    if not isinstance(payload, SeedPayload):
+        raise TypeError("validated seed payload is required")
+    return {
+        field_name: getattr(payload, field_name)
+        for field_name in SeedPayload.model_fields
+    }
+
+
+def seed_payload_hash(payload: SeedPayload) -> str:
+    """Hash the fields present in the persisted seed revision.
+
+    Older revisions contain nine fields. Pydantic supplies empty values for the
+    four newer display fields, but those defaults must not rewrite immutable
+    historical authority.
+    """
+
+    if not isinstance(payload, SeedPayload):
+        raise TypeError("validated seed payload is required")
+    return canonical_hash(payload)
 
 
 def decode_seed_revision(
@@ -392,6 +438,7 @@ def decode_seed_revision(
     document = dict(value)
     raw_provenance = document.pop(SEED_PROVENANCE_KEY, None)
     payload = SeedPayload.model_validate(document, strict=True)
+    object.__setattr__(payload, "_revision_fields", frozenset(document))
     if raw_provenance is None:
         return payload, None
     provenance = SeedProvenance.model_validate(raw_provenance, strict=True)

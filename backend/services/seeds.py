@@ -20,6 +20,7 @@ from backend.domain.seeds import (
     SeedSnapshotProvenance,
     build_seed_provenance,
     decode_seed_revision,
+    seed_payload_hash,
     seed_revision_document,
 )
 from backend.http_errors import (
@@ -478,8 +479,12 @@ class SeedService:
             provenance is not None and not isinstance(provenance, SeedProvenance)
         ):
             raise TypeError("validated seed values are required")
-        payload_json = canonical_json(seed_revision_document(payload, provenance))
-        content_hash = canonical_hash(payload)
+        payload_json = canonical_json(seed_revision_document(
+            payload,
+            provenance,
+            materialize_defaults=True,
+        ))
+        content_hash = seed_payload_hash(payload)
         await self.repository.insert_identity(
             session,
             {
@@ -581,9 +586,13 @@ class SeedService:
             now = self.clock()
             _, provenance = decode_seed_revision(head["payload_json"])
             payload_json = canonical_json(
-                seed_revision_document(command.payload, provenance)
+                seed_revision_document(
+                    command.payload,
+                    provenance,
+                    materialize_defaults=True,
+                )
             )
-            content_hash = canonical_hash(command.payload)
+            content_hash = seed_payload_hash(command.payload)
             revision = {
                 "id": revision_id, "project_id": command.project_id,
                 "seed_id": command.seed_id, "revision": revision_number,

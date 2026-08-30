@@ -189,6 +189,14 @@ class TopicLibraryService:
     async def save_direction(self, command: SaveTopicDirection):
         request_hash = self._request_hash(command)
         async with self._transaction() as session:
+            identity = (
+                await self._repository.lock_direction(
+                    session,
+                    command.direction_id,
+                )
+                if command.direction_id is not None
+                else None
+            )
             existing = await self._repository.find_direction_version_by_key(
                 session,
                 command.idempotency_key,
@@ -211,10 +219,6 @@ class TopicLibraryService:
                 )
             else:
                 direction_id = command.direction_id
-                identity = await self._repository.lock_direction(
-                    session,
-                    direction_id,
-                )
                 if identity is None:
                     raise TopicFailure("TOPIC_NOT_FOUND")
                 if identity["current_version"] != command.expected_version:
@@ -247,6 +251,14 @@ class TopicLibraryService:
     async def save_candidate(self, command: SaveTopicCandidate):
         request_hash = self._request_hash(command)
         async with self._transaction() as session:
+            identity = (
+                await self._repository.lock_candidate(
+                    session,
+                    command.candidate_id,
+                )
+                if command.candidate_id is not None
+                else None
+            )
             existing = await self._repository.find_candidate_version_by_key(
                 session,
                 command.idempotency_key,
@@ -270,10 +282,6 @@ class TopicLibraryService:
                 )
             else:
                 candidate_id = command.candidate_id
-                identity = await self._repository.lock_candidate(
-                    session,
-                    candidate_id,
-                )
                 if identity is None:
                     raise TopicFailure("TOPIC_NOT_FOUND")
                 if identity["status"] == "archived":

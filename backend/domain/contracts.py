@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from backend.domain.seeds import SeedPayload
+from backend.domain.seeds import SeedPayload, decode_seed_revision
 from backend.domain.json_contracts import canonical_hash
 from backend.domain.story_engines import (
     CONTRACT_COLLECTION_MAX_ITEMS,
@@ -151,6 +151,16 @@ class CreationContractPayload(BaseModel):
     )
     authorNotes: ContractText | None = None
     modelBindingRef: FrozenBindingRef | None = None
+
+    @field_validator("selectedSeed", mode="before")
+    @classmethod
+    def preserve_selected_seed_revision_shape(cls, value: object) -> object:
+        if isinstance(value, SeedPayload):
+            return value
+        payload, provenance = decode_seed_revision(value)
+        if provenance is not None:
+            raise ValueError("selectedSeed cannot contain provenance")
+        return payload
 
     @model_validator(mode="after")
     def validate_complete_contract(self) -> Self:

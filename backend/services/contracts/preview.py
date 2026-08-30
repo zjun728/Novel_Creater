@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from backend.domain.contracts import CreationContractPayload
 from backend.domain.json_contracts import canonical_hash
 from backend.domain.model_bindings import TASK_KEYS
-from backend.domain.seeds import decode_seed_revision
+from backend.domain.seeds import decode_seed_revision, seed_payload_hash
 from .drafts import (
     BindingContractRef,
     ContractConflict,
@@ -182,7 +182,7 @@ class ContractPreviewService(ContractDraftService):
                 seed_payload is not None
                 and (
                 frozen_seed.get("seed_hash") != draft.seedHash
-                or canonical_hash(seed_payload) != draft.seedHash
+                or seed_payload_hash(seed_payload) != draft.seedHash
                 )
             ):
                 reasons.append("seed_invalid")
@@ -473,7 +473,7 @@ class ContractPreviewService(ContractDraftService):
             or selected.get("seed_hash") != draft.seedHash
             or frozen_seed.get("seed_revision_id") != draft.seedRevisionId
             or frozen_seed.get("seed_hash") != draft.seedHash
-            or canonical_hash(seed_payload) != draft.seedHash
+            or seed_payload_hash(seed_payload) != draft.seedHash
             or engine.get("status") != "succeeded"
             or int(engine.get("selection_revision") or 0)
                 != saved.selection_revision

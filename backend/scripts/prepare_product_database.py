@@ -1514,7 +1514,7 @@ async def _default_official_audit(
         )
         if (
             type(refresh_rows) is not tuple
-            or len(expected_source_ids) != 2
+            or not expected_source_ids
             or any(type(source_id) is not str or not source_id for source_id in expected_source_ids)
             or len(set(expected_source_ids)) != len(expected_source_ids)
             or len(refresh_rows) != len(expected_source_ids)

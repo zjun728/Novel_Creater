@@ -47,6 +47,7 @@ EXPECTED_ROUTER_FILES = {
     "seeds.py",
     "story_engines.py",
     "style_trials.py",
+    "topics.py",
 }
 
 
