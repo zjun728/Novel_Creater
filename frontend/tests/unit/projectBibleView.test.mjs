@@ -322,6 +322,8 @@ test('mounted ProjectBibleView presents every mode label without exposing raw st
     assert.equal(currentStatusNotes.filter(value => value === '创作圣经状态需要重新读取。').length, 1)
     assert.doesNotMatch(text(root), /bible_confirmed|contract_unavailable|contract_basis_invalid|unknown-current-reason-sentinel/)
     await router.push('/projects/head/bible'); await flush(); assert.equal(text(eyebrow()), 'CREATION BIBLE · 已确认'); assert.match(text(root), /已确认，作为项目永久基线/); area = walk(root).find(value => value.type === 'textarea'); assert.equal(area.props.readonly, true); assert.equal(area.props.disabled, false); assert.equal(byText(root, '调整未来设计'), undefined)
+    const confirmedActions = walk(root).filter(value => value.type === 'button').map(value => text(value).trim())
+    assert.deepEqual(confirmedActions, ['修订历史'])
     await router.push('/projects/super/bible'); await flush(); assert.equal(text(eyebrow()), 'CREATION BIBLE · 历史修订'); assert.match(text(root), /此修订已被替代/); assert.equal(byText(root, '调整未来设计'), undefined)
     await router.push('/projects/archived/bible'); await flush(); assert.equal(text(eyebrow()), 'CREATION BIBLE · 只读归档'); assert.match(text(root), /此项目或当前服务端状态为只读/); area = walk(root).find(value => value.type === 'textarea' && value.props.value === 'ARCHIVED HEAD'); assert.ok(area); assert.equal(area.props.readonly, true)
     assert.doesNotMatch(text(eyebrow()), /\b(?:current|head|superseded|archived)\b|bible_confirmed/)

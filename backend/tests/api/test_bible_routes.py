@@ -487,6 +487,7 @@ def test_generation_routes_accept_only_browser_command_and_return_safe_facts():
     assert command.expected_draft_version == 0
     assert command.expected_head_revision == 0
     assert command.idempotency_key == "generation-key-1"
+    assert [call[0] for call in generation.calls] == ["generate", "get"]
     rendered = str(created.json()).lower()
     assert all(
         forbidden not in rendered

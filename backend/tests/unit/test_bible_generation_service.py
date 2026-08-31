@@ -525,6 +525,8 @@ async def test_success_is_one_call_outside_transaction_and_replays_atomically():
     assert transactions.gateway_observed_transaction is False
     assert all(for_update for _, for_update in contracts.calls)
     assert repository.draft["draft_version"] == 1
+    assert repository.draft["project_id"] == PROJECT_ID
+    assert repository.draft["active_slot"] == 1
     assert repository.draft["binding_revision_id"] == "binding-revision-1"
     assert repository.draft["binding_hash"] == "b" * 64
     assert repository.draft["draft_json"] == canonical_json(_bible())

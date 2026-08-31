@@ -35,6 +35,7 @@ test('confirmed contract components present a permanent baseline without clone c
   assert.match(contents, /Number\(contractStore\.head\?\.revision \|\| 0\) > 0/)
   assert.doesNotMatch(contents, /contractStore\.contractReady\s*&&\s*!contractStore\.draft/)
   assert.doesNotMatch(contents, /创建新修订|调整未来设计|cloneRevision/)
+  assert.doesNotMatch(contents, /contracts\/[^`'"\n]*\/clone/)
 })
 
 function formalAssetRecommendations(styles = [], cards = [], corpus = []) {
@@ -685,7 +686,8 @@ test('wizard treats a revisioned contract head as a permanent baseline despite s
       node.type === 'nav' && node.props['aria-label'] === '创作契约五个步骤'
     )), undefined)
     assert.match(rendered, /雾港错钟/)
-    assert.ok(findByText(mounted.root, 'button', '历史修订'))
+    const buttons = walk(mounted.root).filter(node => node.type === 'button')
+    assert.deepEqual(buttons.map(textContent).sort(), ['历史修订', '查看修订历史'])
   } finally {
     mounted.app.unmount()
   }

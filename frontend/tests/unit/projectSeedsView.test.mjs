@@ -91,8 +91,8 @@ test('handed-off seed shows all author fields, exact provenance and pending conf
 test('selected seed is read-only under the existing one-time confirmation authority', async () => {
   const html = await render({ selected: true })
   assert.match(html, /当前选定/)
-  assert.doesNotMatch(html, /<button[^>]*>[\s\S]*?编辑[\s\S]*?<\/button>/)
-  assert.doesNotMatch(html, /确认这个种子并进入创作契约<\/button>/)
+  for (const value of Object.values(payload)) assert.match(html, new RegExp(value))
+  assert.doesNotMatch(html, /<(?:button|input|textarea|select)\b/)
 })
 
 test('project seed workspace contains no duplicate market manager, analysis, or chat', async () => {
