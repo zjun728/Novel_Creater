@@ -6,6 +6,7 @@ import { createModalFocusManager } from '@/components/common/modalFocusManager.j
 const props = defineProps({
   open: { type: Boolean, default: false },
   title: { type: String, required: true },
+  closeDisabled: { type: Boolean, default: false },
 })
 const emit = defineEmits(['close'])
 const dialog = ref(null)
@@ -31,7 +32,7 @@ function cancelFocus() {
   focusManager.unmount()
 }
 
-function close() { emit('close') }
+function close() { if (!props.closeDisabled) emit('close') }
 function handleKeydown(event) {
   if (event.key === 'Escape') { event.preventDefault(); close(); return }
   if (event.key === 'Tab' && !focusManager.trapTab(event)) {

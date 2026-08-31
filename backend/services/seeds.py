@@ -15,6 +15,7 @@ from backend.domain.seeds import (
     SeedInspirationProvenance,
     SeedMutationCapabilities,
     SeedPayload,
+    seed_recorded_fields,
     SeedProvenance,
     SeedProvenanceSelection,
     SeedSnapshotProvenance,
@@ -90,6 +91,7 @@ class SeedResult(BaseModel):
     revision_id: str
     content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     payload: SeedPayload
+    recorded_fields: tuple[str, ...] = tuple(SeedPayload.model_fields)
     provenance: SeedProvenance | None = None
     is_selected: bool
     selection_revision: int = Field(ge=0)
@@ -226,6 +228,7 @@ class SeedService:
             revision_id=row.get("revision_id", row.get("id")),
             content_hash=row["content_hash"],
             payload=payload,
+            recorded_fields=seed_recorded_fields(row["payload_json"]),
             provenance=provenance,
             is_selected=selected,
             selection_revision=(
@@ -525,6 +528,7 @@ class SeedService:
             revision_id=revision_id,
             content_hash=content_hash,
             payload=payload,
+            recorded_fields=tuple(SeedPayload.model_fields),
             is_selected=False,
             provenance=provenance,
             selection_revision=selection_revision,
@@ -614,6 +618,7 @@ class SeedService:
             status=head["status"], revision=revision_number,
             revision_id=revision_id, content_hash=content_hash,
             payload=command.payload, is_selected=is_selected,
+            recorded_fields=tuple(SeedPayload.model_fields),
             provenance=provenance,
             selection_revision=selection_revision,
             capabilities=self._capabilities(

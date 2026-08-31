@@ -1,6 +1,7 @@
 /** Writer Core product API client. */
 
 import { ApiError, parseApiError } from './api-error.js'
+import { sha256Text } from '../../utils/sha256Text.js'
 import { unicodeScalarLength } from '../../utils/unicodeScalarText.js'
 import { parseProjectOverview } from '../../application/projects/projectOverview.js'
 
@@ -306,7 +307,306 @@ const BIBLE_ARRAY_FIELDS = [
   'relationshipDynamics', 'continuityGuardrails', 'openDesignQuestions',
 ]
 
-const seedPayload = value => pickDefined(value, SEED_FIELDS)
+function seedPayload(value) {
+  const payload = pickDefined(value, SEED_FIELDS)
+  if (Object.keys(payload).length !== SEED_FIELDS.length
+    || !SEED_FIELDS.every(field => typeof payload[field] === 'string'
+      && hasValidUnicode(payload[field]) && unicodeScalarLength(payload[field]) <= 2000)
+    || !SEED_REQUIRED_FIELDS.every(field => payload[field].trim())) {
+    throw new TypeError('Invalid seed payload')
+  }
+  return payload
+}
+const seedProvenanceSelection = value => pickDefined(value, [
+  'kind', 'snapshotIds', 'analysisId', 'inspirationAttemptId', 'publicNotes',
+])
+const SEED_REQUIRED_FIELDS = SEED_FIELDS.slice(0, 9)
+const SEED_CAPABILITY_FIELDS = [
+  'referenced', 'hasFinalChapters', 'canEdit', 'canSelect', 'canArchive',
+  'canRestore', 'canPermanentlyDelete',
+]
+
+function invalidSeedMutationResponse() {
+  throw new ApiError({ code: 'invalid_response', message: '服务返回了无效响应' })
+}
+
+function seedCanonicalDocument(value) {
+  if (Array.isArray(value)) return value.map(seedCanonicalDocument)
+  if (value && typeof value === 'object') return Object.fromEntries(
+    Object.keys(value).sort().map(key => [key, seedCanonicalDocument(value[key])]),
+  )
+  return value
+}
+
+async function seedCanonicalHash(value) {
+  try { return await sha256Text(JSON.stringify(seedCanonicalDocument(value))) } catch { invalidSeedMutationResponse() }
+}
+
+function seedPublicText(value, maxLength) {
+  return typeof value === 'string' && value === value.trim() && value.length > 0
+    && hasValidUnicode(value) && unicodeScalarLength(value) <= maxLength
+}
+
+function seedPublicHash(value) {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/u.test(value)
+}
+
+function seedPublicObject(value, fields) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).length === fields.length && fields.every(field => Object.hasOwn(value, field))
+}
+
+function seedPublicUrl(value) {
+  if (!seedPublicText(value, 2048) || /[\x00-\x1f]/u.test(value)) return false
+  try {
+    const parsed = new URL(value)
+    return ['http:', 'https:'].includes(parsed.protocol) && Boolean(parsed.hostname)
+      && !parsed.username && !parsed.password && !parsed.search && !parsed.hash
+  } catch { return false }
+}
+
+function seedSnapshotProvenance(value) {
+  if (!seedPublicObject(value, ['id', 'hash', 'sourceId', 'sourceURL', 'capturedAt'])
+    || !seedPublicText(value.id, 36) || !seedPublicHash(value.hash)
+    || !seedPublicText(value.sourceId, 36) || !seedPublicUrl(value.sourceURL)
+    || !Number.isSafeInteger(value.capturedAt) || value.capturedAt < 0) invalidSeedMutationResponse()
+  return value
+}
+
+function seedAnalysisProvenance(value) {
+  if (!seedPublicObject(value, ['id', 'hash']) || !seedPublicText(value.id, 36)
+    || !seedPublicHash(value.hash)) invalidSeedMutationResponse()
+  return value
+}
+
+function seedInspirationProvenance(value) {
+  if (!seedPublicObject(value, ['id', 'resultHash']) || !seedPublicText(value.id, 36)
+    || !seedPublicHash(value.resultHash)) invalidSeedMutationResponse()
+  return value
+}
+
+function seedTopicCandidateProvenance(value) {
+  if (!seedPublicObject(value, ['id', 'version', 'hash']) || !seedPublicText(value.id, 36)
+    || !Number.isSafeInteger(value.version) || value.version <= 0 || !seedPublicHash(value.hash)) invalidSeedMutationResponse()
+  return value
+}
+
+function sameSeedProvenance(left, right) {
+  const leftValue = left?.provenance ?? null
+  const rightValue = right?.provenance ?? null
+  return leftValue === rightValue || (leftValue !== null && rightValue !== null
+    && JSON.stringify(seedCanonicalDocument(leftValue)) === JSON.stringify(seedCanonicalDocument(rightValue)))
+}
+
+async function seedPublicProvenance(value) {
+  const fields = ['kind', 'snapshots', 'analysis', 'inspirationAttempt', 'topicCandidate', 'publicNotes', 'provenanceHash']
+  if (!seedPublicObject(value, fields) || !['manual', 'market_snapshot', 'market_analysis', 'ai_chat', 'topic_candidate'].includes(value.kind)
+    || !Array.isArray(value.snapshots) || value.snapshots.length > 4
+    || !Array.isArray(value.publicNotes) || value.publicNotes.length > 8
+    || !seedPublicHash(value.provenanceHash)) invalidSeedMutationResponse()
+  const snapshots = value.snapshots.map(seedSnapshotProvenance)
+  if (new Set(snapshots.map(item => item.id)).size !== snapshots.length
+    || !value.publicNotes.every(note => seedPublicText(note, 300)
+      && !/(?:api[\s_-]*key|base[\s_-]*url|authorization|bearer\s+[A-Za-z0-9]|password\s*[:=]|token\s*[:=])/iu.test(note))) invalidSeedMutationResponse()
+  const analysis = value.analysis === null ? null : seedAnalysisProvenance(value.analysis)
+  const inspiration = value.inspirationAttempt === null ? null : seedInspirationProvenance(value.inspirationAttempt)
+  const topicCandidate = value.topicCandidate === null ? null : seedTopicCandidateProvenance(value.topicCandidate)
+  const validKind = value.kind === 'manual'
+    ? !snapshots.length && !analysis && !inspiration && !topicCandidate
+    : value.kind === 'market_snapshot'
+      ? Boolean(snapshots.length) && !analysis && !inspiration && !topicCandidate
+      : value.kind === 'market_analysis'
+        ? Boolean(snapshots.length) && Boolean(analysis) && !inspiration && !topicCandidate
+        : value.kind === 'ai_chat'
+          ? Boolean(snapshots.length) && Boolean(analysis) && Boolean(inspiration) && !topicCandidate
+          : !analysis && !inspiration && Boolean(topicCandidate)
+  if (!validKind) invalidSeedMutationResponse()
+  const facts = { kind: value.kind, snapshots, analysis, inspirationAttempt: inspiration, publicNotes: value.publicNotes }
+  if (topicCandidate) facts.topicCandidate = topicCandidate
+  if (value.provenanceHash !== await seedCanonicalHash(facts)) invalidSeedMutationResponse()
+  return value
+}
+
+async function seedMutationResponse(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) invalidSeedMutationResponse()
+  const keys = Object.keys(value)
+  const required = ['id', 'projectId', 'status', 'revision', 'revisionId', 'contentHash', 'payload', 'recordedFields', 'isSelected', 'selectionRevision', 'capabilities']
+  if (!required.every(key => Object.hasOwn(value, key)) || keys.some(key => ![...required, 'provenance'].includes(key))) invalidSeedMutationResponse()
+  if (typeof value.id !== 'string' || !value.id || typeof value.projectId !== 'string' || !value.projectId
+    || !['candidate', 'archived'].includes(value.status) || !Number.isSafeInteger(value.revision) || value.revision <= 0
+    || typeof value.revisionId !== 'string' || !value.revisionId || !/^[0-9a-f]{64}$/u.test(value.contentHash)
+    || typeof value.isSelected !== 'boolean' || !Number.isSafeInteger(value.selectionRevision) || value.selectionRevision < 0) invalidSeedMutationResponse()
+  const payload = value.payload
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload) || Object.keys(payload).length !== SEED_FIELDS.length
+    || !SEED_FIELDS.every(field => typeof payload[field] === 'string'
+      && hasValidUnicode(payload[field]) && unicodeScalarLength(payload[field]) <= 2000)
+    || !SEED_REQUIRED_FIELDS.every(field => payload[field].trim())) invalidSeedMutationResponse()
+  const recordedFields = value.recordedFields
+  if (!Array.isArray(recordedFields) || recordedFields.length < SEED_REQUIRED_FIELDS.length
+    || recordedFields.length > SEED_FIELDS.length || recordedFields.some((field, index) => field !== SEED_FIELDS[index])) invalidSeedMutationResponse()
+  if (value.contentHash !== await seedPayloadContentHash(payload, recordedFields)) invalidSeedMutationResponse()
+  const capabilities = value.capabilities
+  if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities)
+    || Object.keys(capabilities).length !== SEED_CAPABILITY_FIELDS.length
+    || !SEED_CAPABILITY_FIELDS.every(field => typeof capabilities[field] === 'boolean')) invalidSeedMutationResponse()
+  if (value.provenance != null) await seedPublicProvenance(value.provenance)
+  return value
+}
+
+function seedMutationInteger(value, minimum) {
+  if (!Number.isSafeInteger(value) || value < minimum) invalidSeedMutationResponse()
+  return value
+}
+
+async function commandSeedMutationResponse(value, {
+  projectId, seedId, status, revision, selectionRevision, isSelected,
+}) {
+  const seed = await seedMutationResponse(value)
+  if (seed.projectId !== projectId || (seedId !== undefined && seed.id !== seedId)
+    || seed.status !== status || seed.revision !== revision
+    || seed.selectionRevision !== selectionRevision || seed.isSelected !== isSelected) invalidSeedMutationResponse()
+  return seed
+}
+
+function normalizedSeedMutationPayload(value) {
+  const payload = seedPayload(value)
+  if (Object.keys(payload).length !== SEED_FIELDS.length
+    || !SEED_FIELDS.every(field => typeof payload[field] === 'string')) invalidSeedMutationResponse()
+  return Object.fromEntries(SEED_FIELDS.map(field => [field, payload[field].trim()]))
+}
+
+function sameSeedPayload(left, right) {
+  return SEED_FIELDS.every(field => left[field] === right[field])
+}
+
+function fullSeedRecordedFields(value) {
+  return Array.isArray(value) && value.length === SEED_FIELDS.length
+    && value.every((field, index) => field === SEED_FIELDS[index])
+}
+
+async function seedPayloadContentHash(payload, recordedFields = SEED_FIELDS) {
+  // The backend hashes the fields physically persisted in a revision. Public
+  // legacy DTOs materialize newer empty fields, so recordedFields is authority.
+  return seedCanonicalHash(Object.fromEntries(recordedFields.map(field => [field, payload[field]])))
+}
+
+async function immutableSeedForCommand(value, projectId, seedId, revision, selectionRevision, status = 'candidate') {
+  const seed = await seedMutationResponse(value)
+  if (seed.projectId !== projectId || seed.id !== seedId || seed.revision !== revision
+    || seed.selectionRevision !== selectionRevision || seed.status !== status
+    || seed.isSelected !== false) invalidSeedMutationResponse()
+  return seed
+}
+
+function sameImmutableRevision(left, right) {
+  return left.revisionId === right.revisionId && left.contentHash === right.contentHash
+    && sameSeedPayload(left.payload, right.payload)
+    && left.recordedFields.length === right.recordedFields.length
+    && left.recordedFields.every((field, index) => field === right.recordedFields[index])
+    && sameSeedProvenance(left, right)
+}
+
+function normalizedSeedProvenanceSelection(value) {
+  if (value == null) return null
+  const selection = seedProvenanceSelection(value)
+  const normalized = {
+    kind: selection.kind,
+    snapshotIds: selection.snapshotIds ?? [],
+    analysisId: selection.analysisId ?? null,
+    inspirationAttemptId: selection.inspirationAttemptId ?? null,
+    publicNotes: selection.publicNotes ?? [],
+  }
+  if (!['manual', 'market_snapshot', 'market_analysis', 'ai_chat'].includes(normalized.kind)
+    || !Array.isArray(normalized.snapshotIds) || normalized.snapshotIds.length > 4
+    || !normalized.snapshotIds.every(id => seedPublicText(id, 36))
+    || new Set(normalized.snapshotIds).size !== normalized.snapshotIds.length
+    || !(normalized.analysisId === null || seedPublicText(normalized.analysisId, 36))
+    || !(normalized.inspirationAttemptId === null || seedPublicText(normalized.inspirationAttemptId, 36))
+    || !Array.isArray(normalized.publicNotes) || normalized.publicNotes.length > 8
+    || !normalized.publicNotes.every(note => seedPublicText(note, 300)
+      && !/(?:api[\s_-]*key|base[\s_-]*url|authorization|bearer\s+[A-Za-z0-9]|password\s*[:=]|token\s*[:=])/iu.test(note))) invalidSeedMutationResponse()
+  const validKind = normalized.kind === 'manual'
+    ? !normalized.snapshotIds.length && !normalized.analysisId && !normalized.inspirationAttemptId
+    : normalized.kind === 'market_snapshot'
+      ? Boolean(normalized.snapshotIds.length) && !normalized.analysisId && !normalized.inspirationAttemptId
+      : normalized.kind === 'market_analysis'
+        ? Boolean(normalized.snapshotIds.length) && Boolean(normalized.analysisId) && !normalized.inspirationAttemptId
+        : Boolean(normalized.snapshotIds.length) && Boolean(normalized.analysisId) && Boolean(normalized.inspirationAttemptId)
+  if (!validKind) invalidSeedMutationResponse()
+  return normalized
+}
+
+function matchesCreatedProvenance(seed, selection) {
+  if (selection === null) return seed.provenance == null
+  if (seed.provenance == null) return false
+  const provenance = seed.provenance
+  return provenance.kind === selection.kind
+    && provenance.publicNotes.length === selection.publicNotes.length
+    && provenance.publicNotes.every((note, index) => note === selection.publicNotes[index])
+    && provenance.snapshots.length === selection.snapshotIds.length
+    && provenance.snapshots.every((snapshot, index) => snapshot.id === selection.snapshotIds[index])
+    && (provenance.analysis?.id || null) === selection.analysisId
+    && (provenance.inspirationAttempt?.id || null) === selection.inspirationAttemptId
+    && provenance.topicCandidate === null
+}
+
+async function createSeedMutationResponse(value, projectId, payload, options) {
+  const expectedPayload = normalizedSeedMutationPayload(payload)
+  const expectedProvenance = normalizedSeedProvenanceSelection(options?.provenance)
+  const seed = await commandSeedMutationResponse(value, {
+    projectId, status: 'candidate', revision: 1, selectionRevision: 0, isSelected: false,
+  })
+  if (!sameSeedPayload(seed.payload, expectedPayload) || !fullSeedRecordedFields(seed.recordedFields)
+    || seed.contentHash !== await seedPayloadContentHash(expectedPayload)
+    || !matchesCreatedProvenance(seed, expectedProvenance)) invalidSeedMutationResponse()
+  return seed
+}
+
+async function updateSeedMutationResponse(value, projectId, seedId, data) {
+  const expectedSeedRevision = seedMutationInteger(data?.expectedSeedRevision, 1)
+  const expectedSelectionRevision = seedMutationInteger(data?.expectedSelectionRevision, 0)
+  const expectedPayload = normalizedSeedMutationPayload(data?.payload)
+  const immutableSeed = await immutableSeedForCommand(data?.immutableSeed, projectId, seedId, expectedSeedRevision, expectedSelectionRevision)
+  const seed = await commandSeedMutationResponse(value, {
+    projectId, seedId, status: 'candidate', revision: expectedSeedRevision + 1,
+    selectionRevision: expectedSelectionRevision, isSelected: false,
+  })
+  if (seed.revisionId === immutableSeed.revisionId || !sameSeedPayload(seed.payload, expectedPayload)
+    || !fullSeedRecordedFields(seed.recordedFields)
+    || seed.contentHash !== await seedPayloadContentHash(expectedPayload)
+    || !sameSeedProvenance(seed, immutableSeed)) invalidSeedMutationResponse()
+  return seed
+}
+
+async function lifecycleSeedMutationResponse(value, projectId, seedId, data, status) {
+  const expectedSeedRevision = seedMutationInteger(data?.expectedSeedRevision, 1)
+  const expectedSelectionRevision = seedMutationInteger(data?.expectedSelectionRevision, 0)
+  const immutableSeed = await immutableSeedForCommand(data?.immutableSeed, projectId, seedId, expectedSeedRevision, expectedSelectionRevision, status === 'archived' ? 'candidate' : 'archived')
+  const seed = await commandSeedMutationResponse(value, {
+    projectId, seedId, status, revision: expectedSeedRevision,
+    selectionRevision: expectedSelectionRevision, isSelected: false,
+  })
+  if (!sameImmutableRevision(seed, immutableSeed)) invalidSeedMutationResponse()
+  return seed
+}
+
+async function selectedSeedMutationResponse(value, projectId, data) {
+  const expectedSeedRevision = seedMutationInteger(data?.expectedSeedRevision, 1)
+  const expectedSelectionRevision = seedMutationInteger(data?.expectedSelectionRevision, 0)
+  const immutableSeed = await immutableSeedForCommand(data?.immutableSeed, projectId, data?.seedId, expectedSeedRevision, expectedSelectionRevision)
+  const seed = await commandSeedMutationResponse(value, {
+    projectId, seedId: data?.seedId, status: 'candidate', revision: expectedSeedRevision,
+    selectionRevision: expectedSelectionRevision + 1, isSelected: true,
+  })
+  if (!sameImmutableRevision(seed, immutableSeed)) invalidSeedMutationResponse()
+  return seed
+}
+
+function seedDeleteResponse(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).length !== 1 || value.ok !== true) invalidSeedMutationResponse()
+  return value
+}
 const seedProvenance = value => pickDefined(value, [
   'kind', 'snapshotIds', 'analysisId', 'inspirationAttemptId', 'publicNotes',
 ])
@@ -2225,7 +2525,7 @@ export const api = {
 
   seeds: {
     list: projectId => get(`/projects/${segment(projectId)}/seeds`),
-    create: (projectId, payload, options = {}) => post(
+    create: async (projectId, payload, options = {}) => createSeedMutationResponse(await post(
       `/projects/${segment(projectId)}/seeds`,
       pickDefined({
         payload: seedPayload(payload),
@@ -2234,39 +2534,39 @@ export const api = {
           : undefined,
         idempotencyKey: options.idempotencyKey,
       }, ['payload', 'provenance', 'idempotencyKey']),
-    ),
-    update: (projectId, seedId, data) => put(
+    ), projectId, payload, options),
+    update: async (projectId, seedId, data) => updateSeedMutationResponse(await put(
       `/projects/${segment(projectId)}/seeds/${segment(seedId)}`,
       {
         payload: seedPayload(data.payload),
         expectedSeedRevision: data.expectedSeedRevision,
         expectedSelectionRevision: data.expectedSelectionRevision,
       },
-    ),
-    delete: (projectId, seedId, data) => del(
+    ), projectId, seedId, data),
+    delete: async (projectId, seedId, data) => seedDeleteResponse(await del(
       `/projects/${segment(projectId)}/seeds/${segment(seedId)}`,
       {
         expectedSeedRevision: data.expectedSeedRevision,
         expectedSelectionRevision: data.expectedSelectionRevision,
       },
-    ),
-    archive: (projectId, seedId, data) => post(
+    )),
+    archive: async (projectId, seedId, data) => lifecycleSeedMutationResponse(await post(
       `/projects/${segment(projectId)}/seeds/${segment(seedId)}/archive`,
       pickDefined(data, ['expectedSeedRevision', 'expectedSelectionRevision']),
-    ),
-    restore: (projectId, seedId, data) => post(
+    ), projectId, seedId, data, 'archived'),
+    restore: async (projectId, seedId, data) => lifecycleSeedMutationResponse(await post(
       `/projects/${segment(projectId)}/seeds/${segment(seedId)}/restore`,
       pickDefined(data, ['expectedSeedRevision', 'expectedSelectionRevision']),
-    ),
+    ), projectId, seedId, data, 'candidate'),
     selected: projectId => get(`/projects/${segment(projectId)}/selected-seed`),
-    select: (projectId, data) => put(
+    select: async (projectId, data) => selectedSeedMutationResponse(await put(
       `/projects/${segment(projectId)}/selected-seed`,
       {
         seedId: data.seedId,
         expectedSeedRevision: data.expectedSeedRevision,
         expectedSelectionRevision: data.expectedSelectionRevision,
       },
-    ),
+    ), projectId, data),
   },
 
   marketSources: {

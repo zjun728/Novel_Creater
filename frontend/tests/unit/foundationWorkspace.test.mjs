@@ -171,6 +171,24 @@ test('section index renders all author-facing states, emits stable keys, and hon
   } finally { globalThis.document = originalDocument; globalThis.matchMedia = originalMatchMedia }
 })
 
+test('section index can defer focus until a parent accepts navigation', async () => {
+  const SectionIndex = await component('components/foundation/FoundationSectionIndex.vue')
+  const heading = node('h2'); heading.props.id = 'foundation-world'; heading.scrollIntoView = () => { heading.scrolled = true }
+  const originalDocument = globalThis.document
+  globalThis.document = { activeElement: null, getElementById: id => id === 'foundation-world' ? heading : null }
+  const root = node('root'); const emitted = []
+  try {
+    const app = renderer.createApp(defineComponent({
+      setup: () => () => h(SectionIndex, { focusOnNavigate: false, items: [{ key: 'world', label: '世界规则', status: 'filled', statusLabel: '已填写', targetId: 'foundation-world' }], onNavigate: key => emitted.push(key) }),
+    }))
+    app.provide(ssrContextKey, { modules: new Set() }); app.mount(root)
+    walk(root).find(item => item.type === 'button').props.onClick({ preventDefault() {} })
+    assert.deepEqual(emitted, ['world'])
+    assert.equal(heading.scrolled, undefined)
+    assert.equal(globalThis.document.activeElement, null)
+  } finally { globalThis.document = originalDocument }
+})
+
 test('status rail exposes exact summary, status, source, and action slots while omitting action in read-only mode', async () => {
   const StatusRail = (await vite.ssrLoadModule('/src/components/foundation/FoundationStatusRail.vue')).default
   const render = readOnly => renderToString(createSSRApp({

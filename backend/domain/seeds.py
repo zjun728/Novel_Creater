@@ -454,6 +454,18 @@ def decode_seed_revision(
     return payload, provenance
 
 
+def seed_recorded_fields(value: object) -> tuple[str, ...]:
+    """Return only the author fields physically recorded in a revision JSON."""
+
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8")
+    if isinstance(value, str):
+        value = json.loads(value)
+    if not isinstance(value, dict):
+        raise ValueError("seed revision is invalid")
+    return tuple(name for name in SeedPayload.model_fields if name in value)
+
+
 class SeedMutationCapabilities(BaseModel):
     """Server-owned seed lifecycle facts; clients never infer these."""
 

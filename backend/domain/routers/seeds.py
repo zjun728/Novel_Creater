@@ -77,6 +77,7 @@ def _public_seed(result: SeedResult) -> dict:
         "revisionId": result.revision_id,
         "contentHash": result.content_hash,
         "payload": seed_payload_public_document(result.payload),
+        "recordedFields": list(result.recorded_fields),
         "isSelected": result.is_selected,
         "selectionRevision": result.selection_revision,
         "capabilities": result.capabilities.model_dump(mode="json"),

@@ -2,12 +2,14 @@
 const props = defineProps({
   items: { type: Array, required: true },
   currentKey: { type: String, default: '' },
+  focusOnNavigate: { type: Boolean, default: true },
 })
 
 const emit = defineEmits(['navigate'])
 
 function navigate(item) {
   emit('navigate', item.key)
+  if (!props.focusOnNavigate) return
   const target = globalThis.document?.getElementById?.(item.targetId)
   const reducedMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true
   target?.scrollIntoView?.({ block: 'start', behavior: reducedMotion ? 'auto' : 'smooth' })
@@ -25,6 +27,7 @@ function navigate(item) {
           :class="{ 'foundation-section-index__item--current': item.key === currentKey }"
           :aria-current="item.key === currentKey ? 'true' : undefined"
           :aria-controls="item.targetId"
+          :disabled="item.disabled === true"
           @click="navigate(item)"
         >
           <span class="foundation-section-index__item-label">{{ item.label }}</span>

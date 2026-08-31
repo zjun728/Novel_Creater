@@ -29,6 +29,52 @@ function bodyOf(call) {
   return call.options.body === undefined ? undefined : JSON.parse(call.options.body)
 }
 
+function seedPayloadHash(payload) {
+  const document = Object.fromEntries(Object.entries(payload).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)))
+  return createHash('sha256').update(JSON.stringify(document), 'utf8').digest('hex')
+}
+
+function seedPhysicalPayloadHash(payload, recordedFields) {
+  return createHash('sha256').update(JSON.stringify(canonicalDocument(Object.fromEntries(recordedFields.map(field => [field, payload[field]])))), 'utf8').digest('hex')
+}
+
+function canonicalDocument(value) {
+  if (Array.isArray(value)) return value.map(canonicalDocument)
+  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalDocument(value[key])]))
+  return value
+}
+
+function validManualProvenance(publicNotes = []) {
+  const facts = { kind: 'manual', snapshots: [], analysis: null, inspirationAttempt: null, publicNotes }
+  return { ...facts, topicCandidate: null, provenanceHash: createHash('sha256').update(JSON.stringify(canonicalDocument(facts)), 'utf8').digest('hex') }
+}
+
+function seedMutationResponse(overrides = {}) {
+  const payload = {
+    title: '典镇山河', genre: '历史穿越', logline: '一句话故事', protagonist: '沈砚',
+    desire: '活下去', coreConflict: '冲突', worldPressure: '压力', openingHook: '钩子', differentiation: '差异化',
+    targetAudience: '', storyPromise: '', longFormPotential: '', marketBasis: '',
+  }
+  return {
+    id: 'seed-1', projectId: 'project-1', status: 'candidate', revision: 1,
+    revisionId: 'seed-revision-1', contentHash: seedPayloadHash(payload), payload,
+    recordedFields: ['title', 'genre', 'logline', 'protagonist', 'desire', 'coreConflict', 'worldPressure', 'openingHook', 'differentiation', 'targetAudience', 'storyPromise', 'longFormPotential', 'marketBasis'],
+    isSelected: false, selectionRevision: 0,
+    capabilities: { referenced: false, hasFinalChapters: false, canEdit: true, canSelect: true, canArchive: true, canRestore: false, canPermanentlyDelete: true },
+    ...overrides,
+  }
+}
+
+function seedWriteResponseFor({ url, options }) {
+  const path = new URL(url).pathname
+  if (/\/seeds(?:\/[^/]+)?$/u.test(path) && options.method === 'DELETE') return { ok: true }
+  if (path.endsWith('/selected-seed') && options.method === 'PUT') return seedMutationResponse({ revision: 2, revisionId: 'seed-revision-2', isSelected: true, selectionRevision: 4 })
+  if (/\/seeds\/seed-1$/u.test(path) && options.method === 'PUT') return seedMutationResponse({ revision: 3, revisionId: 'seed-revision-3', selectionRevision: 3 })
+  if (/\/seeds$/u.test(path) && options.method === 'POST') { const payload = JSON.parse(options.body).payload; return seedMutationResponse({ payload, contentHash: seedPayloadHash(payload) }) }
+  if (options.method !== 'GET' && /\/seeds(?:\/|$)/u.test(path)) return seedMutationResponse()
+  return {}
+}
+
 test('planning actual progress parser remains private to the client module', async () => {
   const client = await import('../../src/api/db/client.js')
   assert.equal(Object.hasOwn(client, 'planningActualProgressItem'), false)
@@ -223,7 +269,8 @@ test('project lifecycle client uses narrow endpoints and CAS request bodies', as
 })
 
 test('seed CRUD and selection expose exact CAS payloads', async () => {
-  const payload = { title: '永乐大典', genre: '穿越' }
+  const payload = seedMutationResponse().payload
+  const immutableSeed = seedMutationResponse({ revision: 2, revisionId: 'seed-revision-2', selectionRevision: 3 })
   const calls = await captureRequests(async api => {
     await api.seeds.list('project-1')
     await api.seeds.create('project-1', payload)
@@ -231,11 +278,13 @@ test('seed CRUD and selection expose exact CAS payloads', async () => {
       payload,
       expectedSeedRevision: 2,
       expectedSelectionRevision: 3,
+      immutableSeed,
       apiKey: 'must-not-send',
     })
     await api.seeds.delete('project-1', 'seed-1', {
       expectedSeedRevision: 2,
       expectedSelectionRevision: 3,
+      immutableSeed,
       debug: 'must-not-send',
     })
     await api.seeds.selected('project-1')
@@ -243,9 +292,10 @@ test('seed CRUD and selection expose exact CAS payloads', async () => {
       seedId: 'seed-1',
       expectedSeedRevision: 2,
       expectedSelectionRevision: 3,
+      immutableSeed,
       rawText: 'must-not-send',
     })
-  })
+  }, seedWriteResponseFor)
 
   assert.deepEqual(calls.map(call => [call.options.method, new URL(call.url).pathname]), [
     ['GET', '/api/projects/project-1/seeds'],
@@ -270,6 +320,160 @@ test('seed CRUD and selection expose exact CAS payloads', async () => {
     expectedSeedRevision: 2,
     expectedSelectionRevision: 3,
   })
+})
+
+test('seed selection rejects a 2xx DTO that does not confirm the requested selection', async () => {
+  const originalFetch = global.fetch
+  global.fetch = async () => jsonResponse(seedMutationResponse({ isSelected: false, selectionRevision: 0 }))
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    await assert.rejects(
+      api.seeds.select('project-1', { seedId: 'seed-1', expectedSeedRevision: 1, expectedSelectionRevision: 0 }),
+      error => error?.code === 'invalid_response',
+    )
+  } finally { global.fetch = originalFetch }
+})
+
+test('Seed write commands reject valid-shaped 2xx DTOs that contradict their route CAS outcomes', async () => {
+  const payload = seedMutationResponse().payload
+  const candidate = seedMutationResponse()
+  const archived = seedMutationResponse({ status: 'archived' })
+  const cases = [
+    ['create', api => api.seeds.create('project-1', payload), seedMutationResponse({ projectId: 'other-project' })],
+    ['create-selected', api => api.seeds.create('project-1', payload), seedMutationResponse({ isSelected: true, selectionRevision: 1 })],
+    ['update', api => api.seeds.update('project-1', 'seed-1', { payload, expectedSeedRevision: 1, expectedSelectionRevision: 0, immutableSeed: candidate }), seedMutationResponse({ id: 'other-seed', revision: 2 })],
+    ['archive', api => api.seeds.archive('project-1', 'seed-1', { expectedSeedRevision: 1, expectedSelectionRevision: 0, immutableSeed: candidate }), seedMutationResponse({ status: 'candidate' })],
+    ['restore', api => api.seeds.restore('project-1', 'seed-1', { expectedSeedRevision: 1, expectedSelectionRevision: 0, immutableSeed: archived }), seedMutationResponse({ revision: 2 })],
+    ['select', api => api.seeds.select('project-1', { seedId: 'seed-1', expectedSeedRevision: 1, expectedSelectionRevision: 0, immutableSeed: candidate }), seedMutationResponse({ revision: 2, isSelected: true, selectionRevision: 1 })],
+  ]
+  for (const [label, invoke, response] of cases) {
+    const originalFetch = global.fetch
+    global.fetch = async () => jsonResponse(response)
+    try {
+      const { api } = await import('../../src/api/db/client.js')
+      await assert.rejects(invoke(api), error => error?.code === 'invalid_response', label)
+    } finally { global.fetch = originalFetch }
+  }
+})
+
+test('Seed writes count Unicode scalars like the backend and never dispatch invalid payloads', async () => {
+  const astral = '\u{1F4DA}'.repeat(1001)
+  const withinLimit = { ...seedMutationResponse().payload, title: astral }
+  const overLimit = { ...seedMutationResponse().payload, title: '\u{1F4DA}'.repeat(2001) }
+  let calls = 0
+  const originalFetch = global.fetch
+  global.fetch = async (_url, options = {}) => {
+    calls += 1
+    const sent = JSON.parse(options.body).payload
+    return jsonResponse(seedMutationResponse({ payload: sent, contentHash: seedPayloadHash(sent) }))
+  }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    await api.seeds.create('project-1', withinLimit)
+    await assert.rejects(api.seeds.create('project-1', overLimit), /Invalid seed payload/)
+    await assert.rejects(api.seeds.create('project-1', { ...withinLimit, title: '\uD800' }), /Invalid seed payload/)
+    assert.equal(calls, 1)
+  } finally { global.fetch = originalFetch }
+})
+
+test('Seed write DTOs normalize an absent and null provenance as the same manual authority', async () => {
+  const originalFetch = global.fetch
+  let requestBody = null
+  global.fetch = async (_url, options = {}) => { requestBody = JSON.parse(options.body); return jsonResponse(seedMutationResponse({ provenance: null })) }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    await api.seeds.create('project-1', seedMutationResponse().payload, { provenance: null })
+    assert.equal(Object.hasOwn(requestBody, 'provenance'), false)
+  } finally { global.fetch = originalFetch }
+})
+
+test('Seed write commands reject immutable-looking 2xx revision substitutions', async () => {
+  const source = seedMutationResponse()
+  const archivedSource = seedMutationResponse({ status: 'archived' })
+  const payload = source.payload
+  const changedPayload = { ...payload, title: '被替换的标题' }
+  const cases = [
+    ['create-payload', api => api.seeds.create('project-1', payload), seedMutationResponse({ payload: changedPayload, contentHash: seedPayloadHash(changedPayload) })],
+    ['create-hash', api => api.seeds.create('project-1', payload), seedMutationResponse({ contentHash: 'b'.repeat(64) })],
+    ['update-payload', api => api.seeds.update('project-1', 'seed-1', { payload, expectedSeedRevision: 1, expectedSelectionRevision: 0, immutableSeed: source }), seedMutationResponse({ revision: 2, revisionId: 'seed-revision-2', payload: changedPayload, contentHash: seedPayloadHash(changedPayload) })],
+    ['update-reused-revision-id', api => api.seeds.update('project-1', 'seed-1', { payload, expectedSeedRevision: 1, expectedSelectionRevision: 0, immutableSeed: source }), seedMutationResponse({ revision: 2, revisionId: source.revisionId })],
+    ['select-revision-id', api => api.seeds.select('project-1', { seedId: 'seed-1', expectedSeedRevision: 1, expectedSelectionRevision: 0, immutableSeed: source }), seedMutationResponse({ isSelected: true, selectionRevision: 1, revisionId: 'other-revision' })],
+    ['select-hash', api => api.seeds.select('project-1', { seedId: 'seed-1', expectedSeedRevision: 1, expectedSelectionRevision: 0, immutableSeed: source }), seedMutationResponse({ isSelected: true, selectionRevision: 1, contentHash: 'b'.repeat(64) })],
+    ['archive-payload', api => api.seeds.archive('project-1', 'seed-1', { expectedSeedRevision: 1, expectedSelectionRevision: 0, immutableSeed: source }), seedMutationResponse({ status: 'archived', payload: changedPayload, contentHash: seedPayloadHash(changedPayload) })],
+    ['archive-revision-id', api => api.seeds.archive('project-1', 'seed-1', { expectedSeedRevision: 1, expectedSelectionRevision: 0, immutableSeed: source }), seedMutationResponse({ status: 'archived', revisionId: 'other-revision' })],
+    ['restore-hash', api => api.seeds.restore('project-1', 'seed-1', { expectedSeedRevision: 1, expectedSelectionRevision: 0, immutableSeed: archivedSource }), seedMutationResponse({ contentHash: 'b'.repeat(64) })],
+    ['restore-recorded-fields', api => api.seeds.restore('project-1', 'seed-1', { expectedSeedRevision: 1, expectedSelectionRevision: 0, immutableSeed: archivedSource }), seedMutationResponse({ recordedFields: source.recordedFields.slice(0, -1) })],
+  ]
+  for (const [label, invoke, response] of cases) {
+    const originalFetch = global.fetch
+    global.fetch = async () => jsonResponse(response)
+    try {
+      const { api } = await import('../../src/api/db/client.js')
+      await assert.rejects(invoke(api), error => error?.code === 'invalid_response', label)
+    } finally { global.fetch = originalFetch }
+  }
+})
+
+test('Seed write hashes bind the physical revision fields, including legacy nine-field authority', async () => {
+  const legacyFields = ['title', 'genre', 'logline', 'protagonist', 'desire', 'coreConflict', 'worldPressure', 'openingHook', 'differentiation']
+  const legacyPayload = {
+    title: '典镇山河', genre: '东方奇幻', logline: '少年以县志镇压黑潮。', protagonist: '沈码',
+    desire: '让被抹去的乡民重获姓名。', coreConflict: '修史会同时唤醒镇物。', worldPressure: '黑潮上涨，王朝封存旧志。', openingHook: '县志预写了新县令的死期。', differentiation: '以地方志书写为力量体系。',
+    targetAudience: '', storyPromise: '', longFormPotential: '', marketBasis: '',
+  }
+  const legacyHash = '1dfac820f6632da7660f1febba8e60a73ba329d60d46cd5aa3d92c06ff17a3b7'
+  assert.equal(seedPhysicalPayloadHash(legacyPayload, legacyFields), legacyHash)
+  const legacy = seedMutationResponse({ payload: legacyPayload, recordedFields: legacyFields, contentHash: legacyHash })
+  const corrupt = { ...legacy, contentHash: 'b'.repeat(64) }
+  const cases = [
+    ['select', api => api.seeds.select('project-1', { seedId: 'seed-1', expectedSeedRevision: 1, expectedSelectionRevision: 0, immutableSeed: corrupt }), { ...corrupt, isSelected: true, selectionRevision: 1 }],
+    ['archive', api => api.seeds.archive('project-1', 'seed-1', { expectedSeedRevision: 1, expectedSelectionRevision: 0, immutableSeed: corrupt }), { ...corrupt, status: 'archived' }],
+    ['restore', api => api.seeds.restore('project-1', 'seed-1', { expectedSeedRevision: 1, expectedSelectionRevision: 0, immutableSeed: { ...corrupt, status: 'archived' } }), corrupt],
+  ]
+  for (const [label, invoke, response] of cases) {
+    const originalFetch = global.fetch
+    global.fetch = async () => jsonResponse(response)
+    try {
+      const { api } = await import('../../src/api/db/client.js')
+      await assert.rejects(invoke(api), error => error?.code === 'invalid_response', label)
+    } finally { global.fetch = originalFetch }
+  }
+  const originalFetch = global.fetch
+  global.fetch = async () => jsonResponse({ ...legacy, isSelected: true, selectionRevision: 1 })
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    await api.seeds.select('project-1', { seedId: 'seed-1', expectedSeedRevision: 1, expectedSelectionRevision: 0, immutableSeed: legacy })
+  } finally { global.fetch = originalFetch }
+})
+
+test('Seed write commands reject malformed or substituted public provenance', async () => {
+  const payload = seedMutationResponse().payload
+  const provenance = validManualProvenance()
+  const source = seedMutationResponse({ provenance })
+  const archivedSource = seedMutationResponse({ status: 'archived', provenance })
+  const malformed = { kind: 'ai_chat', snapshots: [], publicNotes: ['substituted'] }
+  const substituted = validManualProvenance(['substituted'])
+  const manualSelection = { kind: 'manual', snapshotIds: [], analysisId: null, inspirationAttemptId: null, publicNotes: [] }
+  const cases = [
+    ['create', api => api.seeds.create('project-1', payload, { provenance: manualSelection }), seedMutationResponse({ provenance: malformed })],
+    ['create-substituted', api => api.seeds.create('project-1', payload, { provenance: manualSelection }), seedMutationResponse({ provenance: substituted })],
+    ['update', api => api.seeds.update('project-1', 'seed-1', { payload, expectedSeedRevision: 1, expectedSelectionRevision: 0, immutableSeed: source }), seedMutationResponse({ revision: 2, revisionId: 'seed-revision-2', provenance: malformed })],
+    ['update-substituted', api => api.seeds.update('project-1', 'seed-1', { payload, expectedSeedRevision: 1, expectedSelectionRevision: 0, immutableSeed: source }), seedMutationResponse({ revision: 2, revisionId: 'seed-revision-2', provenance: substituted })],
+    ['select', api => api.seeds.select('project-1', { seedId: 'seed-1', expectedSeedRevision: 1, expectedSelectionRevision: 0, immutableSeed: source }), seedMutationResponse({ isSelected: true, selectionRevision: 1, provenance: malformed })],
+    ['select-substituted', api => api.seeds.select('project-1', { seedId: 'seed-1', expectedSeedRevision: 1, expectedSelectionRevision: 0, immutableSeed: source }), seedMutationResponse({ isSelected: true, selectionRevision: 1, provenance: substituted })],
+    ['archive', api => api.seeds.archive('project-1', 'seed-1', { expectedSeedRevision: 1, expectedSelectionRevision: 0, immutableSeed: source }), seedMutationResponse({ status: 'archived', provenance: malformed })],
+    ['archive-substituted', api => api.seeds.archive('project-1', 'seed-1', { expectedSeedRevision: 1, expectedSelectionRevision: 0, immutableSeed: source }), seedMutationResponse({ status: 'archived', provenance: substituted })],
+    ['restore', api => api.seeds.restore('project-1', 'seed-1', { expectedSeedRevision: 1, expectedSelectionRevision: 0, immutableSeed: archivedSource }), seedMutationResponse({ provenance: malformed })],
+    ['restore-substituted', api => api.seeds.restore('project-1', 'seed-1', { expectedSeedRevision: 1, expectedSelectionRevision: 0, immutableSeed: archivedSource }), seedMutationResponse({ provenance: substituted })],
+  ]
+  for (const [label, invoke, response] of cases) {
+    const originalFetch = global.fetch
+    global.fetch = async () => jsonResponse(response)
+    try {
+      const { api } = await import('../../src/api/db/client.js')
+      await assert.rejects(invoke(api), error => error?.code === 'invalid_response', label)
+    } finally { global.fetch = originalFetch }
+  }
 })
 
 test('bindings and story-engine methods send only explicit revision and idempotency inputs', async () => {
@@ -2435,7 +2639,7 @@ test('nested frozen DTOs discard secret and debug fields before transport', asyn
   const seedPayload = {
     title: '典镇山河', genre: '历史穿越', logline: 'Logline', protagonist: 'Protagonist',
     desire: 'Desire', coreConflict: 'Conflict', worldPressure: 'Pressure',
-    openingHook: 'Hook', differentiation: 'Different', apiKey: 'must-not-send',
+    openingHook: 'Hook', differentiation: 'Different', targetAudience: '', storyPromise: '', longFormPotential: '', marketBasis: '', apiKey: 'must-not-send',
   }
   const engineOption = {
     name: 'Engine', storyPromise: 'Promise', protagonistDesire: 'Desire',
@@ -2480,12 +2684,12 @@ test('nested frozen DTOs discard secret and debug fields before transport', asyn
       options: [engineOption, engineOption, engineOption],
     })
     await api.contracts.draft.save('project-1', { expectedDraftVersion: 0, draft })
-  })
+  }, seedWriteResponseFor)
 
   assert.deepEqual(bodyOf(calls[0]).payload, {
     title: '典镇山河', genre: '历史穿越', logline: 'Logline', protagonist: 'Protagonist',
     desire: 'Desire', coreConflict: 'Conflict', worldPressure: 'Pressure',
-    openingHook: 'Hook', differentiation: 'Different',
+    openingHook: 'Hook', differentiation: 'Different', targetAudience: '', storyPromise: '', longFormPotential: '', marketBasis: '',
   })
   assert.deepEqual(bodyOf(calls[1]).entries, [{ taskKey: 'seed', providerId: 'provider-1' }])
   assert.deepEqual(bodyOf(calls[2]).options[0].ensembleRoles, [{ role: 'Role', purpose: 'Purpose' }])

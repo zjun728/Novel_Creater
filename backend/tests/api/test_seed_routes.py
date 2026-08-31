@@ -171,7 +171,11 @@ def test_seed_routes_use_service_dependency_and_return_camel_case_public_dto():
             "storyPromise": "",
             "longFormPotential": "",
             "marketBasis": "",
-        }, "isSelected": False, "selectionRevision": 0,
+        }, "recordedFields": [
+            "title", "genre", "logline", "protagonist", "desire", "coreConflict",
+            "worldPressure", "openingHook", "differentiation", "targetAudience",
+            "storyPromise", "longFormPotential", "marketBasis",
+        ], "isSelected": False, "selectionRevision": 0,
         "capabilities": {
             "referenced": False, "hasFinalChapters": False,
             "canEdit": True, "canSelect": True, "canArchive": True,

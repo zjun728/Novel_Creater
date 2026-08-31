@@ -23,8 +23,13 @@ function capabilityDenied(code) {
 }
 
 function invalidatesSelectionAuthority(failure) {
-  const code = String(failure?.code || failure?.publicErrorCode || failure?.status || '')
-  return Number(failure?.status) === 409 || code === 'outcome_unknown'
+  const status = Number(failure?.status)
+  const code = String(failure?.code || failure?.publicErrorCode || '')
+  return status === 409
+    || status >= 500
+    || !Number.isFinite(status)
+    || status === 0
+    || ['outcome_unknown', 'request_timeout', 'request_aborted', 'invalid_response'].includes(code)
 }
 
 function lockedCapabilities(capabilities = {}) {
@@ -67,7 +72,7 @@ export const useSeedStore = defineStore('seed', () => {
   const nextAction = computed(() => (
     activeSelection.value
       ? { key: 'continue-contract', label: '继续创作契约' }
-      : { key: 'select-seed', label: '确认这个种子并进入创作契约' }
+      : { key: 'select-seed', label: '确认项目种子' }
   ))
 
   function activate(projectId) {
@@ -107,8 +112,8 @@ export const useSeedStore = defineStore('seed', () => {
   }
 
   function assertMutation(projectId, kind, seedId = null) {
-    assertHydrated(projectId)
     if (mutationBusy.value) throw capabilityDenied('seed_mutation_busy')
+    assertHydrated(projectId)
     if (kind === 'create') {
       if (activeSelection.value !== null) throw capabilityDenied('seed_create_denied')
       return
@@ -169,6 +174,11 @@ export const useSeedStore = defineStore('seed', () => {
   }
 
   async function refresh(projectId) {
+    if (mutationBusy.value) {
+      const failure = capabilityDenied('seed_mutation_busy')
+      error.value = failure
+      throw failure
+    }
     const projectKey = activate(projectId)
     const generation = loadGuard.begin()
     loading.value = true
@@ -229,6 +239,7 @@ export const useSeedStore = defineStore('seed', () => {
     } catch (failure) {
       if (mutationCurrent(state)) {
         error.value = failure
+        if (invalidatesSelectionAuthority(failure)) selectionHydrated.value = false
         onFailure?.(failure)
       }
       throw failure
@@ -248,9 +259,10 @@ export const useSeedStore = defineStore('seed', () => {
 
   function updateSeed(projectId, seedId, data) {
     try { assertMutation(projectId, 'update', seedId) } catch (failure) { return Promise.reject(failure) }
+    const immutableSeed = seeds.value.find(seed => seed.id === seedId)
     return mutate(
       projectId,
-      () => api.seeds.update(projectId, seedId, data),
+      () => api.seeds.update(projectId, seedId, { ...data, immutableSeed }),
       updated => {
         upsert(updated)
         if (activeSelection.value?.seedId === updated.id) applySelection(updated)
@@ -260,10 +272,11 @@ export const useSeedStore = defineStore('seed', () => {
 
   function selectSeed(projectId, data) {
     try { assertMutation(projectId, 'select', data?.seedId) } catch (failure) { return Promise.reject(failure) }
+    const immutableSeed = seeds.value.find(seed => seed.id === data?.seedId)
     return mutate(
       projectId,
       async () => {
-        const result = await api.seeds.select(projectId, data)
+        const result = await api.seeds.select(projectId, { ...data, immutableSeed })
         if (String(result?.status || result?.publicErrorCode || '') === 'outcome_unknown') {
           throw capabilityDenied('outcome_unknown')
         }
@@ -278,18 +291,20 @@ export const useSeedStore = defineStore('seed', () => {
 
   function archiveSeed(projectId, seedId, data) {
     try { assertMutation(projectId, 'archive', seedId) } catch (failure) { return Promise.reject(failure) }
+    const immutableSeed = seeds.value.find(seed => seed.id === seedId)
     return mutate(
       projectId,
-      () => api.seeds.archive(projectId, seedId, data),
+      () => api.seeds.archive(projectId, seedId, { ...data, immutableSeed }),
       upsert,
     )
   }
 
   function restoreSeed(projectId, seedId, data) {
     try { assertMutation(projectId, 'restore', seedId) } catch (failure) { return Promise.reject(failure) }
+    const immutableSeed = seeds.value.find(seed => seed.id === seedId)
     return mutate(
       projectId,
-      () => api.seeds.restore(projectId, seedId, data),
+      () => api.seeds.restore(projectId, seedId, { ...data, immutableSeed }),
       upsert,
     )
   }
