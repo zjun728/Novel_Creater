@@ -2,7 +2,10 @@ import { defineStore } from 'pinia'
 import { computed, ref, shallowRef } from 'vue'
 
 import { api } from '../api/db/client.js'
-import { contractReady as isContractReady } from '../domain/creation-contract/wizard-state.js'
+import {
+  contractDraftVersion,
+  contractReady as isContractReady,
+} from '../domain/creation-contract/wizard-state.js'
 import { createLatestRequestGuard } from '../utils/latestRequest.js'
 
 function publicError(error) {
@@ -92,6 +95,8 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   const lastSavedStage = computed(() => (
     draft.value?.draftStage || draft.value?.draft?.draftStage || null
   ))
+  const activeDraftVersion = computed(() => contractDraftVersion(draft.value?.draftVersion))
+  const savedStage = computed(() => lastSavedStage.value)
 
   const activeReadiness = computed(() => {
     if (draft.value) return previewResult.value
@@ -111,6 +116,8 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   })
   const contractReady = computed(() => isContractReady({ readiness: readiness.value }))
   const readinessReasons = computed(() => [...readiness.value.reasons])
+  const serverCanConfirm = computed(() => contractReady.value)
+  const serverReasons = computed(() => [...readiness.value.reasons])
   const providerOutcomeUnknown = computed(() => (
     engineBatch.value?.status === 'outcome_unknown'
   ))
@@ -560,9 +567,13 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     styleTrialLoading,
     historyLoading,
     lastSavedStage,
+    activeDraftVersion,
+    savedStage,
     readiness,
     contractReady,
     readinessReasons,
+    serverCanConfirm,
+    serverReasons,
     providerOutcomeUnknown,
     baselineLocked,
     markUnsavedChanges,

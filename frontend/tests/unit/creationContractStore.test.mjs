@@ -455,6 +455,35 @@ test('contract readiness is copied from backend responses and never inferred fro
   })
 })
 
+test('document read selectors expose only safe atomic Contract state', () => {
+  setActivePinia(createPinia())
+  const store = useCreationContractStore()
+  store.draft = publicDraft('style', 4)
+  store.previewResult = {
+    contractReady: true,
+    reasons: [],
+  }
+
+  assert.equal(store.activeDraftVersion, 4)
+  assert.equal(store.savedStage, 'style')
+  assert.equal(store.serverCanConfirm, true)
+  assert.deepEqual(store.serverReasons, [])
+  assert.equal('documentSections' in store, false)
+})
+
+test('active Contract CAS version accepts only backend-issued positive integers', () => {
+  for (const value of [null, '', '7', -1, 0]) {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+    store.draft = { draftVersion: value }
+    assert.equal(store.activeDraftVersion, null, String(value))
+  }
+  setActivePinia(createPinia())
+  const store = useCreationContractStore()
+  store.draft = { draftVersion: 7 }
+  assert.equal(store.activeDraftVersion, 7)
+})
+
 for (const reason of ['seed_drift', 'binding_drift']) {
   test(`${reason} from backend keeps UI contract readiness false`, async () => {
     await withApiMethods([

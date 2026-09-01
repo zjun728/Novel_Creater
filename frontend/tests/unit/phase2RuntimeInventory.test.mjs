@@ -197,6 +197,7 @@ const CANONICAL_ROUTE_VIEWS = [
 ]
 
 const PRESERVED_FUTURE_RUNTIME = [
+  'application/contracts/contractDocumentSections.js',
   'components/project/ContractHeadSummary.vue',
   'components/project/WriterCoreStateCard.vue',
   'components/manuscript/ManuscriptSummaryLink.vue',

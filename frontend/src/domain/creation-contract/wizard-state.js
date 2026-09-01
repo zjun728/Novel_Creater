@@ -22,6 +22,10 @@ export function contractReady({ readiness } = {}) {
   )
 }
 
+export function contractDraftVersion(value) {
+  return Number.isInteger(value) && value > 0 ? value : null
+}
+
 export function providerRetryAction(batch) {
   return batch?.status === 'outcome_unknown'
     ? 'create-new-batch-with-explicit-confirmation'
