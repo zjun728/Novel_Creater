@@ -25,6 +25,7 @@ from backend.services.bible_generation import (
     BibleGenerationProviderFailed,
     BibleGenerationRetryable,
     BibleGenerationService,
+    GenerateBibleProposal,
     GenerateBibleDraft,
 )
 from backend.services.bibles import BibleAlreadyConfirmed
@@ -480,6 +481,276 @@ def _command(**changes):
     }
     values.update(changes)
     return GenerateBibleDraft(**values)
+
+
+def _proposal(**changes):
+    values = {
+        "project_id": PROJECT_ID,
+        "scope": "whole",
+        "author_instructions": "强调群像分工与长期关系代价。",
+        "expected_draft_version": 0,
+        "expected_head_revision": 0,
+        "idempotency_key": "proposal-key-1",
+    }
+    values.update(changes)
+    return GenerateBibleProposal(**values)
+
+
+def _legacy_request_document(command):
+    return {
+        "projectId": command.project_id,
+        "authorInstructions": {
+            "hash": canonical_hash(command.author_instructions),
+            "length": len(command.author_instructions),
+        },
+        "expectedDraftVersion": command.expected_draft_version,
+        "expectedHeadRevision": command.expected_head_revision,
+        "policyVersion": "creation-bible-generation-v1",
+    }
+
+
+def test_proposal_request_identity_is_audited_by_operation_and_scope():
+    whole = _proposal()
+    section = _proposal(scope="core_characters")
+    draft = _command(idempotency_key="draft-key-1")
+
+    assert BibleGenerationService.request_document(whole)["operation"] == "proposal"
+    assert BibleGenerationService.request_document(whole)["scope"] == "whole"
+    assert BibleGenerationService.request_hash(whole) != BibleGenerationService.request_hash(section)
+    assert BibleGenerationService.request_hash(whole) != BibleGenerationService.request_hash(draft)
+    assert BibleGenerationService.request_document(draft)["operation"] == "draft_generation"
+    assert "scope" not in BibleGenerationService.request_document(draft)
+
+
+@pytest.mark.asyncio
+async def test_section_proposal_requires_a_complete_saved_draft_for_prompt_context():
+    service, repository, _, _, gateway, _ = _harness()
+
+    with pytest.raises(BibleGenerationNotReady):
+        async with service._transaction() as session:
+            await service._load_inputs(
+                session,
+                _proposal(scope="world_rules"),
+                build_prompt=True,
+            )
+
+    assert gateway.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_proposal_manifest_is_distinct_by_operation_and_scope_without_secrets():
+    service, repository, _, _, _, _ = _harness()
+    repository.draft = service._draft_row(
+        project_id=PROJECT_ID,
+        draft_id="draft-1",
+        payload=_bible(),
+        basis=service._basis(_contract()),
+        binding_revision_id="binding-revision-1",
+        binding_hash="b" * 64,
+        base_head_revision=0,
+        draft_version=1,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    whole = _proposal(expected_draft_version=1)
+    section = _proposal(scope="world_rules", expected_draft_version=1)
+    draft = _command(expected_draft_version=1)
+
+    async with service._transaction() as session:
+        whole_inputs = await service._load_inputs(session, whole, build_prompt=True)
+    async with service._transaction() as session:
+        section_inputs = await service._load_inputs(session, section, build_prompt=True)
+    async with service._transaction() as session:
+        draft_inputs = await service._load_inputs(session, draft, build_prompt=True)
+
+    assert whole_inputs["manifest"]["operation"] == "proposal"
+    assert whole_inputs["manifest"]["scope"] == "whole"
+    assert section_inputs["manifest"]["scope"] == "world_rules"
+    assert draft_inputs["manifest"]["operation"] == "draft_generation"
+    assert "scope" not in draft_inputs["manifest"]
+    assert canonical_hash(whole_inputs["manifest"]) != canonical_hash(section_inputs["manifest"])
+    assert canonical_hash(whole_inputs["manifest"]) != canonical_hash(draft_inputs["manifest"])
+    assert "PRIVATE_PROVIDER_KEY_123456" not in canonical_json(section_inputs["messages"])
+
+
+@pytest.mark.parametrize("scope", ([], {}, None, 7, "not-a-bible-scope"))
+def test_proposal_command_rejects_non_string_or_unknown_scopes(scope):
+    service, _, _, _, _, _ = _harness()
+
+    with pytest.raises(BibleGenerationNotReady):
+        service._validate(_proposal(scope=scope))
+
+
+@pytest.mark.asyncio
+async def test_legacy_generate_rejects_proposals_before_any_side_effect():
+    service, repository, _, _, gateway, _ = _harness()
+
+    with pytest.raises(BibleGenerationNotReady):
+        await service.generate(_proposal())
+
+    assert gateway.calls == 0
+    assert repository.attempts == {}
+    assert repository.draft is None
+
+
+@pytest.mark.parametrize("status", ("succeeded", "failed", "outcome_unknown", "running"))
+@pytest.mark.asyncio
+async def test_exact_legacy_draft_request_hash_replays_existing_attempt(status):
+    service, repository, _, _, gateway, clock = _harness()
+    command = _command(idempotency_key=f"legacy-{status}")
+    legacy_hash = canonical_hash(_legacy_request_document(command))
+    row = {
+        "id": f"legacy-attempt-{status}",
+        "project_id": PROJECT_ID,
+        "selection_revision": 3,
+        "seed_id": "seed-1",
+        "seed_revision_id": "seed-revision-1",
+        "seed_hash": canonical_hash(_seed()),
+        "contract_revision": 2,
+        "creation_contract_id": "creation-contract-1",
+        "creation_hash": "f" * 64,
+        "style_contract_id": "style-contract-1",
+        "style_hash": "a" * 64,
+        "binding_revision_id": "binding-revision-1",
+        "binding_hash": "b" * 64,
+        "provider_id": "provider-1",
+        "model_name_snapshot": "novel-model",
+        # Idempotency is keyed by the audited request hash.  A historical row's
+        # policy column must not turn an exact legacy hash replay into a conflict.
+        "policy_version": "historical-policy-version",
+        "idempotency_key": command.idempotency_key,
+        "request_hash": legacy_hash,
+        "input_manifest_json": "{}",
+        "input_manifest_hash": canonical_hash({}),
+        "status": status,
+        "owner_token": "other-owner" if status == "running" else None,
+        "lease_expires_at": clock() + BIBLE_GENERATION_LEASE_MS if status == "running" else None,
+        "attempt_version": 1,
+        "result_json": canonical_json(_bible()) if status == "succeeded" else None,
+        "result_hash": canonical_bible_hash(_bible()) if status == "succeeded" else None,
+        "public_error_code": "LegacyFailure" if status == "failed" else None,
+        "created_at": clock(),
+        "completed_at": clock() if status != "running" else None,
+    }
+    await repository.insert_generation_attempt(None, row)
+
+    replay = await service.generate(command)
+
+    assert replay.attempt_id == row["id"]
+    assert replay.status == status
+    assert gateway.calls == 0
+    assert repository.draft is None
+    assert repository.attempts[row["id"]]["request_hash"] == legacy_hash
+
+
+@pytest.mark.asyncio
+async def test_legacy_hash_does_not_accept_a_different_draft_command():
+    service, repository, _, _, _, clock = _harness()
+    original = _command(idempotency_key="legacy-conflict")
+    row = {
+        "id": "legacy-conflict-attempt",
+        "project_id": PROJECT_ID,
+        "selection_revision": 3,
+        "seed_id": "seed-1",
+        "seed_revision_id": "seed-revision-1",
+        "seed_hash": canonical_hash(_seed()),
+        "contract_revision": 2,
+        "creation_contract_id": "creation-contract-1",
+        "creation_hash": "f" * 64,
+        "style_contract_id": "style-contract-1",
+        "style_hash": "a" * 64,
+        "binding_revision_id": "binding-revision-1",
+        "binding_hash": "b" * 64,
+        "provider_id": "provider-1",
+        "model_name_snapshot": "novel-model",
+        "policy_version": "creation-bible-generation-v1",
+        "idempotency_key": original.idempotency_key,
+        "request_hash": canonical_hash(_legacy_request_document(original)),
+        "input_manifest_json": "{}",
+        "input_manifest_hash": canonical_hash({}),
+        "status": "running",
+        "owner_token": "other-owner",
+        "lease_expires_at": clock() + BIBLE_GENERATION_LEASE_MS,
+        "attempt_version": 1,
+        "result_json": None,
+        "result_hash": None,
+        "public_error_code": None,
+        "created_at": clock(),
+        "completed_at": None,
+    }
+    await repository.insert_generation_attempt(None, row)
+
+    with pytest.raises(BibleGenerationIdempotencyConflict):
+        await service.generate(
+            _command(
+                author_instructions="different",
+                idempotency_key=original.idempotency_key,
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_proposal_never_accepts_a_legacy_draft_request_hash():
+    service, repository, _, _, _, _ = _harness()
+    draft = _command(idempotency_key="legacy-proposal-conflict")
+    await repository.insert_generation_attempt(
+        None,
+        {
+            "id": "legacy-proposal-conflict-attempt",
+            "project_id": PROJECT_ID,
+            "idempotency_key": draft.idempotency_key,
+            "request_hash": canonical_hash(_legacy_request_document(draft)),
+            "status": "running",
+        },
+    )
+
+    with pytest.raises(BibleGenerationIdempotencyConflict):
+        await service._reserve(
+            _proposal(idempotency_key=draft.idempotency_key), {}
+        )
+
+
+@pytest.mark.asyncio
+async def test_succeeded_attempt_exposes_its_validated_proposal():
+    service, repository, _, _, _, _ = _harness()
+
+    generated = await service.generate(_command())
+    result = service._attempt_result(repository.attempts[generated.attempt_id])
+
+    assert result.proposal == _bible()
+
+
+@pytest.mark.asyncio
+async def test_corrupt_succeeded_attempt_result_fails_closed():
+    service, repository, _, _, _, _ = _harness()
+    result = await service.generate(_command())
+    repository.attempts[result.attempt_id]["result_json"] = "not-json"
+
+    with pytest.raises(BibleGenerationParseFailed):
+        service._attempt_result(repository.attempts[result.attempt_id])
+
+
+@pytest.mark.asyncio
+async def test_succeeded_attempt_with_mismatched_result_hash_fails_closed():
+    service, repository, _, _, _, _ = _harness()
+    result = await service.generate(_command())
+    repository.attempts[result.attempt_id]["result_hash"] = "0" * 64
+
+    with pytest.raises(BibleGenerationParseFailed):
+        service._attempt_result(repository.attempts[result.attempt_id])
+
+
+@pytest.mark.asyncio
+async def test_non_succeeded_attempt_never_exposes_a_proposal():
+    service, repository, _, _, _, _ = _harness(
+        gateway_result=BibleProviderHTTPError("provider failed")
+    )
+
+    generated = await service.generate(_command())
+    result = service._attempt_result(repository.attempts[generated.attempt_id])
+
+    assert result.status == "failed"
+    assert result.proposal is None
 
 
 def _harness(*, gateway_result=None):

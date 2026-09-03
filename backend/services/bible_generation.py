@@ -25,7 +25,10 @@ from backend.gateways.bible_provider import (
     BibleProviderTransportError,
 )
 from backend.http_errors import ProjectArchived, PublicDomainError
-from backend.prompts.bible import build_bible_messages
+from backend.prompts.bible import (
+    BIBLE_PROPOSAL_SCOPE_FIELDS,
+    build_bible_messages,
+)
 from backend.security.provider_secrets import (
     normalize_provider_secrets,
     provider_public_fields_contain_secret,
@@ -96,6 +99,16 @@ class GenerateBibleDraft:
 
 
 @dataclass(frozen=True)
+class GenerateBibleProposal:
+    project_id: str
+    scope: str
+    author_instructions: str
+    expected_draft_version: int
+    expected_head_revision: int
+    idempotency_key: str
+
+
+@dataclass(frozen=True)
 class BibleGenerationAttemptResult:
     attempt_id: str
     project_id: str
@@ -108,6 +121,7 @@ class BibleGenerationAttemptResult:
     public_error_code: str | None
     created_at: int
     completed_at: int | None
+    proposal: BiblePayload | None
 
 
 def _value(source, name, default=None):
@@ -155,8 +169,10 @@ class BibleGenerationService:
         self._failpoint = failpoint
 
     @staticmethod
-    def _validate(command: GenerateBibleDraft) -> None:
+    def _validate(command: GenerateBibleDraft | GenerateBibleProposal) -> None:
         if (
+            not isinstance(command, (GenerateBibleDraft, GenerateBibleProposal))
+            or
             not isinstance(command.project_id, str)
             or not command.project_id
             or not isinstance(command.author_instructions, str)
@@ -171,13 +187,23 @@ class BibleGenerationService:
             or _IDEMPOTENCY_KEY.fullmatch(command.idempotency_key) is None
         ):
             raise BibleGenerationNotReady()
+        if (
+            isinstance(command, GenerateBibleProposal)
+            and (
+                not isinstance(command.scope, str)
+                or command.scope not in BIBLE_PROPOSAL_SCOPE_FIELDS
+            )
+        ):
+            raise BibleGenerationNotReady()
         try:
             command.author_instructions.encode("utf-8")
         except UnicodeError:
             raise BibleGenerationNotReady() from None
 
     @classmethod
-    def request_document(cls, command: GenerateBibleDraft) -> dict:
+    def _legacy_request_document(
+        cls, command: GenerateBibleDraft | GenerateBibleProposal
+    ) -> dict:
         return {
             "projectId": command.project_id,
             "authorInstructions": {
@@ -190,11 +216,56 @@ class BibleGenerationService:
         }
 
     @classmethod
-    def request_hash(cls, command: GenerateBibleDraft) -> str:
+    def request_document(
+        cls, command: GenerateBibleDraft | GenerateBibleProposal
+    ) -> dict:
+        document = {
+            **cls._legacy_request_document(command),
+            "operation": (
+                "proposal"
+                if isinstance(command, GenerateBibleProposal)
+                else "draft_generation"
+            ),
+        }
+        if isinstance(command, GenerateBibleProposal):
+            document["scope"] = command.scope
+        return document
+
+    @classmethod
+    def request_hash(
+        cls, command: GenerateBibleDraft | GenerateBibleProposal
+    ) -> str:
         return canonical_hash(cls.request_document(command))
 
     @staticmethod
     def _attempt_result(row) -> BibleGenerationAttemptResult:
+        proposal = None
+        if row["status"] == "succeeded":
+            try:
+                raw = _json_mapping(row["result_json"])
+                for field_name in (
+                    "worldRules",
+                    "coreCast",
+                    "factions",
+                    "longTermConflicts",
+                    "relationshipDynamics",
+                    "continuityGuardrails",
+                    "openDesignQuestions",
+                ):
+                    if isinstance(raw.get(field_name), list):
+                        raw[field_name] = tuple(raw[field_name])
+                proposal = BiblePayload.model_validate(raw, strict=True)
+                if canonical_bible_hash(proposal) != row["result_hash"]:
+                    raise ValueError("stored generation result hash mismatch")
+            except (
+                KeyError,
+                TypeError,
+                ValueError,
+                ValidationError,
+                json.JSONDecodeError,
+                UnicodeError,
+            ):
+                raise BibleGenerationParseFailed() from None
         return BibleGenerationAttemptResult(
             attempt_id=row["id"],
             project_id=row["project_id"],
@@ -211,6 +282,7 @@ class BibleGenerationService:
                 if row.get("completed_at") is not None
                 else None
             ),
+            proposal=proposal,
         )
 
     @staticmethod
@@ -271,7 +343,7 @@ class BibleGenerationService:
         corpus_refs = tuple(
             _value(contract, "corpus_source_refs", ()) or ()
         )
-        return {
+        manifest = {
             "selection": {
                 "revision": basis["selection_revision"],
                 "seedId": basis["seed_id"],
@@ -364,7 +436,44 @@ class BibleGenerationService:
             "draft": cls._draft_fact(draft),
             "head": {"revision": int(head["revision"])},
             "policyVersion": BIBLE_GENERATION_POLICY_VERSION,
+            "operation": (
+                "proposal"
+                if isinstance(command, GenerateBibleProposal)
+                else "draft_generation"
+            ),
         }
+        if isinstance(command, GenerateBibleProposal):
+            manifest["scope"] = command.scope
+        return manifest
+
+    @staticmethod
+    def _stored_draft_payload(draft) -> BiblePayload:
+        try:
+            raw = _json_mapping(draft["draft_json"])
+            for field_name in (
+                "worldRules",
+                "coreCast",
+                "factions",
+                "longTermConflicts",
+                "relationshipDynamics",
+                "continuityGuardrails",
+                "openDesignQuestions",
+            ):
+                if isinstance(raw.get(field_name), list):
+                    raw[field_name] = tuple(raw[field_name])
+            payload = BiblePayload.model_validate(raw, strict=True)
+            if canonical_bible_hash(payload) != draft["content_hash"]:
+                raise ValueError("stored Bible hash mismatch")
+            return payload
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            ValidationError,
+            json.JSONDecodeError,
+            UnicodeError,
+        ):
+            raise BibleGenerationNotReady() from None
 
     @staticmethod
     def _provider_ready(binding, basis) -> bool:
@@ -437,6 +546,14 @@ class BibleGenerationService:
         )
         if not self._expected_state(command, draft, head):
             raise BibleGenerationConflict()
+        current_bible = None
+        if (
+            isinstance(command, GenerateBibleProposal)
+            and command.scope != "whole"
+        ):
+            if draft is None:
+                raise BibleGenerationNotReady()
+            current_bible = self._stored_draft_payload(draft)
 
         binding = await self.repository.lock_planning_binding(
             session, command.project_id
@@ -568,18 +685,25 @@ class BibleGenerationService:
         messages = None
         if build_prompt:
             try:
-                messages = build_bible_messages(
-                    seed=seed.model_dump(mode="json"),
-                    creation_contract=_dump(
+                prompt_inputs = {
+                    "seed": seed.model_dump(mode="json"),
+                    "creation_contract": _dump(
                         _value(contract, "creation_contract")
                     ),
-                    style_contract=_dump(
+                    "style_contract": _dump(
                         _value(contract, "style_contract")
                     ),
-                    experience_cards=tuple(experience_cards),
-                    corpus_fragments=tuple(corpus_fragments),
-                    author_instructions=command.author_instructions,
-                )
+                    "experience_cards": tuple(experience_cards),
+                    "corpus_fragments": tuple(corpus_fragments),
+                    "author_instructions": command.author_instructions,
+                }
+                if isinstance(command, GenerateBibleProposal):
+                    prompt_inputs["proposal_scope"] = command.scope
+                    if current_bible is not None:
+                        prompt_inputs["current_bible"] = current_bible.model_dump(
+                            mode="json"
+                        )
+                messages = build_bible_messages(**prompt_inputs)
             except (TypeError, ValueError):
                 raise BibleGenerationNotReady() from None
 
@@ -648,6 +772,11 @@ class BibleGenerationService:
 
     async def _reserve(self, command, identity):
         request_hash = self.request_hash(command)
+        compatible_hashes = {request_hash}
+        if isinstance(command, GenerateBibleDraft):
+            compatible_hashes.add(
+                canonical_hash(self._legacy_request_document(command))
+            )
         async with self._transaction() as session:
             project = await self.repository.lock_project(
                 session, command.project_id
@@ -665,7 +794,8 @@ class BibleGenerationService:
                 )
             )
             if existing is not None:
-                if existing["request_hash"] != request_hash:
+                stored_request_hash = existing["request_hash"]
+                if stored_request_hash not in compatible_hashes:
                     raise BibleGenerationIdempotencyConflict()
                 if existing["status"] in _TERMINAL:
                     return self._attempt_result(existing), None
@@ -988,6 +1118,8 @@ class BibleGenerationService:
         self,
         command: GenerateBibleDraft,
     ) -> BibleGenerationAttemptResult:
+        if not isinstance(command, GenerateBibleDraft):
+            raise BibleGenerationNotReady()
         self._validate(command)
         identity = {}
         try:
@@ -1113,6 +1245,7 @@ __all__ = (
     "BIBLE_GENERATION_LEASE_MS",
     "BIBLE_GENERATION_POLICY_VERSION",
     "BIBLE_MAX_OUTPUT_TOKENS",
+    "BIBLE_PROPOSAL_SCOPE_FIELDS",
     "BibleGenerationAttemptNotFound",
     "BibleGenerationAttemptResult",
     "BibleGenerationConflict",
@@ -1123,4 +1256,5 @@ __all__ = (
     "BibleGenerationRetryable",
     "BibleGenerationService",
     "GenerateBibleDraft",
+    "GenerateBibleProposal",
 )
