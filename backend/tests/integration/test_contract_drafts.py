@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from hashlib import sha256
 
 import pytest
@@ -314,7 +315,10 @@ async def test_real_progressive_draft_saves_engine_style_assets_as_versions_1_2_
     assert engine.draft.draftStage == "engine"
     assert engine.draft.primaryStyleRef is None
     assert engine.draft.experienceCardRefs is None
-    assert await service.get_draft(PROJECT) == engine
+    loaded_engine = await service.get_draft(PROJECT)
+    assert replace(loaded_engine, document_projection=None) == engine
+    assert loaded_engine.document_projection.selected_engine.name == "方案 1"
+    assert loaded_engine.document_projection.primary_style is None
 
     style = await service.save_draft(SaveContractDraft(
         PROJECT, 1, _draft(facts, stage="style")
@@ -323,7 +327,10 @@ async def test_real_progressive_draft_saves_engine_style_assets_as_versions_1_2_
     assert style.draft.draftStage == "style"
     assert style.draft.primaryStyleRef.id == STYLE
     assert style.draft.experienceCardRefs is None
-    assert await service.get_draft(PROJECT) == style
+    loaded_style = await service.get_draft(PROJECT)
+    assert replace(loaded_style, document_projection=None) == style
+    assert loaded_style.document_projection.primary_style.name == "克制现实"
+    assert loaded_style.document_projection.primary_style.revision == 1
 
     assets = await service.save_draft(SaveContractDraft(
         PROJECT, 2, _draft(facts)
@@ -333,7 +340,8 @@ async def test_real_progressive_draft_saves_engine_style_assets_as_versions_1_2_
     assert assets.draft.is_complete is True
     assert assets.draft.experienceCardRefs[0].id == CARD
     assert assets.draft.corpusSourceRefs[0].id == SOURCE
-    assert await service.get_draft(PROJECT) == assets
+    loaded_assets = await service.get_draft(PROJECT)
+    assert replace(loaded_assets, document_projection=None) == assets
 
 
 @pytest.mark.asyncio
@@ -354,7 +362,9 @@ async def test_real_archived_project_reads_existing_draft_but_rejects_preview_an
         (1_900_000_000_500, PROJECT),
     )
 
-    assert await service.get_draft(PROJECT) == saved
+    assert replace(
+        await service.get_draft(PROJECT), document_projection=None
+    ) == saved
     with pytest.raises(ContractNotFound):
         await service.preview(PROJECT)
     with pytest.raises(ProjectArchived):
@@ -407,7 +417,9 @@ async def test_real_incomplete_draft_preview_and_confirm_are_422_without_writes(
         (PROJECT,),
     )
     assert head["revision"] == 0
-    assert await service.get_draft(PROJECT) == saved
+    assert replace(
+        await service.get_draft(PROJECT), document_projection=None
+    ) == saved
 
 
 @pytest.mark.asyncio
@@ -465,7 +477,9 @@ async def test_real_draft_preview_cas_and_confirmed_contract_is_locked(disposabl
     facts = await _bootstrap(disposable_mysql.session)
     service = _service(disposable_mysql)
     created = await service.save_draft(SaveContractDraft(PROJECT, 0, _draft(facts)))
-    assert (await service.get_draft(PROJECT)) == created
+    assert replace(
+        await service.get_draft(PROJECT), document_projection=None
+    ) == created
     preview = await service.preview(PROJECT)
     assert preview.contract_ready is True, preview.reasons
     assert preview.creation_hash and preview.style_hash

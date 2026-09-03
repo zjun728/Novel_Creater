@@ -12,6 +12,7 @@ const props = defineProps({
   engineHash: { type: String, required: true },
   primaryStyleRef: { type: Object, default: null },
   secondaryStyleRef: { type: Object, default: null },
+  interactionLocked: { type: Boolean, default: false },
 })
 const store = useCreationContractStore()
 const authorScenario = ref('')
@@ -20,6 +21,11 @@ const errorMessage = ref('')
 const errorRegion = ref(null)
 const runGuard = createLatestRequestGuard()
 const result = computed(() => store.styleTrial)
+
+function focusControl(reference, options = { preventScroll: false }) {
+  const target = typeof reference?.focus === 'function' ? reference : reference?.$el
+  target?.focus?.(options)
+}
 const canRun = computed(() => Boolean(
   props.selectionRevision > 0
   && props.engineOptionId
@@ -40,7 +46,7 @@ async function showError(message, generation) {
   errorMessage.value = String(message || '临时风格试写失败')
   await nextTick()
   if (!runGuard.isCurrent(generation)) return
-  errorRegion.value?.focus({ preventScroll: false })
+  focusControl(errorRegion.value)
 }
 
 async function runTrial() {
@@ -94,12 +100,17 @@ onBeforeUnmount(() => runGuard.invalidate())
 </script>
 
 <template>
-  <aside class="trial-panel" aria-labelledby="style-trial-heading">
+  <aside
+    class="trial-panel"
+    aria-labelledby="style-trial-heading"
+    :inert="props.interactionLocked ? '' : undefined"
+    :aria-disabled="props.interactionLocked ? 'true' : undefined"
+  >
     <header>
       <div>
         <span>TEMPORARY STYLE TRIAL</span>
-        <h3 id="style-trial-heading">临时试写，不改变任何选择</h3>
-        <p>试写只通过后端安全网关调用当前绑定。结果不会进入创作契约，也不会自动选择主风格或辅风格。</p>
+        <h3 id="style-trial-heading">先预览阅读感受，再决定是否采用</h3>
+        <p>试写只通过后端安全网关调用当前绑定。结果不会进入创作契约，也不会自动选择、采用或冻结主风格与辅风格。</p>
       </div>
       <n-tag :type="result?.status === 'succeeded' ? 'success' : result?.status === 'failed' ? 'error' : 'default'" round>
         {{ store.styleTrialLoading ? '试写中' : result?.status === 'succeeded' ? '已完成' : result?.status === 'failed' ? '失败' : '未试写' }}

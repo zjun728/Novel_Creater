@@ -39,7 +39,13 @@ def test_save_reload_and_preview_routes_return_strict_safe_public_snapshots():
     preview = client.post("/api/projects/p1/contracts/preview")
 
     assert [saved.status_code, reloaded.status_code, preview.status_code] == [200] * 3
-    assert reloaded.json() == saved.json()
+    assert "documentProjection" not in saved.json()
+    assert reloaded.json()["draft"] == saved.json()["draft"]
+    projection = reloaded.json()["documentProjection"]
+    assert projection["selectedEngine"]["name"] == "方案 1"
+    assert projection["primaryStyle"]["name"] == "克制现实"
+    assert projection["primaryStyle"]["revision"] == 2
+    assert projection["unavailableReasons"] == []
     assert saved.json()["baseHeadRevision"] == 0
     assert saved.json()["draftVersion"] == 1
     assert saved.json()["draftStage"] == "assets"
@@ -238,7 +244,9 @@ def test_archived_project_reads_existing_draft_but_rejects_formal_operations():
     })
 
     assert loaded.status_code == 200
-    assert loaded.json() == saved.json()
+    loaded_body = loaded.json()
+    assert loaded_body.pop("documentProjection")["selectedEngine"]["name"] == "方案 1"
+    assert loaded_body == saved.json()
     for response in (preview, saved_again, confirmed):
         assert response.status_code in {404, 409}
     assert preview.json()["code"] == "ContractNotFound"

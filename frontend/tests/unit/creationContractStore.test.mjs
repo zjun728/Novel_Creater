@@ -885,6 +885,66 @@ test('confirmation locks its permanent baseline after the first command', async 
   })
 })
 
+test('confirmation conflict blocks stale repeats until an authoritative reload restores eligibility', async () => {
+  let backendDraft = publicDraft('assets', 3)
+  let confirmCalls = 0
+  const commands = []
+  const readyPreview = {
+    projectId: 'project-1', contractReady: true, reasons: [],
+    seedRef: { revisionId: 'seed-1', contentHash: HASH_A },
+  }
+
+  await withApiMethods([
+    [api.contracts.draft, 'get', async () => backendDraft],
+    [api.contracts, 'head', async () => ({ revision: 0, contractReady: false, reasons: [] })],
+    [api.contracts, 'preview', async () => readyPreview],
+    [api.contracts, 'confirm', async (_projectId, command) => {
+      confirmCalls += 1
+      commands.push(structuredClone(command))
+      if (confirmCalls === 1) {
+        throw Object.assign(new Error('stale confirmation authority'), {
+          status: 409,
+          code: 'ContractConflict',
+          correlationId: 'cid-confirm-conflict',
+        })
+      }
+      return {
+        projectId: 'project-1', revision: 1, hasContract: true,
+        contractReady: true, reasons: [],
+      }
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+    await store.load('project-1')
+    await store.preview('project-1')
+    assert.equal(store.serverCanConfirm, true)
+
+    await assert.rejects(
+      store.confirm('project-1', { idempotencyKey: 'stale-confirm' }),
+      error => error?.status === 409 && error?.code === 'ContractConflict',
+    )
+    assert.equal(store.requiresReload, true)
+
+    await assert.rejects(
+      store.confirm('project-1', { idempotencyKey: 'stale-confirm' }),
+      error => error?.code === 'contract_reload_required',
+    )
+    assert.equal(confirmCalls, 1)
+
+    backendDraft = publicDraft('assets', 4)
+    await store.load('project-1')
+    assert.equal(store.requiresReload, false)
+    await store.preview('project-1')
+    assert.equal(store.serverCanConfirm, true)
+
+    await store.confirm('project-1', { idempotencyKey: 'fresh-confirm' })
+    assert.equal(confirmCalls, 2)
+    assert.equal(commands[1].expectedDraftVersion, 4)
+    assert.equal(commands[1].expectedDraftHash, HASH_B)
+  })
+})
+
 test('style trial uses the backend gateway and remains temporary contract-neutral state', async () => {
   assert.equal(typeof api.styleTrials?.generate, 'function')
   const restoreStorage = installThrowingLocalStorage()

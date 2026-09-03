@@ -38,7 +38,7 @@ const routeProject = useRouteProject()
 
   <section
     v-else-if="routeProject.state.value === 'archived'"
-    class="contract-page contract-page--archived"
+    class="contract-page contract-page--foundation contract-page--archived"
   >
     <header class="archive-banner">
       <div>
@@ -54,7 +54,7 @@ const routeProject = useRouteProject()
     />
   </section>
 
-  <section v-else-if="routeProject.state.value === 'active'" class="contract-page">
+  <section v-else-if="routeProject.state.value === 'active'" class="contract-page contract-page--foundation">
     <creation-contract-wizard
       :project-id="String(routeProject.project.value.id)"
       :project="routeProject.project.value"
@@ -64,6 +64,7 @@ const routeProject = useRouteProject()
 
 <style scoped>
 .contract-page {
+  position: relative;
   min-height: 100%;
   padding: clamp(20px, 4vw, 54px);
   color: #302a23;
@@ -71,6 +72,7 @@ const routeProject = useRouteProject()
     linear-gradient(rgba(118, 95, 60, .035) 1px, transparent 1px) 0 0 / 100% 30px,
     #f4efe4;
 }
+.contract-page--foundation { padding: 0; }
 .contract-page__loading {
   display: grid;
   width: min(1180px, 100%);
@@ -87,7 +89,7 @@ const routeProject = useRouteProject()
   justify-content: space-between;
   width: min(1180px, 100%);
   gap: 20px;
-  margin: 0 auto 18px;
+  margin: 0 auto;
   padding: 20px 24px;
   border: 1px solid #cfbea3;
   border-left: 5px solid #9c3d2f;
@@ -97,6 +99,7 @@ const routeProject = useRouteProject()
 .archive-banner h1 { margin: 5px 0 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: clamp(24px, 4vw, 36px); }
 @media (max-width: 620px) {
   .contract-page { padding: 14px; }
+  .contract-page--foundation { padding: 0; }
   .archive-banner { align-items: flex-start; flex-direction: column; }
 }
 </style>

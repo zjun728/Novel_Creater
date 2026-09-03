@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 import json
 import traceback
 from typing import get_type_hints
@@ -285,7 +286,7 @@ async def test_create_reload_update_uses_one_draft_and_version_cas_from_head_zer
     assert created.draft.modelBindingRef.id == "binding-revision-3"
     assert created.draft.modelBindingRef.revision == 3
     assert created.draft.modelBindingRef.contentHash == harness.repository.binding["content_hash"]
-    assert reloaded == created
+    assert replace(reloaded, document_projection=None) == created
     assert updated.draft_version == 2
     assert updated.base_head_revision == 0
     assert updated.draft.likes == ("克制", "选择有代价")
@@ -293,6 +294,66 @@ async def test_create_reload_update_uses_one_draft_and_version_cas_from_head_zer
     assert harness.repository.drafts["p1"]["seed_revision_id"] == "seed-revision-1"
     assert harness.repository.drafts["p1"]["engine_option_id"] == "engine-1"
     assert harness.repository.drafts["p1"]["content_hash"] == canonical_hash(updated.draft)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ("engine", "style"))
+async def test_cold_draft_read_projects_exact_saved_engine_and_style_without_preview(stage):
+    harness = ContractHarness()
+    overrides = {"draftStage": stage}
+    if stage == "engine":
+        overrides.update({
+            "primaryStyleRef": None, "secondaryStyleRef": None,
+            "likes": None, "dislikes": None,
+            "experienceCardRefs": None, "corpusSourceRefs": None,
+        })
+    else:
+        overrides.update({"experienceCardRefs": None, "corpusSourceRefs": None})
+    await harness.service.save_draft(command(harness, **overrides))
+
+    loaded = await harness.service.get_draft("p1")
+
+    projection = loaded.document_projection
+    assert projection is not None
+    assert projection.selected_engine is not None
+    assert projection.selected_engine.name == "方案 1"
+    assert projection.unavailable_reasons == ()
+    if stage == "style":
+        assert projection.primary_style is not None
+        assert projection.primary_style.name == "克制现实"
+        assert projection.primary_style.revision == 2
+        assert projection.primary_style.content_hash == harness.repository.styles["style-primary"]["content_hash"]
+        assert projection.primary_style.reading_experience == "克制现实主义"
+    else:
+        assert projection.primary_style is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("drift", "reason"),
+    (("engine", "engine_identity_unavailable"), ("style", "primary_style_identity_unavailable")),
+)
+async def test_cold_draft_projection_fails_closed_on_frozen_identity_drift(drift, reason):
+    harness = ContractHarness()
+    await harness.service.save_draft(command(
+        harness,
+        draftStage="style",
+        experienceCardRefs=None,
+        corpusSourceRefs=None,
+    ))
+    if drift == "engine":
+        harness.repository.engines["engine-1"]["content_hash"] = "0" * 64
+    else:
+        harness.repository.styles["style-primary"]["content_hash"] = "0" * 64
+
+    projection = (await harness.service.get_draft("p1")).document_projection
+
+    assert projection is not None
+    assert reason in projection.unavailable_reasons
+    if drift == "engine":
+        assert projection.selected_engine is None
+    else:
+        assert projection.primary_style is None
 
 
 @pytest.mark.asyncio
@@ -649,7 +710,8 @@ async def test_archived_project_can_read_existing_draft_but_cannot_preview_or_wr
     writes = harness.repository.write_count
     harness.repository.projects["p1"]["status"] = "archived"
 
-    assert await harness.service.get_draft("p1") == saved
+    loaded = await harness.service.get_draft("p1")
+    assert replace(loaded, document_projection=None) == saved
     with pytest.raises(ContractNotFound):
         await harness.service.preview("p1")
     with pytest.raises(ProjectArchived):

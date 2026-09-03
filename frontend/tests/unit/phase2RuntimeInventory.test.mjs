@@ -166,6 +166,7 @@ const CANONICAL_RUNTIME = [
   'stores/bibleStore.js',
   'stores/chapterSessionStore.js',
   'stores/creationContractStore.js',
+  'application/contracts/contractDocumentSections.js',
   'stores/planningStore.js',
   'application/writer/draftOperationCoordinator.js',
   'components/planning/PlanningWorkspace.vue',
@@ -197,7 +198,6 @@ const CANONICAL_ROUTE_VIEWS = [
 ]
 
 const PRESERVED_FUTURE_RUNTIME = [
-  'application/contracts/contractDocumentSections.js',
   'components/project/ContractHeadSummary.vue',
   'components/project/WriterCoreStateCard.vue',
   'components/manuscript/ManuscriptSummaryLink.vue',

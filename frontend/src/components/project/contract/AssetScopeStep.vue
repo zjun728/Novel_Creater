@@ -1,18 +1,26 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { NAlert, NButton, NEmpty, NInputNumber, NSelect, NSkeleton, NSpin, NTag } from 'naive-ui'
 
 import { useCorpusStore } from '@/stores/corpusStore.js'
 import { useCreationAssetStore } from '@/stores/creationAssetStore.js'
 import { useCreationContractStore } from '@/stores/creationContractStore.js'
 
-const props = defineProps({ projectId: { type: String, required: true } })
-const emit = defineEmits(['saved', 'dirty-change', 'back'])
+const props = defineProps({
+  projectId: { type: String, required: true },
+  interactionLocked: { type: Boolean, default: false },
+})
+const emit = defineEmits(['saved', 'dirty-change', 'editing-change'])
 const assetStore = useCreationAssetStore()
 const contractStore = useCreationContractStore()
 const corpusStore = useCorpusStore()
 const loading = ref(false)
 const loadError = ref('')
+
+function focusControl(reference, options = { preventScroll: false }) {
+  const target = typeof reference?.focus === 'function' ? reference : reference?.$el
+  target?.focus?.(options)
+}
 const saveError = ref('')
 const errorRegion = ref(null)
 const selectedExperienceIds = ref([])
@@ -95,7 +103,7 @@ function markDirty() {
 async function showError(message) {
   saveError.value = String(message || '素材范围操作失败')
   await nextTick()
-  errorRegion.value?.focus({ preventScroll: false })
+  focusControl(errorRegion.value)
 }
 
 function updateExperienceSelection(values) {
@@ -390,11 +398,11 @@ function corpusRefs() {
   return [...groups.values()]
 }
 
-async function saveAndContinue() {
+async function saveSection() {
   if (contractStore.saving || contractStore.requiresReload) return
   const current = draftValues.value
   if (!current?.engineOptionId || !current?.primaryStyleRef) {
-    await showError('风格草稿已失效，请返回上一步重新加载。')
+    await showError('风格方案草稿已失效，请重新加载权威状态。')
     return
   }
   try {
@@ -416,14 +424,20 @@ async function saveAndContinue() {
 }
 
 watch(() => props.projectId, projectId => void initialize(String(projectId || '')), { immediate: true })
-onBeforeUnmount(() => { loadEpoch += 1; fragmentEpoch += 1 })
+onMounted(() => emit('editing-change', true))
+onBeforeUnmount(() => { emit('editing-change', false); loadEpoch += 1; fragmentEpoch += 1 })
 </script>
 
 <template>
-  <section class="asset-step" aria-labelledby="asset-step-heading">
-    <header class="step-heading"><div><p>STEP 03 · REFERENCE SCOPE</p><h2 id="asset-step-heading">逐项授权，片段级冻结</h2><span>推荐只是候选，任何经验卡或语料片段都不会默认勾选；推荐为空时仍可浏览完整库。</span></div><b aria-hidden="true">03</b></header>
+  <section
+    class="asset-step"
+    aria-labelledby="asset-step-heading"
+    :inert="props.interactionLocked ? '' : undefined"
+    :aria-disabled="props.interactionLocked ? 'true' : undefined"
+  >
+    <header class="step-heading"><div><p>CONTRACT SECTION · REFERENCE SCOPE</p><h2 id="asset-step-heading">逐项授权，片段级冻结</h2><span>推荐只是候选，任何经验卡或语料片段都不会默认勾选；推荐为空时仍可浏览完整库。</span></div></header>
 
-    <n-alert v-if="loadError" type="error" class="state-alert" title="创作资产未能加载">{{ loadError }}<template #action><n-button size="small" @click="initialize(props.projectId, { reloadContract: true })">重新加载并核对</n-button></template></n-alert>
+    <n-alert v-if="loadError" type="error" class="state-alert" title="创作资产未能加载">{{ loadError }}<n-button size="small" @click="initialize(props.projectId, { reloadContract: true })">重新加载并核对</n-button></n-alert>
     <div v-if="loading" class="loading-grid" aria-busy="true"><section><n-skeleton text :repeat="6" /></section><section><n-skeleton text :repeat="6" /></section></div>
 
     <template v-else-if="!loadError">
@@ -488,7 +502,7 @@ onBeforeUnmount(() => { loadEpoch += 1; fragmentEpoch += 1 })
     </template>
 
     <n-alert v-if="saveError" ref="errorRegion" tabindex="-1" type="error" class="state-alert" aria-live="assertive">{{ saveError }}</n-alert>
-    <footer class="step-actions"><n-button secondary @click="emit('back')">返回风格契约</n-button><div><small>零选择会明确保存为空；推荐不会自动纳入。</small><n-button type="primary" size="large" :loading="contractStore.saving" :disabled="loading || contractStore.saving || contractStore.requiresReload || Boolean(loadError)" @click="saveAndContinue">保存草稿并继续</n-button></div></footer>
+    <footer class="step-actions"><div><small>零选择会明确保存为空；推荐不会自动纳入。</small><n-button type="primary" size="large" :loading="contractStore.saving" :disabled="loading || contractStore.saving || contractStore.requiresReload || Boolean(loadError)" @click="saveSection">保存本节</n-button></div></footer>
   </section>
 </template>
 

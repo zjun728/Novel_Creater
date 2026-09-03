@@ -1,5 +1,5 @@
 <script setup>
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 
 import { createModalFocusManager } from '@/components/common/modalFocusManager.js'
 
@@ -10,20 +10,20 @@ const props = defineProps({
 })
 const emit = defineEmits(['close'])
 const dialog = ref(null)
+const titleId = `${useId()}-title`
 const mounted = ref(false)
 let focusGeneration = 0
 let componentMounted = false
 const focusManager = createModalFocusManager({
   getDialog: () => dialog.value,
-  getInitialFocus: () => dialog.value?.querySelectorAll?.(
-    'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
-  )?.[0] ?? dialog.value,
+  getInitialFocus: () => dialog.value,
 })
 
 async function mountFocus() {
   const generation = ++focusGeneration
   await nextTick()
   if (generation !== focusGeneration || !componentMounted || !props.open || !dialog.value) return
+  dialog.value.scrollTop = 0
   focusManager.mount()
 }
 
@@ -55,11 +55,11 @@ onBeforeUnmount(() => { componentMounted = false; cancelFocus() })
         role="dialog"
         aria-modal="true"
         tabindex="-1"
-        :aria-label="title"
+        :aria-labelledby="titleId"
         @keydown="handleKeydown"
       >
         <p class="foundation-confirmation-dialog__kicker">CONFIRM REVISION</p>
-        <h2>{{ title }}</h2>
+        <h2 :id="titleId">{{ title }}</h2>
         <div v-if="$slots.snapshot" class="foundation-confirmation-dialog__snapshot"><slot name="snapshot" /></div>
         <div v-if="$slots.source" class="foundation-confirmation-dialog__source"><slot name="source" /></div>
         <footer v-if="$slots.action" class="foundation-confirmation-dialog__actions"><slot name="action" /></footer>

@@ -1,11 +1,15 @@
 <script setup>
-import { nextTick, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { NAlert, NButton, NInput, NInputNumber } from 'naive-ui'
 
 import { useCreationContractStore } from '@/stores/creationContractStore.js'
 
-const props = defineProps({ projectId: { type: String, required: true } })
-const emit = defineEmits(['saved', 'back', 'dirty-change'])
+const props = defineProps({
+  projectId: { type: String, required: true },
+  mode: { type: String, default: 'capacity', validator: value => ['capacity', 'prohibitions'].includes(value) },
+  interactionLocked: { type: Boolean, default: false },
+})
+const emit = defineEmits(['saved', 'dirty-change', 'editing-change'])
 const store = useCreationContractStore()
 const targetTotalWords = ref(0)
 const expectedVolumeCount = ref(0)
@@ -17,6 +21,11 @@ const authorNotes = ref('')
 const errorMessage = ref('')
 const errorRegion = ref(null)
 let hydrating = false
+
+function focusControl(reference, options = { preventScroll: false }) {
+  const target = typeof reference?.focus === 'function' ? reference : reference?.$el
+  target?.focus?.(options)
+}
 
 function listFromText(value) {
   return [...new Set(String(value || '').split(/\r?\n/u).map(item => item.trim()).filter(Boolean))]
@@ -45,7 +54,7 @@ function markDirty() {
 async function showError(message) {
   errorMessage.value = message
   await nextTick()
-  errorRegion.value?.focus({ preventScroll: false })
+  focusControl(errorRegion.value)
 }
 
 function positiveInteger(value, label, max) {
@@ -56,11 +65,11 @@ function positiveInteger(value, label, max) {
   return number
 }
 
-async function saveAndContinue() {
+async function saveSection() {
   if (store.saving || store.requiresReload) return
   const current = store.draft?.draft
   if (!current?.engineOptionId || current?.draftStage !== 'assets') {
-    await showError('素材范围草稿已失效，请返回上一步重新加载。')
+    await showError('正式资产范围草稿已失效，请重新加载权威状态。')
     return
   }
   try {
@@ -96,20 +105,27 @@ async function saveAndContinue() {
 }
 
 watch(() => store.draft?.draft, draft => hydrate(draft), { immediate: true })
+onMounted(() => emit('editing-change', true))
+onBeforeUnmount(() => emit('editing-change', false))
 </script>
 
 <template>
-  <section class="capacity-step" aria-labelledby="capacity-step-heading">
+  <section
+    class="capacity-step"
+    aria-labelledby="capacity-step-heading"
+    :inert="props.interactionLocked ? '' : undefined"
+    :aria-disabled="props.interactionLocked ? 'true' : undefined"
+  >
     <header class="step-heading">
       <div>
-        <p class="step-kicker">STEP 04 · CAPACITY</p>
-        <h2 id="capacity-step-heading">给长篇一副可调整的骨架</h2>
-        <p>总量约束用于滚动规划，不会强迫每章机械等长；禁止方向和作者备注会随正式契约一起冻结。</p>
+        <p class="step-kicker">CONTRACT SECTION · {{ props.mode === 'capacity' ? 'CAPACITY' : 'PROHIBITIONS' }}</p>
+        <h2 id="capacity-step-heading">{{ props.mode === 'capacity' ? '给长篇一副可调整的骨架' : '把不可越过的方向写清楚' }}</h2>
+        <p v-if="props.mode === 'capacity'">总量约束用于滚动规划，不会强迫每章机械等长；作者备注会随正式契约一起冻结。</p>
+        <p v-else>禁止方向会进入同一份正式契约，成为规划与正文都必须尊重的作者边界。</p>
       </div>
-      <span aria-hidden="true">04</span>
     </header>
 
-    <div class="capacity-grid">
+    <div v-if="props.mode === 'capacity'" class="capacity-grid">
       <label>
         <span>目标总字数</span>
         <small>整书容量的主锚点</small>
@@ -134,13 +150,13 @@ watch(() => store.draft?.draft, draft => hydrate(draft), { immediate: true })
       </fieldset>
     </div>
 
-    <div class="direction-grid">
-      <label>
+    <div class="direction-grid direction-grid--single">
+      <label v-if="props.mode === 'prohibitions'">
         <span>禁止方向</span>
         <small>每行一条，最多 20 条。例如“不写无代价升级”。</small>
         <n-input v-model:value="prohibitedDirectionsText" type="textarea" :autosize="{ minRows: 4, maxRows: 9 }" maxlength="2000" show-count @update:value="markDirty" />
       </label>
-      <label>
+      <label v-else>
         <span>作者备注</span>
         <small>写给未来规划和写作阶段的短笺，可留空。</small>
         <n-input v-model:value="authorNotes" type="textarea" :autosize="{ minRows: 4, maxRows: 9 }" maxlength="2000" show-count @update:value="markDirty" />
@@ -159,10 +175,9 @@ watch(() => store.draft?.draft, draft => hydrate(draft), { immediate: true })
     </n-alert>
 
     <footer class="step-actions">
-      <n-button secondary :disabled="store.saving" @click="emit('back')">返回素材范围</n-button>
       <div>
-        <small>保存会建立明确的草稿检查点；确认仍在下一步一次完成。</small>
-        <n-button type="primary" size="large" :loading="store.saving" :disabled="store.saving || store.requiresReload" @click="saveAndContinue">保存草稿并继续</n-button>
+        <small>保存会建立明确的草稿检查点；最终签印只在完整预览中完成。</small>
+        <n-button type="primary" size="large" :loading="store.saving" :disabled="store.saving || store.requiresReload" @click="saveSection">保存本节</n-button>
       </div>
     </footer>
   </section>
@@ -183,6 +198,7 @@ watch(() => store.draft?.draft, draft => hydrate(draft), { immediate: true })
 .capacity-grid fieldset > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .capacity-grid fieldset label { display: grid; gap: 6px; }
 .direction-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+.direction-grid--single { grid-template-columns: minmax(0, 1fr); }
 .state-alert { margin-top: 16px; }
 .step-actions { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-top: 26px; padding-top: 20px; border-top: 1px solid var(--rule, #ded5c4); }
 .step-actions > div { display: flex; align-items: center; gap: 14px; }

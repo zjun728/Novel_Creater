@@ -79,7 +79,7 @@ class ConfirmBody(_StrictBody):
 
 
 def _public_draft(result):
-    return {
+    public = {
         "id": result.id,
         "projectId": result.project_id,
         "selectionRevision": result.selection_revision,
@@ -92,6 +92,28 @@ def _public_draft(result):
         "createdAt": result.created_at,
         "updatedAt": result.updated_at,
     }
+    projection = result.document_projection
+    if projection is not None:
+        def public_style(style):
+            return ({
+                "id": style.id,
+                "revision": style.revision,
+                "contentHash": style.content_hash,
+                "name": style.name,
+                "readingExperience": style.reading_experience,
+                "narrativeDistance": style.narrative_distance,
+                "sentenceParagraphRhythm": style.sentence_paragraph_rhythm,
+            } if style else None)
+        public["documentProjection"] = {
+            "selectedEngine": (
+                projection.selected_engine.model_dump(mode="json")
+                if projection.selected_engine else None
+            ),
+            "primaryStyle": public_style(projection.primary_style),
+            "secondaryStyle": public_style(projection.secondary_style),
+            "unavailableReasons": list(projection.unavailable_reasons),
+        }
+    return public
 
 
 def _public_binding_item(item):

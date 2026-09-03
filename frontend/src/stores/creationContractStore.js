@@ -49,6 +49,12 @@ function baselineLockedError() {
   return error
 }
 
+function reloadRequiredError() {
+  const error = new Error('创作契约权威状态已变化，请先重新加载并核对')
+  error.code = 'contract_reload_required'
+  return error
+}
+
 export const useCreationContractStore = defineStore('creationContract', () => {
   const projectId = ref('')
   const draft = shallowRef(null)
@@ -185,6 +191,7 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     if (readOnly.value) throw readOnlyError()
     if (!headHydrated.value) throw hydrationError()
     if (baselineLocked.value) throw baselineLockedError()
+    if (requiresReload.value) throw reloadRequiredError()
   }
 
   function discardUnsavedChanges() {

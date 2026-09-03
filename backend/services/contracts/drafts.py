@@ -258,6 +258,26 @@ class ContractDraftResult:
     draft: ContractDraftPayload
     created_at: int
     updated_at: int
+    document_projection: "ContractDraftDocumentProjection | None" = None
+
+
+@dataclass(frozen=True)
+class ContractStyleDisplay:
+    id: str
+    revision: int
+    content_hash: str
+    name: str
+    reading_experience: str
+    narrative_distance: str
+    sentence_paragraph_rhythm: str
+
+
+@dataclass(frozen=True)
+class ContractDraftDocumentProjection:
+    selected_engine: StoryEngineOption | None
+    primary_style: ContractStyleDisplay | None
+    secondary_style: ContractStyleDisplay | None
+    unavailable_reasons: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -634,9 +654,101 @@ class ContractDraftService:
             if await self.repository.read_project(session, project_id) is None:
                 raise ContractNotFound()
             row = await self.repository.read_draft(session, project_id)
+            if row is None:
+                raise ContractNotFound()
+            result = self._draft_result(row)
+            engine = await self.repository.read_engine_option(
+                session, project_id, result.draft.engineOptionId
+            )
+            primary = (
+                await self.repository.read_style_revision(
+                    session, result.draft.primaryStyleRef.id
+                )
+                if result.draft.primaryStyleRef else None
+            )
+            secondary = (
+                await self.repository.read_style_revision(
+                    session, result.draft.secondaryStyleRef.id
+                )
+                if result.draft.secondaryStyleRef else None
+            )
+        return replace(
+            result,
+            document_projection=self._document_projection(
+                result, engine, primary, secondary
+            ),
+        )
+
+    @staticmethod
+    def _project_engine(result, row):
         if row is None:
-            raise ContractNotFound()
-        return self._draft_result(row)
+            return None
+        try:
+            payload = _strict_engine(row["payload_json"])
+            exact = (
+                row.get("id") == result.draft.engineOptionId
+                and row.get("project_id") == result.project_id
+                and row.get("content_hash") == result.draft.engineHash
+                and canonical_hash(payload) == result.draft.engineHash
+                and row.get("status") == "succeeded"
+                and int(row.get("selection_revision") or 0)
+                    == result.selection_revision
+                and row.get("seed_revision_id")
+                    == result.draft.seedRevisionId
+                and row.get("seed_hash") == result.draft.seedHash
+            )
+            return payload if exact else None
+        except (KeyError, TypeError, ValueError, ValidationError, json.JSONDecodeError):
+            return None
+
+    @staticmethod
+    def _project_style(row, reference):
+        if row is None or reference is None:
+            return None
+        try:
+            payload = _json_object(row["payload_json"])
+            exact = (
+                row.get("id") == reference.id
+                and int(row.get("revision") or 0) == reference.revision
+                and row.get("content_hash") == reference.contentHash
+                and canonical_hash(payload) == reference.contentHash
+            )
+            if not exact:
+                return None
+            return ContractStyleDisplay(
+                id=reference.id,
+                revision=reference.revision,
+                content_hash=reference.contentHash,
+                name=str(row["name"]),
+                reading_experience=str(payload["reading_experience"]),
+                narrative_distance=str(payload["narrative_distance"]),
+                sentence_paragraph_rhythm=str(payload["rhythm"]),
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+
+    @classmethod
+    def _document_projection(cls, result, engine, primary, secondary):
+        selected_engine = cls._project_engine(result, engine)
+        primary_style = cls._project_style(
+            primary, result.draft.primaryStyleRef
+        )
+        secondary_style = cls._project_style(
+            secondary, result.draft.secondaryStyleRef
+        )
+        reasons = []
+        if selected_engine is None:
+            reasons.append("engine_identity_unavailable")
+        if result.draft.primaryStyleRef is not None and primary_style is None:
+            reasons.append("primary_style_identity_unavailable")
+        if result.draft.secondaryStyleRef is not None and secondary_style is None:
+            reasons.append("secondary_style_identity_unavailable")
+        return ContractDraftDocumentProjection(
+            selected_engine=selected_engine,
+            primary_style=primary_style,
+            secondary_style=secondary_style,
+            unavailable_reasons=tuple(reasons),
+        )
 
     @staticmethod
     def _binding_items(binding) -> tuple[BindingItem, ...]:
@@ -680,10 +792,10 @@ class ContractDraftService:
 __all__ = (
     "AssetRevisionRef", "BindingContractRef", "ConfirmContracts",
     "ConfirmedContractResult", "ContractAlreadyConfirmed", "ContractConflict", "ContractDraftIncomplete",
-    "ContractDraftInput", "ContractDraftPayload", "ContractDraftResult",
+    "ContractDraftDocumentProjection", "ContractDraftInput", "ContractDraftPayload", "ContractDraftResult",
     "ContractHistoryPage",
     "ContractDraftService", "ContractNotFound", "ContractPreconditionFailed",
     "CorpusSourceRef", "EngineContractRef", "ModelBindingRef",
     "ResolvedAssetRef", "ResolvedCorpusFragment", "ResolvedCorpusRef",
-    "ResolvedStyleRef", "SaveContractDraft", "SeedContractRef",
+    "ResolvedStyleRef", "ContractStyleDisplay", "SaveContractDraft", "SeedContractRef",
 )

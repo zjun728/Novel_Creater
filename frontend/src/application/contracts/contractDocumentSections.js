@@ -63,18 +63,24 @@ function savedStage(state, payload) {
     || null
 }
 
-function serverReasons(state) {
+function confirmationReasons(state) {
   const sources = [
     state?.serverReasons,
     state?.readiness?.reasons,
-    state?.validation?.reasons,
   ]
   return [...new Set(sources.flatMap(value => (
     Array.isArray(value) ? value.map(reason => String(reason)) : []
   )))]
 }
 
-function serverBlocked(state, reasons) {
+function editReasons(state) {
+  const sources = [state?.serverEditReasons, state?.validation?.reasons]
+  return [...new Set(sources.flatMap(value => (
+    Array.isArray(value) ? value.map(reason => String(reason)) : []
+  )))]
+}
+
+function editBlocked(state, reasons) {
   return reasons.length > 0
     || state?.capabilities?.view === false
     || state?.capabilities?.edit === false
@@ -135,10 +141,11 @@ export function contractDocumentSections(state = {}) {
     selectionDrift: state?.selectionDrift === true,
     lastSavedStage: draftStage,
   })
-  const reasons = serverReasons(state)
-  const blocked = serverBlocked(state, reasons)
-  const canPreview = !blocked && stepAccess.maxOpenStep >= 5
-  const canConfirm = canPreview && serverCanConfirm(state)
+  const confirmReasons = confirmationReasons(state)
+  const writeReasons = editReasons(state)
+  const writeBlocked = editBlocked(state, writeReasons)
+  const canPreview = !writeBlocked && stepAccess.maxOpenStep >= 5
+  const canConfirm = canPreview && confirmReasons.length === 0 && serverCanConfirm(state)
   const draftVersion = hasOwnProperty(state, 'draftVersion')
     ? contractDraftVersion(state.draftVersion)
     : contractDraftVersion(state?.draft?.draftVersion)
@@ -148,7 +155,10 @@ export function contractDocumentSections(state = {}) {
     sections: SECTION_DEFINITIONS.map(definition => {
       const open = definition.step <= stepAccess.maxOpenStep
       const filled = isFilled(definition.key, payload, draftStage)
-      const status = blocked ? 'blocked' : (filled ? 'filled' : 'suggested')
+      const confirmationBlocked = definition.key === 'preview' && confirmReasons.length > 0
+      const status = writeBlocked || confirmationBlocked
+        ? 'blocked'
+        : (filled ? 'filled' : 'suggested')
       return {
         key: definition.key,
         label: definition.label,
@@ -157,10 +167,12 @@ export function contractDocumentSections(state = {}) {
         open,
         status,
         values: valuesFor(definition.fields, payload),
-        writeFields: !blocked && open ? [...definition.fields] : [],
+        writeFields: !writeBlocked && open ? [...definition.fields] : [],
         canPreview: definition.key === 'preview' && canPreview,
         canConfirm: definition.key === 'preview' && canConfirm,
-        blockedReasons: blocked ? reasons : [],
+        blockedReasons: writeBlocked
+          ? writeReasons
+          : (confirmationBlocked ? confirmReasons : []),
       }
     }),
   }

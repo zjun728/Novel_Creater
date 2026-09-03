@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   NAlert,
   NButton,
@@ -20,9 +20,10 @@ import StyleTrialPanel from './StyleTrialPanel.vue'
 const props = defineProps({
   projectId: { type: String, required: true },
   selectionRevision: { type: Number, required: true },
+  interactionLocked: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['saved', 'dirty-change', 'back'])
+const emit = defineEmits(['saved', 'dirty-change', 'editing-change'])
 const assetStore = useCreationAssetStore()
 const contractStore = useCreationContractStore()
 
@@ -43,6 +44,11 @@ const detailErrorRegion = ref(null)
 const selectedDetail = ref(null)
 const loadGuard = createLatestRequestGuard()
 const detailGuard = createLatestRequestGuard()
+
+function focusControl(reference, options = { preventScroll: false }) {
+  const target = typeof reference?.focus === 'function' ? reference : reference?.$el
+  target?.focus?.(options)
+}
 
 const draftValues = computed(() => contractStore.draft?.draft || null)
 const recommendedStyles = computed(() => assetStore.recommendedStyles)
@@ -105,7 +111,7 @@ function markDirty() {
 
 function setSaveError(message) {
   saveError.value = String(message || '')
-  if (saveError.value) void nextTick(() => errorRegion.value?.focus({ preventScroll: false }))
+  if (saveError.value) void nextTick(() => focusControl(errorRegion.value))
 }
 
 function setPrimary(id) {
@@ -195,7 +201,7 @@ async function initialize(projectId, { reloadContract = false } = {}) {
       loadError.value = error?.message || '风格模板加载失败'
       await nextTick()
       if (!loadGuard.isCurrent(generation)) return
-      errorRegion.value?.focus({ preventScroll: false })
+      focusControl(errorRegion.value)
     }
   } finally {
     if (loadGuard.isCurrent(generation)) loading.value = false
@@ -219,7 +225,7 @@ async function openStyleDetail(style) {
     detailError.value = error?.message || '完整风格详情加载失败'
     await nextTick()
     if (!detailGuard.isCurrent(generation)) return
-    detailErrorRegion.value?.focus({ preventScroll: false })
+    focusControl(detailErrorRegion.value)
   } finally {
     if (detailGuard.isCurrent(generation)) detailLoading.value = false
   }
@@ -241,7 +247,7 @@ function handleDetailShowUpdate(show) {
   closeStyleDetail()
 }
 
-async function saveAndContinue() {
+async function saveSection() {
   if (contractStore.saving || contractStore.requiresReload) return
   saveError.value = ''
   const current = draftValues.value
@@ -251,7 +257,7 @@ async function saveAndContinue() {
   const dislikes = splitPreferenceLines(dislikesText.value)
 
   if (!current?.engineOptionId || !current?.engineHash) {
-    setSaveError('故事发动机草稿已失效，请返回上一步重新加载。')
+    setSaveError('故事发动机草稿已失效，请重新加载权威状态。')
     return
   }
   if (!primary || !primaryStyleId.value) {
@@ -307,17 +313,24 @@ watch(
 
 watch(() => props.projectId, projectId => initialize(String(projectId || '')), { immediate: true })
 
+onMounted(() => emit('editing-change', true))
 onBeforeUnmount(() => {
+  emit('editing-change', false)
   loadGuard.invalidate()
   detailGuard.invalidate()
 })
 </script>
 
 <template>
-  <section class="contract-step" aria-labelledby="style-step-heading">
+  <section
+    class="contract-step"
+    aria-labelledby="style-step-heading"
+    :inert="props.interactionLocked ? '' : undefined"
+    :aria-disabled="props.interactionLocked ? 'true' : undefined"
+  >
     <header class="step-heading">
       <div>
-        <p class="step-kicker">STEP 02 · STYLE CONTRACT</p>
+        <p class="step-kicker">CONTRACT SECTION · STYLE</p>
         <h3 id="style-step-heading">先定阅读感受，再谈写法</h3>
         <p>主风格决定整本书的语言底色；次风格只借少量局部技法，不与主风格平分控制权。</p>
       </div>
@@ -326,7 +339,7 @@ onBeforeUnmount(() => {
 
     <n-alert v-if="loadError" ref="errorRegion" tabindex="-1" type="error" class="state-alert" title="风格模板未能加载" aria-live="assertive">
       {{ loadError }}
-      <template #action><n-button size="small" :disabled="contractStore.saving" @click="initialize(props.projectId, { reloadContract: true })">重新加载</n-button></template>
+      <n-button size="small" :disabled="contractStore.saving" @click="initialize(props.projectId, { reloadContract: true })">重新加载</n-button>
     </n-alert>
 
     <template v-if="loading">
@@ -411,6 +424,7 @@ onBeforeUnmount(() => {
           :engine-hash="draftValues.engineHash"
           :primary-style-ref="primaryFrozenRef"
           :secondary-style-ref="secondaryFrozenRef"
+          :interaction-locked="props.interactionLocked"
         />
       </section>
 
@@ -485,13 +499,12 @@ onBeforeUnmount(() => {
 
     <n-alert v-if="saveError" ref="errorRegion" tabindex="-1" type="error" class="state-alert" aria-live="assertive">
       {{ saveError }}
-      <template v-if="contractStore.requiresReload" #action>
+      <template v-if="contractStore.requiresReload">
         <n-button size="small" :disabled="contractStore.saving" @click="initialize(props.projectId, { reloadContract: true })">重新加载项目状态</n-button>
       </template>
     </n-alert>
 
     <footer class="step-actions">
-      <n-button secondary :disabled="contractStore.saving" @click="emit('back')">返回故事发动机</n-button>
       <div>
         <small>保存后建立一个刷新恢复点，并清除尚未重新确认的下游资产范围。</small>
         <n-button
@@ -499,8 +512,8 @@ onBeforeUnmount(() => {
           size="large"
           :loading="contractStore.saving"
           :disabled="loading || contractStore.saving || contractStore.requiresReload || Boolean(loadError) || !primaryStyleId"
-          @click="saveAndContinue"
-        >保存草稿并继续</n-button>
+          @click="saveSection"
+        >保存本节</n-button>
       </div>
     </footer>
 

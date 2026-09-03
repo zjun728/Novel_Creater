@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { access, readFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
@@ -23,6 +24,25 @@ const frontendRoot = fileURLToPath(new URL('../..', import.meta.url))
 const behaviorNaiveStubId = '\0contract-workspace-naive-ui-stub'
 const HASH_A = 'a'.repeat(64)
 const HASH_B = 'b'.repeat(64)
+const teleportTarget = hostNode('body')
+
+test('real Naive UI alert renders default recovery markup but has no action slot', async () => {
+  const require = createRequire(import.meta.url)
+  const NAlert = require('naive-ui/lib/alert/src/Alert.js').default
+  const NButton = require('naive-ui/lib/button/src/Button.js').default
+  const [{ createSSRApp }, { renderToString }] = await Promise.all([
+    import('vue'), import('@vue/server-renderer'),
+  ])
+  const html = await renderToString(createSSRApp({
+    setup: () => () => h(NAlert, null, {
+      default: () => [h('p', '权威状态已变化'), h(NButton, null, () => '默认内容恢复')],
+      action: () => h(NButton, null, () => '无效 action 恢复'),
+    }),
+  }))
+
+  assert.match(html, /默认内容恢复/)
+  assert.doesNotMatch(html, /无效 action 恢复/)
+})
 
 test('confirmed contract components present a permanent baseline without clone controls', async () => {
   const files = await Promise.all([
@@ -93,7 +113,14 @@ const behaviorNaiveStubPlugin = {
           return () => h(tag, { ...attrs, 'data-component': name }, children(slots))
         },
       })
-      export const NAlert = stub('NAlert', 'aside')
+      export const NAlert = defineComponent({
+        name: 'NAlert',
+        inheritAttrs: false,
+        setup(_, { attrs, expose, slots }) {
+          expose({ $el: { focus() { focusEvents.push('NAlert.$el') } } })
+          return () => h('aside', { ...attrs, 'data-component': 'NAlert' }, slots.default?.())
+        },
+      })
       export const NButton = stub('NButton', 'button')
       export const NCheckbox = stub('NCheckbox', 'input')
       export const NCollapse = stub('NCollapse')
@@ -122,7 +149,20 @@ const behaviorNaiveStubPlugin = {
           })
         },
       })
-      export const NInputNumber = stub('NInputNumber', 'input')
+      export const NInputNumber = defineComponent({
+        name: 'NInputNumber',
+        inheritAttrs: false,
+        props: { value: { default: null } },
+        emits: ['update:value'],
+        setup(props, { attrs, emit }) {
+          return () => h('input', {
+            ...attrs,
+            value: props.value,
+            'data-component': 'NInputNumber',
+            onInput: event => emit('update:value', Number(event?.target?.value ?? event)),
+          })
+        },
+      })
       export const NDrawer = defineComponent({
         name: 'NDrawer',
         inheritAttrs: false,
@@ -193,7 +233,7 @@ const renderer = createRenderer({
     const index = node.parent.children.indexOf(node)
     return node.parent.children[index + 1] || null
   },
-  querySelector: () => null,
+  querySelector: selector => selector === 'body' ? teleportTarget : null,
   setScopeId(element, id) { element.props[id] = '' },
   cloneNode(node) {
     return { ...node, props: { ...node.props }, children: [...node.children], parent: null }
@@ -275,6 +315,7 @@ function deferred() {
 
 let behaviorVite
 let AssetScopeStep
+let CapacityStep
 let CreationContractWizard
 let StoryEngineStep
 let ContractHistoryDrawer
@@ -337,6 +378,22 @@ test.before(async () => {
   AssetScopeStep.render = await compileClientRender(
     'src/components/project/contract/AssetScopeStep.vue',
   )
+  CapacityStep = (
+    await behaviorVite.ssrLoadModule('/src/components/project/contract/CapacityStep.vue')
+  ).default
+  CapacityStep.render = await compileClientRender(
+    'src/components/project/contract/CapacityStep.vue',
+  )
+  for (const path of [
+    'src/components/foundation/FoundationWorkspace.vue',
+    'src/components/foundation/FoundationSectionIndex.vue',
+    'src/components/foundation/FoundationStatusRail.vue',
+    'src/components/foundation/FoundationDocumentSection.vue',
+    'src/components/foundation/FoundationConfirmationDialog.vue',
+  ]) {
+    const foundationComponent = (await behaviorVite.ssrLoadModule(`/${path}`)).default
+    foundationComponent.render = await compileClientRender(path)
+  }
   CreationContractWizard = (
     await behaviorVite.ssrLoadModule('/src/components/project/CreationContractWizard.vue')
   ).default
@@ -429,6 +486,7 @@ test('contract page owns project states and keeps the selected seed read-only', 
   assert.match(view, /routeProject\.state\.value === 'active'/)
   assert.match(view, /routeProject\.state\.value === 'archived'/)
   assert.match(view, /:read-only="true"/)
+  assert.match(view, /contract-page--foundation/)
   assert.match(wizard, /seedStore\.selectedSeed/)
   assert.match(wizard, /已选创作种子/)
   assert.match(wizard, /只读/)
@@ -437,21 +495,82 @@ test('contract page owns project states and keeps the selected seed read-only', 
   assert.doesNotMatch(wizard, /selectSeed|SeedSelectionStep/)
 })
 
-test('wizard is exactly five formal steps and the retired seed step is deleted', async () => {
-  const wizard = await source('src/components/project/CreationContractWizard.vue')
-  const expected = ['故事发动机', '风格契约', '素材范围', '容量约定', '预览并确认']
+test('contract is one six-section author document rather than a paged wizard', async () => {
+  const [wizard, mapper] = await Promise.all([
+    source('src/components/project/CreationContractWizard.vue'),
+    source('src/application/contracts/contractDocumentSections.js'),
+  ])
+  const expected = ['故事发动机', '长篇容量', '正式资产范围', '风格方案', '禁止方向', '完整预览']
 
-  for (const label of expected) assert.match(wizard, new RegExp(label))
+  for (const label of expected) assert.match(`${wizard}\n${mapper}`, new RegExp(label))
+  for (const foundationComponent of [
+    'FoundationWorkspace', 'FoundationSectionIndex',
+    'FoundationStatusRail', 'FoundationDocumentSection',
+  ]) assert.match(wizard, new RegExp(foundationComponent))
+  assert.match(wizard, /contractDocumentSections/)
+  assert.match(wizard, /activeSectionKey/)
+  assert.match(wizard, /targetId:\s*`contract-section-\$\{section\.key\}`/)
   assert.match(wizard, /StoryEngineStep/)
   assert.match(wizard, /StyleSelectionStep/)
   assert.match(wizard, /AssetScopeStep/)
   assert.match(wizard, /CapacityStep/)
   assert.match(wizard, /ContractPreviewStep/)
-  assert.match(wizard, /repeat\(5/)
+  assert.doesNotMatch(wizard, /const step\s*=|step-ribbon|openStep|advance\(|repeat\(5/)
+  assert.doesNotMatch(wizard, /下一步|上一步|保存草稿并继续|返回(?:故事发动机|风格契约|素材范围|容量约定)/)
+  assert.doesNotMatch(wizard, /router\.push|route\.push/)
   await assert.rejects(
     access(file('src/components/project/contract/SeedSelectionStep.vue')),
     error => error?.code === 'ENOENT',
   )
+})
+
+test('contract section components contain no residual page-step navigation language', async () => {
+  const files = await Promise.all([
+    'src/components/project/contract/StoryEngineStep.vue',
+    'src/components/project/contract/StyleSelectionStep.vue',
+    'src/components/project/contract/AssetScopeStep.vue',
+    'src/components/project/contract/CapacityStep.vue',
+    'src/components/project/contract/ContractPreviewStep.vue',
+  ].map(path => source(path)))
+  assert.doesNotMatch(files.join('\n'), /下一步|上一步|保存草稿并继续|返回(?:故事发动机|风格契约|素材范围|容量约定)/)
+})
+
+test('document navigation focuses sections and locked sections explain server-owned prerequisites without controls', async () => {
+  const wizard = await source('src/components/project/CreationContractWizard.vue')
+
+  assert.match(wizard, /focusOnNavigate|:focus-on-navigate="false"/i)
+  assert.match(wizard, /scrollIntoView/)
+  assert.match(wizard, /\.focus\?\.\(\{ preventScroll: true \}\)/)
+  assert.match(wizard, /section\.open/)
+  assert.match(wizard, /section\.blockedReasons/)
+  assert.match(wizard, /服务器|服务端/)
+  assert.match(wizard, /前置条件|先保存/)
+  assert.match(wizard, /writeFields/)
+  assert.match(wizard, /:read-only="documentReadOnly \|\| !section\.open[^\"]*section\.blockedReasons\.length/)
+})
+
+test('preview confirmation is server-snapshot driven and uses the shared confirmation shell', async () => {
+  const [wizard, preview] = await Promise.all([
+    source('src/components/project/CreationContractWizard.vue'),
+    source('src/components/project/contract/ContractPreviewStep.vue'),
+  ])
+
+  assert.match(wizard, /:can-confirm="section\.canConfirm"/)
+  assert.match(wizard, /contractStore\.serverCanConfirm/)
+  assert.match(wizard, /contractStore\.serverReasons/)
+  assert.match(wizard, /draftVersion:\s*contractStore\.activeDraftVersion/)
+  assert.match(preview, /FoundationConfirmationDialog/)
+  assert.match(preview, /preview\.seedRef/)
+  assert.match(preview, /preview\.styleRefs/)
+  assert.match(preview, /preview\.experienceCardRefs/)
+  assert.match(preview, /preview\.corpusSourceRefs/)
+  assert.match(preview, /preview\.creationHash/)
+  assert.match(preview, /preview\.styleHash/)
+  assert.match(preview, /store\.readinessReasons/)
+  assert.match(preview, /v-if="props\.canConfirm"/)
+  assert.match(preview, /ref="confirmErrorRegion"/)
+  assert.match(preview, /focusControl\(confirmErrorRegion\.value\)/)
+  assert.doesNotMatch(preview, /store\.contractReady\s*\?/)
 })
 
 test('manual story engines use named fields without JSON or channel and genre assumptions', async () => {
@@ -461,7 +580,7 @@ test('manual story engines use named fields without JSON or channel and genre as
   }
   assert.doesNotMatch(engine, /manualJson|JSON\.parse|高级手动 JSON|qidian-qq|['"]玄幻['"]/)
   assert.match(engine, /createManualEngineBatch/)
-  assert.match(engine, /保存草稿并继续/)
+  assert.match(engine, /保存本节/)
 })
 
 test('story engine error focus safely targets the Naive UI component root', async () => {
@@ -531,9 +650,10 @@ test('capacity step captures all formal length and author-direction fields', asy
     'prohibitedDirections',
     'authorNotes',
   ]) assert.match(capacity, new RegExp(field))
-  assert.match(capacity, /保存草稿并继续/)
+  assert.match(capacity, /mode/)
+  assert.match(capacity, /保存本节/)
   assert.match(capacity, /aria-live="assertive"/)
-  assert.match(preview, /返回容量约定/)
+  assert.match(preview, /FoundationConfirmationDialog/)
 })
 
 test('story engine missing-project capacity fallback uses the long-form default', async () => {
@@ -561,7 +681,7 @@ test('workspace guards unsaved edits, scopes its overlay, and focuses live error
   assert.match(combined, /aria-live="polite"/)
   assert.match(combined, /aria-live="assertive"/)
   assert.match(combined, /tabindex="-1"/)
-  assert.match(combined, /\.focus\(/)
+  assert.match(combined, /focusControl/)
   assert.match(combined, /requiresReload/)
   assert.match(combined, /重新加载并核对/)
   assert.doesNotMatch(combined, /删除契约|重置契约|resetContract|deleteContract/)
@@ -635,7 +755,15 @@ test('wizard treats a revisioned contract head as a permanent baseline despite s
     contractReady: false,
     reasons: ['selection_revision_changed'],
     revision: 1,
+    selectionRevision: 3,
     seedRef: { revisionId: 'seed-revision-a', contentHash: HASH_A },
+    creationContract: {
+      selectedSeed: {
+        title: '雾港错钟',
+        logline: '回到雾港的守钟人必须阻止一场被时间掩埋的灾难。',
+        genre: '历史悬疑',
+      },
+    },
     styleRefs: [],
     experienceCardRefs: [],
     corpusSourceRefs: [],
@@ -687,7 +815,12 @@ test('wizard treats a revisioned contract head as a permanent baseline despite s
     )), undefined)
     assert.match(rendered, /雾港错钟/)
     const buttons = walk(mounted.root).filter(node => node.type === 'button')
-    assert.deepEqual(buttons.map(textContent).sort(), ['历史修订', '查看修订历史'])
+    assert.deepEqual(buttons.map(textContent), [
+      '故事发动机已签印', '长篇容量已签印', '正式资产范围已签印',
+      '风格方案已签印', '禁止方向已签印', '完整预览已签印', '历史修订',
+    ])
+    assert.doesNotMatch(rendered, /本节等待服务端前置状态|前置条件：/)
+    assert.doesNotMatch(rendered, /编辑本节|生成三套方案|运行临时试写|保存本节|核对并签印/)
   } finally {
     mounted.app.unmount()
   }
@@ -778,11 +911,11 @@ test('story engine refuses missing author-visible profile identifiers without sa
   try {
     assert.equal(inputForLabel(mounted.root, '渠道定位标识').props.value, '')
     assert.equal(inputForLabel(mounted.root, '题材定位标识').props.value, '')
-    await trigger(findByText(mounted.root, 'button', '保存草稿并继续'), 'onClick')
+    await trigger(findByText(mounted.root, 'button', '保存本节'), 'onClick')
 
     assert.equal(saveCalls, 0)
     assert.match(textContent(mounted.root), /渠道定位标识和题材定位标识均不能为空。/)
-    assert.ok(naiveBehaviorModule.focusEvents.includes('NAlert'))
+    assert.ok(naiveBehaviorModule.focusEvents.includes('NAlert.$el'))
   } finally {
     mounted.app.unmount()
   }
@@ -814,7 +947,7 @@ test('story engine trims and saves custom profile identifiers without mapping or
     assert.equal(genre.props.value, 'initial-genre')
     await trigger(channel, 'onInput', { target: { value: '  custom-channel  ' } })
     await trigger(genre, 'onInput', { target: { value: '  自定义题材标识  ' } })
-    await trigger(findByText(mounted.root, 'button', '保存草稿并继续'), 'onClick')
+    await trigger(findByText(mounted.root, 'button', '保存本节'), 'onClick')
 
     assert.equal(calls.length, 1)
     assert.equal(calls[0].projectId, 'project-1')
@@ -985,6 +1118,734 @@ test('reusable decision summary renders every formal author decision without dro
   }
 })
 
+test('loaded document reads substantive author decisions and top capacity without opening editors', async () => {
+  const decisions = completeDecisionPayload()
+  let previewCalls = 0
+  const draft = {
+    id: 'draft-readable', projectId: 'project-1', draftVersion: 6, draftStage: 'assets',
+    contentHash: HASH_A, baseHeadRevision: 0,
+    draft: {
+      ...decisions.creationContract,
+      draftStage: 'assets', engineOptionId: 'engine-readable', engineHash: HASH_A,
+      primaryStyleRef: { id: 'style-primary', name: '克制潮汐体', revision: 4, contentHash: HASH_B },
+      secondaryStyleRef: { id: 'style-secondary', name: '档案残页体', revision: 2, contentHash: HASH_A },
+      experienceCardRefs: [{ id: 'card-memory-cost', name: '记忆代价卡', revision: 3, contentHash: HASH_A }],
+      corpusSourceRefs: [{
+        id: 'corpus-tide', name: '潮汐档案语料', revision: 5, contentHash: HASH_B,
+        selectionMode: 'fragments',
+        fragments: [{ chapterId: 'chapter-2', fragmentId: 'tide-frag', chapterCharStart: 12, chapterCharEnd: 38, referenceUse: 'fact_check' }],
+      }],
+      likes: decisions.likes, dislikes: decisions.dislikes,
+    },
+  }
+  const mounted = mountWithPinia(CreationContractWizard, {
+    projectId: 'project-1', project: {}, readOnly: false,
+  }, store => {
+    store.draft = draft
+    store.head = { projectId: 'project-1', revision: 0, hasContract: false, contractReady: false, reasons: ['contract_missing'] }
+    store.engineBatch = null
+    store.load = async () => ({ draft: store.draft, head: store.head, recovery: { items: [] } })
+    store.preview = async () => {
+      previewCalls += 1
+      const result = {
+        projectId: 'project-1', selectionRevision: 4, draftVersion: 6,
+        baseHeadRevision: 0, expectedRevision: 1, contractReady: true, reasons: [],
+        seedRef: { id: 'seed-a', revisionId: 'seed-revision-a', contentHash: HASH_A },
+        engineRef: { id: 'engine-readable', batchId: 'batch-readable', contentHash: HASH_A },
+        bindingRef: { id: 'binding-1', revision: 2, contentHash: HASH_B, items: [] },
+        styleRefs: store.draft.draft.primaryStyleRef ? [store.draft.draft.primaryStyleRef] : [],
+        experienceCardRefs: store.draft.draft.experienceCardRefs,
+        corpusSourceRefs: store.draft.draft.corpusSourceRefs,
+        ...decisions,
+        creationHash: HASH_A, styleHash: HASH_B,
+      }
+      store.previewResult = result
+      return result
+    }
+    const seedStore = useSeedStore()
+    seedStore.activeSelection = {
+      projectId: 'project-1', selectionRevision: 4, seedId: 'seed-a',
+      seedRevisionId: 'seed-revision-a', seedHash: HASH_A,
+      seed: { id: 'seed-a', revisionId: 'seed-revision-a', contentHash: HASH_A, revision: 2,
+        payload: decisions.creationContract.selectedSeed },
+    }
+    seedStore.refresh = async () => ({ activeSelection: seedStore.activeSelection })
+  })
+
+  try {
+    await flush()
+    assert.equal(previewCalls, 1)
+    const rendered = textContent(mounted.root)
+    for (const value of [
+      '钟摆发动机', '每次破案都会失去一段记忆。', '克制潮汐体', '档案残页体',
+      '对话中的关系位移', '记忆代价卡', '潮汐档案语料', 'tide-frag · 12–38 · fact_check',
+      '1,260,000', '7 卷', '420 章', '2,800 ～ 3,400',
+      '禁止无代价升级', '人物选择必须优先于设定解释。',
+    ]) assert.ok(rendered.includes(value), `missing immediate document substance: ${value}`)
+  } finally {
+    mounted.app.unmount()
+  }
+})
+
+test('cold Engine and Style drafts render only the server document projection', async () => {
+  const cases = [
+    {
+      stage: 'engine',
+      draftFields: {
+        primaryStyleRef: null, secondaryStyleRef: null,
+        likes: null, dislikes: null, experienceCardRefs: null, corpusSourceRefs: null,
+      },
+      projection: {
+        selectedEngine: {
+          name: '冷启动钟摆发动机',
+          storyPromise: '每次核对档案都要放弃一种确定性。',
+          sustainedPressure: '真相与城市一起下沉',
+          conflictLoop: '核对—取舍—失真—再核对',
+          advantageAndCost: '看见删改，代价是失去亲历记忆',
+        },
+        primaryStyle: null,
+        secondaryStyle: null,
+        unavailableReasons: [],
+      },
+      visible: ['冷启动钟摆发动机', '每次核对档案都要放弃一种确定性。'],
+    },
+    {
+      stage: 'style',
+      draftFields: {
+        primaryStyleRef: { id: 'style-exact', revision: 2, contentHash: HASH_B },
+        secondaryStyleRef: null, likes: ['克制'], dislikes: ['喊口号'],
+        experienceCardRefs: null, corpusSourceRefs: null,
+      },
+      projection: {
+        selectedEngine: engineOption().payload,
+        primaryStyle: {
+          id: 'style-exact', revision: 2, contentHash: HASH_B, name: '克制现实',
+          readingExperience: '冷静但不冷漠', narrativeDistance: '近距离第三人称',
+          sentenceParagraphRhythm: '行动短促，余波舒展',
+        },
+        secondaryStyle: null,
+        unavailableReasons: [],
+      },
+      visible: ['克制现实', 'R2', '冷静但不冷漠', '近距离第三人称'],
+    },
+  ]
+
+  for (const scenario of cases) {
+    const mounted = mountWithPinia(CreationContractWizard, {
+      projectId: 'project-1', project: {}, readOnly: false,
+    }, store => {
+      store.engineBatch = null
+      store.draft = {
+        id: 'draft-cold', projectId: 'project-1', draftVersion: 3,
+        draftStage: scenario.stage, contentHash: HASH_A, baseHeadRevision: 0,
+        documentProjection: scenario.projection,
+        draft: {
+          schemaVersion: 'contract-draft-v2', draftStage: scenario.stage,
+          engineOptionId: 'engine-1', engineHash: HASH_A,
+          channelProfileKey: 'serial', genreProfileKey: 'mystery',
+          qualityCharterVersion: 'quality-v1', targetTotalWords: 900000,
+          expectedVolumeCount: 6, expectedChapterCount: 300,
+          chapterWordRangePreference: [2800, 3200], prohibitedDirections: [],
+          authorNotes: '冷启动读取', ...scenario.draftFields,
+        },
+      }
+      store.head = { projectId: 'project-1', revision: 0, hasContract: false, reasons: ['contract_missing'] }
+      store.load = async () => ({ draft: store.draft, head: store.head, recovery: { items: [] } })
+      const seedStore = useSeedStore()
+      seedStore.activeSelection = {
+        projectId: 'project-1', selectionRevision: 3, seedId: 'seed-a',
+        seedRevisionId: 'seed-r3', seedHash: HASH_A,
+        seed: { payload: { title: '冷启动种子', genre: '悬疑', logline: '读取服务器冻结决定。' } },
+      }
+      seedStore.refresh = async () => ({ activeSelection: seedStore.activeSelection })
+    })
+    try {
+      await flush()
+      const rendered = textContent(mounted.root)
+      for (const value of scenario.visible) {
+        assert.ok(rendered.includes(value), `${scenario.stage} missing server projection: ${value}`)
+      }
+    } finally {
+      mounted.app.unmount()
+    }
+  }
+})
+
+test('cold draft identity mismatch never falls back to stale author content', async () => {
+  const mounted = mountWithPinia(CreationContractWizard, {
+    projectId: 'project-1', project: {}, readOnly: false,
+  }, store => {
+    store.engineBatch = {
+      id: 'stale-local-batch', status: 'succeeded', options: [{
+        id: 'engine-1', contentHash: HASH_A,
+        payload: { name: '过期发动机内容', storyPromise: '不得显示的本地缓存' },
+      }],
+    }
+    store.draft = {
+      id: 'draft-drift', projectId: 'project-1', draftVersion: 3,
+      draftStage: 'style', contentHash: HASH_A, baseHeadRevision: 0,
+      documentProjection: {
+        selectedEngine: null, primaryStyle: null, secondaryStyle: null,
+        unavailableReasons: ['engine_identity_unavailable', 'primary_style_identity_unavailable'],
+      },
+      draft: {
+        schemaVersion: 'contract-draft-v2', draftStage: 'style',
+        engineOptionId: 'engine-1', engineHash: HASH_A,
+        channelProfileKey: 'serial', genreProfileKey: 'mystery', qualityCharterVersion: 'quality-v1',
+        targetTotalWords: 900000, expectedVolumeCount: 6, expectedChapterCount: 300,
+        chapterWordRangePreference: [2800, 3200], prohibitedDirections: [], authorNotes: '',
+        primaryStyleRef: { id: 'style-exact', revision: 2, contentHash: HASH_B },
+        secondaryStyleRef: null, likes: [], dislikes: [],
+        experienceCardRefs: null, corpusSourceRefs: null,
+      },
+    }
+    store.head = { projectId: 'project-1', revision: 0, hasContract: false, reasons: ['contract_missing'] }
+    store.load = async () => ({ draft: store.draft, head: store.head, recovery: { items: [] } })
+    const seedStore = useSeedStore()
+    seedStore.activeSelection = { selectionRevision: 3, seed: { payload: { title: '种子', genre: '悬疑' } } }
+    seedStore.refresh = async () => ({ activeSelection: seedStore.activeSelection })
+  })
+  try {
+    await flush()
+    const rendered = textContent(mounted.root)
+    assert.doesNotMatch(rendered, /过期发动机内容|过期风格名称/)
+    assert.match(rendered, /engine-1/)
+    assert.match(rendered, /style-exact/)
+  } finally {
+    mounted.app.unmount()
+  }
+})
+
+test('workspace locks active controls without dropping local values while reload awaits keep or discard', async () => {
+  const interactionLocked = VueRuntime.ref(false)
+  const mounted = mountWithPinia(StoryEngineStep, () => ({
+    projectId: 'project-1', project: {}, selectedSeed: { payload: { title: '种子', genre: '幻想' } },
+    interactionLocked: interactionLocked.value,
+  }))
+  try {
+    await flush()
+    const channel = inputForLabel(mounted.root, '渠道定位标识')
+    await trigger(channel, 'onInput', { target: { value: '作者尚未保存的渠道' } })
+    interactionLocked.value = true
+    await flush()
+    assert.equal(channel.props.value, '作者尚未保存的渠道')
+    const editor = walk(mounted.root).find(node => node.type === 'section' && node.props['aria-labelledby'] === 'engine-step-heading')
+    assert.equal(editor.props.inert, '')
+    assert.equal(editor.props['aria-disabled'], 'true')
+    const sourceText = await source('src/components/project/CreationContractWizard.vue')
+    assert.match(sourceText, /FoundationConfirmationDialog/)
+    assert.match(sourceText, /requestAuthoritativeReload/)
+    assert.match(sourceText, /contractStore\.hasUnsavedChanges/)
+    assert.match(sourceText, /保留本地修改/)
+    assert.match(sourceText, /放弃并重新加载/)
+  } finally {
+    mounted.app.unmount()
+  }
+})
+
+test('save conflict locks the whole document and requires keep or discard before authoritative reload', async () => {
+  teleportTarget.children.splice(0)
+  let loadCalls = 0
+  const mounted = mountWithPinia(CreationContractWizard, {
+    projectId: 'project-1', project: {}, readOnly: false,
+  }, store => {
+    store.draft = {
+      ...store.draft,
+      selectionRevision: 3,
+      draftStage: 'engine',
+      draft: {
+        ...store.draft.draft,
+        draftStage: 'engine', channelProfileKey: '原渠道', genreProfileKey: '原题材',
+      },
+    }
+    store.head = { projectId: 'project-1', revision: 0, hasContract: false, reasons: ['contract_missing'] }
+    store.load = async () => {
+      loadCalls += 1
+      if (loadCalls > 1) store.requiresReload = false
+      return { draft: store.draft, head: store.head, recovery: { items: [] } }
+    }
+    store.saveDraft = async () => {
+      store.requiresReload = true
+      store.conflict = { code: 'ContractConflict' }
+      throw new Error('服务器版本已经变化')
+    }
+    const seedStore = useSeedStore()
+    seedStore.activeSelection = {
+      projectId: 'project-1', selectionRevision: 3, seedId: 'seed-a',
+      seedRevisionId: 'seed-r3', seedHash: HASH_A,
+      seed: { id: 'seed-a', revisionId: 'seed-r3', contentHash: HASH_A, revision: 3,
+        payload: { title: '冲突测试种子', logline: '保留作者本地输入。', genre: '悬疑' } },
+    }
+    seedStore.refresh = async () => ({ activeSelection: seedStore.activeSelection })
+  })
+
+  try {
+    await flush()
+    await trigger(findByText(mounted.root, 'button', '编辑本节'), 'onClick')
+    const channel = inputForLabel(mounted.root, '渠道定位标识')
+    await trigger(channel, 'onInput', { target: { value: '尚未保存的作者渠道' } })
+    await trigger(findByText(mounted.root, 'button', '保存本节'), 'onClick')
+
+    assert.equal(channel.props.value, '尚未保存的作者渠道')
+    const engine = walk(mounted.root).find(node => node.props['aria-labelledby'] === 'engine-step-heading')
+    assert.equal(engine.props.inert, '')
+    for (const button of walk(mounted.root).filter(node => node.type === 'button' && textContent(node).trim() === '编辑本节')) {
+      assert.equal(button.props.disabled, true)
+    }
+
+    await trigger(findByText(mounted.root, 'button', '重新加载并核对'), 'onClick')
+    let dialog = walk(teleportTarget).find(node => node.props.role === 'dialog')
+    assert.ok(dialog)
+    await trigger(findByText(dialog, 'button', '保留本地修改'), 'onClick')
+    assert.equal(channel.props.value, '尚未保存的作者渠道')
+    assert.equal(loadCalls, 1)
+    assert.equal(mounted.store.requiresReload, true)
+
+    await trigger(findByText(mounted.root, 'button', '重新加载并核对'), 'onClick')
+    dialog = walk(teleportTarget).find(node => node.props.role === 'dialog')
+    await trigger(findByText(dialog, 'button', '放弃并重新加载'), 'onClick')
+    assert.equal(loadCalls, 2)
+    assert.equal(mounted.store.requiresReload, false)
+    assert.equal(mounted.store.hasUnsavedChanges, false)
+  } finally {
+    mounted.app.unmount()
+    teleportTarget.children.splice(0)
+  }
+})
+
+test('real alert exposes Capacity conflict recovery without replacing dirty input', async () => {
+  teleportTarget.children.splice(0)
+  let loadCalls = 0
+  const mounted = mountWithPinia(CreationContractWizard, {
+    projectId: 'project-1', project: {}, readOnly: false,
+  }, store => {
+    const draft = {
+      ...store.draft,
+      selectionRevision: 3,
+      draftStage: 'assets',
+      draft: {
+        ...store.draft.draft,
+        draftStage: 'assets',
+        channelProfileKey: 'serial', genreProfileKey: 'mystery',
+        targetTotalWords: 900000, expectedVolumeCount: 6, expectedChapterCount: 300,
+        chapterWordRangePreference: [2800, 3200], prohibitedDirections: [], authorNotes: '',
+        primaryStyleRef: { id: 'style-1', revision: 2, contentHash: HASH_B },
+        secondaryStyleRef: null, likes: [], dislikes: [],
+        experienceCardRefs: [], corpusSourceRefs: [],
+      },
+    }
+    store.draft = draft
+    store.head = { projectId: 'project-1', revision: 0, hasContract: false, reasons: ['contract_missing'] }
+    store.load = async () => {
+      loadCalls += 1
+      if (loadCalls > 1) {
+        store.draft = {
+          ...draft,
+          draft: { ...draft.draft, targetTotalWords: 800000 },
+        }
+        store.requiresReload = false
+      }
+      return { draft: store.draft, head: store.head, recovery: { items: [] } }
+    }
+    store.preview = async () => ({ contractReady: false, reasons: ['not_ready'] })
+    store.saveDraft = async () => {
+      store.requiresReload = true
+      store.conflict = { code: 'ContractConflict' }
+      throw new Error('服务器版本已经变化')
+    }
+    const seedStore = useSeedStore()
+    seedStore.activeSelection = {
+      projectId: 'project-1', selectionRevision: 3, seedId: 'seed-a',
+      seedRevisionId: 'seed-r3', seedHash: HASH_A,
+      seed: { payload: { title: '冲突测试种子', genre: '悬疑', logline: '保留容量输入。' } },
+    }
+    seedStore.refresh = async () => ({ activeSelection: seedStore.activeSelection })
+  })
+
+  try {
+    await flush()
+    await trigger(findByText(mounted.root, 'button', '长篇容量已记录'), 'onClick')
+    const targetWords = inputForLabel(mounted.root, '目标总字数')
+    await trigger(targetWords, 'onInput', { target: { value: '910000' } })
+    await trigger(findByText(mounted.root, 'button', '保存本节'), 'onClick')
+
+    assert.equal(targetWords.props.value, 910000)
+    assert.equal(mounted.store.requiresReload, true)
+    const recovery = findByText(mounted.root, 'button', '重新加载并核对')
+    assert.ok(recovery, 'recovery action must be in NAlert default content')
+    assert.notEqual(recovery.props.disabled, true)
+    const directory = walk(mounted.root).find(node => (
+      node.type === 'nav' && node.props['aria-label'] === '文档章节'
+    ))
+    const directoryButtons = walk(directory).filter(node => node.type === 'button')
+    assert.equal(directoryButtons.length, 6)
+    for (const button of directoryButtons) assert.equal(button.props.disabled, true)
+    for (const button of walk(mounted.root).filter(node => (
+      node.type === 'button' && textContent(node).trim() === '编辑本节'
+    ))) assert.equal(button.props.disabled, true)
+
+    await trigger(recovery, 'onClick')
+    let dialog = walk(teleportTarget).find(node => node.props.role === 'dialog')
+    await trigger(findByText(dialog, 'button', '保留本地修改'), 'onClick')
+    assert.equal(targetWords.props.value, 910000)
+    assert.equal(loadCalls, 1)
+
+    await trigger(findByText(mounted.root, 'button', '重新加载并核对'), 'onClick')
+    dialog = walk(teleportTarget).find(node => node.props.role === 'dialog')
+    await trigger(findByText(dialog, 'button', '放弃并重新加载'), 'onClick')
+    assert.equal(loadCalls, 2)
+    assert.equal(mounted.store.requiresReload, false)
+  } finally {
+    mounted.app.unmount()
+    teleportTarget.children.splice(0)
+  }
+})
+
+test('confirmation conflict closes its stale dialog and locks every later confirmation attempt', async () => {
+  teleportTarget.children.splice(0)
+  let confirmCalls = 0
+  let contractStore
+  const mounted = mountWithPinia(ContractPreviewStep, () => ({
+    projectId: 'project-1', canConfirm: true,
+    interactionLocked: contractStore.requiresReload,
+  }), store => {
+    contractStore = store
+    store.draft = { ...store.draft, draftVersion: 3, contentHash: HASH_A, baseHeadRevision: 0 }
+    const result = {
+      projectId: 'project-1', selectionRevision: 3, draftVersion: 3,
+      baseHeadRevision: 0, expectedRevision: 1, contractReady: true, reasons: [],
+      seedRef: { id: 'seed-a', revisionId: 'seed-r3', contentHash: HASH_A },
+      engineRef: { id: 'engine-1', batchId: 'batch-1', contentHash: HASH_A },
+      bindingRef: { revision: 2, contentHash: HASH_B, items: [] },
+      styleRefs: [], experienceCardRefs: [], corpusSourceRefs: [],
+      creationHash: HASH_A, styleHash: HASH_B,
+    }
+    store.preview = async () => { store.previewResult = result; return result }
+    store.confirm = async () => {
+      confirmCalls += 1
+      store.requiresReload = true
+      throw new Error('服务器版本已经变化')
+    }
+  })
+
+  try {
+    await flush()
+    await trigger(findByText(mounted.root, 'button', '核对并签印完整契约'), 'onClick')
+    const dialog = walk(teleportTarget).find(node => node.props.role === 'dialog')
+    await trigger(findByText(dialog, 'button', '一次确认完整契约'), 'onClick')
+    assert.equal(confirmCalls, 1)
+    assert.equal(walk(teleportTarget).some(node => node.props.role === 'dialog'), false)
+    const previewRoot = walk(mounted.root).find(node => node.type === 'article' && node.props.class === 'preview-step')
+    assert.equal(previewRoot.props.inert, '')
+    assert.equal(findByText(mounted.root, 'button', '核对并签印完整契约').props.disabled, true)
+    assert.equal(confirmCalls, 1)
+  } finally {
+    mounted.app.unmount()
+    teleportTarget.children.splice(0)
+  }
+})
+
+test('confirmation dialog contains the exact server snapshot, CAS tuple, references, and decisions', async () => {
+  const preview = await source('src/components/project/contract/ContractPreviewStep.vue')
+  const dialog = preview.slice(
+    preview.indexOf('<FoundationConfirmationDialog'),
+    preview.indexOf('</FoundationConfirmationDialog>'),
+  )
+  for (const evidence of [
+    '并发版本', '草稿摘要', '基础修订', '预期契约修订', '选择代次',
+    'seedRef', 'styleRefs', 'experienceCardRefs', 'corpusSourceRefs',
+    'ContractDecisionSummary', 'creationHash', 'styleHash',
+  ]) assert.ok(dialog.includes(evidence), `missing confirmation-dialog evidence: ${evidence}`)
+  assert.match(dialog, /store\.draft\?\.contentHash/)
+})
+
+test('opened confirmation dialog renders the exact server target and every frozen reference', async () => {
+  const decisions = completeDecisionPayload()
+  teleportTarget.children.splice(0)
+  const exactPreview = {
+    projectId: 'project-1', selectionRevision: 8, draftVersion: 11,
+    baseHeadRevision: 4, expectedRevision: 5, contractReady: true, reasons: [],
+    seedRef: { id: 'seed-exact', revisionId: 'seed-revision-8', contentHash: '1'.repeat(64) },
+    engineRef: { id: 'engine-exact', batchId: 'batch-exact', contentHash: '2'.repeat(64) },
+    bindingRef: {
+      id: 'binding-1', revision: 6, contentHash: '3'.repeat(64),
+      items: [{ taskKey: 'planning', providerId: 'provider-1', providerNameSnapshot: '作者模型', modelNameSnapshot: 'novel-model', resolutionStatus: 'ready' }],
+    },
+    styleRefs: [{ id: 'style-exact', name: '潮汐留白体', revision: 2, contentHash: '4'.repeat(64) }],
+    experienceCardRefs: [{ id: 'card-exact', name: '记忆代价卡', revision: 3, contentHash: '5'.repeat(64) }],
+    corpusSourceRefs: [{
+      id: 'corpus-exact', name: '雾港档案', revisionId: 'corpus-r5', revision: 5,
+      selectionMode: 'fragments', pinnedHistoricalRevision: false, contentHash: '6'.repeat(64),
+      fragments: [{ chapterId: 'chapter-4', fragmentId: 'fragment-9', fragmentHash: '9'.repeat(64), chapterCharStart: 12, chapterCharEnd: 38, referenceUse: 'fact_check' }],
+    }],
+    ...decisions,
+    creationHash: '7'.repeat(64), styleHash: '8'.repeat(64),
+  }
+  const mounted = mountWithPinia(ContractPreviewStep, {
+    projectId: 'project-1', canConfirm: true, interactionLocked: false,
+  }, store => {
+    store.draft = {
+      ...store.draft, draftVersion: 11, baseHeadRevision: 4,
+      selectionRevision: 8, contentHash: HASH_A,
+    }
+    store.preview = async () => { store.previewResult = exactPreview; return exactPreview }
+  })
+
+  try {
+    await flush()
+    await trigger(findByText(mounted.root, 'button', '核对并签印完整契约'), 'onClick')
+    const dialog = walk(teleportTarget).find(node => node.props.role === 'dialog')
+    assert.ok(dialog, 'shared confirmation dialog should be mounted')
+    const rendered = textContent(dialog)
+    for (const value of [
+      '并发版本11', `草稿摘要${HASH_A}`, '基础修订R4', '预期契约修订R5', '选择代次R8',
+      '服务器确认能力允许签印', 'seed-exact', 'seed-revision-8', '潮汐留白体',
+      'engine-exact', 'batch-exact', 'binding-1', 'R6', 'planning · 作者模型 [provider-1] / novel-model · ready', '记忆代价卡',
+      '雾港档案', 'corpus-r5', '历史修订钉住 否', 'chapter-4',
+      'fragment-9 12–38 fact_check', '9'.repeat(64),
+      '钟摆发动机', '每次破案都会失去一段记忆。', '克制、清醒，但余韵绵长',
+      '7'.repeat(64), '8'.repeat(64),
+    ]) assert.ok(rendered.includes(value), `missing exact dialog target: ${value}`)
+  } finally {
+    mounted.app.unmount()
+    teleportTarget.children.splice(0)
+  }
+})
+
+test('real component refs focus through either component focus or its root element', async () => {
+  const components = await Promise.all([
+    source('src/components/project/CreationContractWizard.vue'),
+    source('src/components/project/contract/ContractPreviewStep.vue'),
+    source('src/components/project/contract/CapacityStep.vue'),
+    source('src/components/project/contract/AssetScopeStep.vue'),
+    source('src/components/project/contract/StyleSelectionStep.vue'),
+    source('src/components/project/contract/StyleTrialPanel.vue'),
+    source('src/components/project/contract/ContractHistoryDrawer.vue'),
+  ])
+  for (const contents of components) {
+    assert.match(contents, /\?\.\$el/)
+    assert.match(contents, /typeof .*?\.focus === 'function'/s)
+    assert.doesNotMatch(contents, /(?:errorRegion|detailErrorRegion|loadErrorRegion|confirmErrorRegion)\.value\?\.focus/)
+  }
+})
+
+test('Foundation shell maps every legacy child token to the shared editorial tokens', async () => {
+  const paths = [
+    'src/components/project/contract/StoryEngineStep.vue',
+    'src/components/project/contract/StyleSelectionStep.vue',
+    'src/components/project/contract/StyleTrialPanel.vue',
+    'src/components/project/contract/AssetScopeStep.vue',
+    'src/components/project/contract/CapacityStep.vue',
+    'src/components/project/contract/ContractPreviewStep.vue',
+    'src/components/project/contract/ContractDecisionSummary.vue',
+  ]
+  const children = (await Promise.all(paths.map(path => source(path)))).join('\n')
+  const shell = await source('src/components/foundation/FoundationWorkspace.vue')
+  const globalStyles = await source('src/style.css')
+  const legacyTokens = [...new Set([...children.matchAll(/var\(--(paper|ink|muted|rule|cinnabar|jade)\b/g)].map(match => match[1]))]
+  const aliases = Object.fromEntries([...shell.matchAll(/--(paper|ink|muted|rule|cinnabar|jade):\s*var\(--(nc-[a-z-]+)\)/g)].map(match => [match[1], match[2]]))
+  assert.deepEqual(legacyTokens.sort(), Object.keys(aliases).sort())
+  assert.deepEqual(aliases, {
+    paper: 'nc-paper', ink: 'nc-ink', muted: 'nc-muted', rule: 'nc-border',
+    cinnabar: 'nc-vermilion', jade: 'nc-jade',
+  })
+  const rootBlock = globalStyles.match(/:root\s*\{([\s\S]*?)\}/)?.[1] || ''
+  const globalTokens = Object.fromEntries(
+    [...rootBlock.matchAll(/--([\w-]+):\s*([^;]+);/g)].map(match => [match[1], match[2].trim()]),
+  )
+  const resolved = Object.fromEntries(Object.entries(aliases).map(([legacy, shared]) => (
+    [legacy, globalTokens[shared]]
+  )))
+  assert.match(resolved.jade || '', /^#[0-9a-f]{6}$/i)
+  assert.ok(Object.values(resolved).every(value => value && !value.includes('var(')))
+})
+
+test('preview directory uses preview-specific read labels instead of generic editing labels', async () => {
+  const wizard = await source('src/components/project/CreationContractWizard.vue')
+  for (const label of ['待核对', '核对中', '已加载']) assert.match(wizard, new RegExp(label))
+})
+
+test('fresh head-zero contract_missing keeps the first Engine generate and save path writable', async () => {
+  const headZero = {
+    projectId: 'project-fresh', revision: 0, hasContract: false,
+    contractReady: false, reasons: ['contract_missing'],
+  }
+  let generateCalls = 0
+  let saveCalls = 0
+  const mounted = mountWithPinia(CreationContractWizard, {
+    projectId: 'project-fresh', project: { channelProfileKey: 'serial-fiction' }, readOnly: false,
+  }, store => {
+    store.draft = null
+    store.head = headZero
+    store.engineBatch = null
+    store.load = async () => {
+      store.draft = null
+      store.head = headZero
+      store.headHydrated = true
+      return { draft: null, head: headZero, recovery: { items: [] } }
+    }
+    store.generateEngineBatch = async () => {
+      generateCalls += 1
+      const options = [1, 2, 3].map(index => ({
+        ...engineOption(), id: `engine-${index}`, contentHash: index === 1 ? HASH_A : HASH_B,
+        payload: { ...engineOption().payload, name: `新书发动机${index}`, storyPromise: `承诺${index}` },
+      }))
+      store.engineBatch = { id: 'batch-fresh', status: 'succeeded', options }
+      return store.engineBatch
+    }
+    store.saveDraft = async (_projectId, values) => {
+      saveCalls += 1
+      const saved = {
+        id: 'draft-fresh', projectId: 'project-fresh', draftVersion: 1,
+        contentHash: HASH_A, draftStage: 'engine', draft: values,
+      }
+      store.draft = saved
+      return saved
+    }
+    const seedStore = useSeedStore()
+    seedStore.activeSelection = {
+      projectId: 'project-fresh', selectionRevision: 1, seedId: 'seed-fresh',
+      seedRevisionId: 'seed-revision-fresh', seedHash: HASH_A,
+      seed: {
+        id: 'seed-fresh', revisionId: 'seed-revision-fresh', contentHash: HASH_A, revision: 1,
+        payload: { title: '新书种子', genre: '幻想', logline: '从空白契约开始。' },
+      },
+    }
+    seedStore.refresh = async () => ({ activeSelection: seedStore.activeSelection })
+  })
+
+  try {
+    await flush()
+    await trigger(findByText(mounted.root, 'button', '编辑本节'), 'onClick')
+    const generate = findByText(mounted.root, 'button', '生成三套方案')
+    assert.ok(generate)
+    assert.notEqual(generate.props.disabled, true)
+    await trigger(generate, 'onClick')
+    assert.equal(generateCalls, 1)
+    await trigger(walk(mounted.root).find(node => node.props.role === 'radio'), 'onClick')
+    await trigger(findByText(mounted.root, 'button', '保存本节'), 'onClick')
+    assert.equal(saveCalls, 1)
+    assert.match(textContent(mounted.root), /风格方案待填写/)
+  } finally {
+    mounted.app.unmount()
+  }
+})
+
+test('signed Contract header uses the frozen Seed even when the live selection differs', async () => {
+  const decisions = completeDecisionPayload()
+  const frozenSeed = { ...decisions.creationContract.selectedSeed, title: '签印时的雾港种子' }
+  const head = {
+    projectId: 'project-1', revision: 5, hasContract: true, contractReady: true, reasons: [],
+    selectionRevision: 7,
+    seedRef: { id: 'seed-frozen', revisionId: 'seed-frozen-r3', contentHash: HASH_A },
+    creationContract: { ...decisions.creationContract, selectedSeed: frozenSeed },
+    styleContract: decisions.styleContract, likes: decisions.likes, dislikes: decisions.dislikes,
+    styleRefs: [], experienceCardRefs: [], corpusSourceRefs: [],
+  }
+  const mounted = mountWithPinia(CreationContractWizard, {
+    projectId: 'project-1', project: {}, readOnly: false,
+  }, store => {
+    store.draft = null
+    store.head = head
+    store.load = async () => { store.head = head; store.draft = null; return { head, draft: null } }
+    const seedStore = useSeedStore()
+    seedStore.activeSelection = {
+      projectId: 'project-1', selectionRevision: 9, seedId: 'seed-live',
+      seedRevisionId: 'seed-live-r9', seedHash: HASH_B,
+      seed: { id: 'seed-live', revisionId: 'seed-live-r9', contentHash: HASH_B, revision: 9,
+        payload: { title: '当前但未签印的新种子', genre: '都市', logline: '不应冒充签印依据。' } },
+    }
+    seedStore.refresh = async () => ({ activeSelection: seedStore.activeSelection })
+  })
+
+  try {
+    await flush()
+    const header = walk(mounted.root).find(node => node.type === 'aside' && node.props['aria-label']?.includes('种子'))
+    assert.match(textContent(header), /签印时的雾港种子/)
+    assert.match(textContent(header), /seed-frozen-r3/)
+    assert.match(textContent(header), /R7/)
+    assert.doesNotMatch(textContent(header), /当前但未签印的新种子/)
+  } finally {
+    mounted.app.unmount()
+  }
+})
+
+test('document directory opens the server preview in place without changing page step', async () => {
+  let previewCalls = 0
+  const draft = {
+    id: 'draft-document',
+    projectId: 'project-1',
+    draftVersion: 9,
+    draftStage: 'assets',
+    draft: {
+      draftStage: 'assets',
+      seedRevisionId: 'seed-revision-a',
+      seedHash: HASH_A,
+      engineOptionId: 'engine-1',
+      engineHash: HASH_A,
+      primaryStyleRef: { id: 'style-1', revision: 1, contentHash: HASH_B },
+      secondaryStyleRef: null,
+      likes: [], dislikes: [], experienceCardRefs: [], corpusSourceRefs: [],
+      targetTotalWords: 900000, expectedVolumeCount: 6, expectedChapterCount: 300,
+      chapterWordRangePreference: [2800, 3400], prohibitedDirections: [], authorNotes: null,
+    },
+  }
+  const mounted = mountWithPinia(CreationContractWizard, {
+    projectId: 'project-1', project: {}, readOnly: false,
+  }, store => {
+    store.draft = draft
+    store.head = { projectId: 'project-1', revision: 0, hasContract: false }
+    store.headHydrated = true
+    store.load = async () => ({ draft, head: store.head })
+    store.preview = async () => {
+      previewCalls += 1
+      const result = {
+        projectId: 'project-1', draftVersion: 9, contractReady: true, reasons: [],
+        seedRef: { revisionId: 'seed-revision-preview', contentHash: HASH_A },
+        engineRef: { batchId: 'engine-batch-preview', contentHash: HASH_B },
+        bindingRef: { revision: 4, contentHash: HASH_A, items: [] },
+        styleRefs: [], experienceCardRefs: [], corpusSourceRefs: [],
+        creationHash: HASH_A, styleHash: HASH_B,
+      }
+      store.previewResult = result
+      return result
+    }
+    const seedStore = useSeedStore()
+    seedStore.activeSelection = {
+      projectId: 'project-1', selectionRevision: 4, seedId: 'seed-a',
+      seedRevisionId: 'seed-revision-a', seedHash: HASH_A,
+      seed: {
+        id: 'seed-a', revisionId: 'seed-revision-a', contentHash: HASH_A, revision: 2,
+        payload: { title: '目录预览种子', logline: '目录定位后在原文档内核对。', genre: '悬疑' },
+      },
+    }
+    seedStore.refresh = async () => ({ activeSelection: seedStore.activeSelection })
+  })
+
+  try {
+    await flush()
+    for (const heading of ['故事发动机', '长篇容量', '正式资产范围', '风格方案', '禁止方向', '完整预览']) {
+      assert.ok(textContent(mounted.root).includes(heading), `missing document heading: ${heading}`)
+    }
+    const previewDirectoryItem = walk(mounted.root).find(node => (
+      node.type === 'button' && textContent(node).includes('完整预览')
+    ))
+    await trigger(previewDirectoryItem, 'onClick')
+    assert.equal(previewCalls, 1)
+    assert.match(textContent(mounted.root), /seed-revision-preview/)
+    assert.doesNotMatch(textContent(mounted.root), /下一步|上一步/)
+  } finally {
+    mounted.app.unmount()
+  }
+})
+
+test('the shared decision summary declares its immutable display semantics', async () => {
+  const summary = await source('src/components/project/contract/ContractDecisionSummary.vue')
+  assert.match(summary, /readOnly/)
+  assert.match(summary, /aria-readonly/)
+  assert.doesNotMatch(summary, /@input|@update:value|contenteditable/)
+})
+
 test('confirmed head and every history revision consume the same decision-summary component', async () => {
   const [wizard, history, preview] = await Promise.all([
     source('src/components/project/CreationContractWizard.vue'),
@@ -1031,6 +1892,14 @@ test('contract preview ignores an old project failure after the new project prev
   } finally {
     mounted.app.unmount()
   }
+})
+
+test('confirmation conflict closes the stale dialog and disables every submit before reload', async () => {
+  const preview = await source('src/components/project/contract/ContractPreviewStep.vue')
+
+  assert.match(preview, /if \(!props\.canConfirm \|\| store\.confirming \|\| store\.requiresReload\) return/)
+  assert.match(preview, /if \(store\.requiresReload\)\s*\{\s*confirmOpen\.value = false/)
+  assert.match(preview, /:disabled="(?:props\.interactionLocked \|\| )?store\.confirming \|\| store\.requiresReload \|\| !props\.canConfirm"/)
 })
 
 test('style selection keeps rapid A to B navigation on B when A fails late', async () => {
@@ -1193,7 +2062,7 @@ test('formal high-confidence style card and corpus recommendations remain explic
     assert.match(textContent(cardMounted.root), /已授权 1 个来源/)
     await trigger(findByText(cardMounted.root, 'button', '明确纳入'), 'onClick')
     assert.match(textContent(cardMounted.root), /1 张已选/)
-    await trigger(findByText(cardMounted.root, 'button', '保存草稿并继续'), 'onClick')
+    await trigger(findByText(cardMounted.root, 'button', '保存本节'), 'onClick')
     assert.equal(saves.length, 1, textContent(cardMounted.root))
     assert.deepEqual(saves[0], {
       projectId: 'project-1',
@@ -1277,7 +2146,7 @@ test('style selection updates both summaries and saves both frozen refs from sel
     await trigger(selects[1], 'onUpdate:value', secondary.id)
     assert.match(textContent(mounted.root), /次风格：沉浸群像型/)
 
-    await trigger(findByText(mounted.root, 'button', '保存草稿并继续'), 'onClick')
+    await trigger(findByText(mounted.root, 'button', '保存本节'), 'onClick')
     assert.equal(saves.length, 1)
     assert.equal(saves[0].projectId, 'project-1')
     assert.deepEqual(saves[0].payload.primaryStyleRef, {
@@ -1480,6 +2349,36 @@ function simpleHistoryRow(revision) {
     styleRefs: [], experienceCardRefs: [], corpusSourceRefs: [], supersededReasons: [],
   }
 }
+
+test('history error focuses the real component root and exposes retry in alert content', async () => {
+  const show = VueRuntime.ref(false)
+  let calls = 0
+  naiveBehaviorModule.focusEvents.length = 0
+  const mounted = mountWithPinia(ContractHistoryDrawer, () => ({
+    show: show.value, projectId: 'project-1',
+  }), store => {
+    store.loadHistory = async () => {
+      calls += 1
+      if (calls === 1) throw new Error('历史暂时不可用')
+      store.history = [simpleHistoryRow(9)]
+      return { items: store.history, nextBeforeRevision: null }
+    }
+    store.clearHistory = () => { store.history = [] }
+  })
+  try {
+    show.value = true
+    await flush()
+    assert.match(textContent(mounted.root), /历史暂时不可用/)
+    assert.ok(naiveBehaviorModule.focusEvents.includes('NAlert.$el'))
+    const retry = findByText(mounted.root, 'button', '重新加载')
+    assert.ok(retry)
+    await trigger(retry, 'onClick')
+    assert.equal(calls, 2)
+    assert.match(textContent(mounted.root), /R9/)
+  } finally {
+    mounted.app.unmount()
+  }
+})
 
 test('history drawer reloads on project change and ignores the old project late failure', async () => {
   const pendingA = deferred()

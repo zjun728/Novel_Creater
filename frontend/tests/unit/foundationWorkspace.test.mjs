@@ -34,6 +34,7 @@ test.after(async () => { await vite?.close() })
 function node(type, value = '') {
   return {
     type, text: value, props: {}, children: [], parent: null, isConnected: true,
+    scrollTop: type === 'section' ? 480 : 0,
     focus() { globalThis.document.activeElement = this },
     hasAttribute(name) { return Object.hasOwn(this.props, name) },
     getAttribute(name) { return this.props[name] ?? null },
@@ -122,6 +123,47 @@ test('foundation workspace gives Chinese purpose a dominant document region and 
   assert.match(html, /foundation-workspace__status/)
   assert.match(html, /保存工作稿/)
   assert.doesNotMatch(html, /<main\b/)
+})
+
+test('foundation status rail stays beside the document on desktop and precedes it on mobile', async () => {
+  const { chromium } = await import('@playwright/test')
+  const Workspace = (await vite.ssrLoadModule('/src/components/foundation/FoundationWorkspace.vue')).default
+  const componentSource = await readFile(source('components/foundation/FoundationWorkspace.vue'), 'utf8')
+  const css = componentSource.match(/<style scoped>([\s\S]*?)<\/style>/)?.[1] ?? ''
+  const body = await renderToString(createSSRApp({
+    setup: () => () => h(Workspace, {
+      title: '创作契约', purpose: '把长期承诺写成可复核的正文。', statusLabel: '工作稿',
+    }, {
+      index: () => h('nav', '目录内容'),
+      status: () => h('div', { style: 'height:240px' }, '容量与准备度摘要'),
+      document: () => h('article', { style: 'height:4200px' }, '长篇正文'),
+    }),
+  }))
+  const browser = await chromium.launch({ headless: true })
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
+  try {
+    await page.setContent(`<style>:root{--nc-paper:#fff;--nc-ink:#111;--nc-muted:#555;--nc-border:#ccc;--nc-vermilion:#a33;--nc-jade:#496750;--nc-canvas:#f5f2eb}${css}</style>${body}`)
+    const geometry = async () => page.locator('.foundation-workspace__grid').evaluate(grid => {
+      const index = grid.querySelector('.foundation-workspace__index').getBoundingClientRect()
+      const status = grid.querySelector('aside.foundation-workspace__status').getBoundingClientRect()
+      const document = grid.querySelector('.foundation-workspace__document').getBoundingClientRect()
+      return {
+        indexTop: index.top, statusTop: status.top, documentTop: document.top,
+        statusPosition: getComputedStyle(grid.querySelector('aside.foundation-workspace__status')).position,
+      }
+    })
+
+    const desktop = await geometry()
+    assert.ok(Math.abs(desktop.statusTop - desktop.documentTop) <= 2, JSON.stringify(desktop))
+    assert.equal(desktop.statusPosition, 'sticky')
+
+    await page.setViewportSize({ width: 360, height: 800 })
+    const mobile = await geometry()
+    assert.ok(mobile.indexTop < mobile.statusTop, JSON.stringify(mobile))
+    assert.ok(mobile.statusTop < mobile.documentTop, JSON.stringify(mobile))
+  } finally {
+    await browser.close()
+  }
 })
 
 test('section index renders all author-facing states, emits stable keys, and honors reduced motion', async () => {
@@ -224,7 +266,7 @@ test('document section keeps a stable heading anchor and omits edit slot only in
   assert.doesNotMatch(readOnly, /可编辑正文/)
 })
 
-test('confirmation dialog teleports beyond inert app root, traps focus, and restores its trigger', async () => {
+test('confirmation dialog opens at its heading, traps focus, and restores its trigger', async () => {
   const Dialog = await component('components/foundation/FoundationConfirmationDialog.vue')
   const body = node('body')
   const appRoot = node('div'); appRoot.props.id = 'app'; appRoot.parent = body; body.children.push(appRoot)
@@ -252,6 +294,13 @@ test('confirmation dialog teleports beyond inert app root, traps focus, and rest
     assert.equal(walk(appRoot).includes(dialog), false)
     assert.equal(appRoot.inert, true)
     const buttons = dialog.querySelectorAll()
+    assert.equal(dialog.scrollTop, 0)
+    assert.equal(globalThis.document.activeElement?.props.role, 'dialog')
+    const heading = walk(dialog).find(item => item.type === 'h2')
+    assert.ok(heading)
+    assert.equal(dialog.props['aria-labelledby'], heading.props.id)
+    assert.equal(text(heading), '确认创作契约')
+    dialog.props.onKeydown({ key: 'Tab', shiftKey: false, preventDefault() {} })
     assert.equal(text(globalThis.document.activeElement), '返回核对')
     globalThis.document.activeElement = buttons[0]
     dialog.props.onKeydown({ key: 'Tab', shiftKey: true, preventDefault() {} })
@@ -377,10 +426,12 @@ test('each foundation component owns its responsive safety CSS', async () => {
   assert.match(workspace, /prefers-reduced-motion:\s*reduce/)
   assert.match(workspace, /grid-template-columns:\s*minmax\(168px,\.72fr\)\s+minmax\(0,2\.5fr\)\s+minmax\(196px,\.86fr\)/)
   assert.match(workspace, /@media\s*\(max-width:760px\)/)
-  assert.match(workspace, /\.foundation-workspace__grid\s*\{\s*grid-template-columns:minmax\(0,1fr\)/)
+  assert.match(workspace, /grid-template-areas:'index'\s+'status'\s+'document';\s*grid-template-columns:minmax\(0,1fr\)/)
+  assert.match(workspace, /\.foundation-workspace__status\s*\{[^}]*position:sticky;[^}]*align-self:start/)
+  assert.match(workspace, /\.foundation-workspace__header-status\s*\{[^}]*align-self:end/)
   const workspaceTemplate = workspace.match(/<template>([\s\S]*)<\/template>/)?.[1] ?? ''
   assert.ok(workspaceTemplate.indexOf('foundation-workspace__index') < workspaceTemplate.indexOf('foundation-workspace__document'))
-  assert.ok(workspaceTemplate.indexOf('foundation-workspace__document') < workspaceTemplate.indexOf('<aside class="foundation-workspace__status"'))
+  assert.ok(workspaceTemplate.indexOf('<aside class="foundation-workspace__status"') < workspaceTemplate.indexOf('foundation-workspace__document'))
   assert.match(index, /overflow-wrap:\s*anywhere/)
   assert.match(index, /@media\s*\(max-width:\s*760px\)/)
   assert.match(index, /--foundation-status-suggested:\s*#60420f/)

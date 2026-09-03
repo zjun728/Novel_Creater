@@ -33,6 +33,11 @@ function reasonLabel(reason) {
   }[reason] || reason
 }
 
+function focusControl(reference, options = { preventScroll: false }) {
+  const target = typeof reference?.focus === 'function' ? reference : reference?.$el
+  target?.focus?.(options)
+}
+
 async function loadHistory({ append = false } = {}) {
   const generation = historyRequestGuard.begin()
   const targetProjectId = props.projectId
@@ -51,7 +56,7 @@ async function loadHistory({ append = false } = {}) {
     errorMessage.value = error?.message || '历史修订加载失败'
     await nextTick()
     if (!historyRequestGuard.isCurrent(generation)) return
-    errorRegion.value?.focus({ preventScroll: false })
+    focusControl(errorRegion.value)
   }
 }
 
@@ -106,8 +111,8 @@ onBeforeUnmount(() => resetDrawerState())
         type="error"
         aria-live="assertive"
       >
-        {{ errorMessage }}
-        <template #action><n-button size="small" @click="loadHistory">重新加载</n-button></template>
+        <p class="history-error__message">{{ errorMessage }}</p>
+        <n-button class="history-error__action" size="small" @click="loadHistory">重新加载</n-button>
       </n-alert>
 
       <n-spin :show="store.historyLoading">
@@ -222,6 +227,8 @@ onBeforeUnmount(() => resetDrawerState())
 
 <style scoped>
 .drawer-intro { margin: 0 0 18px; color: var(--muted, #786e60); font-size: 12px; line-height: 1.8; }
+.history-error__message { margin: 0; }
+.history-error__action { margin-top: 10px; }
 .history-list { display: grid; gap: 14px; }
 .history-card { padding: 18px; border: 1px solid var(--rule, #d9ccb7); border-radius: 10px; color: var(--ink, #302b24); background: var(--paper, #fffdf7); }
 .history-card header, .history-card footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; }

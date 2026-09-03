@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { NAlert, NButton, NCheckbox, NCollapse, NCollapseItem, NInput, NSpin, NTag } from 'naive-ui'
 
 import { useCreationContractStore } from '@/stores/creationContractStore.js'
@@ -8,8 +8,9 @@ const props = defineProps({
   projectId: { type: String, required: true },
   project: { type: Object, default: null },
   selectedSeed: { type: Object, default: null },
+  interactionLocked: { type: Boolean, default: false },
 })
-const emit = defineEmits(['saved', 'dirty-change', 'busy-change'])
+const emit = defineEmits(['saved', 'dirty-change', 'busy-change', 'editing-change'])
 const store = useCreationContractStore()
 const selectedOptionId = ref('')
 const manualOpen = ref(false)
@@ -28,6 +29,9 @@ function blankManualOption(index) {
   }
 }
 const manualOptions = ref([0, 1, 2].map(blankManualOption))
+
+onMounted(() => emit('editing-change', true))
+onBeforeUnmount(() => emit('editing-change', false))
 
 const batch = computed(() => store.engineBatch)
 const options = computed(() => Array.isArray(batch.value?.options) ? batch.value.options : [])
@@ -219,7 +223,7 @@ function provisionalCapacity() {
   }
 }
 
-async function saveAndContinue() {
+async function saveSection() {
   if (store.saving || store.engineLoading || store.requiresReload || !selectedOption.value) return
   errorMessage.value = ''
   const channelProfile = channelProfileKey.value.trim()
@@ -268,10 +272,15 @@ watch(options, rows => {
 </script>
 
 <template>
-  <section class="engine-step" aria-labelledby="engine-step-heading">
+  <section
+    class="engine-step"
+    aria-labelledby="engine-step-heading"
+    :inert="props.interactionLocked ? '' : undefined"
+    :aria-disabled="props.interactionLocked ? 'true' : undefined"
+  >
     <header class="step-heading">
       <div>
-        <p class="folio">STEP 01 · STORY ENGINE</p>
+      <p class="folio">CONTRACT SECTION · STORY ENGINE</p>
         <h2 id="engine-step-heading">选择能持续制造故事的发动机</h2>
         <p>比较长期承诺、持续压力、冲突循环、群像位置与必须付出的代价；不会在这里假定渠道或题材。</p>
       </div>
@@ -352,7 +361,7 @@ watch(options, rows => {
       <div v-else class="empty-engine"><i aria-hidden="true">三</i><h3>尚未形成可比较的三案</h3><p>显式调用已绑定的 Provider，或用命名字段一次建立三套手动方案。</p></div>
     </n-spin>
 
-    <footer class="step-actions"><span><n-tag :bordered="false">所选种子只读</n-tag> {{ selectedSeedPayload.title }}</span><n-button type="primary" size="large" :loading="store.saving" :disabled="store.saving || store.engineLoading || store.requiresReload || !selectedOption" @click="saveAndContinue">保存草稿并继续</n-button></footer>
+    <footer class="step-actions"><span><n-tag :bordered="false">所选种子只读</n-tag> {{ selectedSeedPayload.title }}</span><n-button type="primary" size="large" :loading="store.saving" :disabled="store.saving || store.engineLoading || store.requiresReload || !selectedOption" @click="saveSection">保存本节</n-button></footer>
   </section>
 </template>
 

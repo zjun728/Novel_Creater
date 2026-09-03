@@ -1,16 +1,23 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { NAlert, NButton, NDescriptions, NDescriptionsItem, NResult, NSpin, NTag } from 'naive-ui'
+import FoundationConfirmationDialog from '@/components/foundation/FoundationConfirmationDialog.vue'
 import { useCreationContractStore } from '@/stores/creationContractStore'
 import { createLatestRequestGuard } from '@/utils/latestRequest.js'
 import ContractDecisionSummary from './ContractDecisionSummary.vue'
 
-const props = defineProps({ projectId: { type: String, required: true } })
-const emit = defineEmits(['back', 'confirmed', 'reload'])
+const props = defineProps({
+  projectId: { type: String, required: true },
+  canConfirm: { type: Boolean, default: false },
+  interactionLocked: { type: Boolean, default: false },
+})
+const emit = defineEmits(['confirmed', 'reload'])
 const store = useCreationContractStore()
 const loadError = ref('')
 const confirmError = ref('')
-const errorRegion = ref(null)
+const loadErrorRegion = ref(null)
+const confirmErrorRegion = ref(null)
+const confirmOpen = ref(false)
 const previewLoadGuard = createLatestRequestGuard()
 
 function commandKey() {
@@ -42,6 +49,34 @@ function explain(reason) {
   return reasonText[reason] || reason
 }
 
+function focusControl(reference, options = { preventScroll: false }) {
+  const target = typeof reference?.focus === 'function' ? reference : reference?.$el
+  target?.focus?.(options)
+}
+
+function frozenReference(reference) {
+  if (!reference) return '—'
+  const revision = reference.revision
+  const revisionId = reference.revisionId
+  const batch = reference.batchId ? ` · 批次 ${reference.batchId}` : ''
+  const logicalRevision = revisionId ? ` · 修订 ${revisionId}` : ''
+  const historical = Object.hasOwn(reference, 'pinnedHistoricalRevision')
+    ? ` · 历史修订钉住 ${reference.pinnedHistoricalRevision === true ? '是' : '否'}`
+    : ''
+  const fragments = Array.isArray(reference.fragments) && reference.fragments.length
+    ? ` · 片段 ${reference.fragments.map(fragment => (
+        `${fragment.chapterId || '未标注章节'} · ${fragment.fragmentId || fragment.id || '—'} ${fragment.chapterCharStart ?? '—'}–${fragment.chapterCharEnd ?? '—'} ${fragment.referenceUse || ''} · ${fragment.fragmentHash || '—'}`.trim()
+      )).join('；')}`
+    : ''
+  return `${reference.name || reference.title || reference.id || '—'}${revision !== undefined ? ` · R${revision}` : ''}${logicalRevision}${batch}${historical} · ${reference.selectionMode || '完整引用'} · ${reference.contentHash || '—'}${fragments}`
+}
+
+function bindingItem(item) {
+  const providerName = item.providerNameSnapshot || '未命名 Provider'
+  const providerId = item.providerId ? ` [${item.providerId}]` : ' [无 Provider ID]'
+  return `${item.taskKey || '未标注任务'} · ${providerName}${providerId} / ${item.modelNameSnapshot || '—'} · ${item.resolutionStatus || 'unknown'}`
+}
+
 async function loadPreview() {
   const generation = previewLoadGuard.begin()
   loadError.value = ''
@@ -53,44 +88,60 @@ async function loadPreview() {
     loadError.value = error?.message || '契约预览生成失败'
     await nextTick()
     if (!previewLoadGuard.isCurrent(generation)) return
-    errorRegion.value?.focus({ preventScroll: false })
+    focusControl(loadErrorRegion.value)
   }
 }
 
 async function confirmContract() {
+  if (props.interactionLocked) return
+  if (!props.canConfirm || store.confirming || store.requiresReload) return
   confirmError.value = ''
   try {
     const result = await store.confirm(props.projectId, { idempotencyKey })
+    confirmOpen.value = false
     emit('confirmed', result)
   } catch (error) {
     confirmError.value = error?.message || '契约确认结果未知'
+    if (store.requiresReload) {
+      confirmOpen.value = false
+      return
+    }
     await nextTick()
-    errorRegion.value?.focus({ preventScroll: false })
+    focusControl(confirmErrorRegion.value)
   }
 }
 
-watch(() => props.projectId, () => loadPreview(), { immediate: true })
+watch(() => props.projectId, projectId => {
+  const currentDraftVersion = store.draft?.draftVersion
+  if (preview.value?.projectId === projectId
+    && preview.value?.draftVersion === currentDraftVersion) return
+  void loadPreview()
+}, { immediate: true })
 onBeforeUnmount(() => previewLoadGuard.invalidate())
 </script>
 
 <template>
-  <article class="preview-step">
+  <article
+    class="preview-step"
+    :inert="props.interactionLocked ? '' : undefined"
+    :aria-disabled="props.interactionLocked ? 'true' : undefined"
+  >
     <header class="step-heading">
-      <div><span>STEP 05 · COMPLETE REVIEW</span><h3>预览全部变化，再一次确认</h3><p>本页只读汇总五步决定；签印后当前修订不可覆盖。</p></div>
-      <n-tag :type="store.contractReady ? 'success' : 'warning'" round>
-        {{ store.contractReady ? '可以签印' : '尚未就绪' }}
+      <div><span>CONTRACT SECTION · COMPLETE REVIEW</span><h3>预览全部变化，再一次确认</h3><p>本节只读汇总整份作者文档；签印后当前修订不可覆盖。</p></div>
+      <n-tag :type="props.canConfirm ? 'success' : 'warning'" round>
+        {{ props.canConfirm ? '服务器允许签印' : '服务器尚未允许签印' }}
       </n-tag>
     </header>
 
     <div v-if="store.previewing" class="loading"><n-spin size="large" /><span>正在核对全部冻结引用…</span></div>
-    <n-result v-else-if="loadError" ref="errorRegion" tabindex="-1" status="error" title="无法形成契约预览" :description="loadError" aria-live="assertive">
+    <n-result v-else-if="loadError" ref="loadErrorRegion" tabindex="-1" status="error" title="无法形成契约预览" :description="loadError" aria-live="assertive">
       <template #footer><n-button @click="loadPreview">重新加载并核对</n-button></template>
     </n-result>
 
     <template v-else-if="preview">
       <n-alert v-if="store.readinessReasons.length" type="warning" title="签印前仍需处理">
         <ul><li v-for="reason in store.readinessReasons" :key="reason">{{ explain(reason) }}</li></ul>
-        <template #action><n-button size="small" @click="emit('reload')">重新加载并核对</n-button></template>
+        <n-button size="small" @click="emit('reload')">重新加载并核对</n-button>
       </n-alert>
 
       <section class="snapshot" aria-labelledby="frozen-snapshot-heading">
@@ -143,24 +194,75 @@ onBeforeUnmount(() => previewLoadGuard.invalidate())
         </div>
       </section>
 
-      <n-alert v-if="confirmError" ref="errorRegion" tabindex="-1" type="error" title="确认没有得到明确结果" aria-live="assertive">
-        {{ confirmError }}。再次点击会使用同一幂等命令核对，不会创建重复修订。
-      </n-alert>
-
-      <footer class="step-actions">
-        <n-button :disabled="store.confirming" @click="emit('back')">返回容量约定</n-button>
+      <footer v-if="props.canConfirm" class="step-actions">
         <div class="seal-action">
           <span>签印成功后进入“等待滚动规划”，写作台仍保持关闭。</span>
           <n-button
             type="primary"
             size="large"
             :loading="store.confirming"
-            :disabled="store.confirming || store.requiresReload || !store.contractReady"
-            @click="confirmContract"
-          >{{ confirmError ? '使用同一命令重试' : '一次确认完整契约' }}</n-button>
+            :disabled="props.interactionLocked || store.confirming || store.requiresReload || !props.canConfirm"
+            @click="confirmOpen = true"
+          >核对并签印完整契约</n-button>
         </div>
       </footer>
     </template>
+
+    <FoundationConfirmationDialog
+      v-if="confirmOpen"
+      :open="true"
+      title="确认签印这份完整创作契约"
+      :close-disabled="store.confirming"
+      @close="confirmOpen = false"
+    >
+      <template #snapshot>
+        <strong>服务器快照</strong>
+        <dl class="confirmation-ledger">
+          <div><dt>并发版本</dt><dd>{{ store.draft?.draftVersion ?? '—' }}</dd></div>
+          <div><dt>草稿摘要</dt><dd>{{ store.draft?.contentHash || '—' }}</dd></div>
+          <div><dt>基础修订</dt><dd>R{{ preview?.baseHeadRevision ?? store.draft?.baseHeadRevision ?? '—' }}</dd></div>
+          <div><dt>预期契约修订</dt><dd>R{{ preview?.expectedRevision ?? '—' }}</dd></div>
+          <div><dt>选择代次</dt><dd>R{{ preview?.selectionRevision ?? store.draft?.selectionRevision ?? '—' }}</dd></div>
+          <div><dt>服务器确认能力</dt><dd>{{ preview?.contractReady === true ? '允许签印' : '不允许签印' }}</dd></div>
+          <div><dt>Seed 引用</dt><dd>{{ frozenReference(preview?.seedRef) }}</dd></div>
+          <div><dt>故事发动机</dt><dd>{{ frozenReference(preview?.engineRef) }}</dd></div>
+          <div><dt>模型绑定</dt><dd>{{ frozenReference(preview?.bindingRef) }}</dd></div>
+          <div><dt>创作摘要</dt><dd>{{ preview?.creationHash || '—' }}</dd></div>
+          <div><dt>风格摘要</dt><dd>{{ preview?.styleHash || '—' }}</dd></div>
+        </dl>
+      </template>
+      <template #source>
+        <p>以下是服务器预览中将被完整冻结的引用；确认能力与阻断原因完全采用服务器当前响应。</p>
+        <section class="confirmation-references" aria-label="即将冻结的精确引用">
+          <div><strong>风格模板</strong><p v-if="!preview?.styleRefs?.length">未选择</p><p v-for="ref in preview?.styleRefs || []" :key="ref.id">{{ frozenReference(ref) }}</p></div>
+          <div><strong>经验卡</strong><p v-if="!preview?.experienceCardRefs?.length">未选择</p><p v-for="ref in preview?.experienceCardRefs || []" :key="ref.id">{{ frozenReference(ref) }}</p></div>
+          <div><strong>参考语料</strong><p v-if="!preview?.corpusSourceRefs?.length">未选择</p><p v-for="ref in preview?.corpusSourceRefs || []" :key="ref.id">{{ frozenReference(ref) }}</p></div>
+        </section>
+        <section class="confirmation-binding" aria-label="即将冻结的模型任务绑定">
+          <strong>模型任务绑定明细</strong>
+          <p v-if="!preview?.bindingRef?.items?.length">无绑定明细</p>
+          <p v-for="item in preview?.bindingRef?.items || []" :key="item.taskKey">{{ bindingItem(item) }}</p>
+        </section>
+        <ContractDecisionSummary
+          v-if="preview?.creationContract || preview?.styleContract"
+          :creation-contract="preview?.creationContract"
+          :style-contract="preview?.styleContract"
+          :likes="preview?.likes"
+          :dislikes="preview?.dislikes"
+          heading="签印目标中的全部作者决定"
+        />
+        <ul v-if="store.readinessReasons.length"><li v-for="reason in store.readinessReasons" :key="reason">{{ explain(reason) }}</li></ul>
+        <n-alert v-if="confirmError" ref="confirmErrorRegion" tabindex="-1" type="error" title="确认没有得到明确结果" aria-live="assertive">
+          {{ confirmError }}。再次点击会使用同一幂等命令核对，不会创建重复修订。
+        </n-alert>
+      </template>
+      <template #action>
+        <n-button :disabled="store.confirming" @click="confirmOpen = false">继续核对文档</n-button>
+        <n-button type="primary" :loading="store.confirming" :disabled="props.interactionLocked || store.confirming || store.requiresReload || !props.canConfirm" @click="confirmContract">
+          {{ confirmError ? '使用同一命令重试' : '一次确认完整契约' }}
+        </n-button>
+      </template>
+    </FoundationConfirmationDialog>
   </article>
 </template>
 
@@ -183,5 +285,14 @@ ul { margin: 7px 0 0; padding-left: 18px; }
 .step-actions { align-items: flex-end; margin-top: 28px; padding-top: 22px; border-top: 1px solid var(--rule, #d9ccb7); }
 .seal-action { display: grid; justify-items: end; gap: 8px; }
 .seal-action span { color: var(--muted, #817668); font-size: 11px; }
-@media (max-width: 760px) { .reference-grid { grid-template-columns: 1fr; } .step-actions { align-items: stretch; flex-direction: column; } .seal-action { justify-items: stretch; } }
+.confirmation-ledger { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 18px; margin:10px 0 0; }
+.confirmation-ledger div { min-width:0; }
+.confirmation-ledger dt { color:var(--muted,#817668); font-size:11px; }
+.confirmation-ledger dd { margin:3px 0 0; overflow-wrap:anywhere; color:var(--ink,#574c3e); font-size:12px; }
+.confirmation-references { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+.confirmation-references > div { min-width:0; padding:10px; border:1px solid var(--rule,#ded2bf); background:var(--paper,#faf6ed); }
+.confirmation-references p { margin:5px 0 0; overflow-wrap:anywhere; font-size:11px; line-height:1.55; }
+.confirmation-binding { margin-top:10px; padding:10px; border:1px solid var(--rule,#ded2bf); background:var(--paper,#faf6ed); }
+.confirmation-binding p { margin:5px 0 0; overflow-wrap:anywhere; font-size:11px; line-height:1.55; }
+@media (max-width: 760px) { .reference-grid,.confirmation-references,.confirmation-ledger { grid-template-columns: 1fr; } .step-actions { align-items: stretch; flex-direction: column; } .seal-action { justify-items: stretch; } }
 </style>

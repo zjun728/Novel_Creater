@@ -6,6 +6,7 @@ const props = defineProps({
   dislikes: { type: Array, default: null },
   heading: { type: String, default: '作者决策摘要' },
   compact: { type: Boolean, default: false },
+  readOnly: { type: Boolean, default: true },
 })
 
 function readable(value) {
@@ -30,7 +31,11 @@ function wordRange(value) {
 </script>
 
 <template>
-  <section class="decision-summary" :class="{ 'decision-summary--compact': props.compact }">
+  <section
+    class="decision-summary"
+    :class="{ 'decision-summary--compact': props.compact }"
+    :aria-readonly="props.readOnly ? 'true' : undefined"
+  >
     <header class="decision-summary__heading">
       <span>AUTHOR DECISIONS</span>
       <h4>{{ props.heading }}</h4>

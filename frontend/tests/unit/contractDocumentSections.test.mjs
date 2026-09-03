@@ -122,12 +122,44 @@ test('only server capability, reasons, or validation can block a section', () =>
     draftStage: 'assets',
     capabilities: { edit: false },
     readiness: { ready: false, reasons: ['seed_drift'] },
+    serverEditReasons: ['contract_write_denied'],
     validation: { reasons: ['contract_invalid'] },
   })
   for (const item of serverBlocked.sections) {
     assert.equal(item.status, 'blocked')
-    assert.deepEqual(item.blockedReasons, ['seed_drift', 'contract_invalid'])
+    assert.deepEqual(item.blockedReasons, ['contract_write_denied', 'contract_invalid'])
   }
+})
+
+test('confirmation readiness reasons never revoke otherwise-open editing', () => {
+  const fresh = map({
+    draftStage: null,
+    payload: {},
+    serverCanConfirm: false,
+    serverReasons: ['contract_missing'],
+  })
+
+  assert.equal(section(fresh, 'engine').open, true)
+  assert.deepEqual(section(fresh, 'engine').writeFields, [
+    'engineOptionId', 'engineHash', 'channelProfileKey', 'genreProfileKey',
+    'qualityCharterVersion',
+  ])
+  assert.notEqual(section(fresh, 'engine').status, 'blocked')
+  assert.equal(section(fresh, 'preview').canConfirm, false)
+  assert.deepEqual(section(fresh, 'preview').blockedReasons, ['contract_missing'])
+})
+
+test('server view denial independently closes every write and confirmation surface', () => {
+  const denied = map({
+    draftStage: 'assets',
+    capabilities: { view: false, edit: true, confirm: true },
+    serverCanConfirm: true,
+    serverReasons: [],
+  })
+
+  assert.ok(denied.sections.every(item => item.writeFields.length === 0))
+  assert.equal(section(denied, 'preview').canPreview, false)
+  assert.equal(section(denied, 'preview').canConfirm, false)
 })
 
 test('filled and suggested sections remain display-only and cannot grant confirmation', () => {
