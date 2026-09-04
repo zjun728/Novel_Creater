@@ -2826,6 +2826,14 @@ export const api = {
       ]),
       BIBLE_GENERATION_TIMEOUT,
     ),
+    propose: (projectId, data) => post(
+      `/projects/${segment(projectId)}/bible/proposals`,
+      pickDefined(data, [
+        'scope', 'authorInstructions', 'expectedDraftVersion', 'expectedHeadRevision',
+        'idempotencyKey',
+      ]),
+      BIBLE_GENERATION_TIMEOUT,
+    ),
     generationAttempt: (projectId, attemptId) => get(
       `/projects/${segment(projectId)}/bible/generation-attempts/${segment(attemptId)}`,
     ),

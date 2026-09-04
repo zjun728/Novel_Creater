@@ -184,11 +184,12 @@ test('history detail participates in busy state and publishes its error only for
 })
 
 function generationAttempt(projectId, status = 'succeeded', extra = {}) {
+  const pending = ['reserved', 'running'].includes(status)
   return {
     id: `attempt-${projectId}`,
     projectId,
     status,
-    attemptVersion: status === 'running' ? 1 : 2,
+    attemptVersion: pending ? 1 : 2,
     providerId: 'provider-1',
     modelNameSnapshot: 'novel-model',
     inputManifestHash: '9'.repeat(64),
@@ -199,7 +200,7 @@ function generationAttempt(projectId, status = 'succeeded', extra = {}) {
         ? 'BibleGenerationRetryable'
         : null,
     createdAt: 1900000000000,
-    completedAt: status === 'running' ? null : 1900000000100,
+    completedAt: pending ? null : 1900000000100,
     apiKey: 'must-not-publish',
     rawProviderBody: 'must-not-publish',
     ...extra,
@@ -329,4 +330,111 @@ test('loadAttempt uses encoded safe attempt endpoint and fences old projects', a
     assert.equal(store.generationAttempt.rawProviderBody, undefined)
     assert.equal(calls[0], '/api/projects/project%2Fone/bible/generation-attempts/attempt%2Fone')
   })
+})
+
+test('propose posts the exact stable body, sanitizes proposal data, and performs no authority reload', async () => {
+  const bodies = []; let headReads = 0; let draftReads = 0
+  const proposal = { ...bible(), premiseAndPromise: 'PROPOSED', privateField: 'must-not-publish' }
+  await withFetch(async (url, options = {}) => {
+    const path = new URL(String(url)).pathname
+    if (path.endsWith('/bible/proposals')) {
+      bodies.push(JSON.parse(options.body))
+      return response({ attempt: generationAttempt('project-1', 'succeeded', { proposal }) })
+    }
+    if (path.endsWith('/bible/head')) { headReads += 1; return response(head('project-1')) }
+    if (path.endsWith('/bible/draft')) { draftReads += 1; return response(draft('project-1')) }
+    throw new Error(`unexpected ${path}`)
+  }, async () => {
+    setActivePinia(createPinia()); const store = useBibleStore(); await store.load('project-1')
+    const draftBefore = JSON.stringify(store.draft); const headBefore = JSON.stringify(store.head)
+    const result = await store.propose('project-1', {
+      scope: 'world_rules', authorInstructions: '补足代价链', idempotencyKey: 'proposal-key-1',
+      providerId: 'must-not-send', expectedDraftVersion: 999,
+    })
+    assert.deepEqual(bodies, [{
+      scope: 'world_rules', authorInstructions: '补足代价链', expectedDraftVersion: 1,
+      expectedHeadRevision: 0, idempotencyKey: 'proposal-key-1',
+    }])
+    assert.equal(result.proposal.premiseAndPromise, 'PROPOSED')
+    assert.equal(result.proposal.privateField, undefined)
+    assert.equal(result.apiKey, undefined)
+    assert.equal(store.proposalAttempt, result)
+    assert.equal(store.proposing, false)
+    assert.equal(JSON.stringify(store.draft), draftBefore)
+    assert.equal(JSON.stringify(store.head), headBefore)
+    assert.equal(store.dirty, false)
+    assert.equal(headReads, 1); assert.equal(draftReads, 1)
+    store.clearProposal(); assert.equal(store.proposalAttempt, null)
+  })
+})
+
+test('proposal state is independent from direct generation and project switches fence late proposals', async () => {
+  const oldProposal = deferred()
+  await withFetch(async (url, options = {}) => {
+    const path = new URL(String(url)).pathname; const isA = path.includes('/project-a/')
+    if (path.endsWith('/bible/proposals')) return oldProposal.promise
+    if (path.endsWith('/bible/head')) return response(head(isA ? 'project-a' : 'project-b'))
+    if (path.endsWith('/bible/draft')) return response(draft(isA ? 'project-a' : 'project-b'))
+    throw new Error(`unexpected ${path}`)
+  }, async () => {
+    setActivePinia(createPinia()); const store = useBibleStore(); await store.load('project-a')
+    const pending = store.propose('project-a', { scope: 'whole', authorInstructions: '', idempotencyKey: 'late-proposal' })
+    assert.equal(store.proposing, true); assert.equal(store.generating, false)
+    await store.load('project-b')
+    oldProposal.resolve(response({ attempt: generationAttempt('project-a', 'succeeded', { proposal: bible() }) }))
+    await pending
+    assert.equal(store.projectId, 'project-b'); assert.equal(store.proposalAttempt, null)
+    assert.equal(store.proposing, false); assert.equal(store.generationAttempt, null)
+  })
+})
+
+test('proposal parser accepts every legal backend status without weakening proposal-state rules', async () => {
+  for (const status of ['reserved', 'running', 'failed', 'outcome_unknown', 'succeeded']) {
+    await withFetch(async (url, options = {}) => {
+      const path = new URL(String(url)).pathname
+      if (path.endsWith('/bible/proposals')) {
+        const extra = status === 'succeeded' ? { proposal: bible() } : {}
+        return response({ attempt: generationAttempt('project-1', status, extra) })
+      }
+      return response(path.endsWith('/head') ? head('project-1') : draft('project-1'))
+    }, async () => {
+      setActivePinia(createPinia()); const store = useBibleStore(); await store.load('project-1')
+      const result = await store.propose('project-1', {
+        scope: 'whole', authorInstructions: '', idempotencyKey: `proposal-${status}`,
+      })
+      assert.equal(result.status, status)
+      assert.equal(Object.hasOwn(result, 'proposal'), status === 'succeeded')
+    })
+  }
+})
+
+test('proposal parser rejects cross-project identity, malformed payloads, illegal status, and invalid proposal combinations', async () => {
+  const invalidAttempts = [
+    generationAttempt('another-project', 'succeeded', { proposal: bible() }),
+    generationAttempt('project-1', 'invented', {}),
+    generationAttempt('project-1', 'succeeded', {}),
+    generationAttempt('project-1', 'failed', { proposal: bible() }),
+    generationAttempt('project-1', 'succeeded', { proposal: { ...bible(), protagonist: 7 } }),
+    generationAttempt('project-1', 'succeeded', { proposal: { ...bible(), worldRules: [] } }),
+    generationAttempt('project-1', 'succeeded', { proposal: { ...bible(), coreCast: [{ id: 'bad id', text: 'cast' }] } }),
+    { ...generationAttempt('project-1', 'succeeded', { proposal: bible() }), attemptVersion: '2' },
+  ]
+  for (const [index, attempt] of invalidAttempts.entries()) {
+    await withFetch(async (url, options = {}) => {
+      const path = new URL(String(url)).pathname
+      if (path.endsWith('/bible/proposals')) return response({ attempt })
+      return response(path.endsWith('/head') ? head('project-1') : draft('project-1'))
+    }, async () => {
+      setActivePinia(createPinia()); const store = useBibleStore(); await store.load('project-1')
+      const before = JSON.stringify(store.draft)
+      await assert.rejects(
+        store.propose('project-1', { scope: 'whole', authorInstructions: '', idempotencyKey: `invalid-${index}` }),
+        failure => failure.code === 'invalid_response',
+      )
+      assert.equal(store.error.code, 'invalid_response')
+      assert.equal(store.proposalAttempt, null)
+      assert.equal(JSON.stringify(store.draft), before)
+      assert.equal(store.dirty, false)
+    })
+  }
 })

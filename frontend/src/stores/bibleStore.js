@@ -2,7 +2,9 @@ import { computed, ref, shallowRef } from 'vue'
 import { defineStore } from 'pinia'
 
 import { api } from '../api/db/client.js'
+import { ApiError } from '../api/db/api-error.js'
 import { createLatestRequestGuard } from '../utils/latestRequest.js'
+import { unicodeScalarLength } from '../utils/unicodeScalarText.js'
 
 const BIBLE_SCALAR_FIELDS = [
   'premiseAndPromise', 'powerOrProgressionSystem', 'protagonist',
@@ -17,6 +19,72 @@ const BASIS_FIELDS = [
   'creationContractId', 'creationHash', 'styleContractId', 'styleHash',
   'bindingRevisionId', 'bindingHash', 'policyVersion',
 ]
+const GENERATION_ATTEMPT_FIELDS = [
+  'id', 'projectId', 'status', 'attemptVersion', 'providerId', 'modelNameSnapshot',
+  'inputManifestHash', 'resultHash', 'publicErrorCode', 'createdAt', 'completedAt',
+]
+const GENERATION_STATUSES = new Set(['reserved', 'running', 'succeeded', 'failed', 'outcome_unknown'])
+const HASH_PATTERN = /^[0-9a-f]{64}$/u
+const ITEM_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u
+const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key)
+
+function invalidResponse() {
+  return new ApiError({ code: 'invalid_response', message: '服务返回了无效响应' })
+}
+
+function validText(value, maximum) {
+  if (typeof value !== 'string' || value.length === 0 || value !== value.trim()) return false
+  try { return unicodeScalarLength(value) <= maximum } catch { return false }
+}
+
+function strictProposalBible(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalidResponse()
+  const result = {}
+  for (const field of BIBLE_SCALAR_FIELDS) {
+    if (!hasOwn(value, field) || !validText(value[field], 4_000)) throw invalidResponse()
+    result[field] = value[field]
+  }
+  for (const field of BIBLE_ARRAY_FIELDS) {
+    if (!hasOwn(value, field) || !Array.isArray(value[field]) || value[field].length < 1 || value[field].length > 20) throw invalidResponse()
+    const ids = new Set()
+    result[field] = value[field].map(item => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)
+        || !hasOwn(item, 'id') || !hasOwn(item, 'text')
+        || typeof item.id !== 'string' || !ITEM_ID_PATTERN.test(item.id)
+        || !validText(item.text, 4_000) || ids.has(item.id)) throw invalidResponse()
+      ids.add(item.id)
+      return { id: item.id, text: item.text }
+    })
+  }
+  return result
+}
+
+function publicProposalAttempt(value, expectedProjectId) {
+  try {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+      || GENERATION_ATTEMPT_FIELDS.some(field => !hasOwn(value, field))) throw invalidResponse()
+    const attempt = Object.fromEntries(GENERATION_ATTEMPT_FIELDS.map(field => [field, value[field]]))
+    if (!validText(attempt.id, 64) || attempt.projectId !== expectedProjectId
+      || !GENERATION_STATUSES.has(attempt.status)
+      || !Number.isSafeInteger(attempt.attemptVersion) || attempt.attemptVersion < 1
+      || !validText(attempt.providerId, 64) || !validText(attempt.modelNameSnapshot, 160)
+      || typeof attempt.inputManifestHash !== 'string' || !HASH_PATTERN.test(attempt.inputManifestHash)
+      || !Number.isSafeInteger(attempt.createdAt) || attempt.createdAt < 0) throw invalidResponse()
+    const pending = attempt.status === 'reserved' || attempt.status === 'running'
+    const succeeded = attempt.status === 'succeeded'
+    const failed = attempt.status === 'failed' || attempt.status === 'outcome_unknown'
+    if ((succeeded ? !(typeof attempt.resultHash === 'string' && HASH_PATTERN.test(attempt.resultHash)) : attempt.resultHash !== null)
+      || (failed ? !validText(attempt.publicErrorCode, 64) : attempt.publicErrorCode !== null)
+      || (pending ? attempt.completedAt !== null : !Number.isSafeInteger(attempt.completedAt) || attempt.completedAt < 0)) throw invalidResponse()
+    const hasProposal = hasOwn(value, 'proposal')
+    if (succeeded !== hasProposal) throw invalidResponse()
+    if (succeeded) attempt.proposal = strictProposalBible(value.proposal)
+    return publicGenerationAttempt(attempt)
+  } catch (failure) {
+    if (failure instanceof ApiError && failure.code === 'invalid_response') throw failure
+    throw invalidResponse()
+  }
+}
 
 function publicError(error) {
   return {
@@ -86,7 +154,7 @@ function publicRevision(value) {
 
 function publicGenerationAttempt(value) {
   if (!value || typeof value !== 'object') return null
-  return {
+  const result = {
     id: value.id,
     projectId: value.projectId,
     status: value.status,
@@ -99,6 +167,10 @@ function publicGenerationAttempt(value) {
     createdAt: value.createdAt,
     completedAt: value.completedAt ?? null,
   }
+  if (value.status === 'succeeded' && value.proposal != null) {
+    result.proposal = publicBible(value.proposal)
+  }
+  return result
 }
 
 function denied(code) {
@@ -118,15 +190,18 @@ export const useBibleStore = defineStore('bible', () => {
   const saving = ref(false)
   const confirming = ref(false)
   const generating = ref(false)
+  const proposing = ref(false)
   const historyLoading = ref(false)
   const dirty = ref(false)
   const generationAttempt = shallowRef(null)
+  const proposalAttempt = shallowRef(null)
   const readOnly = ref(false)
   const headHydrated = ref(false)
   const loadGuard = createLatestRequestGuard()
   const writeGuard = createLatestRequestGuard()
   const historyGuard = createLatestRequestGuard()
   const generationGuard = createLatestRequestGuard()
+  const proposalGuard = createLatestRequestGuard()
   const confirmCommands = new Map()
   let stateGeneration = 0
   let editGeneration = 0
@@ -145,12 +220,12 @@ export const useBibleStore = defineStore('bible', () => {
     if (projectId.value !== next) {
       stateGeneration += 1
       editGeneration += 1
-      loadGuard.invalidate(); writeGuard.invalidate(); historyGuard.invalidate(); generationGuard.invalidate()
+      loadGuard.invalidate(); writeGuard.invalidate(); historyGuard.invalidate(); generationGuard.invalidate(); proposalGuard.invalidate()
       projectId.value = next; head.value = null; draft.value = null; history.value = []
       headHydrated.value = false
-      historyNextBeforeRevision.value = null; historyDetail.value = null; generationAttempt.value = null; error.value = null
+      historyNextBeforeRevision.value = null; historyDetail.value = null; generationAttempt.value = null; proposalAttempt.value = null; error.value = null
       conflict.value = null; dirty.value = false; loading.value = false; saving.value = false
-      confirming.value = false; generating.value = false; historyLoading.value = false
+      confirming.value = false; generating.value = false; proposing.value = false; historyLoading.value = false
     }
     if (options.readOnly !== undefined) readOnly.value = options.readOnly === true
     return next
@@ -170,6 +245,8 @@ export const useBibleStore = defineStore('bible', () => {
     } else if (kind === 'generate') {
       if (draft.value?.canEdit !== true) throw denied('bible_edit_denied')
       if (dirty.value) throw denied('bible_generation_dirty')
+    } else if (kind === 'propose') {
+      if (draft.value?.canEdit !== true) throw denied('bible_edit_denied')
     } else if (kind === 'confirm' && draft.value?.canConfirm !== true) throw denied('bible_confirm_denied')
   }
 
@@ -319,6 +396,50 @@ export const useBibleStore = defineStore('bible', () => {
     }
   }
 
+  async function propose(nextProjectId, command = {}) {
+    const targetProject = enterProject(nextProjectId)
+    const key = String(command.idempotencyKey || '')
+    if (!key) throw new TypeError('idempotencyKey is required')
+    assertWritable('propose')
+    const scope = String(command.scope || '')
+    if (scope !== 'whole' && (dirty.value || draft.value?.draft == null || Number(draft.value?.draftVersion || 0) < 1)) {
+      throw denied(dirty.value ? 'bible_proposal_dirty' : 'bible_proposal_draft_missing')
+    }
+    const requestGeneration = proposalGuard.begin()
+    const targetStateGeneration = stateGeneration
+    proposing.value = true; error.value = null
+    try {
+      const response = await api.bible.propose(targetProject, {
+        scope,
+        authorInstructions: String(command.authorInstructions || ''),
+        expectedDraftVersion: Number(draft.value?.draftVersion ?? 0),
+        expectedHeadRevision: Number(head.value?.revision || 0),
+        idempotencyKey: key,
+      })
+      const attempt = publicProposalAttempt(response?.attempt, targetProject)
+      if (current(proposalGuard, requestGeneration, targetProject, targetStateGeneration)) {
+        proposalAttempt.value = attempt
+      }
+      return attempt
+    } catch (failure) {
+      if (current(proposalGuard, requestGeneration, targetProject, targetStateGeneration)) {
+        error.value = publicError(failure)
+        if (Number(failure?.status) === 409) conflict.value = publicError(failure)
+      }
+      throw failure
+    } finally {
+      if (current(proposalGuard, requestGeneration, targetProject, targetStateGeneration)) {
+        proposing.value = false
+      }
+    }
+  }
+
+  function clearProposal() {
+    proposalGuard.invalidate()
+    proposalAttempt.value = null
+    proposing.value = false
+  }
+
   async function loadAttempt(nextProjectId, attemptId) {
     const targetProject = enterProject(nextProjectId)
     const requestGeneration = generationGuard.begin()
@@ -382,9 +503,9 @@ export const useBibleStore = defineStore('bible', () => {
 
   return {
     projectId, head, draft, history, historyNextBeforeRevision, historyDetail, error, conflict,
-    loading, saving, confirming, generating, historyLoading, dirty, readOnly, headHydrated,
-    generationAttempt, baselineLocked, canEdit, canConfirm, reasons, load, edit, save, confirm,
-    generate, loadAttempt, loadHistory, loadHistoryDetail,
+    loading, saving, confirming, generating, proposing, historyLoading, dirty, readOnly, headHydrated,
+    generationAttempt, proposalAttempt, baselineLocked, canEdit, canConfirm, reasons, load, edit, save, confirm,
+    generate, propose, clearProposal, loadAttempt, loadHistory, loadHistoryDetail,
     setReadOnly, clearHistory,
   }
 })

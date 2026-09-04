@@ -1,5 +1,6 @@
 import { computed, nextTick, ref, toRef } from 'vue'
 import { bibleReasonLabel, presentBibleReasons } from './bibleStatusPresentation.js'
+import { adoptBibleProposal, bibleProposalScope } from './bibleProposalScopes.js'
 
 export { bibleReasonLabel }
 
@@ -18,11 +19,13 @@ export function createBibleWorkspaceController({
 } = {}) {
   if (!store || typeof projectId !== 'function') throw new TypeError('store and projectId are required')
   const working = ref(null); const confirmOpen = ref(false); const historyOpen = ref(false); const errorSummary = ref(null); const confirmTrigger = ref(null)
+  const proposalOpen = ref(false); const requestedScope = ref(null); const proposalSnapshot = ref(null)
   const recoveryCommand = ref(null)
   const attempts = new Map()
   let generation = 0
+  let proposalGeneration = 0
   let activeProject = ''
-  const busy = computed(() => Boolean(store.loading || store.saving || store.confirming || store.generating || store.historyLoading))
+  const busy = computed(() => Boolean(store.loading || store.saving || store.confirming || store.generating || store.proposing || store.historyLoading))
   const hasDraftBody = computed(() => store.draft?.draft != null)
   const hasHeadBody = computed(() => store.head?.bible != null)
   const mode = computed(() => {
@@ -47,6 +50,12 @@ export function createBibleWorkspaceController({
   const canSave = computed(() => editable.value && store.dirty === true && !busy.value)
   const canConfirm = computed(() => editable.value && store.canConfirm === true && store.dirty !== true && !busy.value)
   const canGenerate = toRef(() => editable.value && planningReady() === true && store.dirty !== true && !busy.value)
+  function canPropose(scopeKey) {
+    const scope = bibleProposalScope(scopeKey)
+    if (!scope || !editable.value || planningReady() !== true || busy.value) return false
+    if (scope.key === 'whole') return true
+    return store.dirty !== true && store.draft?.draft != null && Number(store.draft?.draftVersion || 0) > 0
+  }
   const generationDisabledReason = toRef(() => {
     if (store.dirty === true) return '请先保存本地编辑，再使用 AI 生成。'
     if (!editable.value) return '当前创作圣经不可编辑。'
@@ -58,6 +67,7 @@ export function createBibleWorkspaceController({
   const reasonLabels = computed(() => presentBibleReasons(activeReasons.value))
   function ticket() { return { project: String(projectId() || ''), generation } }
   function current(value) { return value.project === String(projectId() || '') && value.project === activeProject && value.generation === generation }
+  function proposalCurrent(value) { return current(value) && value.proposalGeneration === proposalGeneration }
   function publicFailure(failure) {
     const status = Number(failure?.status || store.error?.status || store.conflict?.status || 0)
     const code = String(failure?.code || store.error?.code || store.conflict?.code || 'request_failed')
@@ -94,8 +104,10 @@ export function createBibleWorkspaceController({
     const targetProject = String(projectId() || '')
     if (!targetProject) return null
     generation += 1
+    proposalGeneration += 1
     activeProject = targetProject
     working.value = null; confirmOpen.value = false; historyOpen.value = false
+    proposalOpen.value = false; requestedScope.value = null; proposalSnapshot.value = null; store.clearProposal?.()
     errorSummary.value = null; recoveryCommand.value = null; confirmTrigger.value = null; attempts.clear()
     const value = ticket()
     try {
@@ -183,6 +195,60 @@ export function createBibleWorkspaceController({
       throw failure
     }
   }
+  async function propose(scopeKey, authorInstructions = '') {
+    const scope = bibleProposalScope(scopeKey)
+    if (!scope || !canPropose(scope.key)) return undefined
+    proposalGeneration += 1
+    const value = { ...ticket(), proposalGeneration }; const instructions = String(authorInstructions || '')
+    proposalOpen.value = false; proposalSnapshot.value = null; requestedScope.value = scope.key
+    store.clearProposal?.()
+    try {
+      const result = await store.propose(value.project, {
+        scope: scope.key,
+        authorInstructions: instructions,
+        idempotencyKey: keyFactory(),
+      })
+      if (!proposalCurrent(value)) return undefined
+      if (result?.status === 'succeeded' && result.proposal != null) {
+        proposalSnapshot.value = {
+          scope: scope.key,
+          scopeLabel: scope.label,
+          authorInstructions: instructions,
+          current: clone(working.value),
+          proposal: clone(result.proposal),
+        }
+        proposalOpen.value = true
+        clearFailure(value)
+      } else if (result?.status === 'failed' || result?.status === 'outcome_unknown') {
+        setError({
+          status: result.status === 'outcome_unknown' ? 503 : 422,
+          code: result.publicErrorCode || result.status,
+        }, value, 'reconcile')
+      }
+      return result
+    } catch (failure) {
+      if (!proposalCurrent(value)) return undefined
+      setError(failure, value, Number(failure?.status || 0) === 409 ? 'reloadAuthoritative' : 'reconcile')
+      throw failure
+    }
+  }
+  function cancelProposal() {
+    proposalGeneration += 1
+    proposalOpen.value = false; requestedScope.value = null; proposalSnapshot.value = null
+    store.clearProposal?.()
+  }
+  function adoptProposal() {
+    if (!editable.value || busy.value || !proposalOpen.value || !proposalSnapshot.value) return false
+    const adopted = adoptBibleProposal(
+      working.value,
+      proposalSnapshot.value.proposal,
+      proposalSnapshot.value.scope,
+    )
+    working.value = clone(adopted)
+    store.edit(working.value)
+    cancelProposal()
+    return true
+  }
   async function openHistory() {
     const value = ticket(); historyOpen.value = true
     try {
@@ -229,5 +295,5 @@ export function createBibleWorkspaceController({
   }
   function requestLeave() { if (busy.value) return false; return store.dirty !== true || confirmLeave() }
   function beforeUnload(event) { if (store.dirty !== true && !busy.value) return undefined; event.preventDefault(); event.returnValue = ''; return '' }
-  return { working, confirmOpen, historyOpen, errorSummary, recoveryCommand, busy, mode, activeStatus, activeReasons, editable, canSave, canConfirm, canGenerate, generationDisabledReason, confirmPreview, reasonLabels, hydrate, edit, save, openConfirm, closeConfirm, confirm, generate, openHistory, showHistoryDetail, loadMoreHistory, retryFailure, requestLeave, beforeUnload, confirmLeave: requestLeave }
+  return { working, confirmOpen, historyOpen, proposalOpen, requestedScope, proposalSnapshot, errorSummary, recoveryCommand, busy, mode, activeStatus, activeReasons, editable, canSave, canConfirm, canGenerate, canPropose, generationDisabledReason, confirmPreview, reasonLabels, hydrate, edit, save, openConfirm, closeConfirm, confirm, generate, propose, adoptProposal, cancelProposal, openHistory, showHistoryDetail, loadMoreHistory, retryFailure, requestLeave, beforeUnload, confirmLeave: requestLeave }
 }

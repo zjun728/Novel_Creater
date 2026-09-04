@@ -26,12 +26,12 @@ function deferred() {
 }
 
 function makeStore(overrides = {}) {
-  const calls = { load: [], edit: [], save: [], confirm: [], generate: [], history: [], detail: [] }
+  const calls = { load: [], edit: [], save: [], confirm: [], generate: [], propose: [], clearProposal: 0, history: [], detail: [] }
   const state = reactive({
     draft: { draftVersion: 2, draft: bible(), canEdit: true, canConfirm: true, reasons: [] },
     head: revision(7), history: [revision(7)], historyNextBeforeRevision: 6, historyDetail: null,
-    loading: false, saving: false, confirming: false, generating: false, historyLoading: false,
-    generationAttempt: null, baselineLocked: false,
+    loading: false, saving: false, confirming: false, generating: false, proposing: false, historyLoading: false,
+    generationAttempt: null, proposalAttempt: null, baselineLocked: false,
     dirty: false, readOnly: false, canEdit: true, canConfirm: true, reasons: [],
     ...overrides,
   })
@@ -47,6 +47,12 @@ function makeStore(overrides = {}) {
       state.draft = { ...state.draft, draftVersion: state.draft.draftVersion + 1, draft: { ...bible(), premiseAndPromise: 'generated' } }
       return state.generationAttempt
     },
+    async propose(projectId, command) {
+      calls.propose.push([projectId, command])
+      state.proposalAttempt = { id: `proposal-${calls.propose.length}`, status: 'succeeded', proposal: { ...bible(), premiseAndPromise: 'proposed', worldRules: [{ id: 'proposed-world', text: 'proposed rule' }] } }
+      return state.proposalAttempt
+    },
+    clearProposal() { calls.clearProposal += 1; state.proposalAttempt = null; state.proposing = false },
     async loadHistory(projectId, params) { calls.history.push([projectId, params]); return { items: state.history, nextBeforeRevision: state.historyNextBeforeRevision } },
     async loadHistoryDetail(projectId, itemRevision) { calls.detail.push([projectId, itemRevision]); state.historyDetail = revision(itemRevision); return state.historyDetail },
   })
@@ -391,3 +397,110 @@ test('late generation completion cannot publish focus or working state into a ne
   assert.deepEqual(focused, [])
   assert.equal(workspace.errorSummary.value, null)
 })
+
+test('whole and section proposals open immutable comparison snapshots and adopt only into unsaved local work', async () => {
+  const store = makeStore(); const workspace = controller(store, { planningReady: () => true })
+  await workspace.hydrate()
+  const whole = await workspace.propose('whole', '重写整份')
+  assert.equal(whole.status, 'succeeded'); assert.equal(workspace.proposalOpen.value, true)
+  assert.equal(workspace.requestedScope.value, 'whole')
+  assert.equal(workspace.proposalSnapshot.value.current.premiseAndPromise, 'promise')
+  assert.equal(workspace.proposalSnapshot.value.proposal.premiseAndPromise, 'proposed')
+  assert.equal(store.calls.save.length, 0)
+  assert.equal(workspace.adoptProposal(), true)
+  assert.equal(workspace.working.value.premiseAndPromise, 'proposed')
+  assert.equal(store.dirty, true); assert.equal(store.calls.save.length, 0)
+  assert.equal(workspace.proposalOpen.value, false)
+
+  store.dirty = false; store.draft = { ...store.draft, draftVersion: 3, draft: bible() }
+  await workspace.propose('world_rules', '只补世界规则')
+  assert.equal(workspace.adoptProposal(), true)
+  assert.equal(workspace.working.value.premiseAndPromise, 'proposed')
+  assert.deepEqual(workspace.working.value.worldRules, [{ id: 'proposed-world', text: 'proposed rule' }])
+  assert.equal(store.calls.save.length, 0)
+})
+
+test('section proposals require a saved clean draft while whole can seed an empty local work copy', async () => {
+  const missing = makeStore({ draft: { draftVersion: null, draft: null, canEdit: true, canConfirm: false, reasons: [] }, head: { revision: 0, bible: null }, dirty: false })
+  const workspace = controller(missing, { planningReady: () => true }); await workspace.hydrate()
+  assert.equal(workspace.canPropose('world_rules'), false)
+  assert.equal(await workspace.propose('world_rules', ''), undefined)
+  assert.equal(workspace.canPropose('whole'), true)
+  await workspace.propose('whole', '生成初稿')
+  assert.equal(workspace.adoptProposal(), true)
+  assert.equal(workspace.working.value.premiseAndPromise, 'proposed')
+  assert.equal(missing.dirty, true); assert.equal(missing.calls.save.length, 0)
+
+  const dirty = makeStore({ dirty: true }); const dirtyWorkspace = controller(dirty, { planningReady: () => true })
+  await dirtyWorkspace.hydrate(); dirty.dirty = true
+  assert.equal(dirtyWorkspace.canPropose('world_rules'), false)
+  assert.equal(dirtyWorkspace.canPropose('whole'), true)
+})
+
+test('cancel and project switches clear proposal state and late completion cannot reopen it', async () => {
+  const pending = deferred(); let currentProject = 'A'; const store = makeStore()
+  store.propose = async project => project === 'A' ? pending.promise : store.proposalAttempt
+  const workspace = createBibleWorkspaceController({ store, projectId: () => currentProject, planningReady: () => true, keyFactory: () => 'proposal-key' })
+  await workspace.hydrate(); const old = workspace.propose('whole', '')
+  currentProject = 'B'; await workspace.hydrate()
+  pending.resolve({ status: 'succeeded', proposal: { ...bible(), premiseAndPromise: 'LATE A' } })
+  await old
+  assert.equal(workspace.proposalOpen.value, false); assert.equal(workspace.proposalSnapshot.value, null)
+  assert.equal(workspace.requestedScope.value, null)
+  assert.equal(workspace.working.value.premiseAndPromise, 'promise')
+  assert.equal(store.calls.clearProposal >= 2, true)
+
+  await workspace.propose('whole', ''); const before = JSON.parse(JSON.stringify(workspace.working.value))
+  workspace.cancelProposal(); assert.equal(workspace.proposalOpen.value, false)
+  assert.deepEqual(workspace.working.value, before); assert.equal(store.proposalAttempt, null)
+})
+
+test('proposal conflicts preserve local work and confirmed or archived modes cannot propose or adopt', async () => {
+  const store = makeStore(); const workspace = controller(store, { planningReady: () => true }); await workspace.hydrate()
+  const before = JSON.parse(JSON.stringify(workspace.working.value))
+  store.propose = async () => { throw error(409, 'conflict raw') }
+  await assert.rejects(workspace.propose('whole', ''))
+  assert.deepEqual(workspace.working.value, before)
+  assert.equal(workspace.errorSummary.value.status, 409)
+
+  const confirmed = makeStore({ baselineLocked: true }); const confirmedWorkspace = controller(confirmed, { planningReady: () => true })
+  await confirmedWorkspace.hydrate(); assert.equal(confirmedWorkspace.canPropose('whole'), false)
+  confirmedWorkspace.proposalOpen.value = true
+  confirmedWorkspace.proposalSnapshot.value = { scope: 'whole', current: bible(), proposal: { ...bible(), premiseAndPromise: 'blocked' } }
+  assert.equal(confirmedWorkspace.adoptProposal(), false)
+
+  const archived = makeStore({ readOnly: true }); const archivedWorkspace = controller(archived, { isArchived: () => true, planningReady: () => true })
+  await archivedWorkspace.hydrate(); assert.equal(archivedWorkspace.canPropose('whole'), false)
+  assert.equal(await archivedWorkspace.propose('whole', ''), undefined)
+})
+
+for (const outcome of ['success', 'failure']) {
+  test(`cancelling a pending same-project proposal fences its late ${outcome}`, async () => {
+    const pending = deferred(); const focused = []; const store = makeStore()
+    store.propose = async () => pending.promise
+    const workspace = controller(store, {
+      planningReady: () => true,
+      focusError: () => focused.push('error'),
+      focusStatus: () => focused.push('status'),
+    })
+    await workspace.hydrate()
+    const before = JSON.parse(JSON.stringify(workspace.working.value))
+    const request = workspace.propose('whole', '迟到请求')
+    assert.equal(workspace.requestedScope.value, 'whole')
+    workspace.cancelProposal()
+    if (outcome === 'success') {
+      pending.resolve({ status: 'succeeded', proposal: { ...bible(), premiseAndPromise: 'LATE' } })
+      await request
+    } else {
+      pending.reject(error(503, 'late raw failure'))
+      assert.equal(await request, undefined)
+    }
+    await Promise.resolve()
+    assert.equal(workspace.proposalOpen.value, false)
+    assert.equal(workspace.requestedScope.value, null)
+    assert.equal(workspace.proposalSnapshot.value, null)
+    assert.deepEqual(workspace.working.value, before)
+    assert.equal(workspace.errorSummary.value, null)
+    assert.deepEqual(focused, [])
+  })
+}
