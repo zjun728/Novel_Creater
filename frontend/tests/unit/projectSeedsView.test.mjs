@@ -175,7 +175,7 @@ test('candidate detail offers the author document confirmation CTA only after ex
 test('authoritative reload keeps the local work copy when refresh fails', async () => {
   const source = await readFile(new URL('../../src/views/ProjectSeedsView.vue', import.meta.url), 'utf8')
   assert.match(source, /await seedStore\.refresh\(projectId\)/)
-  assert.match(source, /catch \(failure\) \{\n    if \(isCurrentWorkspace\(projectId, generation\)\) loadError\.value/)
+  assert.match(source, /catch \(failure\) \{\r?\n    if \(isCurrentWorkspace\(projectId, generation\)\) loadError\.value/)
   assert.match(source, /beginWorkCopy\(openedCandidate\.value\)/)
 })
 
