@@ -29,6 +29,7 @@ else:  # pragma: no cover - the product boundary deliberately fails closed off W
 
 from backend.domain.product_database_readiness import (
     LEGACY_DATABASE,
+    NEW_DATABASE,
     BackupReceipt,
     DatabaseInventory,
     ReadinessState,
@@ -84,6 +85,36 @@ class MySQLClientPair:
     mysqldump: Path
     mysql: Path
     version: str
+
+
+@dataclass(frozen=True)
+class ProductLogicalBackupReceipt:
+    """Hardened backup evidence for the exact in-place product upgrade."""
+
+    source_database: str
+    backup_filename: str
+    backup_sha256: str
+    backup_byte_length: int
+    client_version: str
+    source_inventory_hash: str
+
+    def __post_init__(self) -> None:
+        try:
+            _validate_receipt_inputs(self.backup_filename, "0" * 64)
+            if (
+                self.source_database != NEW_DATABASE
+                or type(self.backup_sha256) is not str
+                or _HASH.fullmatch(self.backup_sha256) is None
+                or type(self.backup_byte_length) is not int
+                or self.backup_byte_length <= 0
+                or type(self.client_version) is not str
+                or _SERVER_VERSION.fullmatch(self.client_version) is None
+                or type(self.source_inventory_hash) is not str
+                or _HASH.fullmatch(self.source_inventory_hash) is None
+            ):
+                raise ValueError
+        except BaseException as error:
+            _raise_normalized(error, _BACKUP_ERROR)
 
 
 @dataclass(frozen=True)
@@ -378,6 +409,12 @@ def dump_command(
     pair: MySQLClientPair, option_file: Path, database: str
 ) -> list[str]:
     database = validate_database_role("legacy", database)
+    return _dump_command(pair, option_file, database)
+
+
+def _dump_command(
+    pair: MySQLClientPair, option_file: Path, database: str
+) -> list[str]:
     try:
         pair = _validated_pair(pair)
         option = _validated_option_file(option_file)
@@ -1098,10 +1135,12 @@ def _source_hash(
     source_inventory: DatabaseInventory | str | None,
     supplied_hash: str | None,
     source_database: str,
+    *,
+    source_role: str = "legacy",
 ) -> str:
-    validate_database_role("legacy", source_database)
+    validate_database_role(source_role, source_database)
     if type(source_inventory) is DatabaseInventory:
-        validate_database_role("legacy", source_inventory.database)
+        validate_database_role(source_role, source_inventory.database)
         calculated = inventory_hash(source_inventory)
         if supplied_hash is not None and supplied_hash != calculated:
             raise ValueError
@@ -1144,7 +1183,7 @@ def _hash_stream(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), length
 
 
-def create_logical_backup(
+def _create_logical_backup_artifact(
     pair: MySQLClientPair,
     option_file: Path,
     source_inventory: DatabaseInventory | str | None = None,
@@ -1158,14 +1197,20 @@ def create_logical_backup(
     source_database: str = LEGACY_DATABASE,
     repository_root: Path = REPOSITORY_ROOT,
     owned_delete: Callable[[Path, _OwnedFileLease], bool] = _delete_owned_windows,
-) -> BackupReceipt:
-    """Create and absent-only publish a private logical backup."""
+    source_role: str = "legacy",
+) -> tuple[MySQLClientPair, str, str, int, str]:
+    """Create one absent-only publication through the hardened owner-handle path."""
 
     try:
         pair = _validated_pair(pair)
         option = _validated_option_file(option_file)
         filename = _validate_receipt_inputs(backup_filename, previous_receipt_hash)
-        source_hash = _source_hash(source_inventory, source_inventory_hash, source_database)
+        source_hash = _source_hash(
+            source_inventory,
+            source_inventory_hash,
+            source_database,
+            source_role=source_role,
+        )
         if backup_dir is None:
             raise ValueError
     except BaseException as error:
@@ -1196,7 +1241,7 @@ def create_logical_backup(
         handle = os.fdopen(descriptor, "w+b", closefd=True)
         descriptor = None
         result = runner(
-            dump_command(pair, option, source_database),
+            _dump_command(pair, option, source_database),
             stdout=handle,
             stderr=subprocess.PIPE,
             check=False,
@@ -1249,6 +1294,44 @@ def create_logical_backup(
         )
 
     try:
+        return pair, filename, digest, length, source_hash
+    except BaseException as error:
+        _raise_normalized(error, _BACKUP_ERROR)
+
+
+def create_logical_backup(
+    pair: MySQLClientPair,
+    option_file: Path,
+    source_inventory: DatabaseInventory | str | None = None,
+    backup_dir: Path | None = None,
+    backup_filename: str | None = None,
+    previous_receipt_hash: str | None = None,
+    runner: Callable[..., object] = subprocess.run,
+    acl_runner: Callable[[Path], None] = _restrict_phase7b_private_resource,
+    *,
+    source_inventory_hash: str | None = None,
+    source_database: str = LEGACY_DATABASE,
+    repository_root: Path = REPOSITORY_ROOT,
+    owned_delete: Callable[[Path, _OwnedFileLease], bool] = _delete_owned_windows,
+) -> BackupReceipt:
+    """Create and absent-only publish a private legacy logical backup."""
+
+    pair, filename, digest, length, source_hash = _create_logical_backup_artifact(
+        pair,
+        option_file,
+        source_inventory,
+        backup_dir,
+        backup_filename,
+        previous_receipt_hash,
+        runner,
+        acl_runner,
+        source_inventory_hash=source_inventory_hash,
+        source_database=source_database,
+        repository_root=repository_root,
+        owned_delete=owned_delete,
+        source_role="legacy",
+    )
+    try:
         return BackupReceipt(
             state=ReadinessState.BACKUP_CREATED.value,
             previous_receipt_hash=previous_receipt_hash,  # type: ignore[arg-type]
@@ -1261,6 +1344,44 @@ def create_logical_backup(
         )
     except BaseException as error:
         _raise_normalized(error, _BACKUP_ERROR)
+
+
+def create_product_logical_backup(
+    pair: MySQLClientPair,
+    option_file: Path,
+    source_inventory: DatabaseInventory,
+    backup_dir: Path,
+    backup_filename: str,
+    runner: Callable[..., object] = subprocess.run,
+    acl_runner: Callable[[Path], None] = _restrict_phase7b_private_resource,
+    *,
+    repository_root: Path = REPOSITORY_ROOT,
+    owned_delete: Callable[[Path, _OwnedFileLease], bool] = _delete_owned_windows,
+) -> ProductLogicalBackupReceipt:
+    """Create a hardened backup of the exact v1.13 product database."""
+
+    pair, filename, digest, length, source_hash = _create_logical_backup_artifact(
+        pair,
+        option_file,
+        source_inventory,
+        backup_dir,
+        backup_filename,
+        "0" * 64,
+        runner,
+        acl_runner,
+        source_database=NEW_DATABASE,
+        repository_root=repository_root,
+        owned_delete=owned_delete,
+        source_role="new",
+    )
+    return ProductLogicalBackupReceipt(
+        source_database=NEW_DATABASE,
+        backup_filename=filename,
+        backup_sha256=digest,
+        backup_byte_length=length,
+        client_version=pair.version,
+        source_inventory_hash=source_hash,
+    )
 
 
 def _validate_expected_backup(expected_sha256: object, expected_length: object) -> None:

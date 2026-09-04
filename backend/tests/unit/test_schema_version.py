@@ -5,6 +5,10 @@ import traceback
 import pytest
 
 from backend.schema_manifest import manifest_hash
+from backend.scripts.upgrade_product_database_v114 import (
+    V113_SCHEMA_VERSION,
+    v113_manifest_hash,
+)
 from backend.schema_version import (
     EXPECTED_SCHEMA_VERSION,
     SchemaMismatch,
@@ -20,6 +24,8 @@ V1_4_MANIFEST_HASH = "d4ca983a7748cdf1e05867a2ab4ccb958e76bf82a59aab8e56398693af
 
 def test_expected_schema_version_is_writer_core_v1_14():
     assert EXPECTED_SCHEMA_VERSION == "writer-core-v1.14.0"
+    assert V113_SCHEMA_VERSION == "writer-core-v1.13.0"
+    assert v113_manifest_hash() != manifest_hash()
 
 
 class FakeVersionSession:

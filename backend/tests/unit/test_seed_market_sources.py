@@ -47,6 +47,7 @@ class FakeMarketSeedRepository:
                 **source,
                 "policy": self.policies.get(source_id),
                 "head": self.heads.get(source_id),
+                "refresh_state": self.states.get(source_id),
             }
             for source_id, source in self.sources.items()
         )
@@ -210,6 +211,67 @@ async def test_seed_rolls_back_all_changes_on_compare_and_swap_conflict():
         await service.seed(package)
 
     assert repository.__dict__ == before
+
+
+@pytest.mark.asyncio
+async def test_seed_repairs_a_missing_refresh_state_in_the_same_transaction():
+    from backend.domain.market_sources import load_market_source_package
+    from backend.services.market_sources import MarketSourceSeedService
+
+    package = load_market_source_package(MANIFEST)
+    repository = FakeMarketSeedRepository()
+    ids = iter(f"30000000-0000-0000-0000-{index:012d}" for index in range(1, 40))
+    service = MarketSourceSeedService(
+        repository,
+        transaction_factory=_transaction(repository),
+        id_factory=lambda: next(ids),
+        clock=lambda: 1_721_000_000_000,
+    )
+    await service.seed(package)
+    missing_id = repository.id_for("qidian.newsign")
+    del repository.states[missing_id]
+
+    report = await service.seed(package)
+
+    assert report.replayed == 10
+    assert set(repository.states) == set(repository.sources)
+    assert repository.states[missing_id] == {
+        "source_id": missing_id,
+        "updated_at": 1_721_000_000_000,
+    }
+
+
+@pytest.mark.asyncio
+async def test_authoritative_inventory_validation_rejects_corrupt_contract_and_missing_state():
+    from backend.domain.market_sources import load_market_source_package
+    from backend.services.market_sources import (
+        MarketSourceSeedConflict,
+        MarketSourceSeedService,
+        assert_market_source_package_inventory,
+    )
+
+    package = load_market_source_package(MANIFEST)
+    repository = FakeMarketSeedRepository()
+    ids = iter(f"40000000-0000-0000-0000-{index:012d}" for index in range(1, 40))
+    service = MarketSourceSeedService(
+        repository,
+        transaction_factory=_transaction(repository),
+        id_factory=lambda: next(ids),
+        clock=lambda: 1_721_000_000_000,
+    )
+    await service.seed(package)
+    clean = list(await repository.list_seed_inventory(object()))
+    assert_market_source_package_inventory(package, tuple(clean))
+
+    corrupt = deepcopy(clean)
+    corrupt[0]["policy"]["evidence_hash"] = "0" * 64
+    with pytest.raises(MarketSourceSeedConflict):
+        assert_market_source_package_inventory(package, tuple(corrupt))
+
+    missing = deepcopy(clean)
+    missing[0]["refresh_state"] = None
+    with pytest.raises(MarketSourceSeedConflict):
+        assert_market_source_package_inventory(package, tuple(missing))
 
 
 @pytest.mark.asyncio

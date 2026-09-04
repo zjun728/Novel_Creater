@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 import hashlib
 import json
 import os
@@ -1336,6 +1336,44 @@ def test_create_backup_preflights_before_file_creation_and_publishes_receipt(tmp
     )
     assert [path.name for path in backup_dir.iterdir()] == ["phase7b.sql"]
     assert str(backup_dir) not in repr(receipt)
+
+
+def test_product_upgrade_backup_reuses_hardened_publication_boundary(tmp_path: Path):
+    pair, _ = make_clients(tmp_path)
+    option = make_option(tmp_path)
+    backup_dir = tmp_path / "product-upgrade-backups"
+    backup_dir.mkdir()
+    repository = tmp_path / "declared-repository"
+    repository.mkdir()
+    inventory = replace(make_inventory(), database="novel_creator_v113")
+    events: list[str] = []
+
+    def runner(argv: list[str], **kwargs: object) -> object:
+        if Path(argv[0]) == pair.mysql:
+            events.append("preflight")
+            return SimpleNamespace(returncode=0, stdout="8.4.6\n", stderr="")
+        events.append("dump")
+        assert argv[-1] == "novel_creator_v113"
+        kwargs["stdout"].write(b"CREATE TABLE product_copy(id INT);\n")
+        return SimpleNamespace(returncode=0, stderr=b"")
+
+    receipt = backup.create_product_logical_backup(
+        pair=pair,
+        option_file=option,
+        source_inventory=inventory,
+        backup_dir=backup_dir,
+        backup_filename="phase7b-backup-0123456789abcdef0123456789abcdef.sql",
+        runner=runner,
+        acl_runner=lambda _path: None,
+        repository_root=repository,
+    )
+
+    payload = (backup_dir / receipt.backup_filename).read_bytes()
+    assert events == ["preflight", "dump"]
+    assert receipt.source_database == "novel_creator_v113"
+    assert receipt.backup_sha256 == hashlib.sha256(payload).hexdigest()
+    assert receipt.backup_byte_length == len(payload)
+    assert receipt.source_inventory_hash == inventory_hash(inventory)
 
 
 def test_backup_never_overwrites_existing_and_removes_unpublished_temp(tmp_path: Path):

@@ -40,18 +40,25 @@ def _normalize_newlines(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
+def read_fragment_statements(fragment_name: str) -> tuple[str, ...]:
+    """Return one named fragment without accepting caller-controlled paths."""
+    if fragment_name not in FRAGMENTS:
+        raise ValueError("fragment is outside the schema manifest")
+    normalized = _normalize_newlines(
+        (SCHEMA_DIR / fragment_name).read_text(encoding="utf-8")
+    )
+    return tuple(
+        part.strip() for part in _STATEMENT_SPLIT.split(normalized) if part.strip()
+    )
+
+
 def read_statements() -> list[str]:
     """Return normalized bootstrap statements in their immutable manifest order."""
-    statements: list[str] = []
-    for fragment_name in FRAGMENTS:
-        fragment = (SCHEMA_DIR / fragment_name).read_text(encoding="utf-8")
-        normalized = _normalize_newlines(fragment)
-        statements.extend(
-            part.strip()
-            for part in _STATEMENT_SPLIT.split(normalized)
-            if part.strip()
-        )
-    return statements
+    return [
+        statement
+        for fragment_name in FRAGMENTS
+        for statement in read_fragment_statements(fragment_name)
+    ]
 
 
 def manifest_hash() -> str:

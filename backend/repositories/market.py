@@ -42,12 +42,14 @@ class MarketRepository:
                       p.created_at AS policy_created_at,
                       h.revision_id AS head_revision_id,
                       h.revision AS head_revision,
-                      h.content_hash AS head_content_hash
+                      h.content_hash AS head_content_hash,
+                      rs.source_id AS refresh_source_id
                FROM market_sources s
                LEFT JOIN market_source_policy_heads h ON h.source_id=s.id
                LEFT JOIN market_source_policy_revisions p
                  ON p.source_id=h.source_id AND p.id=h.revision_id
                 AND p.revision=h.revision AND p.content_hash=h.content_hash
+               LEFT JOIN market_source_refresh_states rs ON rs.source_id=s.id
                ORDER BY s.stable_key"""
         )
         inventory = []
@@ -96,6 +98,11 @@ class MarketRepository:
                     "updated_at": row["updated_at"],
                     "policy": policy,
                     "head": head,
+                    "refresh_state": (
+                        None
+                        if row["refresh_source_id"] is None
+                        else {"source_id": row["refresh_source_id"]}
+                    ),
                 }
             )
         return tuple(inventory)

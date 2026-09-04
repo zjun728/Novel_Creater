@@ -4,12 +4,15 @@ import re
 from hashlib import sha256
 from pathlib import Path
 
+import pytest
+
 from backend import schema_manifest
 from backend.domain.assets import ASSET_CATEGORIES
 from backend.schema_manifest import (
     FRAGMENTS,
     created_table_names,
     manifest_hash,
+    read_fragment_statements,
     read_statements,
 )
 
@@ -163,6 +166,16 @@ def test_manifest_has_exact_ordered_fragments_and_tables():
     assert set(created_table_names()).isdisjoint(
         {"task_model_bindings", "task_model_binding_items", "contract_asset_refs"}
     )
+
+
+def test_fragment_reader_is_bounded_and_topic_fragment_has_exact_eight_tables():
+    statements = read_fragment_statements("19_topics.sql")
+
+    assert type(statements) is tuple
+    assert len(statements) == 8
+    assert all(_compact(statement).startswith("create table ") for statement in statements)
+    with pytest.raises(ValueError, match="outside the schema manifest"):
+        read_fragment_statements("../19_topics.sql")
 
 
 def test_manifest_uses_portable_normalized_hash(monkeypatch):

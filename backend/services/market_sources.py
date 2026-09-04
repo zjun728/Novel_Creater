@@ -94,6 +94,45 @@ def _same_policy(existing: dict, expected_policy: dict) -> bool:
     return all(policy_fields)
 
 
+def assert_market_source_package_inventory(
+    package: MarketSourcePackage,
+    inventory: object,
+) -> None:
+    """Require the full authoritative source, policy, head, and refresh contract."""
+
+    try:
+        if type(inventory) is not tuple or len(inventory) != len(package.sources):
+            raise ValueError
+        by_key = {row["stable_key"]: row for row in inventory}
+        if len(by_key) != len(inventory) or set(by_key) != {
+            source.stable_key for source in package.sources
+        }:
+            raise ValueError
+        for source in package.sources:
+            existing = by_key[source.stable_key]
+            policy = existing.get("policy")
+            if (
+                existing.get("status") != "active"
+                or not _same_source_definition(existing, source)
+                or not isinstance(policy, dict)
+                or not _same_policy(
+                    existing,
+                    _policy_row(
+                        existing["id"],
+                        policy["id"],
+                        int(policy["revision"]),
+                        source,
+                        1,
+                    ),
+                )
+                or not isinstance(existing.get("refresh_state"), dict)
+                or existing["refresh_state"].get("source_id") != existing["id"]
+            ):
+                raise ValueError
+    except BaseException:
+        raise MarketSourceSeedConflict() from None
+
+
 class MarketSourceSeedService:
     def __init__(
         self,
@@ -122,6 +161,7 @@ class MarketSourceSeedService:
 
             inserts = []
             updates = []
+            refresh_repairs = []
             for source in package.sources:
                 existing = by_key.get(source.stable_key)
                 if existing is None:
@@ -145,6 +185,13 @@ class MarketSourceSeedService:
                 )
                 source_matches = _same_source_definition(existing, source)
                 policy_matches = _same_policy(existing, expected_policy)
+                if existing.get("refresh_state") is None:
+                    refresh_repairs.append(existing["id"])
+                elif (
+                    not isinstance(existing.get("refresh_state"), dict)
+                    or existing["refresh_state"].get("source_id") != existing["id"]
+                ):
+                    raise MarketSourceSeedConflict()
                 if source_matches and policy_matches:
                     replayed += 1
                 else:
@@ -189,6 +236,12 @@ class MarketSourceSeedService:
                     {"source_id": source_id, "updated_at": now_ms},
                 )
                 inserted += 1
+
+            for source_id in refresh_repairs:
+                await self.repository.insert_refresh_state(
+                    session,
+                    {"source_id": source_id, "updated_at": now_ms},
+                )
 
             for existing, source, source_changed in updates:
                 source_id = existing["id"]
