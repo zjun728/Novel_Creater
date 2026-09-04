@@ -20,6 +20,7 @@ const suiteNames = [
   'm1-regression',
   'browser-product-shell',
   'browser-p0-c',
+  'browser-p0-d',
   'browser-phase2a',
   'browser-phase2b',
   'browser-phase2c',
@@ -48,6 +49,7 @@ const mysqlSuites = new Set([
   'browser',
   'browser-product-shell',
   'browser-p0-c',
+  'browser-p0-d',
   'browser-phase2a',
   'browser-phase2b',
   'browser-phase2c',
@@ -104,6 +106,9 @@ const productShellBrowserFiles = [
 ]
 const p0CBrowserFiles = [
   'frontend/e2e/p0-c-topic-center.spec.ts',
+]
+const p0DBrowserFiles = [
+  'frontend/e2e/p0-d-creative-foundation.spec.ts',
 ]
 const phase2aBrowserFiles = [
   'frontend/e2e/phase2a-assets-settings.spec.ts',
@@ -174,6 +179,7 @@ function createSuites(rootDirectory, environment) {
   const m1NodeTests = absolute(m1RegressionNodeFiles)
   const productShellBrowserTests = absolute(productShellBrowserFiles)
   const p0CBrowserTests = absolute(p0CBrowserFiles)
+  const p0DBrowserTests = absolute(p0DBrowserFiles)
   const phase2aBrowserTests = absolute(phase2aBrowserFiles)
   const phase2bBrowserTests = absolute(phase2bBrowserFiles)
   const phase2cBrowserTests = absolute(phase2cBrowserFiles)
@@ -233,6 +239,7 @@ function createSuites(rootDirectory, environment) {
   ]
   const browserProductShell = [[node, ['frontend/e2e/run-product-shell.mjs']]]
   const browserP0C = [[node, ['frontend/e2e/run-p0-c.mjs']]]
+  const browserP0D = [[node, ['frontend/e2e/run-p0-d.mjs']]]
   const browserPhase2A = [[node, ['frontend/e2e/run-phase2a.mjs']]]
   const browserPhase2B = [[node, ['frontend/e2e/run-phase2b.mjs']]]
   const browserPhase2C = [[node, ['frontend/e2e/run-phase2c.mjs']]]
@@ -259,6 +266,7 @@ function createSuites(rootDirectory, environment) {
       'm1-regression': retainedM1,
       'browser-product-shell': browserProductShell,
       'browser-p0-c': browserP0C,
+      'browser-p0-d': browserP0D,
       'browser-phase2a': browserPhase2A,
       'browser-phase2b': browserPhase2B,
       'browser-phase2c': browserPhase2C,
@@ -291,6 +299,9 @@ function createSuites(rootDirectory, environment) {
       ],
       'browser-p0-c': [
         ['P0-C topic center Playwright spec', p0CBrowserTests],
+      ],
+      'browser-p0-d': [
+        ['P0-D creative foundation Playwright spec', p0DBrowserTests],
       ],
       'browser-phase2a': [
         ['Phase 2A Playwright spec', phase2aBrowserTests],
