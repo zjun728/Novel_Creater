@@ -23,11 +23,23 @@ from backend.domain.json_contracts import canonical_hash
 from backend.http_errors import PublicDomainError
 
 
-PACKAGE_VERSION = "market-sources-v1.0.0"
+PACKAGE_VERSION = "market-sources-v1.1.0"
 MAX_SOURCE_MANIFEST_BYTES = 64 * 1024
 MAX_SOURCE_FILE_BYTES = 256 * 1024
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _PUBLIC_CONFIG_KEYS = {"platform", "rankingName", "category"}
+NETWORK_ADAPTER_KEYS = frozenset(
+    {
+        "fanqie_public_rank",
+        "qimao_public_rank",
+        "qq_reading_public_rank",
+        "17k_public_rank",
+        "zongheng_public_rank",
+        "hongxiu_public_rank",
+        "jjwxc_public_rank",
+        "heiyan_public_rank",
+    }
+)
 
 
 _FAILURE_MESSAGES = {
@@ -220,6 +232,13 @@ class MarketSourceDefinition(_FrozenModel):
         "fanqie_manual_snapshot",
         "qimao_manual_snapshot",
         "shuqi_manual_snapshot",
+        "fanqie_public_rank",
+        "qimao_public_rank",
+        "17k_public_rank",
+        "zongheng_public_rank",
+        "hongxiu_public_rank",
+        "jjwxc_public_rank",
+        "heiyan_public_rank",
     ] = Field(alias="adapterKey")
     display_name: str = Field(alias="displayName", min_length=1, max_length=200)
     public_config: Mapping[str, str] = Field(alias="publicConfig")
@@ -257,8 +276,7 @@ class MarketSourceDefinition(_FrozenModel):
     @property
     def can_refresh(self) -> bool:
         return (
-            self.adapter_key
-            in {"qidian_public_rank", "qq_reading_public_rank"}
+            self.adapter_key in NETWORK_ADAPTER_KEYS
             and self.policy.status == "verified_public"
         )
 
@@ -290,7 +308,10 @@ class SourceFile(_FrozenModel):
 
 
 class MarketSourceManifest(_FrozenModel):
-    package_version: Literal["market-sources-v1.0.0"]
+    package_version: Literal[
+        "market-sources-v1.0.0",
+        "market-sources-v1.1.0",
+    ]
     sources_file: SourceFile
 
 

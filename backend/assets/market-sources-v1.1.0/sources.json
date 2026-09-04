@@ -1,0 +1,122 @@
+[
+  {
+    "stableKey": "qidian.newsign",
+    "adapterKey": "qidian_public_rank",
+    "displayName": "起点新签榜",
+    "publicConfig": {"platform": "qidian", "rankingName": "newsign", "category": "male"},
+    "policy": {
+      "status": "manual_only", "checkedAt": 1721000000000,
+      "evidenceURL": "https://www.qidian.com/rank/newsign/",
+      "evidenceHash": "2810f7761abcd5abd53e0f05adb155ab7c4d496353e0c51a183329af8e053a49",
+      "allowedOrigins": ["https://www.qidian.com"], "pathPrefixes": ["/rank/newsign/"],
+      "requestIntervalSeconds": 3600, "policyVersion": "public-rank-policy-v1", "enabled": false
+    },
+    "policyHash": "cf38303effb82097846d3b7af441886ec832561e3127bbea7463dbc7682a5a39"
+  },
+  {
+    "stableKey": "qq-reading.male-popular",
+    "adapterKey": "qq_reading_public_rank",
+    "displayName": "QQ 阅读男生人气榜",
+    "publicConfig": {"platform": "qq_reading", "rankingName": "male_popular", "category": "male"},
+    "policy": {
+      "status": "verified_public", "checkedAt": 1721000000000,
+      "evidenceURL": "https://book.qq.com/book-rank",
+      "evidenceHash": "96b69cb0c8fe329a55d466a0ecd552db0ddaf204547c947be7b3a4f4ca9b329a",
+      "allowedOrigins": ["https://book.qq.com"], "pathPrefixes": ["/book-rank", "/book-detail/"],
+      "requestIntervalSeconds": 3600, "policyVersion": "qq-reading-public-rank-v1", "enabled": false
+    },
+    "policyHash": "ccf0ce2187ee578064e055cdc28362a9d642904fdb1546b7dcb83f90f0a2c26a"
+  },
+  {
+    "stableKey": "fanqie.reading",
+    "adapterKey": "fanqie_public_rank",
+    "displayName": "番茄小说阅读榜",
+    "publicConfig": {"platform": "fanqie", "rankingName": "reading", "category": "all"},
+    "policy": {
+      "status": "manual_only", "checkedAt": 1721000000000,
+      "evidenceURL": "https://fanqienovel.com/rank/1",
+      "evidenceHash": "37452f8aa38ba4bc04ae983ea2c83cfb7cc2f3f157240aa757878b5e25285d27",
+      "allowedOrigins": ["https://fanqienovel.com"], "pathPrefixes": ["/rank/1"],
+      "requestIntervalSeconds": 3600, "policyVersion": "manual-public-metadata-policy-v1", "enabled": false
+    },
+    "policyHash": "22563c1a03e853ccc303e51741422e38189f3d8b43f464eb43b8cdfd10cc5842"
+  },
+  {
+    "stableKey": "qimao.public-catalog",
+    "adapterKey": "qimao_public_rank",
+    "displayName": "七猫男生更新榜",
+    "publicConfig": {"platform": "qimao", "rankingName": "boy_update", "category": "male"},
+    "policy": {
+      "status": "verified_public", "checkedAt": 1721000000000,
+      "evidenceURL": "https://www.qimao.com/paihang/boy/update/date/",
+      "evidenceHash": "3fbe50d1ee8cb337e921f9de9e4866a08ff534c7bfa79209619fd8bfc27ce69c",
+      "allowedOrigins": ["https://www.qimao.com"], "pathPrefixes": ["/paihang/", "/shuku/"],
+      "requestIntervalSeconds": 3600, "policyVersion": "qimao-public-rank-v1", "enabled": false
+    },
+    "policyHash": "64a193507bf15d8a3fd1c6ccb93fff3643e1fb8900d72cefc352d2055fcec217"
+  },
+  {
+    "stableKey": "shuqi.public-catalog",
+    "adapterKey": "shuqi_manual_snapshot",
+    "displayName": "书旗公开书库",
+    "publicConfig": {"platform": "shuqi", "rankingName": "public_catalog", "category": "all"},
+    "policy": {
+      "status": "manual_only", "checkedAt": 1721000000000,
+      "evidenceURL": "https://www.shuqi.com/",
+      "evidenceHash": "597f8237c2089f824b9f6b2053fe666585576bc2d3c91ef42915d15fa8551858",
+      "allowedOrigins": ["https://www.shuqi.com"], "pathPrefixes": ["/"],
+      "requestIntervalSeconds": 3600, "policyVersion": "manual-public-metadata-policy-v1", "enabled": false
+    },
+    "policyHash": "dd5a440911cd741d19d37dcb56fc721ab9636ebde2ef0b174082fbc64709d703"
+  },
+  {
+    "stableKey": "17k.top", "adapterKey": "17k_public_rank", "displayName": "17K TOP榜",
+    "publicConfig": {"platform": "17k", "rankingName": "top1", "category": "all"},
+    "policy": {
+      "status": "manual_only", "checkedAt": 1721000000000,
+      "evidenceURL": "https://www.17k.com/top/", "evidenceHash": "12be5746badbf487d2c787e60abc3b3db49fe4681561cb674e7bfa05e2718999",
+      "allowedOrigins": ["https://www.17k.com"], "pathPrefixes": ["/top/", "/book/"],
+      "requestIntervalSeconds": 3600, "policyVersion": "17k-public-rank-v1", "enabled": false
+    }, "policyHash": "9b78499252abe9abe5c1cce501508528ece0deb0f997e790a5f3d382c5faa788"
+  },
+  {
+    "stableKey": "zongheng.monthly", "adapterKey": "zongheng_public_rank", "displayName": "纵横月票榜",
+    "publicConfig": {"platform": "zongheng", "rankingName": "default", "category": "all"},
+    "policy": {
+      "status": "verified_public", "checkedAt": 1721000000000,
+      "evidenceURL": "https://www.zongheng.com/rank?nav=default", "evidenceHash": "798efebf5c885adfb3d4f4c9a5d5c73ebf024da2f3195d29313aabf4402a06fe",
+      "allowedOrigins": ["https://www.zongheng.com"], "pathPrefixes": ["/rank", "/detail/"],
+      "requestIntervalSeconds": 3600, "policyVersion": "zongheng-public-rank-v1", "enabled": false
+    }, "policyHash": "9acdf903bb65a789a77eeefac4c7a99b0eec3b16fe5378b1a9a20d4161941b0a"
+  },
+  {
+    "stableKey": "hongxiu.hotsales", "adapterKey": "hongxiu_public_rank", "displayName": "红袖热销榜",
+    "publicConfig": {"platform": "hongxiu", "rankingName": "rank", "category": "all"},
+    "policy": {
+      "status": "manual_only", "checkedAt": 1721000000000,
+      "evidenceURL": "https://www.hongxiu.com/rank", "evidenceHash": "78834c41921fe104edc11a60726ed4bf19236a8bbc2bbf1eb5caf0000375247a",
+      "allowedOrigins": ["https://www.hongxiu.com"], "pathPrefixes": ["/rank", "/book/"],
+      "requestIntervalSeconds": 3600, "policyVersion": "hongxiu-public-rank-v1", "enabled": false
+    }, "policyHash": "8f6b0c0fa3f99308967dc77363ccbdabeed2f5fe572b6b5c10be3781c7ac7b01"
+  },
+  {
+    "stableKey": "jjwxc.quarterly-score", "adapterKey": "jjwxc_public_rank", "displayName": "晋江季度作品积分榜",
+    "publicConfig": {"platform": "jjwxc", "rankingName": "quarterly_score", "category": "female"},
+    "policy": {
+      "status": "verified_public", "checkedAt": 1721000000000,
+      "evidenceURL": "https://www.jjwxc.net/topten.php?orderstr=4", "evidenceHash": "5f71d82b257dac07d9b30274454bbc64c302a377eb681ec3c3cb1744e35c0cb4",
+      "allowedOrigins": ["https://www.jjwxc.net"], "pathPrefixes": ["/topten.php", "/onebook.php"],
+      "requestIntervalSeconds": 3600, "policyVersion": "jjwxc-public-rank-v1", "enabled": false
+    }, "policyHash": "9e65004fd1abb1424a91b12c865ab9805e03ad124967384630197f0cd5f4b8dd"
+  },
+  {
+    "stableKey": "heiyan.diamond", "adapterKey": "heiyan_public_rank", "displayName": "黑岩钻石榜",
+    "publicConfig": {"platform": "heiyan", "rankingName": "top", "category": "all"},
+    "policy": {
+      "status": "verified_public", "checkedAt": 1721000000000,
+      "evidenceURL": "https://www.heiyan.com/top/", "evidenceHash": "0866b65efbe46d9f75e31219914c5a84fe3e7290baa7cdcb0d342f2ee8431870",
+      "allowedOrigins": ["https://www.heiyan.com"], "pathPrefixes": ["/top/", "/book/"],
+      "requestIntervalSeconds": 3600, "policyVersion": "heiyan-public-rank-v1", "enabled": false
+    }, "policyHash": "8df426d6f1e05bc39961b3604e057f4f16958eb71f6acfe3b00598064ef47259"
+  }
+]

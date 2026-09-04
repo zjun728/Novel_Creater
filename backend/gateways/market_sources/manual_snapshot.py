@@ -29,16 +29,54 @@ _WORK_URL_RULES = {
         "fanqienovel.com",
         re.compile(r"/page/[1-9][0-9]*"),
     ),
+    "fanqie_public_rank": (
+        "https",
+        "fanqienovel.com",
+        re.compile(r"/page/[1-9][0-9]*"),
+    ),
     "qimao_manual_snapshot": (
         "https",
         "www.qimao.com",
         re.compile(r"/shuku/[1-9][0-9]*(?:-[1-9][0-9]*)?/"),
+    ),
+    "qimao_public_rank": (
+        "https",
+        "www.qimao.com",
+        re.compile(r"/shuku/[1-9][0-9]*/"),
     ),
     "shuqi_manual_snapshot": (
         "https",
         "www.shuqi.com",
         re.compile(r"/book/[1-9][0-9]*\.html"),
     ),
+    "17k_public_rank": (
+        "https",
+        "www.17k.com",
+        re.compile(r"/book/[1-9][0-9]*\.html"),
+    ),
+    "hongxiu_public_rank": (
+        "https",
+        "www.hongxiu.com",
+        re.compile(r"/book/[1-9][0-9]*\.html"),
+    ),
+    "zongheng_public_rank": (
+        "https",
+        "www.zongheng.com",
+        re.compile(r"/detail/[1-9][0-9]*"),
+    ),
+    "jjwxc_public_rank": (
+        "https",
+        "www.jjwxc.net",
+        re.compile(r"/onebook\.php"),
+    ),
+    "heiyan_public_rank": (
+        "https",
+        "www.heiyan.com",
+        re.compile(r"/book/[1-9][0-9]*"),
+    ),
+}
+_QUERY_RULES = {
+    "jjwxc_public_rank": re.compile(r"novelid=[1-9][0-9]*"),
 }
 
 
@@ -52,12 +90,18 @@ def _work_url_is_canonical(url: str, adapter_key: str) -> bool:
         parsed = urlsplit(url)
     except ValueError:
         return False
+    query_pattern = _QUERY_RULES.get(adapter_key)
+    query_valid = bool(
+        query_pattern.fullmatch(parsed.query)
+        if query_pattern is not None
+        else not parsed.query
+    )
     return bool(
         parsed.scheme == scheme
         and parsed.netloc == netloc
         and parsed.username is None
         and parsed.password is None
-        and not parsed.query
+        and query_valid
         and not parsed.fragment
         and path_pattern.fullmatch(parsed.path)
     )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 
@@ -31,6 +32,200 @@ def _snapshot():
             ),
         ),
     )
+
+
+@pytest.mark.parametrize(
+    "stable_key",
+    (
+        "qidian.newsign",
+        "qq-reading.male-popular",
+        "fanqie.reading",
+        "qimao.public-catalog",
+        "shuqi.public-catalog",
+        "17k.top",
+        "zongheng.monthly",
+        "hongxiu.hotsales",
+        "jjwxc.quarterly-score",
+        "heiyan.diamond",
+    ),
+)
+def test_v11_source_identity_uses_each_packages_fixed_public_url(stable_key):
+    from backend.domain.market_sources import load_market_source_package
+    from backend.services.market_snapshots import MarketSnapshotService
+
+    manifest = (
+        Path(__file__).resolve().parents[2]
+        / "assets"
+        / "market-sources-v1.1.0"
+        / "manifest.json"
+    )
+    package = load_market_source_package(manifest)
+    source = next(item for item in package.sources if item.stable_key == stable_key)
+    snapshot = _snapshot().model_copy(
+        update={
+            "platform": source.public_config["platform"],
+            "ranking_name": source.public_config["rankingName"],
+            "category": source.public_config["category"],
+            "source_url": source.policy.evidence_url,
+        }
+    )
+
+    MarketSnapshotService._validate_identity(
+        snapshot,
+        {
+            "adapter_key": source.adapter_key,
+            "public_config": dict(source.public_config),
+        },
+    )
+
+
+def test_unknown_adapter_key_has_no_fixed_source_identity():
+    from backend.domain.market_sources import MarketSourceFailure
+    from backend.services.market_snapshots import MarketSnapshotService
+
+    with pytest.raises(MarketSourceFailure) as captured:
+        MarketSnapshotService._validate_identity(
+            _snapshot(),
+            {
+                "adapter_key": "unknown_public_rank",
+                "public_config": {
+                    "platform": "qidian",
+                    "rankingName": "newsign",
+                    "category": "male",
+                },
+            },
+        )
+
+    assert captured.value.code == "MARKET_SNAPSHOT_IDENTITY_MISMATCH"
+
+
+@pytest.mark.parametrize(
+    ("stable_key", "work_url"),
+    (
+        ("qidian.newsign", "https://www.qidian.com/book/123/"),
+        ("qq-reading.male-popular", "https://book.qq.com/book-detail/123"),
+        ("fanqie.reading", "https://fanqienovel.com/page/123"),
+        ("qimao.public-catalog", "https://www.qimao.com/shuku/123/"),
+        ("shuqi.public-catalog", "https://www.shuqi.com/book/123.html"),
+        ("17k.top", "https://www.17k.com/book/123.html"),
+        ("zongheng.monthly", "https://www.zongheng.com/detail/123"),
+        ("hongxiu.hotsales", "https://www.hongxiu.com/book/123.html"),
+        (
+            "jjwxc.quarterly-score",
+            "https://www.jjwxc.net/onebook.php?novelid=123",
+        ),
+        ("heiyan.diamond", "https://www.heiyan.com/book/123"),
+    ),
+)
+def test_v11_source_accepts_manual_import_identity(
+    stable_key,
+    work_url,
+):
+    from backend.domain.market_sources import load_market_source_package
+    from backend.gateways.market_sources.manual_snapshot import ManualSnapshotAdapter
+    from backend.services.market_snapshots import MarketSnapshotService
+
+    manifest = (
+        Path(__file__).resolve().parents[2]
+        / "assets"
+        / "market-sources-v1.1.0"
+        / "manifest.json"
+    )
+    package = load_market_source_package(manifest)
+    source = next(item for item in package.sources if item.stable_key == stable_key)
+    snapshot = ManualSnapshotAdapter().parse(
+        {
+            "platform": source.public_config["platform"],
+            "rankingName": source.public_config["rankingName"],
+            "category": source.public_config["category"],
+            "capturedAt": NOW,
+            "sourceURL": source.policy.evidence_url,
+            "entries": [
+                {
+                    "rank": 1,
+                    "title": "测试作品",
+                    "author": "测试作者",
+                    "category": "测试分类",
+                    "workURL": work_url,
+                    "publicMetrics": {},
+                }
+            ],
+        },
+        adapter_key=source.adapter_key,
+    )
+
+    MarketSnapshotService._validate_identity(
+        snapshot,
+        {
+            "adapter_key": source.adapter_key,
+            "public_config": dict(source.public_config),
+        },
+    )
+
+
+_NEW_PUBLIC_WORK_URLS = {
+    "fanqie_public_rank": "https://fanqienovel.com/page/123",
+    "qimao_public_rank": "https://www.qimao.com/shuku/123/",
+    "17k_public_rank": "https://www.17k.com/book/123.html",
+    "zongheng_public_rank": "https://www.zongheng.com/detail/123",
+    "hongxiu_public_rank": "https://www.hongxiu.com/book/123.html",
+    "jjwxc_public_rank": "https://www.jjwxc.net/onebook.php?novelid=123",
+    "heiyan_public_rank": "https://www.heiyan.com/book/123",
+}
+
+
+def _invalid_new_public_work_urls():
+    cases = []
+    rule_specific = {
+        "fanqie_public_rank": ("https://fanqienovel.com/rank/1", "https://fanqienovel.com/page/0"),
+        "qimao_public_rank": ("https://www.qimao.com/paihang/", "https://www.qimao.com/shuku/0/"),
+        "17k_public_rank": ("https://www.17k.com/top/", "https://www.17k.com/book/0.html"),
+        "zongheng_public_rank": ("https://www.zongheng.com/rank", "https://www.zongheng.com/detail/0"),
+        "hongxiu_public_rank": ("https://www.hongxiu.com/rank", "https://www.hongxiu.com/book/0.html"),
+        "jjwxc_public_rank": (
+            "https://www.jjwxc.net/topten.php",
+            "https://www.jjwxc.net/onebook.php?novelid=0",
+        ),
+        "heiyan_public_rank": ("https://www.heiyan.com/top/", "https://www.heiyan.com/book/0"),
+    }
+    for adapter_key, valid_url in _NEW_PUBLIC_WORK_URLS.items():
+        origin, tail = valid_url.split("//", 1)
+        host, path_and_query = tail.split("/", 1)
+        query_suffix = "&extra=1" if "?" in valid_url else "?extra=1"
+        cases.extend(
+            (
+                (adapter_key, rule_specific[adapter_key][0]),
+                (adapter_key, rule_specific[adapter_key][1]),
+                (adapter_key, valid_url + query_suffix),
+                (adapter_key, valid_url + "#fragment"),
+                (adapter_key, f"{origin}//{host}:443/{path_and_query}"),
+                (adapter_key, f"{origin}//user:pass@{host}/{path_and_query}"),
+            )
+        )
+    cases.append(
+        (
+            "jjwxc_public_rank",
+            "https://www.jjwxc.net/onebook.php?novelid=123&novelid=124",
+        )
+    )
+    return tuple(cases)
+
+
+@pytest.mark.parametrize(("adapter_key", "work_url"), _invalid_new_public_work_urls())
+def test_v11_public_work_url_rules_reject_nonbook_and_url_smuggling(
+    adapter_key,
+    work_url,
+):
+    from backend.domain.market_sources import MarketSourceFailure
+    from backend.gateways.market_sources.manual_snapshot import ManualSnapshotAdapter
+
+    payload = _snapshot().model_dump(mode="json", by_alias=True)
+    payload["entries"][0]["workURL"] = work_url
+
+    with pytest.raises(MarketSourceFailure) as captured:
+        ManualSnapshotAdapter().parse(payload, adapter_key=adapter_key)
+
+    assert captured.value.code == "MARKET_MANUAL_SNAPSHOT_INVALID"
 
 
 class FakeRepository:
@@ -747,7 +942,7 @@ async def test_manual_import_cannot_replace_the_adapters_fixed_source_url():
 
 
 @pytest.mark.asyncio
-async def test_public_inventory_does_not_advertise_expired_verified_policy():
+async def test_public_inventory_treats_old_verified_checked_at_as_audit_data():
     from backend.domain.json_contracts import canonical_hash
     from backend.domain.market_sources import SourcePolicy
     from backend.services.market_sources import MarketSourceService
@@ -790,7 +985,7 @@ async def test_public_inventory_does_not_advertise_expired_verified_policy():
     source = (await service.list_sources())[0]
 
     assert source["policy_status"] == "verified_public"
-    assert source["automatic_refresh_allowed"] is False
+    assert source["automatic_refresh_allowed"] is True
 
 
 @pytest.mark.asyncio

@@ -118,6 +118,34 @@ class MarketRepository:
             ),
         )
 
+    async def update_source_definition(
+        self,
+        session,
+        *,
+        source_id: str,
+        expected_updated_at: int,
+        source,
+        now_ms: int,
+    ) -> None:
+        changed = await session.execute(
+            """UPDATE market_sources
+               SET adapter_key=%s,display_name=%s,public_config_json=%s,
+                   updated_at=%s
+               WHERE id=%s AND updated_at=%s AND status='active'""",
+            (
+                source.adapter_key,
+                source.display_name,
+                canonical_json(dict(source.public_config)),
+                now_ms,
+                source_id,
+                expected_updated_at,
+            ),
+        )
+        if changed != 1:
+            from backend.services.market_sources import MarketSourceSeedConflict
+
+            raise MarketSourceSeedConflict()
+
     async def insert_policy_revision(self, session, row: dict) -> None:
         await session.execute(
             """INSERT INTO market_source_policy_revisions
@@ -158,6 +186,32 @@ class MarketRepository:
                 row["updated_at"],
             ),
         )
+
+    async def replace_policy_head(
+        self,
+        session,
+        *,
+        source_id: str,
+        expected_revision: int,
+        row: dict,
+    ) -> None:
+        changed = await session.execute(
+            """UPDATE market_source_policy_heads
+               SET revision_id=%s,revision=%s,content_hash=%s,updated_at=%s
+               WHERE source_id=%s AND revision=%s""",
+            (
+                row["revision_id"],
+                row["revision"],
+                row["content_hash"],
+                row["updated_at"],
+                source_id,
+                expected_revision,
+            ),
+        )
+        if changed != 1:
+            from backend.services.market_sources import MarketSourceSeedConflict
+
+            raise MarketSourceSeedConflict()
 
     async def insert_refresh_state(self, session, row: dict) -> None:
         await session.execute(

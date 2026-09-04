@@ -440,8 +440,8 @@ async def test_current_bootstrap_and_official_seed_replay_are_exact():
             first_market.source_count,
             first_market.inserted,
             first_market.replayed,
-        ) == (2, 2, 0)
-        assert (replay_market.inserted, replay_market.replayed) == (0, 2)
+        ) == (10, 10, 0)
+        assert (replay_market.inserted, replay_market.replayed) == (0, 10)
 
         logical = _LogicalDatabaseSession(
             current.session, current.database_name, NEW_DATABASE
@@ -469,10 +469,10 @@ async def test_current_bootstrap_and_official_seed_replay_are_exact():
             "style_template_heads": 10,
             "experience_cards": 64,
             "experience_card_heads": 64,
-            "market_sources": 2,
-            "market_source_policy_revisions": 2,
-            "market_source_policy_heads": 2,
-            "market_source_refresh_states": 2,
+            "market_sources": 10,
+            "market_source_policy_revisions": 10,
+            "market_source_policy_heads": 10,
+            "market_source_refresh_states": 10,
         }
         official_tables = {
             "schema_metadata",

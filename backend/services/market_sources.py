@@ -25,14 +25,21 @@ class MarketSourceSeedReport:
     package_hash: str
     inserted: int
     replayed: int
+    updated: int = 0
 
 
-def _policy_row(source_id: str, revision_id: str, source, now_ms: int) -> dict:
+def _policy_row(
+    source_id: str,
+    revision_id: str,
+    revision: int,
+    source,
+    now_ms: int,
+) -> dict:
     policy = source.policy
     return {
         "id": revision_id,
         "source_id": source_id,
-        "revision": 1,
+        "revision": revision,
         "policy_status": policy.status,
         "policy_version": policy.policy_version,
         "checked_at": policy.checked_at,
@@ -48,22 +55,26 @@ def _policy_row(source_id: str, revision_id: str, source, now_ms: int) -> dict:
     }
 
 
-def _same_existing(existing: dict, source, expected_policy: dict) -> bool:
-    source_fields = (
-        existing.get("stable_key") == source.stable_key,
-        existing.get("adapter_key") == source.adapter_key,
-        existing.get("display_name") == source.display_name,
-        existing.get("public_config_json")
-        == canonical_json(dict(source.public_config)),
-        existing.get("status") == "active",
+def _same_source_definition(existing: dict, source) -> bool:
+    return all(
+        (
+            existing.get("stable_key") == source.stable_key,
+            existing.get("adapter_key") == source.adapter_key,
+            existing.get("display_name") == source.display_name,
+            existing.get("public_config_json")
+            == canonical_json(dict(source.public_config)),
+        )
     )
+
+
+def _same_policy(existing: dict, expected_policy: dict) -> bool:
     policy = existing.get("policy")
     head = existing.get("head")
     if policy is None or head is None:
         return False
     policy_fields = (
         policy.get("source_id") == existing.get("id"),
-        policy.get("revision") == 1,
+        policy.get("revision") == expected_policy["revision"],
         policy.get("policy_status") == expected_policy["policy_status"],
         policy.get("policy_version") == expected_policy["policy_version"],
         policy.get("checked_at") == expected_policy["checked_at"],
@@ -77,10 +88,10 @@ def _same_existing(existing: dict, source, expected_policy: dict) -> bool:
         policy.get("next_run_at") is None,
         policy.get("content_hash") == expected_policy["content_hash"],
         head.get("revision_id") == policy.get("id"),
-        head.get("revision") == 1,
+        head.get("revision") == expected_policy["revision"],
         head.get("content_hash") == expected_policy["content_hash"],
     )
-    return all((*source_fields, *policy_fields))
+    return all(policy_fields)
 
 
 class MarketSourceSeedService:
@@ -100,6 +111,7 @@ class MarketSourceSeedService:
     async def seed(self, package: MarketSourcePackage) -> MarketSourceSeedReport:
         now_ms = self._clock()
         inserted = 0
+        updated = 0
         replayed = 0
         async with self._transaction() as session:
             await self.repository.lock_schema_guard(session)
@@ -108,23 +120,37 @@ class MarketSourceSeedService:
             if set(by_key) - {source.stable_key for source in package.sources}:
                 raise MarketSourceSeedConflict()
 
-            plans = []
+            inserts = []
+            updates = []
             for source in package.sources:
                 existing = by_key.get(source.stable_key)
                 if existing is None:
-                    plans.append(source)
+                    inserts.append(source)
                     continue
+                policy = existing.get("policy")
+                head = existing.get("head")
+                if (
+                    existing.get("status") != "active"
+                    or policy is None
+                    or head is None
+                    or head.get("revision") != policy.get("revision")
+                ):
+                    raise MarketSourceSeedConflict()
                 expected_policy = _policy_row(
                     existing["id"],
-                    existing.get("policy", {}).get("id", ""),
+                    policy["id"],
+                    int(policy["revision"]),
                     source,
                     now_ms,
                 )
-                if not _same_existing(existing, source, expected_policy):
-                    raise MarketSourceSeedConflict()
-                replayed += 1
+                source_matches = _same_source_definition(existing, source)
+                policy_matches = _same_policy(existing, expected_policy)
+                if source_matches and policy_matches:
+                    replayed += 1
+                else:
+                    updates.append((existing, source, not source_matches))
 
-            for source in plans:
+            for source in inserts:
                 source_id = self._id()
                 revision_id = self._id()
                 source_row = {
@@ -142,6 +168,7 @@ class MarketSourceSeedService:
                 policy_row = _policy_row(
                     source_id,
                     revision_id,
+                    1,
                     source,
                     now_ms,
                 )
@@ -162,12 +189,48 @@ class MarketSourceSeedService:
                     {"source_id": source_id, "updated_at": now_ms},
                 )
                 inserted += 1
+
+            for existing, source, source_changed in updates:
+                source_id = existing["id"]
+                head = existing["head"]
+                revision = int(head["revision"]) + 1
+                revision_id = self._id()
+                policy_row = _policy_row(
+                    source_id,
+                    revision_id,
+                    revision,
+                    source,
+                    now_ms,
+                )
+                if source_changed:
+                    await self.repository.update_source_definition(
+                        session,
+                        source_id=source_id,
+                        expected_updated_at=existing["updated_at"],
+                        source=source,
+                        now_ms=now_ms,
+                    )
+                await self.repository.insert_policy_revision(session, policy_row)
+                await self.repository.replace_policy_head(
+                    session,
+                    source_id=source_id,
+                    expected_revision=int(head["revision"]),
+                    row={
+                        "source_id": source_id,
+                        "revision_id": revision_id,
+                        "revision": revision,
+                        "content_hash": source.policy_hash,
+                        "updated_at": now_ms,
+                    },
+                )
+                updated += 1
         return MarketSourceSeedReport(
             package_version=package.package_version,
             source_count=len(package.sources),
             package_hash=canonical_hash(package.manifest),
             inserted=inserted,
             replayed=replayed,
+            updated=updated,
         )
 
 
@@ -198,10 +261,7 @@ class MarketSourceService:
         )
         now_ms = self._clock()
         policy_fresh = bool(
-            policy is not None
-            and -5 * 60 * 1000
-            <= now_ms - policy.checked_at
-            <= 30 * 24 * 60 * 60 * 1000
+            policy is not None and now_ms - policy.checked_at >= -5 * 60 * 1000
         )
         automatic_allowed = bool(
             policy is not None

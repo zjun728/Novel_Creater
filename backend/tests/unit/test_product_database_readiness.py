@@ -73,7 +73,7 @@ def _empty_counts() -> dict[str, int]:
 
 def _ready_counts() -> dict[str, int]:
     counts = _empty_counts()
-    counts.update({"style_templates": 10, "style_template_heads": 10, "experience_cards": 64, "experience_card_heads": 64, "market_sources": 2, "market_source_policy_revisions": 2, "market_source_policy_heads": 2, "market_source_refresh_states": 2})
+    counts.update({"style_templates": 10, "style_template_heads": 10, "experience_cards": 64, "experience_card_heads": 64, "market_sources": 10, "market_source_policy_revisions": 10, "market_source_policy_heads": 10, "market_source_refresh_states": 10})
     return counts
 
 
@@ -108,7 +108,7 @@ def _audit_payload() -> dict[str, object]:
 
 
 def _seed_payload() -> dict[str, object]:
-    return {"assets": {"packageVersion": ASSET_MANIFEST["package_version"], "packageHash": ASSET_HASH, "styleCount": STYLE_COUNT, "cardCount": CARD_COUNT, "inserted": STYLE_COUNT + CARD_COUNT, "replayed": 0, "advanced": 0}, "market": {"packageVersion": MARKET_MANIFEST["package_version"], "packageHash": MARKET_HASH, "sourceCount": MARKET_COUNT, "inserted": MARKET_COUNT, "replayed": 0}}
+    return {"assets": {"packageVersion": ASSET_MANIFEST["package_version"], "packageHash": ASSET_HASH, "styleCount": STYLE_COUNT, "cardCount": CARD_COUNT, "inserted": STYLE_COUNT + CARD_COUNT, "replayed": 0, "advanced": 0}, "market": {"packageVersion": MARKET_MANIFEST["package_version"], "packageHash": MARKET_HASH, "sourceCount": MARKET_COUNT, "inserted": MARKET_COUNT, "replayed": 0, "updated": 0}}
 
 
 def _inventory_from_json(payload: dict[str, object]) -> DatabaseInventory:
@@ -291,7 +291,7 @@ class World:
         return AssetSeedReport(ASSET_MANIFEST["package_version"], ASSET_HASH, STYLE_COUNT, CARD_COUNT, STYLE_COUNT + CARD_COUNT, 0, 0)
 
     async def seed_market(self, database: str) -> MarketSourceSeedReport:
-        self.calls.append("seed-market"); self._fail("seed-market"); self.tables[database].update({"market_sources": 2, "market_source_policy_revisions": 2, "market_source_policy_heads": 2, "market_source_refresh_states": 2})
+        self.calls.append("seed-market"); self._fail("seed-market"); self.tables[database].update({"market_sources": 10, "market_source_policy_revisions": 10, "market_source_policy_heads": 10, "market_source_refresh_states": 10})
         self.official_rows.setdefault(database, {}).update({key: value for key, value in _official_row().items() if key.startswith("market_")})
         return MarketSourceSeedReport(MARKET_MANIFEST["package_version"], MARKET_COUNT, MARKET_HASH, MARKET_COUNT, 0)
 
@@ -746,6 +746,48 @@ def test_current_schema_proof_and_target_audit_match_bootstrap_singletons_only()
             audit,
             world.storage(NEW_DATABASE),
             proof,
+        )
+
+
+def test_ready_audit_requires_all_ten_v11_market_seed_rows() -> None:
+    world = World(target="ready")
+    target = world.snapshot(NEW_DATABASE)
+    audit = OfficialDataAudit(**_official_row())  # type: ignore[arg-type]
+    market_tables = (
+        "market_sources",
+        "market_source_policy_revisions",
+        "market_source_policy_heads",
+        "market_source_refresh_states",
+    )
+
+    def with_market_count(count: int) -> DatabaseInventory:
+        counts = dict(target.row_counts)
+        counts.update({table: count for table in market_tables})
+        rows = tuple(sorted(counts.items()))
+        return replace(
+            target,
+            row_counts=rows,
+            nonempty_table_count=sum(value > 0 for _, value in rows),
+            total_row_count=sum(value for _, value in rows),
+        )
+
+    assert_new_database_ready(
+        with_market_count(10),
+        INITIALIZED,
+        audit,
+        world.storage(NEW_DATABASE),
+        _schema_proof(),
+    )
+    with pytest.raises(
+        ProductDatabaseReadinessError,
+        match="^new database readiness audit failed$",
+    ):
+        assert_new_database_ready(
+            with_market_count(2),
+            INITIALIZED,
+            audit,
+            world.storage(NEW_DATABASE),
+            _schema_proof(),
         )
 
 

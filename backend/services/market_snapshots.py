@@ -20,6 +20,13 @@ from backend.services.market_scheduler import scheduled_failure_backoff_ms
 _FIXED_SOURCE_URLS = {
     "qidian_public_rank": "https://www.qidian.com/rank/newsign/",
     "qq_reading_public_rank": "https://book.qq.com/book-rank",
+    "fanqie_public_rank": "https://fanqienovel.com/rank/1",
+    "qimao_public_rank": "https://www.qimao.com/paihang/boy/update/date/",
+    "17k_public_rank": "https://www.17k.com/top/",
+    "zongheng_public_rank": "https://www.zongheng.com/rank?nav=default",
+    "hongxiu_public_rank": "https://www.hongxiu.com/rank",
+    "jjwxc_public_rank": "https://www.jjwxc.net/topten.php?orderstr=4",
+    "heiyan_public_rank": "https://www.heiyan.com/top/",
     "fanqie_manual_snapshot": "https://fanqienovel.com/rank/1",
     "qimao_manual_snapshot": "https://www.qimao.com/shuku/",
     "shuqi_manual_snapshot": "https://www.shuqi.com/",

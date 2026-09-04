@@ -455,6 +455,7 @@ def _seed_payload(assets: object, market: object) -> dict[str, object]:
             "sourceCount": _field(market, "source_count"),
             "inserted": _field(market, "inserted"),
             "replayed": _field(market, "replayed"),
+            "updated": _field(market, "updated"),
         },
     }
 
@@ -488,7 +489,7 @@ def _validated_seed_payload(assets: object, market: object) -> dict[str, object]
         )
         or any(
             type(market_report[key]) is not int or market_report[key] < 0
-            for key in ("sourceCount", "inserted", "replayed")
+            for key in ("sourceCount", "inserted", "replayed", "updated")
         )
     ):
         raise ValueError
@@ -516,12 +517,17 @@ def _validated_seed_payload(assets: object, market: object) -> dict[str, object]
             "sourceCount": len(market_package.sources),
             "inserted": market_report["inserted"],
             "replayed": market_report["replayed"],
+            "updated": market_report["updated"],
         }
         or type(market_report["inserted"]) is not int
         or type(market_report["replayed"]) is not int
+        or type(market_report["updated"]) is not int
         or market_report["inserted"] < 0
         or market_report["replayed"] < 0
-        or market_report["inserted"] + market_report["replayed"]
+        or market_report["updated"] < 0
+        or market_report["inserted"]
+        + market_report["updated"]
+        + market_report["replayed"]
         != len(market_package.sources)
     ):
         raise ValueError
@@ -576,15 +582,16 @@ def _validate_seed_mode(
     asset_total = assets["styleCount"] + assets["cardCount"]  # type: ignore[operator]
     market_total = market["sourceCount"]
     expected = (
-        (asset_total, 0, market_total, 0)
+        (asset_total, 0, market_total, 0, 0)
         if insertion_expected
-        else (0, asset_total, 0, market_total)
+        else (0, asset_total, 0, market_total, 0)
     )
     observed = (
         assets["inserted"],
         assets["replayed"],
         market["inserted"],
         market["replayed"],
+        market["updated"],
     )
     if observed != expected:
         raise ValueError
@@ -600,10 +607,10 @@ def _expected_row_counts() -> tuple[tuple[str, int], ...]:
             "style_template_heads": 10,
             "experience_cards": 64,
             "experience_card_heads": 64,
-            "market_sources": 2,
-            "market_source_policy_revisions": 2,
-            "market_source_policy_heads": 2,
-            "market_source_refresh_states": 2,
+            "market_sources": 10,
+            "market_source_policy_revisions": 10,
+            "market_source_policy_heads": 10,
+            "market_source_refresh_states": 10,
         }
     )
     return tuple(sorted(expected.items()))

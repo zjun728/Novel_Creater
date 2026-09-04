@@ -14,9 +14,10 @@ NOW = 1_721_000_000_000
 MANIFEST = (
     Path(__file__).resolve().parents[2]
     / "assets"
-    / "market-sources-v1.0.0"
+    / "market-sources-v1.1.0"
     / "manifest.json"
 )
+V1_MANIFEST = MANIFEST.parent.parent / "market-sources-v1.0.0" / "manifest.json"
 
 
 def _connection(disposable_mysql):
@@ -25,6 +26,87 @@ def _connection(disposable_mysql):
         yield disposable_mysql.session
 
     return factory
+
+
+async def test_v1_to_v11_seed_keeps_snapshot_and_refresh_history(disposable_mysql):
+    from backend.domain.market_sources import load_market_source_package
+    from backend.gateways.market_sources.manual_snapshot import ManualSnapshotAdapter
+    from backend.repositories.market import MarketRepository
+    from backend.services.market_sources import MarketSourceSeedService
+    from backend.services.market_snapshots import MarketSnapshotService
+
+    ids = iter(f"29000000-0000-0000-0000-{index:012d}" for index in range(1, 100))
+    id_factory = lambda: next(ids)
+    repository = MarketRepository()
+    transaction = transaction_factory_for(disposable_mysql.connection_config)
+    seeder = MarketSourceSeedService(
+        repository,
+        transaction_factory=transaction,
+        id_factory=id_factory,
+        clock=lambda: NOW,
+    )
+    await seeder.seed(load_market_source_package(V1_MANIFEST))
+    source = await disposable_mysql.session.fetchone(
+        "SELECT id FROM market_sources WHERE stable_key='qidian.newsign'"
+    )
+    snapshot_service = MarketSnapshotService(
+        repository,
+        transaction_factory=transaction,
+        connection_factory=_connection(disposable_mysql),
+        adapters={},
+        manual_adapter=ManualSnapshotAdapter(),
+        id_factory=id_factory,
+        clock=lambda: NOW,
+    )
+    snapshot = await snapshot_service.import_manual(
+        source["id"],
+        {
+            "platform": "qidian",
+            "rankingName": "newsign",
+            "category": "male",
+            "capturedAt": NOW,
+            "sourceURL": "https://www.qidian.com/rank/newsign/",
+            "entries": [
+                {
+                    "rank": 1,
+                    "title": "历史作品",
+                    "author": "历史作者",
+                    "category": "奇幻",
+                    "workURL": "https://www.qidian.com/book/900000001/",
+                    "publicMetrics": {},
+                }
+            ],
+        },
+        idempotency_key="v" * 64,
+    )
+
+    upgraded = await seeder.seed(load_market_source_package(MANIFEST))
+    replayed = await seeder.seed(load_market_source_package(MANIFEST))
+
+    assert (upgraded.inserted, upgraded.updated, upgraded.replayed) == (5, 3, 2)
+    assert (replayed.inserted, replayed.updated, replayed.replayed) == (0, 0, 10)
+    counts = {}
+    for table in (
+        "market_source_policy_revisions",
+        "market_snapshots",
+        "market_refresh_requests",
+        "market_source_refresh_states",
+    ):
+        row = await disposable_mysql.session.fetchone(
+            f"SELECT COUNT(*) AS count FROM {table}"
+        )
+        counts[table] = int(row["count"])
+    assert counts == {
+        "market_source_policy_revisions": 13,
+        "market_snapshots": 1,
+        "market_refresh_requests": 1,
+        "market_source_refresh_states": 10,
+    }
+    state = await disposable_mysql.session.fetchone(
+        "SELECT last_snapshot_id FROM market_source_refresh_states WHERE source_id=%s",
+        (source["id"],),
+    )
+    assert state["last_snapshot_id"] == snapshot["id"]
 
 
 async def test_manual_snapshot_publication_is_immutable_idempotent_and_updates_head_last(

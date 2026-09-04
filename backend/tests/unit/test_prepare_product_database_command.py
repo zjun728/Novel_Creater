@@ -2192,10 +2192,10 @@ def _ready_inventory(database: str) -> DatabaseInventory:
             "style_template_heads": 10,
             "experience_cards": 64,
             "experience_card_heads": 64,
-            "market_sources": 2,
-            "market_source_policy_revisions": 2,
-            "market_source_policy_heads": 2,
-            "market_source_refresh_states": 2,
+            "market_sources": 10,
+            "market_source_policy_revisions": 10,
+            "market_source_policy_heads": 10,
+            "market_source_refresh_states": 10,
         }
     )
     rows = tuple(sorted(counts.items()))

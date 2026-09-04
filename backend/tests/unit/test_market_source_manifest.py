@@ -11,7 +11,7 @@ import pytest
 PACKAGE_ROOT = (
     Path(__file__).resolve().parents[2]
     / "assets"
-    / "market-sources-v1.0.0"
+    / "market-sources-v1.1.0"
 )
 MANIFEST_PATH = PACKAGE_ROOT / "manifest.json"
 
@@ -25,25 +25,53 @@ def _imports():
     return MarketSourcePackageError, load_market_source_package
 
 
-def test_built_in_manifest_is_hash_bound_and_manual_only():
+def test_built_in_manifest_is_hash_bound_and_has_exact_verified_registry():
     _, load_market_source_package = _imports()
 
     package = load_market_source_package(MANIFEST_PATH)
 
-    assert package.package_version == "market-sources-v1.0.0"
+    assert package.package_version == "market-sources-v1.1.0"
     assert {
         source.stable_key: source.adapter_key for source in package.sources
     } == {
-        "qidian.newsign": "qidian_public_rank",
         "qq-reading.male-popular": "qq_reading_public_rank",
-        "fanqie.reading": "fanqie_manual_snapshot",
-        "qimao.public-catalog": "qimao_manual_snapshot",
+        "qidian.newsign": "qidian_public_rank",
+        "fanqie.reading": "fanqie_public_rank",
+        "qimao.public-catalog": "qimao_public_rank",
         "shuqi.public-catalog": "shuqi_manual_snapshot",
+        "17k.top": "17k_public_rank",
+        "zongheng.monthly": "zongheng_public_rank",
+        "hongxiu.hotsales": "hongxiu_public_rank",
+        "jjwxc.quarterly-score": "jjwxc_public_rank",
+        "heiyan.diamond": "heiyan_public_rank",
     }
-    assert {source.policy.status for source in package.sources} == {"manual_only"}
+    verified = {
+        source.adapter_key
+        for source in package.sources
+        if source.policy.status == "verified_public"
+    }
+    assert verified == {
+        "qq_reading_public_rank",
+        "qimao_public_rank",
+        "zongheng_public_rank",
+        "jjwxc_public_rank",
+        "heiyan_public_rank",
+    }
+    assert {
+        source.adapter_key
+        for source in package.sources
+        if source.policy.status == "manual_only"
+    } == {
+        "qidian_public_rank",
+        "fanqie_public_rank",
+        "17k_public_rank",
+        "hongxiu_public_rank",
+        "shuqi_manual_snapshot",
+    }
+    assert len(package.sources) == 10
     assert all(source.policy.enabled is False for source in package.sources)
     assert all(source.can_manual_import for source in package.sources)
-    assert all(not source.can_refresh for source in package.sources)
+    assert {source.adapter_key for source in package.sources if source.can_refresh} == verified
     assert all(not source.can_schedule for source in package.sources)
     assert all(
         set(source.public_config) == {"platform", "rankingName", "category"}
@@ -60,6 +88,70 @@ def test_built_in_manifest_is_hash_bound_and_manual_only():
     raw_manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     child = (PACKAGE_ROOT / raw_manifest["sources_file"]["path"]).read_bytes()
     assert raw_manifest["sources_file"]["sha256"] == sha256(child).hexdigest()
+
+    by_key = {source.stable_key: source for source in package.sources}
+    assert by_key["jjwxc.quarterly-score"].display_name == "晋江季度作品积分榜"
+    assert by_key["jjwxc.quarterly-score"].public_config["rankingName"] == "quarterly_score"
+    assert by_key["jjwxc.quarterly-score"].public_config["category"] == "female"
+    assert all(source.policy.request_interval_seconds == 3600 for source in package.sources)
+    assert set(by_key["qq-reading.male-popular"].policy.path_prefixes) == {
+        "/book-rank",
+        "/book-detail/",
+    }
+    assert set(by_key["qimao.public-catalog"].policy.path_prefixes) == {
+        "/paihang/",
+        "/shuku/",
+    }
+    assert "/detail/" in by_key["zongheng.monthly"].policy.path_prefixes
+    assert "/onebook.php" in by_key["jjwxc.quarterly-score"].policy.path_prefixes
+    assert "/book/" in by_key["heiyan.diamond"].policy.path_prefixes
+
+
+def test_legacy_v1_package_remains_parseable():
+    _, load_market_source_package = _imports()
+    legacy = PACKAGE_ROOT.parent / "market-sources-v1.0.0" / "manifest.json"
+
+    assert load_market_source_package(legacy).package_version == "market-sources-v1.0.0"
+
+
+def test_old_checked_at_remains_audit_data_not_a_refresh_kill_switch():
+    from backend.domain.json_contracts import canonical_hash
+    from backend.domain.market_sources import SourcePolicy
+    from backend.services.market_sources import MarketSourceService
+
+    policy = SourcePolicy(
+        status="verified_public",
+        checkedAt=1_700_000_000_000,
+        evidenceURL="https://book.qq.com/book-rank",
+        evidenceHash="0" * 64,
+        allowedOrigins=("https://book.qq.com",),
+        pathPrefixes=("/book-rank", "/book-detail/"),
+        requestIntervalSeconds=3600,
+        policyVersion="qq-reading-public-rank-v1",
+        enabled=False,
+    )
+    service = MarketSourceService(
+        object(),
+        object(),
+        connection_factory=lambda: None,
+        clock=lambda: 1_900_000_000_000,
+    )
+    row = {
+        "id": "source-id",
+        "stable_key": "qq-reading.male-popular",
+        "display_name": "QQ 阅读男生人气榜",
+        "adapter_key": "qq_reading_public_rank",
+        "public_config": {
+            "platform": "qq_reading",
+            "rankingName": "male_popular",
+            "category": "male",
+        },
+        "policy": policy,
+        "policy_hash": canonical_hash(policy),
+        "policy_revision": 1,
+    }
+
+    assert service._public_source(row)["automatic_refresh_allowed"] is True
 
 
 def test_source_public_config_is_deeply_frozen_and_hash_stable():

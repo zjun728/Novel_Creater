@@ -61,6 +61,7 @@ def _format_report(report) -> str:
             f"package_hash={report.package_hash}",
             f"report.inserted={report.inserted}",
             f"report.replayed={report.replayed}",
+            f"report.updated={report.updated}",
         )
     )
 
