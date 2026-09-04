@@ -51,6 +51,7 @@ test('canonical path builders encode project IDs and require positive chapter nu
     planningPlotsPath,
     planningStoryBlocksPath,
     planningVolumesPath,
+    providerSettingsPath,
     projectSeedsPath,
     styleLibraryPath,
     topicMarketPath,
@@ -80,6 +81,7 @@ test('canonical path builders encode project IDs and require positive chapter nu
     '/projects/a%2Fb/settings/models',
   )
   assert.equal(applicationSettingsPath(), '/settings/application')
+  assert.equal(providerSettingsPath(), '/settings/providers')
   assert.equal(chapterWriterPath('p 1', 3), '/projects/p%201/write/chapters/3')
   assert.equal(manuscriptPath('project 1'), '/projects/project%201/manuscript')
   assert.equal(finalChapterPath('project 1', 3), '/projects/project%201/manuscript/chapters/3')

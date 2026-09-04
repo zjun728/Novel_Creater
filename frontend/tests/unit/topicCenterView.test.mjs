@@ -60,8 +60,22 @@ test('market and discussion surfaces preserve explicit evidence and explicit sav
   assert.match(discussion, /@keydown\.enter\.exact\.prevent/)
   assert.match(discussion, /Shift \+ Enter 换行/)
   assert.match(discussion, /request\.basis\?\.evidence/)
+  assert.match(discussion, /providerSettingsPath\(\)/)
+  assert.match(discussion, /配置默认模型/)
+  assert.match(discussion, /TOPIC_PROVIDER_NOT_READY/)
+  assert.match(discussion, /clearSendFailure/)
+  assert.match(discussion, /readTopicDraft\(discussionId/)
+  assert.match(discussion, /writeTopicDraft\(discussionId/)
+  assert.match(discussion, /默认模型尚未配置/)
+  assert.match(discussion, /消息已经发送成功，但讨论记录刷新失败/)
+  assert.match(discussion, /v-if="localError"[\s\S]*v-if="sendFailure"/)
+  assert.doesNotMatch(discussion, /自动重试|自动保存|自动创建项目|选择模型/)
+  const sendFlow = discussion.match(/async function send\(\)[\s\S]*?\n}\n\nfunction clearSendFailure/)?.[0] || ''
+  assert.match(sendFlow, /const draftSnapshot = draft\.value[\s\S]*content = draftSnapshot\.trim\(\)/)
+  assert.match(sendFlow, /await topics\.sendMessage\([\s\S]*clearTopicDraft\(targetDiscussionId, draftSnapshot\)[\s\S]*await topics\.openDiscussion\(targetDiscussionId\)/)
+  assert.doesNotMatch(sendFlow, /draft\.value\s*=/)
   assert.doesNotMatch(discussion, /evidence:\s*evidencePayload\(\),\s*\n\s*idempotencyKey:\s*commandKey\(\)/)
-  assert.doesNotMatch(discussion, /已自动保存|Provider|模型选择|raw JSON/)
+  assert.doesNotMatch(discussion, /已自动保存|模型选择|raw JSON/)
 })
 
 test('direction and candidate detail show author fields, version history, and guarded handoff', async () => {

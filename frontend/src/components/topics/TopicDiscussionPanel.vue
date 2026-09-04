@@ -2,7 +2,13 @@
 import { computed, ref } from 'vue'
 import { NAlert, NButton, NEmpty, NSpin, NTag } from 'naive-ui'
 
+import { providerSettingsPath } from '@/router/projectRoutes'
 import { useTopicCenterStore } from '@/stores/topicCenterStore'
+import {
+  clearTopicDraft,
+  readTopicDraft,
+  writeTopicDraft,
+} from './topicDiscussionDraftSession'
 
 const props = defineProps({
   evidence: { type: Array, default: () => [] },
@@ -12,17 +18,32 @@ const props = defineProps({
 const emit = defineEmits(['remove-evidence', 'clear-subject'])
 const topics = useTopicCenterStore()
 const discussionTitle = ref('')
-const draft = ref('')
 const localError = ref('')
 const creating = ref(false)
 const savingKey = ref('')
 const savedKeys = ref([])
 
 const detail = computed(() => topics.activeDiscussion)
+const discussionId = computed(() => detail.value?.discussion?.id || '')
+const draft = computed({
+  get: () => (discussionId.value ? readTopicDraft(discussionId.value) : ''),
+  set: value => {
+    if (discussionId.value) writeTopicDraft(discussionId.value, value)
+  },
+})
 const messages = computed(() => detail.value?.messages || [])
 const suggestionRequests = computed(() => (detail.value?.requests || []).filter(request => (
   request.status === 'succeeded' && request.assistantMessageId && request.result
 )))
+const sendFailure = computed(() => (
+  topics.lastSendFailure?.discussionId === discussionId.value ? topics.lastSendFailure : null
+))
+const providerNotReady = computed(() => sendFailure.value?.code === 'TOPIC_PROVIDER_NOT_READY')
+const sendFailureMessage = computed(
+  () => (providerNotReady.value
+    ? '默认模型尚未配置。请先完成配置，返回后可继续发送；当前输入已保留。'
+    : sendFailure.value?.message || 'AI 讨论暂时失败，输入内容已保留'),
+)
 
 function commandKey() {
   const bytes = new Uint8Array(32)
@@ -57,12 +78,13 @@ async function openDiscussion(id) {
 }
 
 async function send() {
-  const content = draft.value.trim()
-  const discussionId = detail.value?.discussion?.id
-  if (!content || !discussionId || topics.sending) return
+  const draftSnapshot = draft.value
+  const content = draftSnapshot.trim()
+  const targetDiscussionId = discussionId.value
+  if (!content || !targetDiscussionId || topics.sending) return
   localError.value = ''
   try {
-    await topics.sendMessage(discussionId, {
+    await topics.sendMessage(targetDiscussionId, {
       content,
       idempotencyKey: commandKey(),
       evidence: evidencePayload(),
@@ -73,10 +95,21 @@ async function send() {
         contentHash: props.subject.contentHash,
       } : null,
     })
-    draft.value = ''
-  } catch (failure) {
-    localError.value = failure?.message || 'AI 讨论暂时失败，输入内容已保留'
-  }
+    clearTopicDraft(targetDiscussionId, draftSnapshot)
+    if (discussionId.value === targetDiscussionId) {
+      try {
+        await topics.openDiscussion(targetDiscussionId)
+      } catch {
+        if (discussionId.value === targetDiscussionId) {
+          localError.value = '消息已经发送成功，但讨论记录刷新失败。请稍后重新打开本讨论查看回复。'
+        }
+      }
+    }
+  } catch {}
+}
+
+function clearSendFailure() {
+  topics.clearSendFailure()
 }
 
 async function saveSuggestion(kind, request, payload, index) {
@@ -119,6 +152,17 @@ async function saveSuggestion(kind, request, payload, index) {
     <p class="panel-intro">从空白想法开始，不依赖市场证据或既有方向。AI 的回复只是建议，不会自动进入正式库。</p>
 
     <n-alert v-if="localError" type="error" aria-live="assertive" class="panel-alert">{{ localError }}</n-alert>
+    <n-alert
+      v-if="sendFailure"
+      type="error"
+      aria-live="assertive"
+      class="panel-alert"
+      closable
+      @close="clearSendFailure"
+    >
+      {{ sendFailureMessage }}
+      <router-link v-if="providerNotReady" :to="providerSettingsPath()">配置默认模型</router-link>
+    </n-alert>
     <div class="discussion-layout">
       <aside class="discussion-index" aria-label="讨论列表">
         <form class="new-discussion" @submit.prevent="createDiscussion">

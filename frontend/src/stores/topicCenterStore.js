@@ -18,12 +18,22 @@ export function createTopicCenterStore(topicApi = api.topics, storeId = 'topic-c
     const sending = ref(false)
     const handoffBusy = ref(false)
     const error = ref(null)
+    const lastSendFailure = ref(null)
     const discussionListGuard = createLatestRequestGuard()
     const directionListGuard = createLatestRequestGuard()
     const candidateListGuard = createLatestRequestGuard()
     const discussionGuard = createLatestRequestGuard()
     const directionGuard = createLatestRequestGuard()
     const candidateGuard = createLatestRequestGuard()
+    let sendSequence = 0
+    let activeSend = null
+
+    function discussionKey(value) {
+      if (typeof value !== 'string' || !value.trim()) {
+        throw new TypeError('Expected a discussion id')
+      }
+      return value
+    }
 
     async function guardedList(guard, target, operation) {
       const generation = guard.begin()
@@ -76,19 +86,40 @@ export function createTopicCenterStore(topicApi = api.topics, storeId = 'topic-c
     }
 
     async function sendMessage(discussionId, data) {
+      const key = discussionKey(discussionId)
+      if (activeSend) {
+        throw Object.assign(new Error('上一条消息仍在发送，请稍候。'), {
+          code: 'TOPIC_SEND_BUSY',
+        })
+      }
+      const submissionId = ++sendSequence
+      activeSend = { discussionId: key, submissionId }
       sending.value = true
       error.value = null
+      lastSendFailure.value = null
       try {
-        const response = await topicApi.sendMessage(discussionId, data)
+        const response = await topicApi.sendMessage(key, data)
         const result = parseAssistantResult(response.result)
-        await openDiscussion(discussionId)
         return { ...response, result }
       } catch (failure) {
         error.value = failure
+        lastSendFailure.value = Object.freeze({
+          discussionId: key,
+          submissionId,
+          code: String(failure?.code || 'request_failed'),
+          message: String(failure?.message || 'AI 讨论暂时失败，输入内容已保留'),
+        })
         throw failure
       } finally {
-        sending.value = false
+        if (activeSend?.submissionId === submissionId) {
+          activeSend = null
+          sending.value = false
+        }
       }
+    }
+
+    function clearSendFailure() {
+      lastSendFailure.value = null
     }
 
     async function saveDirection(discussionId, data) {
@@ -124,10 +155,10 @@ export function createTopicCenterStore(topicApi = api.topics, storeId = 'topic-c
 
     return {
       discussions, directions, candidates, activeDiscussion, activeDirection,
-      activeCandidate, loading, sending, handoffBusy, error,
+      activeCandidate, loading, sending, handoffBusy, error, lastSendFailure,
       loadDiscussions, loadDirections, loadCandidates, openDiscussion,
       openDirection, openCandidate, createDiscussion, sendMessage,
-      saveDirection, saveCandidate, archiveCandidate, handoff, leaveSection,
+      clearSendFailure, saveDirection, saveCandidate, archiveCandidate, handoff, leaveSection,
     }
   })
 }
