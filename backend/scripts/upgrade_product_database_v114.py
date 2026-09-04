@@ -37,6 +37,10 @@ EXPECTED_OLD_TABLE_COUNT = 91
 EXPECTED_TOPIC_TABLE_COUNT = 8
 EXPECTED_CURRENT_TABLE_COUNT = 99
 EXPECTED_MARKET_SOURCE_COUNT = 10
+V113_MARKET_SOURCE_PACKAGE_VERSION = "market-sources-v1.0.0"
+MARKET_SOURCE_INVENTORY_INCOMPATIBLE = (
+    "PRODUCT_DATABASE_MARKET_SOURCE_INVENTORY_INCOMPATIBLE"
+)
 RESTORE_REQUIRED_ERROR = "schema upgrade failed after DDL began; restore required"
 RESTORE_MODE = "drop-recreate-clean-target"
 RESTORE_GUIDANCE = "drop/recreate target before importing exact backup"
@@ -52,6 +56,9 @@ _SERVER_VERSION_QUERY = "SELECT VERSION() AS version"
 _TABLES_QUERY = (
     "SELECT TABLE_NAME FROM information_schema.TABLES "
     "WHERE TABLE_SCHEMA=%s AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME"
+)
+_MARKET_SOURCE_STABLE_KEYS_QUERY = (
+    "SELECT stable_key FROM market_sources ORDER BY stable_key"
 )
 _METADATA_CAS = (
     "UPDATE schema_metadata SET schema_version=%s,manifest_hash=%s,initialized_at=%s "
@@ -135,6 +142,7 @@ class ProductUpgradeResult:
 class ProductUpgradeDependencies:
     upgrade_lock: Callable[[str], AsyncContextManager[object]]
     inventory: Callable[[str], object]
+    market_source_inventory: Callable[[str], object]
     create_backup: Callable[..., object]
     verify_backup: Callable[[UpgradeBackupReceipt], object]
     apply_schema: Callable[[str, str, int, Callable[[], None]], object]
@@ -176,6 +184,33 @@ def v113_table_names() -> tuple[str, ...]:
 def v113_manifest_hash() -> str:
     payload = f"\n{STATEMENT_DELIMITER}\n".join(v113_statements()).encode("utf-8")
     return sha256(payload).hexdigest()
+
+
+def _v113_market_source_stable_keys() -> frozenset[str]:
+    package = load_market_source_package(
+        Path(__file__).resolve().parents[1]
+        / "assets"
+        / V113_MARKET_SOURCE_PACKAGE_VERSION
+        / "manifest.json"
+    )
+    if package.package_version != V113_MARKET_SOURCE_PACKAGE_VERSION:
+        raise SchemaUpgradeError(MARKET_SOURCE_INVENTORY_INCOMPATIBLE)
+    return frozenset(source.stable_key for source in package.sources)
+
+
+def _validate_v113_market_source_inventory(value: object) -> None:
+    try:
+        if type(value) is not tuple:
+            raise ValueError
+        stable_keys = tuple(row["stable_key"] for row in value)
+        if (
+            any(type(key) is not str for key in stable_keys)
+            or len(stable_keys) != len(set(stable_keys))
+            or frozenset(stable_keys) != _v113_market_source_stable_keys()
+        ):
+            raise ValueError
+    except Exception:
+        raise SchemaUpgradeError(MARKET_SOURCE_INVENTORY_INCOMPATIBLE) from None
 
 
 def _validate_static_manifest() -> None:
@@ -402,6 +437,9 @@ async def run_product_upgrade(
         async with lock_boundary:
             inventory = _validate_inventory(
                 await _invoke(dependencies.inventory, name)
+            )
+            _validate_v113_market_source_inventory(
+                await _invoke(dependencies.market_source_inventory, name)
             )
             receipt = _validate_backup_receipt(
                 await _invoke(
@@ -709,6 +747,14 @@ def _default_dependencies(config: Mapping[str, object]) -> ProductUpgradeDepende
         async with session_scope(database) as session:
             return _inventory_contract(await inventory_database(session, database))
 
+    async def market_source_inventory(database: str) -> object:
+        async with session_scope(database) as session:
+            await session.execute("START TRANSACTION READ ONLY")
+            try:
+                return tuple(await session.fetchall(_MARKET_SOURCE_STABLE_KEYS_QUERY))
+            finally:
+                await session.execute("ROLLBACK")
+
     async def create_backup(
         *,
         database: str,
@@ -807,6 +853,7 @@ def _default_dependencies(config: Mapping[str, object]) -> ProductUpgradeDepende
     return ProductUpgradeDependencies(
         upgrade_lock=upgrade_lock,
         inventory=inventory,
+        market_source_inventory=market_source_inventory,
         create_backup=create_backup,
         verify_backup=verify_backup,
         apply_schema=apply_schema,

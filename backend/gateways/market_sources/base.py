@@ -385,6 +385,21 @@ def canonical_work_url(
     return work_url
 
 
+def require_exact_work_path(url: str, pattern: re.Pattern[str]) -> None:
+    """Reject canonical same-origin URLs that are not exact work-detail paths."""
+
+    try:
+        parsed = urlsplit(url)
+    except (TypeError, ValueError):
+        raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE") from None
+    if (
+        parsed.query
+        or parsed.fragment
+        or pattern.fullmatch(parsed.path) is None
+    ):
+        raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
+
+
 def bounded_public_metrics(
     values: object,
 ) -> dict[str, str | int | float | bool]:

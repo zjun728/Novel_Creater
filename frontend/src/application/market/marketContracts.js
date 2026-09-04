@@ -5,7 +5,7 @@ const ENTRY_KEYS = ['rank', 'title', 'author', 'category', 'workURL', 'publicMet
 const VERSION = /^[a-z0-9]+(?:-[a-z0-9]+)*-v[1-9][0-9]*$/
 const HASH = /^[a-f0-9]{64}$/
 const STRUCTURAL_ESCAPE = /%(?:2e|2f|5c|25|[01][0-9a-f]|7f)/i
-const MARKET_ORIGINS = new Set(['https://www.qidian.com', 'https://book.qq.com', 'https://fanqienovel.com', 'https://www.qimao.com', 'https://www.shuqi.com', 'https://www.17k.com', 'https://www.zongheng.com', 'https://www.hongxiu.com', 'https://www.jjwxc.net', 'https://www.heiyan.com'])
+const MARKET_ORIGINS = new Set(['https://www.qidian.com', 'https://book.qq.com', 'https://fanqienovel.com', 'https://www.qimao.com', 'https://www.shuqi.com', 'https://www.zongheng.com', 'https://www.jjwxc.net', 'https://www.heiyan.com', 'https://www.readnovel.com', 'https://www.xxsy.net'])
 
 function invalid() { throw new TypeError('Invalid market source response') }
 function exact(value, keys) { if (!value || typeof value !== 'object' || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Reflect.ownKeys(value).length !== keys.length || keys.some(key => !Object.hasOwn(value, key))) invalid(); for (const key of keys) { const descriptor = Object.getOwnPropertyDescriptor(value, key); if (!descriptor || !Object.hasOwn(descriptor, 'value') || descriptor.get || descriptor.set) invalid() } }

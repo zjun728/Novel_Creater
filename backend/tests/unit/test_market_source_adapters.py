@@ -68,7 +68,10 @@ def _policy(
         default_prefixes = ("/rank", "/detail/")
     elif platform == "heiyan":
         default_origins = ("https://www.heiyan.com",)
-        default_prefixes = ("/top/", "/book/")
+        default_prefixes = ("/top/monthly/day", "/book/")
+    elif platform == "readnovel":
+        default_origins = ("https://www.readnovel.com",)
+        default_prefixes = ("/rank/ywyuepiao", "/book/")
     elif platform == "fanqie":
         default_origins = ("https://fanqienovel.com",)
         default_prefixes = ("/rank/1",)
@@ -193,12 +196,14 @@ def test_candidate_adapter_registry_has_only_bounded_candidates():
     from backend.gateways.market_sources.jjwxc_public_rank import JJWXCPublicRankAdapter
     from backend.gateways.market_sources.qimao_public_rank import QimaoPublicRankAdapter
     from backend.gateways.market_sources.qq_reading_public_rank import QQReadingPublicRankAdapter
+    from backend.gateways.market_sources.readnovel_public_rank import ReadNovelPublicRankAdapter
     from backend.gateways.market_sources.registry import (
         build_market_adapters,
         candidate_adapter_factories,
     )
     from backend.gateways.market_sources.seventeen_k_public_rank import SeventeenKPublicRankAdapter
     from backend.gateways.market_sources.zongheng_public_rank import ZonghengPublicRankAdapter
+    from backend.gateways.market_sources.xxsy_public_rank import XXSYPublicRankAdapter
 
     factories = candidate_adapter_factories()
 
@@ -211,6 +216,8 @@ def test_candidate_adapter_registry_has_only_bounded_candidates():
         "hongxiu_public_rank": HongxiuPublicRankAdapter,
         "jjwxc_public_rank": JJWXCPublicRankAdapter,
         "heiyan_public_rank": HeiyanPublicRankAdapter,
+        "readnovel_public_rank": ReadNovelPublicRankAdapter,
+        "xxsy_public_rank": XXSYPublicRankAdapter,
     }
     with pytest.raises(TypeError):
         factories["qidian_public_rank"] = object
@@ -830,16 +837,7 @@ _DETAIL_ENRICHED_ADAPTERS = (
         "zongheng_rank_official_shape.html",
         "zongheng_detail_official_shape.html",
         "https://www.zongheng.com/rank?nav=default",
-        '<div class="zh-modules-rank-box"><h2>月票榜</h2></div>',
-    ),
-    (
-        "backend.gateways.market_sources.heiyan_public_rank",
-        "HeiyanPublicRankAdapter",
-        "heiyan",
-        "heiyan_rank_official_shape.html",
-        "heiyan_detail_official_shape.html",
-        "https://www.heiyan.com/top/",
-        '<div class="pattern-rank"></div>',
+        '<div class="zh-modules-rank-box"><h2 class="rank-heading">月票榜</h2></div>',
     ),
 )
 
@@ -957,6 +955,8 @@ async def test_zongheng_selects_unique_monthly_ticket_container_with_medal_ranks
     )
 
     assert [entry.rank for entry in snapshot.entries] == list(range(1, 11))
+    assert snapshot.ranking_name == "monthly_ticket"
+    assert ZonghengPublicRankAdapter.adapter_version == "zongheng-public-rank-v2"
     assert [entry.title for entry in snapshot.entries] == [
         *(f"作品{rank}" for rank in range(1, 11))
     ]
@@ -969,6 +969,16 @@ async def test_zongheng_selects_unique_monthly_ticket_container_with_medal_ranks
     (
         lambda text: text.replace("其他榜单五", "月票榜", 1),
         lambda text: text.replace("月票榜", "月度推荐", 1),
+        lambda text: text.replace(
+            '<section class="zh-modules-rank-box">\n  <header class="rank-heading"><span>月票榜</span></header>',
+            '<section class="zh-modules-rank-box" hidden>\n  <header class="rank-heading"><span>月票榜</span></header>',
+            1,
+        ),
+        lambda text: text.replace(
+            '<section class="zh-modules-rank-box">\n  <header class="rank-heading"><span>月票榜</span></header>',
+            '<section class="zh-modules-rank-box" aria-hidden="true">\n  <header class="rank-heading"><span>月票榜</span></header>',
+            1,
+        ),
         lambda text: text.replace(
             '<img src="/static/rank-1.png" alt="第一名奖牌">',
             '<img src="/static/rank-1.png" alt="第一名奖牌"><img src="/static/noise.png" alt="噪声">',
@@ -992,6 +1002,84 @@ async def test_zongheng_rejects_ambiguous_monthly_container_or_rank_shape(mutati
     transport = RankAndDetailTransport(
         rank_url=source_url,
         rank_body=mutation(rank_text).encode("utf-8"),
+        detail_body_for_url=lambda url: AssertionError("detail transport must not open"),
+    )
+    policy = _policy(platform="zongheng", prefixes=("/rank", "/detail/"))
+
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await ZonghengPublicRankAdapter(transport).fetch(
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            captured_at=NOW,
+        )
+
+    assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
+    assert len(transport.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "injected_marker",
+    (
+        "<!--月票榜-->",
+        "<script>月票榜</script>",
+        "<style>.label::after { content: '月票榜'; }</style>",
+        "<template><h2 class='rank-heading'>月票榜</h2></template>",
+        "<h2 class='rank-heading' hidden>月票榜</h2>",
+        "<h2 class='rank-heading' aria-hidden='true'>月票榜</h2>",
+    ),
+)
+async def test_zongheng_nonvisible_or_nonheading_monthly_text_cannot_qualify_container(
+    injected_marker,
+):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.base import MarketSourceFailure
+    from backend.gateways.market_sources.zongheng_public_rank import (
+        ZonghengPublicRankAdapter,
+    )
+
+    source_url = ZonghengPublicRankAdapter.source_url
+    rank_text = (FIXTURES / "zongheng_rank_official_shape.html").read_text(
+        encoding="utf-8"
+    ).replace(
+        '<header class="rank-heading"><span>月票榜</span></header>',
+        f'<header class="rank-heading"><span>月度推荐</span></header>{injected_marker}',
+        1,
+    )
+    transport = RankAndDetailTransport(
+        rank_url=source_url,
+        rank_body=rank_text.encode("utf-8"),
+        detail_body_for_url=lambda url: AssertionError("detail transport must not open"),
+    )
+    policy = _policy(platform="zongheng", prefixes=("/rank", "/detail/"))
+
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await ZonghengPublicRankAdapter(transport).fetch(
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            captured_at=NOW,
+        )
+
+    assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
+    assert len(transport.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_href", ("/rank?nav=default", "/detail/1?from=rank"))
+async def test_zongheng_rejects_same_origin_nonwork_url_before_detail_fetch(bad_href):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.base import MarketSourceFailure
+    from backend.gateways.market_sources.zongheng_public_rank import (
+        ZonghengPublicRankAdapter,
+    )
+
+    source_url = ZonghengPublicRankAdapter.source_url
+    rank_text = (FIXTURES / "zongheng_rank_official_shape.html").read_text(
+        encoding="utf-8"
+    ).replace('href="/detail/1"', f'href="{bad_href}"', 1)
+    transport = RankAndDetailTransport(
+        rank_url=source_url,
+        rank_body=rank_text.encode("utf-8"),
         detail_body_for_url=lambda url: AssertionError("detail transport must not open"),
     )
     policy = _policy(platform="zongheng", prefixes=("/rank", "/detail/"))
@@ -1275,7 +1363,7 @@ async def test_detail_enrichment_rejects_sixth_candidate_outside_policy_before_t
     ),
     _DETAIL_ENRICHED_ADAPTERS,
 )
-async def test_detail_enrichment_canonicalizes_relative_and_protocol_relative_og_urls(
+async def test_detail_enrichment_canonicalizes_protocol_relative_og_urls(
     module_name,
     class_name,
     platform,
@@ -1289,14 +1377,11 @@ async def test_detail_enrichment_canonicalizes_relative_and_protocol_relative_og
     adapter_class = _official_rank_adapter(module_name, class_name)
     adapter = adapter_class(None)
     rank_text = (FIXTURES / rank_fixture).read_text(encoding="utf-8")
-    first_href = "/detail/1" if platform == "zongheng" else "/book/1"
-    rank_body = rank_text.replace(
-        f'href="{first_href}"', f'href="{first_href}/"', 1
-    ).encode("utf-8")
+    rank_body = rank_text.encode("utf-8")
 
     def detail_body_for_url(url):
         path = "/" + url.split("/", 3)[-1]
-        og_url = path if url.endswith("/") else f"//{url.split('/')[2]}{path}"
+        og_url = f"//{url.split('/')[2]}{path}"
         return _detail_fixture_body(
             detail_fixture,
             title=_detail_title_for_url(url),
@@ -1320,7 +1405,7 @@ async def test_detail_enrichment_canonicalizes_relative_and_protocol_relative_og
         captured_at=NOW,
     )
 
-    assert snapshot.entries[0].work_url.endswith("/")
+    assert snapshot.entries[0].work_url == "https://www.zongheng.com/detail/1"
     assert len(transport.requests) == 11
 
 
@@ -1361,41 +1446,6 @@ async def test_detail_enrichment_rejects_off_origin_or_ambiguous_og_urls(
 
     with pytest.raises(MarketSourceFailure) as rejected:
         await _official_rank_adapter(module_name, class_name)(transport).fetch(
-            policy=policy,
-            policy_hash=canonical_hash(policy),
-            captured_at=NOW,
-        )
-
-    assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
-    assert len(transport.requests) == 2
-
-
-@pytest.mark.asyncio
-async def test_heiyan_detail_requires_one_book_info_container():
-    from backend.domain.json_contracts import canonical_hash
-    from backend.gateways.market_sources.base import MarketSourceFailure
-    from backend.gateways.market_sources.heiyan_public_rank import (
-        HeiyanPublicRankAdapter,
-    )
-
-    source_url = HeiyanPublicRankAdapter.source_url
-    transport = RankAndDetailTransport(
-        rank_url=source_url,
-        rank_body=(FIXTURES / "heiyan_rank_official_shape.html").read_bytes(),
-        detail_body_for_url=lambda url: _detail_fixture_body(
-            "heiyan_detail_official_shape.html",
-            title=_detail_title_for_url(url),
-            url=url,
-        ).replace(
-            b"</body>",
-            b'<div class="book-info"><span class="book-count">extra</span></div></body>',
-            1,
-        ),
-    )
-    policy = _policy(platform="heiyan", prefixes=("/top/", "/book/"))
-
-    with pytest.raises(MarketSourceFailure) as rejected:
-        await HeiyanPublicRankAdapter(transport).fetch(
             policy=policy,
             policy_hash=canonical_hash(policy),
             captured_at=NOW,
@@ -1788,7 +1838,7 @@ async def _fetch_single_page_adapter(
             "https://book.qq.com/book-rank",
             "qq_reading",
             "male_popular",
-            "qq-reading-public-rank-v1",
+            "qq-reading-public-rank-v2",
             tuple(f"https://book.qq.com/book-detail/{rank}" for rank in range(1, 11)),
             ("作品一", "作者一", "玄幻"),
             ("作品十", "作者十", "玄幻"),
@@ -1801,7 +1851,7 @@ async def _fetch_single_page_adapter(
             "https://www.qimao.com/paihang/boy/update/date/",
             "qimao",
             "boy_update",
-            "qimao-public-rank-v1",
+            "qimao-public-rank-v2",
             tuple(f"https://www.qimao.com/shuku/{rank}/" for rank in range(1, 11)),
             ("作品一", "作者一", "玄幻奇幻"),
             ("作品十", "作者十", "玄幻奇幻"),
@@ -2136,6 +2186,66 @@ async def test_qimao_rejects_nonsemantic_metrics_bad_rank_and_nonofficial_url(mu
             "qimao",
             "https://www.qimao.com/paihang/boy/update/date/",
             mutated_text(text),
+        )
+
+    assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("module_name", "class_name", "platform", "fixture", "source_url", "old", "bad"),
+    (
+        (
+            "backend.gateways.market_sources.qq_reading_public_rank",
+            "QQReadingPublicRankAdapter",
+            "qq_reading",
+            "qq_rank_official_shape.html",
+            "https://book.qq.com/book-rank",
+            "/book-detail/1",
+            "/book-rank?bookId=1",
+        ),
+        (
+            "backend.gateways.market_sources.qq_reading_public_rank",
+            "QQReadingPublicRankAdapter",
+            "qq_reading",
+            "qq_rank_official_shape.html",
+            "https://book.qq.com/book-rank",
+            "/book-detail/1",
+            "/book-detail/1?from=rank",
+        ),
+        (
+            "backend.gateways.market_sources.qimao_public_rank",
+            "QimaoPublicRankAdapter",
+            "qimao",
+            "qimao_rank_official_shape.html",
+            "https://www.qimao.com/paihang/boy/update/date/",
+            "https://www.qimao.com/shuku/1/",
+            "/paihang/boy/update/date/",
+        ),
+        (
+            "backend.gateways.market_sources.qimao_public_rank",
+            "QimaoPublicRankAdapter",
+            "qimao",
+            "qimao_rank_official_shape.html",
+            "https://www.qimao.com/paihang/boy/update/date/",
+            "https://www.qimao.com/shuku/1/",
+            "/shuku/1/?from=rank",
+        ),
+    ),
+)
+async def test_single_page_adapters_reject_same_origin_nonwork_and_query_urls(
+    module_name, class_name, platform, fixture, source_url, old, bad
+):
+    from backend.gateways.market_sources.base import MarketSourceFailure
+
+    text = (FIXTURES / fixture).read_text(encoding="utf-8").replace(old, bad, 1)
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await _fetch_single_page_adapter(
+            module_name,
+            class_name,
+            platform,
+            source_url,
+            text,
         )
 
     assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"

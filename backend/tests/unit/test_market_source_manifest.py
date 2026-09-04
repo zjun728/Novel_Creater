@@ -39,11 +39,11 @@ def test_built_in_manifest_is_hash_bound_and_has_exact_verified_registry():
         "fanqie.reading": "fanqie_public_rank",
         "qimao.public-catalog": "qimao_public_rank",
         "shuqi.public-catalog": "shuqi_manual_snapshot",
-        "17k.top": "17k_public_rank",
+        "xxsy.xiaoxiang-ticket": "xxsy_public_rank",
         "zongheng.monthly": "zongheng_public_rank",
-        "hongxiu.hotsales": "hongxiu_public_rank",
+        "readnovel.original-monthly-ticket": "readnovel_public_rank",
         "jjwxc.quarterly-score": "jjwxc_public_rank",
-        "heiyan.diamond": "heiyan_public_rank",
+        "heiyan.daily-recommendation": "heiyan_public_rank",
     }
     verified = {
         source.adapter_key
@@ -53,9 +53,9 @@ def test_built_in_manifest_is_hash_bound_and_has_exact_verified_registry():
     assert verified == {
         "qq_reading_public_rank",
         "qimao_public_rank",
-        "zongheng_public_rank",
-        "jjwxc_public_rank",
         "heiyan_public_rank",
+        "readnovel_public_rank",
+        "xxsy_public_rank",
     }
     assert {
         source.adapter_key
@@ -64,8 +64,8 @@ def test_built_in_manifest_is_hash_bound_and_has_exact_verified_registry():
     } == {
         "qidian_public_rank",
         "fanqie_public_rank",
-        "17k_public_rank",
-        "hongxiu_public_rank",
+        "zongheng_public_rank",
+        "jjwxc_public_rank",
         "shuqi_manual_snapshot",
     }
     assert len(package.sources) == 10
@@ -93,6 +93,39 @@ def test_built_in_manifest_is_hash_bound_and_has_exact_verified_registry():
     assert by_key["jjwxc.quarterly-score"].display_name == "晋江季度作品积分榜"
     assert by_key["jjwxc.quarterly-score"].public_config["rankingName"] == "quarterly_score"
     assert by_key["jjwxc.quarterly-score"].public_config["category"] == "female"
+    assert by_key["jjwxc.quarterly-score"].policy.status == "manual_only"
+    assert by_key["heiyan.daily-recommendation"].display_name == "黑岩每日推荐榜"
+    assert by_key["heiyan.daily-recommendation"].public_config["rankingName"] == "daily_recommendation"
+    assert by_key["readnovel.original-monthly-ticket"].display_name == "小说阅读网原创月票榜"
+    assert by_key["readnovel.original-monthly-ticket"].public_config == {
+        "platform": "readnovel",
+        "rankingName": "monthly_ticket",
+        "category": "female",
+    }
+    assert (
+        by_key["readnovel.original-monthly-ticket"].policy.policy_version
+        == "readnovel-public-rank-v2"
+    )
+    assert by_key["zongheng.monthly"].public_config["rankingName"] == "monthly_ticket"
+    assert by_key["zongheng.monthly"].policy.status == "manual_only"
+    assert by_key["xxsy.xiaoxiang-ticket"].display_name == "潇湘票榜"
+    assert by_key["xxsy.xiaoxiang-ticket"].public_config == {
+        "platform": "xxsy",
+        "rankingName": "xiaoxiang_ticket",
+        "category": "female",
+    }
+    assert {
+        by_key[key].policy.policy_version
+        for key in (
+            "qq-reading.male-popular",
+            "qimao.public-catalog",
+            "zongheng.monthly",
+        )
+    } == {
+        "qq-reading-public-rank-v2",
+        "qimao-public-rank-v2",
+        "zongheng-public-rank-v2",
+    }
     assert all(source.policy.request_interval_seconds == 3600 for source in package.sources)
     assert set(by_key["qq-reading.male-popular"].policy.path_prefixes) == {
         "/book-rank",
@@ -104,7 +137,18 @@ def test_built_in_manifest_is_hash_bound_and_has_exact_verified_registry():
     }
     assert "/detail/" in by_key["zongheng.monthly"].policy.path_prefixes
     assert "/onebook.php" in by_key["jjwxc.quarterly-score"].policy.path_prefixes
-    assert "/book/" in by_key["heiyan.diamond"].policy.path_prefixes
+    assert set(by_key["heiyan.daily-recommendation"].policy.path_prefixes) == {
+        "/top/monthly/day",
+        "/book/",
+    }
+    assert set(by_key["readnovel.original-monthly-ticket"].policy.path_prefixes) == {
+        "/rank/ywyuepiao",
+        "/book/",
+    }
+    assert set(by_key["xxsy.xiaoxiang-ticket"].policy.path_prefixes) == {
+        "/rank/xxyuepiao",
+        "/book/",
+    }
 
 
 def test_legacy_v1_package_remains_parseable():
@@ -127,7 +171,7 @@ def test_old_checked_at_remains_audit_data_not_a_refresh_kill_switch():
         allowedOrigins=("https://book.qq.com",),
         pathPrefixes=("/book-rank", "/book-detail/"),
         requestIntervalSeconds=3600,
-        policyVersion="qq-reading-public-rank-v1",
+        policyVersion="qq-reading-public-rank-v2",
         enabled=False,
     )
     service = MarketSourceService(

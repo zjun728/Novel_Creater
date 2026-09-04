@@ -1,100 +1,100 @@
-"""Strict, bounded adapter for Heiyan's public top ranking."""
+"""Strict single-page adapter for Heiyan's daily recommendation ranking."""
 
 from __future__ import annotations
 
 import re
+from urllib.parse import urlsplit
 
 from backend.gateways.market_sources.base import (
-    DetailEnrichedRankAdapter,
     MarketSourceFailure,
-    RankCandidate,
-    canonical_work_url,
+    OfficialRankAdapter,
     market_entry_from_fields,
-    normalized_public_text,
 )
 
 
-class HeiyanPublicRankAdapter(DetailEnrichedRankAdapter):
-    source_url = "https://www.heiyan.com/top/"
-    platform = "heiyan"
-    ranking_name = "top"
-    category = "all"
-    adapter_version = "heiyan-public-rank-v1"
-    work_origin = "https://www.heiyan.com"
-    work_origins = (work_origin,)
+_WORK_PATH = re.compile(r"/book/[1-9][0-9]*")
 
-    def parse_rank_candidates(self, rank_page):
-        containers = rank_page.soup.select(".pattern-rank")
+
+class HeiyanPublicRankAdapter(OfficialRankAdapter):
+    source_url = "https://www.heiyan.com/top/monthly/day?rank=13"
+    platform = "heiyan"
+    ranking_name = "daily_recommendation"
+    category = "all"
+    adapter_version = "heiyan-public-rank-v2"
+    work_origins = ("https://www.heiyan.com",)
+
+    async def fetch(self, *, policy, policy_hash, captured_at):
+        document = await self.document(
+            self.source_url,
+            policy=policy,
+            policy_hash=policy_hash,
+            captured_at=captured_at,
+        )
+        containers = document.soup.select(
+            ".mod.mod-clean.update-list > .bd > table"
+        )
         if len(containers) != 1:
             raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
-        candidates: list[RankCandidate] = []
-        for row in containers[0].find_all(recursive=False):
-            titles = row.select("a.name[href]")
-            ranks = row.select(".rank-num")
-            if len(titles) != 1 or len(ranks) != 1:
-                raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
-            candidates.append(
-                RankCandidate(
-                    rank=_rank(_text(ranks[0])),
-                    title=_text(titles[0]),
-                    detail_url=titles[0].get("href"),
+        bodies = containers[0].select(":scope > tbody#tbody")
+        if len(bodies) != 1:
+            raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
+        rows = bodies[0].select(":scope > tr")
+        if len(rows) < 10:
+            raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
+
+        entries = []
+        for expected_rank, row in enumerate(rows, start=1):
+            try:
+                cells = row.find_all("td", recursive=False)
+                if len(cells) != 6:
+                    raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
+                title = _unique(cells[2], "div.range a.name[data-collect-index]")
+                rank = _rank(title.get("data-collect-index"))
+                if rank != expected_rank:
+                    raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
+                entry = market_entry_from_fields(
+                    rank=rank,
+                    title=_text(title),
+                    author=_text(_unique(cells[3], "div.range a.author")),
+                    category=_text(_unique(cells[1], "a.tag")),
+                    work_url=title.get("href"),
+                    base_url=self.source_url,
+                    work_origins=self.work_origins,
+                    metrics={
+                        "recommendation": _text(_unique(cells[4], "div")),
+                        "updatedAt": _text(_unique(cells[5], "span.time")),
+                    },
                 )
-            )
-        return tuple(candidates)
-
-    def parse_detail(self, candidate, detail_page):
-        try:
-            title = _meta(detail_page.soup, "og:novel:book_name")
-            if title != normalized_public_text(candidate.title):
-                raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
-            if canonical_work_url(
-                _meta(detail_page.soup, "og:novel:read_url"),
-                base_url=detail_page.url,
-                work_origins=self.work_origins,
-            ) != detail_page.url:
-                raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
-            return market_entry_from_fields(
-                rank=candidate.rank,
-                title=title,
-                author=_meta(detail_page.soup, "og:novel:author"),
-                category=_meta(detail_page.soup, "og:novel:category"),
-                work_url=detail_page.url,
-                base_url=detail_page.url,
-                work_origins=self.work_origins,
-                metrics={
-                    "status": _meta(detail_page.soup, "og:novel:status"),
-                    "description": _meta(detail_page.soup, "og:description"),
-                    "counters": _required_counters(detail_page.soup),
-                },
-            )
-        except MarketSourceFailure:
-            raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE") from None
-        except Exception:
-            raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE") from None
+                _require_work_path(entry.work_url)
+                entries.append(entry)
+            except MarketSourceFailure:
+                raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE") from None
+            except Exception:
+                raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE") from None
+        return self.snapshot(tuple(entries[:10]), captured_at=captured_at)
 
 
-def _meta(soup, name: str) -> str:
-    nodes = soup.find_all("meta", attrs={"property": name})
+def _unique(container, selector: str):
+    nodes = container.select(selector)
     if len(nodes) != 1:
         raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
-    return normalized_public_text(nodes[0].get("content"), limit=300)
-
-
-def _required_counters(soup) -> str:
-    containers = soup.select(".book-info")
-    if len(containers) != 1:
-        raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
-    nodes = containers[0].select(".book-count")
-    if not nodes:
-        raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
-    return normalized_public_text(" ".join(_text(node) for node in nodes), limit=200)
+    return nodes[0]
 
 
 def _text(node) -> str:
     return node.get_text(" ", strip=True) if node is not None else ""
 
 
-def _rank(value: str) -> int:
-    if re.fullmatch(r"[1-9][0-9]*", value) is None:
+def _rank(value: object) -> int:
+    if (
+        not isinstance(value, str)
+        or re.fullmatch(r"[1-9][0-9]*", value) is None
+    ):
         raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
     return int(value)
+
+
+def _require_work_path(url: str) -> None:
+    parsed = urlsplit(url)
+    if parsed.query or parsed.fragment or _WORK_PATH.fullmatch(parsed.path) is None:
+        raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")

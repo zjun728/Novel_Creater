@@ -78,9 +78,9 @@ test('live runner uses truthful verified source identities and only browser UI a
   assert.deepEqual(runner.VERIFIED_SOURCES, [
     ['qq-reading.male-popular', 'QQ 阅读男生人气榜'],
     ['qimao.public-catalog', '七猫男生更新榜'],
-    ['zongheng.monthly', '纵横月票榜'],
-    ['jjwxc.quarterly-score', '晋江季度作品积分榜'],
-    ['heiyan.diamond', '黑岩钻石榜'],
+    ['heiyan.daily-recommendation', '黑岩每日推荐榜'],
+    ['readnovel.original-monthly-ticket', '小说阅读网原创月票榜'],
+    ['xxsy.xiaoxiang-ticket', '潇湘票榜'],
   ])
   assert.equal(Object.isFrozen(runner.VERIFIED_SOURCES), true)
   assert.equal(runner.VERIFIED_SOURCES.every(Object.isFrozen), true)

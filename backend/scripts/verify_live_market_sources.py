@@ -24,6 +24,7 @@ from backend.gateways.market_sources.base import (
     canonical_work_url,
     verify_transport_policy,
 )
+from backend.gateways.market_sources.manual_snapshot import work_url_is_canonical
 from backend.gateways.market_sources.registry import candidate_adapter_factories
 
 
@@ -100,6 +101,8 @@ def _validated_snapshot(
         ):
             raise MarketSourceFailure("MARKET_SNAPSHOT_INVALID")
         if urlsplit(entry.work_url).scheme != "https":
+            raise MarketSourceFailure("MARKET_URL_NOT_ALLOWED")
+        if not work_url_is_canonical(entry.work_url, source.adapter_key):
             raise MarketSourceFailure("MARKET_URL_NOT_ALLOWED")
         if canonical_work_url(
             entry.work_url,

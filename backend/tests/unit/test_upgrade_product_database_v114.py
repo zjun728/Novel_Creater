@@ -10,6 +10,7 @@ import pytest
 from backend.domain.market_sources import PACKAGE_VERSION
 from backend.schema_manifest import STATEMENT_DELIMITER, created_table_names, manifest_hash
 from backend.scripts.upgrade_product_database_v114 import (
+    MARKET_SOURCE_INVENTORY_INCOMPATIBLE,
     ProductUpgradeDependencies,
     SchemaUpgradeError,
     SchemaUpgradeResult,
@@ -34,6 +35,37 @@ from backend.scripts.upgrade_product_database_v114 import (
 
 
 DATABASE = "novel_creator_v113"
+V113_MARKET_SOURCE_KEYS = (
+    "fanqie.reading",
+    "qidian.newsign",
+    "qimao.public-catalog",
+    "qq-reading.male-popular",
+    "shuqi.public-catalog",
+)
+PRE_CORRECTION_V11_MARKET_SOURCE_KEYS = (
+    "17k.top",
+    "fanqie.reading",
+    "heiyan.diamond",
+    "hongxiu.hotsales",
+    "jjwxc.quarterly-score",
+    "qidian.newsign",
+    "qimao.public-catalog",
+    "qq-reading.male-popular",
+    "shuqi.public-catalog",
+    "zongheng.monthly",
+)
+CURRENT_V11_MARKET_SOURCE_KEYS = (
+    "fanqie.reading",
+    "heiyan.daily-recommendation",
+    "jjwxc.quarterly-score",
+    "qidian.newsign",
+    "qimao.public-catalog",
+    "qq-reading.male-popular",
+    "readnovel.original-monthly-ticket",
+    "shuqi.public-catalog",
+    "xxsy.xiaoxiang-ticket",
+    "zongheng.monthly",
+)
 CONFIRMED_DATABASE = {
     "database": DATABASE,
     "confirm_database": DATABASE,
@@ -197,8 +229,9 @@ async def test_upgrade_metadata_cas_conflict_requires_restore_and_never_claims_r
 
 
 class FakeProductWorld:
-    def __init__(self) -> None:
+    def __init__(self, market_source_keys=V113_MARKET_SOURCE_KEYS) -> None:
         self.events: list[str] = []
+        self.market_source_keys = market_source_keys
 
     @asynccontextmanager
     async def lock(self, database):
@@ -213,6 +246,11 @@ class FakeProductWorld:
         assert database == DATABASE
         self.events.append("inventory")
         return old_inventory()
+
+    async def market_source_inventory(self, database):
+        assert database == DATABASE
+        self.events.append("market-source-inventory")
+        return tuple({"stable_key": key} for key in self.market_source_keys)
 
     async def backup(self, **kwargs):
         assert kwargs["inventory"] == old_inventory()
@@ -270,6 +308,7 @@ class FakeProductWorld:
         return ProductUpgradeDependencies(
             upgrade_lock=self.lock,
             inventory=self.inventory,
+            market_source_inventory=self.market_source_inventory,
             create_backup=self.backup,
             verify_backup=self.verify_backup,
             apply_schema=self.schema,
@@ -297,6 +336,7 @@ async def test_product_upgrade_orders_backup_before_ddl_and_sources_after_metada
     assert world.events == [
         "lock-acquire",
         "inventory",
+        "market-source-inventory",
         "backup",
         "backup-verify",
         "ddl",
@@ -319,6 +359,47 @@ async def test_product_upgrade_orders_backup_before_ddl_and_sources_after_metada
         )
     ]
     assert "rollback" not in format_product_upgrade_result(result).lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "market_source_keys",
+    (
+        (),
+        V113_MARKET_SOURCE_KEYS[:-1],
+        (*V113_MARKET_SOURCE_KEYS, "unexpected.source"),
+        (*V113_MARKET_SOURCE_KEYS, V113_MARKET_SOURCE_KEYS[0]),
+        PRE_CORRECTION_V11_MARKET_SOURCE_KEYS,
+        CURRENT_V11_MARKET_SOURCE_KEYS,
+    ),
+)
+async def test_incompatible_market_source_inventory_refuses_before_backup_or_ddl(
+    tmp_path, market_source_keys
+):
+    world = FakeProductWorld(market_source_keys)
+
+    with pytest.raises(SchemaUpgradeError) as raised:
+        await run_product_upgrade(
+            dependencies=world.dependencies(),
+            database=DATABASE,
+            confirm_database=DATABASE,
+            backup_directory=tmp_path,
+            mysqldump=tmp_path / "mysqldump.exe",
+            mysql=tmp_path / "mysql.exe",
+            now_ms=1_800_000_000_000,
+        )
+
+    assert str(raised.value) == MARKET_SOURCE_INVENTORY_INCOMPATIBLE
+    assert world.events == [
+        "lock-acquire",
+        "inventory",
+        "market-source-inventory",
+        "lock-release",
+    ]
+    assert not any(
+        event in world.events
+        for event in ("backup", "backup-verify", "ddl", "metadata", "seed-market")
+    )
 
 
 @pytest.mark.asyncio
@@ -377,7 +458,8 @@ async def test_backup_receipt_is_emitted_before_ddl_failure_and_remains_exact(tm
         )
 
     assert world.events == [
-        "lock-acquire", "inventory", "backup", "receipt", "backup-verify",
+        "lock-acquire", "inventory", "market-source-inventory",
+        "backup", "receipt", "backup-verify",
         "ddl", "lock-release",
     ]
     assert receipts == [
@@ -424,6 +506,7 @@ async def test_same_single_receipt_survives_failure_after_metadata_before_verify
     assert world.events == [
         "lock-acquire",
         "inventory",
+        "market-source-inventory",
         "backup",
         "receipt",
         "backup-verify",
@@ -533,6 +616,7 @@ async def test_client_connection_or_backup_refusal_has_no_server_writes_or_dispo
     assert world.events == [
         "lock-acquire",
         "inventory",
+        "market-source-inventory",
         "backup-refused",
         "lock-release",
     ]
@@ -837,6 +921,73 @@ async def test_default_advisory_lock_uses_one_fixed_name_and_releases(monkeypatc
         ("SELECT GET_LOCK(%s, 0) AS acquired", (UPGRADE_LOCK_NAME,)),
         "body",
         ("SELECT RELEASE_LOCK(%s) AS released", (UPGRADE_LOCK_NAME,)),
+        "closed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_default_market_source_inventory_uses_one_read_only_select(monkeypatch):
+    events = []
+
+    class Cursor:
+        def __init__(self):
+            self.sql = None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def execute(self, sql, parameters):
+            self.sql = sql
+            events.append((sql, parameters))
+
+        async def fetchall(self):
+            assert self.sql == "SELECT stable_key FROM market_sources ORDER BY stable_key"
+            return tuple({"stable_key": key} for key in V113_MARKET_SOURCE_KEYS)
+
+        @property
+        def rowcount(self):
+            return 0
+
+    class Raw:
+        def cursor(self, _kind):
+            return Cursor()
+
+        async def ensure_closed(self):
+            events.append("closed")
+
+    async def connect(**kwargs):
+        assert kwargs == {
+            "host": "localhost",
+            "port": 3307,
+            "user": "user",
+            "password": "password",
+            "charset": "utf8mb4",
+            "autocommit": True,
+        }
+        return Raw()
+
+    monkeypatch.setattr("aiomysql.connect", connect)
+    dependencies = _default_dependencies(
+        {
+            "host": "localhost",
+            "port": 3307,
+            "user": "user",
+            "password": "password",
+            "db": DATABASE,
+        }
+    )
+
+    rows = await dependencies.market_source_inventory(DATABASE)
+
+    assert rows == tuple({"stable_key": key} for key in V113_MARKET_SOURCE_KEYS)
+    assert events == [
+        (f"USE `{DATABASE}`", None),
+        ("START TRANSACTION READ ONLY", None),
+        ("SELECT stable_key FROM market_sources ORDER BY stable_key", None),
+        ("ROLLBACK", None),
         "closed",
     ]
 

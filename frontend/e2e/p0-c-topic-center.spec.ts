@@ -66,7 +66,9 @@ test('accepts the complete author-owned topic discovery and project seed flow', 
       '书旗公开书库',
       '纵横月票榜',
       '晋江季度作品积分榜',
-      '黑岩钻石榜',
+      '黑岩每日推荐榜',
+      '小说阅读网原创月票榜',
+      '潇湘票榜',
     ]) {
       await expect(sourceCard(page, name)).toBeVisible()
     }

@@ -42,11 +42,11 @@ def _snapshot():
         "fanqie.reading",
         "qimao.public-catalog",
         "shuqi.public-catalog",
-        "17k.top",
+        "xxsy.xiaoxiang-ticket",
         "zongheng.monthly",
-        "hongxiu.hotsales",
+        "readnovel.original-monthly-ticket",
         "jjwxc.quarterly-score",
-        "heiyan.diamond",
+        "heiyan.daily-recommendation",
     ),
 )
 def test_v11_source_identity_uses_each_packages_fixed_public_url(stable_key):
@@ -107,14 +107,14 @@ def test_unknown_adapter_key_has_no_fixed_source_identity():
         ("fanqie.reading", "https://fanqienovel.com/page/123"),
         ("qimao.public-catalog", "https://www.qimao.com/shuku/123/"),
         ("shuqi.public-catalog", "https://www.shuqi.com/book/123.html"),
-        ("17k.top", "https://www.17k.com/book/123.html"),
+        ("xxsy.xiaoxiang-ticket", "https://www.xxsy.net/book/123"),
         ("zongheng.monthly", "https://www.zongheng.com/detail/123"),
-        ("hongxiu.hotsales", "https://www.hongxiu.com/book/123.html"),
+        ("readnovel.original-monthly-ticket", "https://www.readnovel.com/book/123"),
         (
             "jjwxc.quarterly-score",
             "https://www.jjwxc.net/onebook.php?novelid=123",
         ),
-        ("heiyan.diamond", "https://www.heiyan.com/book/123"),
+        ("heiyan.daily-recommendation", "https://www.heiyan.com/book/123"),
     ),
 )
 def test_v11_source_accepts_manual_import_identity(
@@ -171,6 +171,8 @@ _NEW_PUBLIC_WORK_URLS = {
     "hongxiu_public_rank": "https://www.hongxiu.com/book/123.html",
     "jjwxc_public_rank": "https://www.jjwxc.net/onebook.php?novelid=123",
     "heiyan_public_rank": "https://www.heiyan.com/book/123",
+    "readnovel_public_rank": "https://www.readnovel.com/book/123",
+    "xxsy_public_rank": "https://www.xxsy.net/book/123",
 }
 
 
@@ -186,7 +188,9 @@ def _invalid_new_public_work_urls():
             "https://www.jjwxc.net/topten.php",
             "https://www.jjwxc.net/onebook.php?novelid=0",
         ),
-        "heiyan_public_rank": ("https://www.heiyan.com/top/", "https://www.heiyan.com/book/0"),
+        "heiyan_public_rank": ("https://www.heiyan.com/top/monthly/day", "https://www.heiyan.com/book/0"),
+        "readnovel_public_rank": ("https://www.readnovel.com/rank/ywyuepiao", "https://www.readnovel.com/book/0"),
+        "xxsy_public_rank": ("https://www.xxsy.net/rank/xxyuepiao", "https://www.xxsy.net/book/0"),
     }
     for adapter_key, valid_url in _NEW_PUBLIC_WORK_URLS.items():
         origin, tail = valid_url.split("//", 1)

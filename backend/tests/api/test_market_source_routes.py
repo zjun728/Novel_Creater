@@ -31,7 +31,7 @@ def _snapshot():
         "source_url": "https://www.qidian.com/rank/newsign/",
         "content_hash": "a" * 64,
         "entry_count": 1,
-        "adapter_version": "qq-reading-public-rank-v1",
+        "adapter_version": "qq-reading-public-rank-v2",
         "entries": (
             {
                 "rank": 1,
@@ -65,7 +65,7 @@ def test_snapshot_routes_expose_only_manifest_provenance_and_fail_closed():
         "captureMode", "adapterVersion", "entries",
     }
     assert summary.json()[0]["captureMode"] == "network"
-    assert detail.json()["adapterVersion"] == "qq-reading-public-rank-v1"
+    assert detail.json()["adapterVersion"] == "qq-reading-public-rank-v2"
     assert len(detail.json()["entries"]) == detail.json()["entryCount"]
 
     async def manual(source_id, snapshot_id):
@@ -109,7 +109,7 @@ def test_router_authority_tracks_all_and_only_registered_adapter_versions():
     from backend.domain.routers.market_sources import _OFFICIAL_ADAPTER_VERSIONS
 
     assert _OFFICIAL_ADAPTER_VERSIONS == official_adapter_versions()
-    assert len(_OFFICIAL_ADAPTER_VERSIONS) == 8
+    assert len(_OFFICIAL_ADAPTER_VERSIONS) == 10
     assert all(version and isinstance(version, str) for version in _OFFICIAL_ADAPTER_VERSIONS)
 
 
@@ -143,8 +143,8 @@ async def test_snapshot_repository_reads_immutable_manifest_provenance_only():
     summaries = await repository.list_snapshots(session, SOURCE_ID)
     detail = await repository.get_snapshot(session, SOURCE_ID, SNAPSHOT_ID)
 
-    assert summaries[0]["adapter_version"] == "qq-reading-public-rank-v1"
-    assert detail["adapter_version"] == "qq-reading-public-rank-v1"
+    assert summaries[0]["adapter_version"] == "qq-reading-public-rank-v2"
+    assert detail["adapter_version"] == "qq-reading-public-rank-v2"
     provenance_queries = [query for query in session.queries if "market_snapshot_entries" not in query]
     assert all("JOIN market_snapshot_manifests manifest" in query for query in provenance_queries)
     assert all("manifest.snapshot_hash=snapshot.content_hash" in query for query in provenance_queries)

@@ -1,11 +1,17 @@
 """Official Qimao public ranking adapter."""
 
+import re
+
 from backend.gateways.market_sources.base import (
     MarketSourceFailure,
     OfficialRankAdapter,
     market_entry_from_fields,
     normalized_public_excerpt,
+    require_exact_work_path,
 )
+
+
+_WORK_PATH = re.compile(r"/shuku/[1-9][0-9]*/")
 
 
 class QimaoPublicRankAdapter(OfficialRankAdapter):
@@ -13,7 +19,7 @@ class QimaoPublicRankAdapter(OfficialRankAdapter):
     platform = "qimao"
     ranking_name = "boy_update"
     category = "male"
-    adapter_version = "qimao-public-rank-v1"
+    adapter_version = "qimao-public-rank-v2"
     work_origins = ("https://www.qimao.com",)
 
     async def fetch(self, *, policy, policy_hash, captured_at):
@@ -36,25 +42,25 @@ class QimaoPublicRankAdapter(OfficialRankAdapter):
             if len(metrics) != 2:
                 raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
             try:
-                entries.append(
-                    market_entry_from_fields(
-                        rank=_text(row.select_one(".rank-number")),
-                        title=_text(title),
-                        author=_text_at(details, 0),
-                        category=_text_at(details, 1),
-                        work_url=(title or {}).get("href"),
-                        base_url=self.source_url,
-                        work_origins=self.work_origins,
-                        metrics={
-                            "status": _text_at(metrics, 0),
-                            "wordCount": _text_at(metrics, 1),
-                            "intro": normalized_public_excerpt(
-                                _text(row.select_one(".s-book-intro")),
-                                source_limit=2_000,
-                            ),
-                        },
-                    )
+                entry = market_entry_from_fields(
+                    rank=_text(row.select_one(".rank-number")),
+                    title=_text(title),
+                    author=_text_at(details, 0),
+                    category=_text_at(details, 1),
+                    work_url=(title or {}).get("href"),
+                    base_url=self.source_url,
+                    work_origins=self.work_origins,
+                    metrics={
+                        "status": _text_at(metrics, 0),
+                        "wordCount": _text_at(metrics, 1),
+                        "intro": normalized_public_excerpt(
+                            _text(row.select_one(".s-book-intro")),
+                            source_limit=2_000,
+                        ),
+                    },
                 )
+                require_exact_work_path(entry.work_url, _WORK_PATH)
+                entries.append(entry)
             except MarketSourceFailure:
                 raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE") from None
         _require_consecutive_ranks(entries)

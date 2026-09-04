@@ -12,12 +12,16 @@ from backend.gateways.market_sources.qimao_public_rank import QimaoPublicRankAda
 from backend.gateways.market_sources.qq_reading_public_rank import (
     QQReadingPublicRankAdapter,
 )
+from backend.gateways.market_sources.readnovel_public_rank import (
+    ReadNovelPublicRankAdapter,
+)
 from backend.gateways.market_sources.seventeen_k_public_rank import (
     SeventeenKPublicRankAdapter,
 )
 from backend.gateways.market_sources.zongheng_public_rank import (
     ZonghengPublicRankAdapter,
 )
+from backend.gateways.market_sources.xxsy_public_rank import XXSYPublicRankAdapter
 
 
 def candidate_adapter_factories():
@@ -31,6 +35,8 @@ def candidate_adapter_factories():
             "hongxiu_public_rank": HongxiuPublicRankAdapter,
             "jjwxc_public_rank": JJWXCPublicRankAdapter,
             "heiyan_public_rank": HeiyanPublicRankAdapter,
+            "readnovel_public_rank": ReadNovelPublicRankAdapter,
+            "xxsy_public_rank": XXSYPublicRankAdapter,
         }
     )
 

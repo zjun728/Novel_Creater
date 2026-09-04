@@ -7,9 +7,9 @@ import { fileURLToPath } from 'node:url'
 export const VERIFIED_SOURCES = Object.freeze([
   Object.freeze(['qq-reading.male-popular', 'QQ 阅读男生人气榜']),
   Object.freeze(['qimao.public-catalog', '七猫男生更新榜']),
-  Object.freeze(['zongheng.monthly', '纵横月票榜']),
-  Object.freeze(['jjwxc.quarterly-score', '晋江季度作品积分榜']),
-  Object.freeze(['heiyan.diamond', '黑岩钻石榜']),
+  Object.freeze(['heiyan.daily-recommendation', '黑岩每日推荐榜']),
+  Object.freeze(['readnovel.original-monthly-ticket', '小说阅读网原创月票榜']),
+  Object.freeze(['xxsy.xiaoxiang-ticket', '潇湘票榜']),
 ])
 
 

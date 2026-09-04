@@ -1,8 +1,10 @@
-"""Strict, bounded adapter for Zongheng's public default ranking."""
+"""Strict, bounded adapter for Zongheng's public monthly-ticket ranking."""
 
 from __future__ import annotations
 
 import re
+
+from bs4 import Comment
 
 from backend.gateways.market_sources.base import (
     DetailEnrichedRankAdapter,
@@ -11,15 +13,21 @@ from backend.gateways.market_sources.base import (
     canonical_work_url,
     market_entry_from_fields,
     normalized_public_text,
+    require_exact_work_path,
 )
+
+
+_WORK_PATH = re.compile(r"/detail/[1-9][0-9]*")
+_HEADING_TAGS = frozenset(("h1", "h2", "h3", "h4", "h5", "h6", "header"))
+_NONVISIBLE_TAGS = frozenset(("script", "style", "template", "noscript"))
 
 
 class ZonghengPublicRankAdapter(DetailEnrichedRankAdapter):
     source_url = "https://www.zongheng.com/rank?nav=default"
     platform = "zongheng"
-    ranking_name = "default"
+    ranking_name = "monthly_ticket"
     category = "all"
-    adapter_version = "zongheng-public-rank-v1"
+    adapter_version = "zongheng-public-rank-v2"
     work_origin = "https://www.zongheng.com"
     work_origins = (work_origin,)
 
@@ -40,11 +48,20 @@ class ZonghengPublicRankAdapter(DetailEnrichedRankAdapter):
             ranks = row.select(".book-rank--num")
             if len(titles) != 1 or len(ranks) != 1:
                 raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
+            try:
+                detail_url = canonical_work_url(
+                    titles[0].get("href"),
+                    base_url=self.source_url,
+                    work_origins=self.work_origins,
+                )
+                require_exact_work_path(detail_url, _WORK_PATH)
+            except MarketSourceFailure:
+                raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE") from None
             candidates.append(
                 RankCandidate(
                     rank=_rank(ranks[0], position=position),
                     title=_text(titles[0]),
-                    detail_url=titles[0].get("href"),
+                    detail_url=detail_url,
                 )
             )
         return tuple(candidates)
@@ -102,26 +119,50 @@ def _text(node) -> str:
 def _monthly_ticket_containers(containers):
     matched = []
     for container in containers:
-        markers = [
-            node
-            for node in container.find_all(string=True)
-            if " ".join(str(node).split()) == "月票榜"
-            and not _inside_rank_row(node, container)
+        headings = [
+            child
+            for child in container.find_all(recursive=False)
+            if child.name in _HEADING_TAGS
+            and "rank-heading" in child.get("class", ())
+            and _is_visible(child, container)
         ]
-        if len(markers) > 1:
+        markers = [
+            heading
+            for heading in headings
+            if _visible_text(heading) == "月票榜"
+        ]
+        if len(markers) > 1 or (markers and len(headings) != 1):
             raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
         if markers:
             matched.append(container)
     return matched
 
 
-def _inside_rank_row(node, container) -> bool:
-    parent = node.parent
-    while parent is not None and parent is not container:
-        if "zh-modules-rank-book" in parent.get("class", ()):
+def _is_visible(node, boundary) -> bool:
+    current = node
+    while current is not None:
+        if (
+            current.name in _NONVISIBLE_TAGS
+            or current.has_attr("hidden")
+            or str(current.get("aria-hidden", "")).casefold() == "true"
+        ):
+            return False
+        if current is boundary:
             return True
-        parent = parent.parent
+        current = current.parent
     return False
+
+
+def _visible_text(heading) -> str:
+    fragments = []
+    for node in heading.find_all(string=True):
+        if isinstance(node, Comment) or not _is_visible(node.parent, heading.parent):
+            continue
+        value = " ".join(str(node).split())
+        if value:
+            fragments.append(value)
+    raw = " ".join(fragments)
+    return normalized_public_text(raw, limit=50) if raw else ""
 
 
 def _rank(node, *, position: int) -> int:

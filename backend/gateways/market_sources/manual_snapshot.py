@@ -74,13 +74,23 @@ _WORK_URL_RULES = {
         "www.heiyan.com",
         re.compile(r"/book/[1-9][0-9]*"),
     ),
+    "readnovel_public_rank": (
+        "https",
+        "www.readnovel.com",
+        re.compile(r"/book/[1-9][0-9]*"),
+    ),
+    "xxsy_public_rank": (
+        "https",
+        "www.xxsy.net",
+        re.compile(r"/book/[1-9][0-9]*"),
+    ),
 }
 _QUERY_RULES = {
     "jjwxc_public_rank": re.compile(r"novelid=[1-9][0-9]*"),
 }
 
 
-def _work_url_is_canonical(url: str, adapter_key: str) -> bool:
+def work_url_is_canonical(url: str, adapter_key: str) -> bool:
     rule = _WORK_URL_RULES.get(adapter_key)
     if rule is None:
         return False
@@ -148,7 +158,7 @@ class ManualSnapshotAdapter:
         except ValidationError:
             raise MarketSourceFailure("MARKET_MANUAL_SNAPSHOT_INVALID") from None
         if adapter_key is not None and any(
-            not _work_url_is_canonical(entry.work_url, adapter_key)
+            not work_url_is_canonical(entry.work_url, adapter_key)
             for entry in snapshot.entries
         ):
             raise MarketSourceFailure("MARKET_MANUAL_SNAPSHOT_INVALID")

@@ -94,6 +94,34 @@ test('accepts only bidirectionally consistent capture mode and adapter version',
   ]) assert.throws(() => parseMarketSnapshotDetail(value))
 })
 
+test('accepts ReadNovel and XXSY official URLs and rejects removed source origins', () => {
+  const readnovel = {
+    ...detail,
+    platform: 'readnovel',
+    rankingName: 'monthly_ticket',
+    category: 'female',
+    sourceURL: 'https://www.readnovel.com/rank/ywyuepiao?pageNum=1',
+    adapterVersion: 'readnovel-public-rank-v2',
+    entries: [{
+      ...detail.entries[0],
+      workURL: 'https://www.readnovel.com/book/201',
+      publicMetrics: {},
+    }],
+  }
+  assert.equal(parseMarketSnapshotDetail(readnovel).entries[0].workURL, 'https://www.readnovel.com/book/201')
+  const xxsy = {
+    ...readnovel,
+    platform: 'xxsy',
+    rankingName: 'xiaoxiang_ticket',
+    sourceURL: 'https://www.xxsy.net/rank/xxyuepiao',
+    adapterVersion: 'xxsy-public-rank-v1',
+    entries: [{ ...readnovel.entries[0], workURL: 'https://www.xxsy.net/book/301' }],
+  }
+  assert.equal(parseMarketSnapshotDetail(xxsy).entries[0].workURL, 'https://www.xxsy.net/book/301')
+  assert.throws(() => parseMarketSnapshotSummary({ ...summary, sourceURL: 'https://www.hongxiu.com/rank' }))
+  assert.throws(() => parseMarketSnapshotSummary({ ...summary, sourceURL: 'https://www.17k.com/top/' }))
+})
+
 test('rejects non-data record boundaries while accepting backend-valid Unicode text', () => {
   const withSymbol = { ...summary, [Symbol('extra')]: true }
   assert.throws(() => parseMarketSnapshotSummary(withSymbol))

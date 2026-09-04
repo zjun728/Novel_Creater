@@ -23,9 +23,9 @@
       "evidenceURL": "https://book.qq.com/book-rank",
       "evidenceHash": "96b69cb0c8fe329a55d466a0ecd552db0ddaf204547c947be7b3a4f4ca9b329a",
       "allowedOrigins": ["https://book.qq.com"], "pathPrefixes": ["/book-rank", "/book-detail/"],
-      "requestIntervalSeconds": 3600, "policyVersion": "qq-reading-public-rank-v1", "enabled": false
+      "requestIntervalSeconds": 3600, "policyVersion": "qq-reading-public-rank-v2", "enabled": false
     },
-    "policyHash": "ccf0ce2187ee578064e055cdc28362a9d642904fdb1546b7dcb83f90f0a2c26a"
+    "policyHash": "ab63baf53997e6d0e35f37e4a8ccd109fa4bf7ed1b91883d7908f61d53a4b469"
   },
   {
     "stableKey": "fanqie.reading",
@@ -51,9 +51,9 @@
       "evidenceURL": "https://www.qimao.com/paihang/boy/update/date/",
       "evidenceHash": "3fbe50d1ee8cb337e921f9de9e4866a08ff534c7bfa79209619fd8bfc27ce69c",
       "allowedOrigins": ["https://www.qimao.com"], "pathPrefixes": ["/paihang/", "/shuku/"],
-      "requestIntervalSeconds": 3600, "policyVersion": "qimao-public-rank-v1", "enabled": false
+      "requestIntervalSeconds": 3600, "policyVersion": "qimao-public-rank-v2", "enabled": false
     },
-    "policyHash": "64a193507bf15d8a3fd1c6ccb93fff3643e1fb8900d72cefc352d2055fcec217"
+    "policyHash": "b25bc8d97f5ca872e89d30fa688a5ee9e8c18cf156223b9079466c438e41cd97"
   },
   {
     "stableKey": "shuqi.public-catalog",
@@ -70,53 +70,53 @@
     "policyHash": "dd5a440911cd741d19d37dcb56fc721ab9636ebde2ef0b174082fbc64709d703"
   },
   {
-    "stableKey": "17k.top", "adapterKey": "17k_public_rank", "displayName": "17K TOP榜",
-    "publicConfig": {"platform": "17k", "rankingName": "top1", "category": "all"},
+    "stableKey": "xxsy.xiaoxiang-ticket", "adapterKey": "xxsy_public_rank", "displayName": "潇湘票榜",
+    "publicConfig": {"platform": "xxsy", "rankingName": "xiaoxiang_ticket", "category": "female"},
     "policy": {
-      "status": "manual_only", "checkedAt": 1721000000000,
-      "evidenceURL": "https://www.17k.com/top/", "evidenceHash": "12be5746badbf487d2c787e60abc3b3db49fe4681561cb674e7bfa05e2718999",
-      "allowedOrigins": ["https://www.17k.com"], "pathPrefixes": ["/top/", "/book/"],
-      "requestIntervalSeconds": 3600, "policyVersion": "17k-public-rank-v1", "enabled": false
-    }, "policyHash": "9b78499252abe9abe5c1cce501508528ece0deb0f997e790a5f3d382c5faa788"
+      "status": "verified_public", "checkedAt": 1788537600000,
+      "evidenceURL": "https://www.xxsy.net/rank/xxyuepiao", "evidenceHash": "bb69320483d6a98c4a3dfd113e1e1f9aad15e2e458d4d560a4a7943d7fb9185a",
+      "allowedOrigins": ["https://www.xxsy.net"], "pathPrefixes": ["/rank/xxyuepiao", "/book/"],
+      "requestIntervalSeconds": 3600, "policyVersion": "xxsy-public-rank-v1", "enabled": false
+    }, "policyHash": "e88fc100154af304e0799a949eb1782efb6f5c5d906900c1b11103b70472c121"
   },
   {
     "stableKey": "zongheng.monthly", "adapterKey": "zongheng_public_rank", "displayName": "纵横月票榜",
-    "publicConfig": {"platform": "zongheng", "rankingName": "default", "category": "all"},
-    "policy": {
-      "status": "verified_public", "checkedAt": 1721000000000,
-      "evidenceURL": "https://www.zongheng.com/rank?nav=default", "evidenceHash": "798efebf5c885adfb3d4f4c9a5d5c73ebf024da2f3195d29313aabf4402a06fe",
-      "allowedOrigins": ["https://www.zongheng.com"], "pathPrefixes": ["/rank", "/detail/"],
-      "requestIntervalSeconds": 3600, "policyVersion": "zongheng-public-rank-v1", "enabled": false
-    }, "policyHash": "9acdf903bb65a789a77eeefac4c7a99b0eec3b16fe5378b1a9a20d4161941b0a"
-  },
-  {
-    "stableKey": "hongxiu.hotsales", "adapterKey": "hongxiu_public_rank", "displayName": "红袖热销榜",
-    "publicConfig": {"platform": "hongxiu", "rankingName": "rank", "category": "all"},
+    "publicConfig": {"platform": "zongheng", "rankingName": "monthly_ticket", "category": "all"},
     "policy": {
       "status": "manual_only", "checkedAt": 1721000000000,
-      "evidenceURL": "https://www.hongxiu.com/rank", "evidenceHash": "78834c41921fe104edc11a60726ed4bf19236a8bbc2bbf1eb5caf0000375247a",
-      "allowedOrigins": ["https://www.hongxiu.com"], "pathPrefixes": ["/rank", "/book/"],
-      "requestIntervalSeconds": 3600, "policyVersion": "hongxiu-public-rank-v1", "enabled": false
-    }, "policyHash": "8f6b0c0fa3f99308967dc77363ccbdabeed2f5fe572b6b5c10be3781c7ac7b01"
+      "evidenceURL": "https://www.zongheng.com/rank?nav=default", "evidenceHash": "798efebf5c885adfb3d4f4c9a5d5c73ebf024da2f3195d29313aabf4402a06fe",
+      "allowedOrigins": ["https://www.zongheng.com"], "pathPrefixes": ["/rank", "/detail/"],
+      "requestIntervalSeconds": 3600, "policyVersion": "zongheng-public-rank-v2", "enabled": false
+    }, "policyHash": "e3178615bba43c80744ed9ba7267da609ab1c531880259e144403815de1ae169"
+  },
+  {
+    "stableKey": "readnovel.original-monthly-ticket", "adapterKey": "readnovel_public_rank", "displayName": "小说阅读网原创月票榜",
+    "publicConfig": {"platform": "readnovel", "rankingName": "monthly_ticket", "category": "female"},
+    "policy": {
+      "status": "verified_public", "checkedAt": 1788537600000,
+      "evidenceURL": "https://www.readnovel.com/rank/ywyuepiao?pageNum=1", "evidenceHash": "0dfffcc46f25ee476a8d3abb8891f4a5a268a6e4edbdd04a55adab3ec4244872",
+      "allowedOrigins": ["https://www.readnovel.com"], "pathPrefixes": ["/rank/ywyuepiao", "/book/"],
+      "requestIntervalSeconds": 3600, "policyVersion": "readnovel-public-rank-v2", "enabled": false
+    }, "policyHash": "6fb2c6f4eb8dbc90e66cf1bf996c4d9c3aa2ee175c24354c8dbfcba048af6555"
   },
   {
     "stableKey": "jjwxc.quarterly-score", "adapterKey": "jjwxc_public_rank", "displayName": "晋江季度作品积分榜",
     "publicConfig": {"platform": "jjwxc", "rankingName": "quarterly_score", "category": "female"},
     "policy": {
-      "status": "verified_public", "checkedAt": 1721000000000,
+      "status": "manual_only", "checkedAt": 1721000000000,
       "evidenceURL": "https://www.jjwxc.net/topten.php?orderstr=4", "evidenceHash": "5f71d82b257dac07d9b30274454bbc64c302a377eb681ec3c3cb1744e35c0cb4",
       "allowedOrigins": ["https://www.jjwxc.net"], "pathPrefixes": ["/topten.php", "/onebook.php"],
       "requestIntervalSeconds": 3600, "policyVersion": "jjwxc-public-rank-v1", "enabled": false
-    }, "policyHash": "9e65004fd1abb1424a91b12c865ab9805e03ad124967384630197f0cd5f4b8dd"
+    }, "policyHash": "e1389220d8a1546aca6d96548c528672ef552ac2be4797a74a14bfe6147509a1"
   },
   {
-    "stableKey": "heiyan.diamond", "adapterKey": "heiyan_public_rank", "displayName": "黑岩钻石榜",
-    "publicConfig": {"platform": "heiyan", "rankingName": "top", "category": "all"},
+    "stableKey": "heiyan.daily-recommendation", "adapterKey": "heiyan_public_rank", "displayName": "黑岩每日推荐榜",
+    "publicConfig": {"platform": "heiyan", "rankingName": "daily_recommendation", "category": "all"},
     "policy": {
-      "status": "verified_public", "checkedAt": 1721000000000,
-      "evidenceURL": "https://www.heiyan.com/top/", "evidenceHash": "0866b65efbe46d9f75e31219914c5a84fe3e7290baa7cdcb0d342f2ee8431870",
-      "allowedOrigins": ["https://www.heiyan.com"], "pathPrefixes": ["/top/", "/book/"],
-      "requestIntervalSeconds": 3600, "policyVersion": "heiyan-public-rank-v1", "enabled": false
-    }, "policyHash": "8df426d6f1e05bc39961b3604e057f4f16958eb71f6acfe3b00598064ef47259"
+      "status": "verified_public", "checkedAt": 1788537600000,
+      "evidenceURL": "https://www.heiyan.com/top/monthly/day?rank=13", "evidenceHash": "67cb01afc94ae83d900f187cfd95e617a33b8e50daae89606c93a316184c343f",
+      "allowedOrigins": ["https://www.heiyan.com"], "pathPrefixes": ["/top/monthly/day", "/book/"],
+      "requestIntervalSeconds": 3600, "policyVersion": "heiyan-public-rank-v2", "enabled": false
+    }, "policyHash": "c3243d55d9fa7052936fb298db6258fca156901fe9cb74361ab33bfc57a93a7b"
   }
 ]

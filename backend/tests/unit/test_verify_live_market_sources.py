@@ -26,11 +26,13 @@ def _verified_sources():
 
 def _snapshot(source, *, count: int = 10, work_origin: str | None = None):
     origin = work_origin or source.policy.allowed_origins[0]
-    prefix = next(
-        prefix for prefix in source.policy.path_prefixes
-        if prefix not in {"/rank", "/rank/", "/top", "/top/", "/book-rank"}
-    )
-    separator = "" if prefix.endswith(("/", "=")) else "/"
+    work_path = {
+        "qq_reading_public_rank": lambda rank: f"/book-detail/{rank}",
+        "qimao_public_rank": lambda rank: f"/shuku/{rank}/",
+        "heiyan_public_rank": lambda rank: f"/book/{rank}",
+        "readnovel_public_rank": lambda rank: f"/book/{rank}",
+        "xxsy_public_rank": lambda rank: f"/book/{rank}",
+    }[source.adapter_key]
     return MarketSnapshot(
         platform=source.public_config["platform"],
         rankingName=source.public_config["rankingName"],
@@ -43,7 +45,7 @@ def _snapshot(source, *, count: int = 10, work_origin: str | None = None):
                 title=f"作品 {rank}",
                 author=f"作者 {rank}",
                 category="玄幻",
-                workURL=f"{origin}{prefix}{separator}{rank}",
+                workURL=f"{origin}{work_path(rank)}",
                 publicMetrics={"score": rank},
             )
             for rank in range(1, count + 1)
@@ -146,6 +148,41 @@ async def test_live_verifier_rejects_wrong_identity_and_unapproved_work_urls(
     assert result.lines[0] == (
         f"source={source.stable_key} status=failed code={expected_code}"
     )
+
+
+@pytest.mark.asyncio
+async def test_live_verifier_rejects_rank_page_paths_as_work_urls():
+    from backend.scripts.verify_live_market_sources import verify_sources
+
+    source = next(
+        item
+        for item in _verified_sources()
+        if item.adapter_key == "readnovel_public_rank"
+    )
+    snapshot = _snapshot(source, work_origin="https://www.readnovel.com")
+    invalid = snapshot.model_copy(
+        update={
+            "entries": tuple(
+                entry.model_copy(
+                    update={
+                        "work_url": (
+                            f"https://www.readnovel.com/rank/ywyuepiao/{entry.rank}"
+                        )
+                    }
+                )
+                for entry in snapshot.entries
+            )
+        }
+    )
+
+    result = await verify_sources(
+        (source,),
+        fetch=lambda _source: invalid,
+        required=1,
+    )
+
+    assert result.exit_code == 1
+    assert result.public_errors == frozenset({"MARKET_URL_NOT_ALLOWED"})
 
 
 @pytest.mark.asyncio

@@ -25,7 +25,7 @@
 ### Backend parsing and registry
 
 - `backend/gateways/market_sources/base.py`: bounded HTTP document retrieval, charset handling, page rejection, text and URL normalization.
-- `backend/gateways/market_sources/qq_reading_public_rank.py`, `qimao_public_rank.py`, `jjwxc_public_rank.py`, `zongheng_public_rank.py`, `heiyan_public_rank.py`, `fanqie_public_rank.py`, `seventeen_k_public_rank.py`, and `hongxiu_public_rank.py`: one official-site parsing contract per platform.
+- `backend/gateways/market_sources/qq_reading_public_rank.py`, `qimao_public_rank.py`, `jjwxc_public_rank.py`, `zongheng_public_rank.py`, `heiyan_public_rank.py`, `readnovel_public_rank.py`, `xxsy_public_rank.py`, `fanqie_public_rank.py`, `seventeen_k_public_rank.py`, and `hongxiu_public_rank.py`: one official-site parsing contract per platform.
 - `backend/gateways/market_sources/registry.py`: the only adapter-key-to-instance registry.
 - `backend/domain/market.py`: normalized immutable work metadata contract.
 - `backend/domain/market_sources.py`: source-package keys, capabilities, and immutable policy values.
@@ -316,7 +316,7 @@ class QimaoPublicRankAdapter(OfficialRankAdapter):
     platform = "qimao"
     ranking_name = "boy_update"
     category = "male"
-    adapter_version = "qimao-public-rank-v1"
+    adapter_version = "qimao-public-rank-v2"
 
     def parse_entries(self, document):
         return tuple(
@@ -421,7 +421,7 @@ class DetailEnrichedRankAdapter(OfficialRankAdapter):
         return self.snapshot(tuple(entries), captured_at=captured_at)
 ```
 
-Zongheng uses one `.zh-modules-rank-box`, `.zh-modules-rank-book`, `.book-rank--title a`, then detail `meta[name="og:novel:author"]`, `meta[name="og:novel:category"]`, `meta[name="og:novel:status"]`, `meta[name="og:description"]`, `.book-info--tags`, and `.book-info--nums`. Heiyan uses one `.pattern-rank`, `a.name`, then detail `meta[property="og:novel:author"]`, `meta[property="og:novel:category"]`, `meta[property="og:novel:status"]`, `meta[property="og:description"]`, and public counters. Required OpenGraph values must match the rank title and detail URL.
+Zongheng selects exactly one `.zh-modules-rank-box` through one explicit, visible `.rank-heading` whose normalized text is exactly `月票榜`; comments, scripts, styles, templates, hidden/`aria-hidden` nodes, and ambiguous headings cannot qualify it. It then uses `.zh-modules-rank-book`, `.book-rank--title a`, requires each candidate URL to match exact `/detail/<positive digits>` before any detail fetch, and reads detail `meta[name="og:novel:author"]`, `meta[name="og:novel:category"]`, `meta[name="og:novel:status"]`, `meta[name="og:description"]`, `.book-info--tags`, and `.book-info--nums`. Its truthful `rankingName` is `monthly_ticket`, but it remains manual-only and no `__NUXT__` payload is parsed or evaluated. Heiyan uses the single exact daily-recommendation page, one `.mod.mod-clean.update-list > .bd > table`, direct `tbody#tbody > tr` rows, and exact `/book/<positive digits>` work URLs. XXSY uses the exact `/rank/xxyuepiao` page and one exact `div.flex.flex-1.flex-wrap.relative.min-h-328px.ml-30px` container. Its three direct elements must be the `div.flex` heading wrapper with one direct `h3.font-source.text-t1` equal to `潇湘票榜`, one benign `i.block.line...` separator, and the unique `div.flex.flex-wrap.relative` grid with exactly 20 direct cards. A heading injected into a card cannot qualify the container. Each card requires an exact `/book/<positive digits>` work URL and strict `author · wordCount · category` row. Required OpenGraph values must match the rank title and detail URL where a detail-enriched adapter is used.
 
 - [ ] **Step 4: Run tests and commit**
 
@@ -440,7 +440,7 @@ git add -- backend/gateways/market_sources backend/tests/fixtures/market backend
 git commit -m "feat: enrich two official ranking sources safely"
 ```
 
-## Task 4: Add three non-enabled candidate adapters and one registry
+## Task 4: Register the ten bounded public-rank candidate adapters
 
 **Files:**
 - Create: `backend/gateways/market_sources/fanqie_public_rank.py`
@@ -457,11 +457,12 @@ git commit -m "feat: enrich two official ranking sources safely"
 - [ ] **Step 1: Write failing tests for registry completeness and fail-closed parsing**
 
 ```python
-def test_candidate_registry_contains_exact_eight_adapter_keys():
+def test_candidate_registry_contains_exact_ten_adapter_keys():
     assert set(candidate_adapter_factories()) == {
         "fanqie_public_rank", "qimao_public_rank", "qq_reading_public_rank",
         "17k_public_rank", "zongheng_public_rank", "hongxiu_public_rank",
         "jjwxc_public_rank", "heiyan_public_rank",
+        "readnovel_public_rank", "xxsy_public_rank",
     }
 
 @pytest.mark.asyncio
@@ -490,7 +491,7 @@ Expected: FAIL because the registry does not exist.
 
 - [ ] **Step 3: Implement the candidate parsers and central registry**
 
-Fanqie recognizes `.rank-book-item` but rejects any PUA-obfuscated required field. 17K recognizes the first `.TYPE .BOX.Top1`; Hongxiu recognizes the first `.rank-list .book-rank-list`; both reject rather than invent authors when the official response lacks them.
+Fanqie recognizes `.rank-book-item` but rejects any PUA-obfuscated required field. 17K recognizes the first `.TYPE .BOX.Top1`; Hongxiu recognizes the first `.rank-list .book-rank-list`; both reject rather than invent authors when the official response lacks them. 17K remains a registered, non-packaged candidate and is not part of the ten-source v1.1 package.
 
 ```python
 def candidate_adapter_factories():
@@ -503,6 +504,8 @@ def candidate_adapter_factories():
         "hongxiu_public_rank": HongxiuPublicRankAdapter,
         "jjwxc_public_rank": JJWXCPublicRankAdapter,
         "heiyan_public_rank": HeiyanPublicRankAdapter,
+        "readnovel_public_rank": ReadNovelPublicRankAdapter,
+        "xxsy_public_rank": XXSYPublicRankAdapter,
     })
 
 
@@ -559,8 +562,8 @@ def test_v11_package_has_ten_sources_five_verified_and_no_scheduler():
     assert len(package.sources) == 10
     verified = {item.adapter_key for item in package.sources if item.policy.status == "verified_public"}
     assert verified == {
-        "qq_reading_public_rank", "qimao_public_rank", "jjwxc_public_rank",
-        "zongheng_public_rank", "heiyan_public_rank",
+        "qq_reading_public_rank", "qimao_public_rank", "heiyan_public_rank",
+        "readnovel_public_rank", "xxsy_public_rank",
     }
     assert all(item.policy.enabled is False for item in package.sources)
     assert all(item.can_schedule is False for item in package.sources)
@@ -581,7 +584,7 @@ async def test_sync_upgrades_existing_sources_with_new_policy_revisions():
     assert repository.snapshot_count == 0
 ```
 
-The five verified sources are the exact initial production gate. Fanqie, 17K, and Hongxiu remain manual-only until their returned data meets the same author/title/category requirement. Qidian and Shuqi remain manual-only compatibility sources.
+The registry contains ten candidate adapters, while the hash-bound package contains ten source definitions. The five verified package sources are the exact initial production gate. Fanqie, Zongheng, and JJWXC remain manual-only until their returned data meets the same bounded response and author/title/category requirement. Qidian and Shuqi remain manual-only compatibility sources. 17K remains a registered non-packaged candidate; 17K and Hongxiu are not part of the ten-source package.
 
 - [ ] **Step 2: Run focused tests and verify they fail**
 
@@ -602,6 +605,7 @@ NETWORK_ADAPTER_KEYS = frozenset({
     "fanqie_public_rank", "qimao_public_rank", "qq_reading_public_rank",
     "17k_public_rank", "zongheng_public_rank", "hongxiu_public_rank",
     "jjwxc_public_rank", "heiyan_public_rank",
+    "readnovel_public_rank", "xxsy_public_rank",
 })
 
 @property
@@ -644,9 +648,9 @@ async def replace_policy_head(self, session, *, source_id, expected_revision, ro
 
 - [ ] **Step 5: Create the ten-source v1.1 package**
 
-Retain these stable keys: `qidian.newsign`, `qq-reading.male-popular`, `fanqie.reading`, `qimao.public-catalog`, `shuqi.public-catalog`. Add: `17k.top`, `zongheng.monthly`, `hongxiu.hotsales`, `jjwxc.favorites`, `heiyan.diamond`. The five verified display names are exactly `QQ 阅读男生人气榜`, `七猫男生更新榜`, `纵横月票榜`, `晋江收藏榜`, and `黑岩钻石榜`.
+Retain these stable keys: `qidian.newsign`, `qq-reading.male-popular`, `fanqie.reading`, `qimao.public-catalog`, `shuqi.public-catalog`. Add: `xxsy.xiaoxiang-ticket`, `zongheng.monthly`, `readnovel.original-monthly-ticket`, `jjwxc.quarterly-score`, `heiyan.daily-recommendation`. The five verified display names are exactly `QQ 阅读男生人气榜`, `七猫男生更新榜`, `黑岩每日推荐榜`, `小说阅读网原创月票榜`, and `潇湘票榜`.
 
-Use `verified_public` only for QQ Reading, Qimao, JJWXC, Zongheng, and Heiyan. All policies keep `enabled: false` and `requestIntervalSeconds: 3600`; verified detail-enriched policies include `/detail/` or `/book/` in their path prefixes. Compute the child hash, update `manifest.json` with `apply_patch`, then validate:
+Use `verified_public` only for QQ Reading, Qimao, Heiyan, ReadNovel, and XXSY. Zongheng and JJWXC remain `manual_only`. All policies keep `enabled: false` and `requestIntervalSeconds: 3600`; verified policies include their exact rank path and work path in their path prefixes. Compute the child hash, update `manifest.json` with `apply_patch`, then validate:
 
 ```powershell
 $hash = (Get-FileHash 'backend\assets\market-sources-v1.1.0\sources.json' -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -691,7 +695,7 @@ git commit -m "feat: synchronize verified market source package"
 def test_snapshot_detail_exposes_capture_mode_adapter_and_entries(client):
     value = client.get("/api/market-sources/source-1/snapshots/snapshot-1").json()
     assert value["captureMode"] == "network"
-    assert value["adapterVersion"] == "qimao-public-rank-v1"
+    assert value["adapterVersion"] == "qimao-public-rank-v2"
     assert len(value["entries"]) == value["entryCount"] == 10
 ```
 
@@ -734,7 +738,7 @@ The API detail shape is exact:
   "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "entryCount": 10,
   "captureMode": "network",
-  "adapterVersion": "qimao-public-rank-v1",
+  "adapterVersion": "qimao-public-rank-v2",
   "entries": []
 }
 ```
@@ -949,11 +953,22 @@ async def test_product_upgrade_creates_backup_before_ddl_and_syncs_sources_after
         mysqldump=Path(r"D:\Software\MySQL Server 8.4\bin\mysqldump.exe"),
         mysql=Path(r"D:\Software\MySQL Server 8.4\bin\mysql.exe"),
     )
-    assert events == ["inventory", "backup", "ddl", "metadata", "seed-market", "verify"]
+    assert events == [
+        "inventory", "market-source-inventory", "backup", "ddl", "metadata",
+        "seed-market", "verify",
+    ]
     assert result.backup_sha256 == "a" * 64
+
+@pytest.mark.asyncio
+async def test_incompatible_market_source_inventory_refuses_before_backup_or_ddl():
+    dependencies = fake_dependencies(market_source_keys=("qq-reading.male-popular",))
+    with pytest.raises(SchemaUpgradeError) as raised:
+        await run_product_upgrade(dependencies=dependencies, **UPGRADE_ARGUMENTS)
+    assert str(raised.value) == "PRODUCT_DATABASE_MARKET_SOURCE_INVENTORY_INCOMPATIBLE"
+    assert dependencies.events == ["inventory", "market-source-inventory"]
 ```
 
-Also assert: mismatched database confirmation, non-v1.13 metadata, wrong old hash, wrong old table inventory, and already-v1.14 replay all refuse before DDL; CLI output contains no host/user/password.
+Also assert: mismatched database confirmation, non-v1.13 metadata, wrong old hash, wrong old table inventory, an empty/missing/extra source inventory, the original pre-correction v1.1 ten-source inventory, and already-v1.14 replay all refuse before backup and DDL; CLI output contains no host/user/password.
 
 - [ ] **Step 2: Run tests and verify missing module failure**
 
@@ -1001,7 +1016,7 @@ Flatten the statement tuples, calculate the normalized v1.13 hash with the same 
 
 - [ ] **Step 4: Implement the fail-closed offline command**
 
-The single product command owns the required ordering: exact inventory, unique logical backup, eight additive DDL statements, metadata CAS, v1.1 source synchronization, and read-only post-verification. CLI:
+The single product command owns the required ordering: advisory lock, exact schema inventory, read-only market-source compatibility inventory, unique logical backup, eight additive DDL statements, metadata CAS, v1.1 source synchronization, and read-only post-verification. CLI:
 
 ```text
 python -m backend.scripts.upgrade_product_database_v114 \
@@ -1012,7 +1027,7 @@ python -m backend.scripts.upgrade_product_database_v114 \
   --mysql "D:\Software\MySQL Server 8.4\bin\mysql.exe"
 ```
 
-The command validates the exact database name, current metadata/hash/table inventory, absence of all eight topic tables, MySQL 8.4 client pair, private backup directory, and live connection before creating one unique backup. Only after a nonempty backup has been hashed does it execute `19_topics.sql`, re-read all 99 tables, and update singleton metadata with a guarded predicate on the old version/hash:
+While the advisory lock is held and before backup or DDL, the command loads the hash-bound `market-sources-v1.0.0` package and requires the database to contain exactly its five stable keys: `qidian.newsign`, `qq-reading.male-popular`, `fanqie.reading`, `qimao.public-catalog`, and `shuqi.public-catalog`. Empty, missing, extra, duplicate, or any prior v1.1 inventory fails with `PRODUCT_DATABASE_MARKET_SOURCE_INVENTORY_INCOMPATIBLE` and performs no write. The command also validates the exact database name, current metadata/hash/table inventory, absence of all eight topic tables, MySQL 8.4 client pair, private backup directory, and live connection before creating one unique backup. Only after a nonempty backup has been hashed does it execute `19_topics.sql`, re-read all 99 tables, and update singleton metadata with a guarded predicate on the old version/hash:
 
 ```python
 changed = await session.execute(
@@ -1108,9 +1123,9 @@ await expect(page.getByText('市场热门与公开证据')).toBeVisible()
 const verifiedSources = [
   ['qq-reading.male-popular', 'QQ 阅读男生人气榜'],
   ['qimao.public-catalog', '七猫男生更新榜'],
-  ['zongheng.monthly', '纵横月票榜'],
-  ['jjwxc.favorites', '晋江收藏榜'],
-  ['heiyan.diamond', '黑岩钻石榜'],
+  ['heiyan.daily-recommendation', '黑岩每日推荐榜'],
+  ['readnovel.original-monthly-ticket', '小说阅读网原创月票榜'],
+  ['xxsy.xiaoxiang-ticket', '潇湘票榜'],
 ]
 for (const [key, name] of verifiedSources) {
   const card = page.locator(`[data-market-source-key="${key}"]`)
@@ -1178,7 +1193,7 @@ Run:
 python -m backend.scripts.verify_live_market_sources
 ```
 
-Expected: exit 0, five `status=succeeded` lines for QQ Reading, Qimao, JJWXC, Zongheng, and Heiyan, every success has `entries>=10`, and `summary succeeded=5 failed=0 required=5`.
+Expected: exit 0, exactly five `status=succeeded` lines for `qq-reading.male-popular` (QQ 阅读男生人气榜), `qimao.public-catalog` (七猫男生更新榜), `heiyan.daily-recommendation` (黑岩每日推荐榜), `readnovel.original-monthly-ticket` (小说阅读网原创月票榜), and `xxsy.xiaoxiang-ticket` (潇湘票榜). Every success has `entries>=10`, and the final line is `summary succeeded=5 failed=0 required=5`. `zongheng.monthly` and `jjwxc.quarterly-score` remain `manual_only` and must not appear in the live verified set.
 
 If the command exits nonzero, stop. Fix the failing adapter through a new failing fixture test and rerun the deterministic test set before making one new live qualification attempt. Do not proceed to database work with fewer than five successes.
 
@@ -1293,7 +1308,7 @@ Use the `finishing-a-development-branch` skill. With user-selected integration, 
 
 ## Plan self-review
 
-- Spec coverage: source boundaries, eight candidates, five-source gate, source isolation, immutable snapshots, real work display, blank/evidence discussions, explicit saves, candidate versioning, pending project Seed, single-database upgrade, and real Provider acceptance each map to a task.
+- Spec coverage: source boundaries, ten registered candidate adapters, ten packaged source definitions, five-source gate, source isolation, immutable snapshots, real work display, blank/evidence discussions, explicit saves, candidate versioning, pending project Seed, single-database upgrade, and real Provider acceptance each map to a task.
 - Scope: project metadata editing, Writer Core, automatic refresh, full-text crawling, old-data migration, and a second database remain excluded.
 - Type consistency: adapter keys, `captureMode`, `adapterVersion`, five verified source keys, v1.1 package, and v1.14 schema names are consistent across backend, API, frontend, and acceptance tasks.
 - Safety: all unit/browser development tests avoid real Provider calls; live source qualification precedes database writes; MySQL DDL is never described as transactional; the upgrade refuses partial schema and has one backup recovery boundary.

@@ -59,7 +59,7 @@
 
 ## 3. 市场来源与接入门槛
 
-首批实现以下八个候选官方来源：
+首批实现以下十个候选官方来源：
 
 | 稳定适配器键 | 平台 | 固定公开入口 |
 | --- | --- | --- |
@@ -70,9 +70,11 @@
 | `zongheng_public_rank` | 纵横中文网 | `https://www.zongheng.com/rank?nav=default` |
 | `hongxiu_public_rank` | 红袖读书 | `https://www.hongxiu.com/rank` |
 | `jjwxc_public_rank` | 晋江文学城 | `https://www.jjwxc.net/topten.php?orderstr=4` |
-| `heiyan_public_rank` | 黑岩网 | `https://www.heiyan.com/top/` |
+| `heiyan_public_rank` | 黑岩网 | `https://www.heiyan.com/top/monthly/day?rank=13` |
+| `readnovel_public_rank` | 小说阅读网 | `https://www.readnovel.com/rank/ywyuepiao?pageNum=1` |
+| `xxsy_public_rank` | 潇湘书院 | `https://www.xxsy.net/rank/xxyuepiao` |
 
-八个适配器是实现候选，不是预先承诺全部可用。每个来源只有在产品主机上完成真实响应、解析和数据质量验证后，才能标记为 `verified_public` 并在界面显示“可刷新”。首版发布硬门槛是至少五个不同平台通过。
+十个适配器是实现候选，不是预先承诺全部可用。每个来源只有在产品主机上完成真实响应、解析和数据质量验证后，才能标记为 `verified_public` 并在界面显示“可刷新”。首版发布硬门槛是至少五个不同平台通过。当前来源包的五个可刷新来源是 QQ 阅读、七猫、黑岩每日推荐榜、小说阅读网原创月票榜和潇湘票榜；纵横与晋江保留为人工导入，红袖和 17K 仅保留为未打包的适配候选。
 
 起点公开榜单当前可能返回访问挑战，因此保留为人工导入或后续适配候选，不计入首版五来源门槛。书旗、咪咕和掌阅在未找到稳定官方公开榜单入口前继续使用人工导入，不伪装成网络刷新。
 
@@ -213,7 +215,7 @@
 本轮实施包括：
 
 - 单库 v1.13 → v1.14 原地升级命令；
-- 八个候选公开榜单适配器及至少五个真实可用来源；
+- 十个候选公开榜单适配器及至少五个真实可用来源；
 - 市场作品明细界面；
 - 真实 Provider 讨论与显式保存闭环；
 - 候选版本到项目待确认 Seed 的正式前端验收。

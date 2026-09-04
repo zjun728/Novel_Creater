@@ -38,6 +38,8 @@ NETWORK_ADAPTER_KEYS = frozenset(
         "hongxiu_public_rank",
         "jjwxc_public_rank",
         "heiyan_public_rank",
+        "readnovel_public_rank",
+        "xxsy_public_rank",
     }
 )
 
@@ -239,6 +241,8 @@ class MarketSourceDefinition(_FrozenModel):
         "hongxiu_public_rank",
         "jjwxc_public_rank",
         "heiyan_public_rank",
+        "readnovel_public_rank",
+        "xxsy_public_rank",
     ] = Field(alias="adapterKey")
     display_name: str = Field(alias="displayName", min_length=1, max_length=200)
     public_config: Mapping[str, str] = Field(alias="publicConfig")
