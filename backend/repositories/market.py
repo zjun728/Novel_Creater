@@ -689,9 +689,16 @@ class MarketRepository:
 
     async def _snapshot_summary(self, session, source_id: str, snapshot_id: str):
         return await session.fetchone(
-            """SELECT id,source_id,captured_at,platform,ranking_name,category,
-                      source_url,content_hash,entry_count
-               FROM market_snapshots WHERE source_id=%s AND id=%s""",
+            """SELECT snapshot.id,snapshot.source_id,snapshot.captured_at,
+                      snapshot.platform,snapshot.ranking_name,snapshot.category,
+                      snapshot.source_url,snapshot.content_hash,snapshot.entry_count,
+                      manifest.adapter_version
+               FROM market_snapshots snapshot
+               LEFT JOIN market_snapshot_manifests manifest
+                 ON manifest.snapshot_id=snapshot.id
+                AND manifest.source_id=snapshot.source_id
+                AND manifest.snapshot_hash=snapshot.content_hash
+               WHERE snapshot.source_id=%s AND snapshot.id=%s""",
             (source_id, snapshot_id),
         )
 
@@ -1066,10 +1073,18 @@ class MarketRepository:
     async def list_snapshots(self, session, source_id: str):
         return tuple(
             await session.fetchall(
-                """SELECT id,source_id,captured_at,platform,ranking_name,
-                          category,source_url,content_hash,entry_count
-                   FROM market_snapshots WHERE source_id=%s
-                   ORDER BY captured_at DESC,id DESC LIMIT 100""",
+                """SELECT snapshot.id,snapshot.source_id,snapshot.captured_at,
+                          snapshot.platform,snapshot.ranking_name,
+                          snapshot.category,snapshot.source_url,
+                          snapshot.content_hash,snapshot.entry_count,
+                          manifest.adapter_version
+                   FROM market_snapshots snapshot
+                   LEFT JOIN market_snapshot_manifests manifest
+                     ON manifest.snapshot_id=snapshot.id
+                    AND manifest.source_id=snapshot.source_id
+                    AND manifest.snapshot_hash=snapshot.content_hash
+                   WHERE snapshot.source_id=%s
+                   ORDER BY snapshot.captured_at DESC,snapshot.id DESC LIMIT 100""",
                 (source_id,),
             )
         )

@@ -35,6 +35,18 @@ def candidate_adapter_factories():
     )
 
 
+def official_adapter_versions():
+    versions = frozenset(
+        adapter_type.adapter_version
+        for adapter_type in candidate_adapter_factories().values()
+    )
+    if len(versions) != len(candidate_adapter_factories()) or any(
+        not isinstance(version, str) or not version for version in versions
+    ):
+        raise RuntimeError("market adapter versions must be unique and non-empty")
+    return versions
+
+
 def build_market_adapters(transport):
     return {
         key: adapter_type(transport)

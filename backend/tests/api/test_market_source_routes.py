@@ -9,6 +9,9 @@ from fastapi.testclient import TestClient
 import pytest
 from starlette.requests import Request
 
+from backend.repositories.market import MarketRepository
+from backend.gateways.market_sources.registry import official_adapter_versions
+
 
 SOURCE_ID = "00000000-0000-0000-0000-000000000101"
 SNAPSHOT_ID = "00000000-0000-0000-0000-000000000201"
@@ -28,6 +31,7 @@ def _snapshot():
         "source_url": "https://www.qidian.com/rank/newsign/",
         "content_hash": "a" * 64,
         "entry_count": 1,
+        "adapter_version": "qq-reading-public-rank-v1",
         "entries": (
             {
                 "rank": 1,
@@ -39,6 +43,112 @@ def _snapshot():
             },
         ),
     }
+
+
+def test_snapshot_routes_expose_only_manifest_provenance_and_fail_closed():
+    client, service, _, _ = _client()
+
+    summary = client.get(f"/api/market-sources/{SOURCE_ID}/snapshots")
+    detail = client.get(
+        f"/api/market-sources/{SOURCE_ID}/snapshots/{SNAPSHOT_ID}"
+    )
+
+    assert summary.status_code == detail.status_code == 200
+    assert set(summary.json()[0]) == {
+        "id", "sourceId", "capturedAt", "platform", "rankingName",
+        "category", "sourceURL", "contentHash", "entryCount",
+        "captureMode", "adapterVersion",
+    }
+    assert set(detail.json()) == {
+        "id", "sourceId", "capturedAt", "platform", "rankingName",
+        "category", "sourceURL", "contentHash", "entryCount",
+        "captureMode", "adapterVersion", "entries",
+    }
+    assert summary.json()[0]["captureMode"] == "network"
+    assert detail.json()["adapterVersion"] == "qq-reading-public-rank-v1"
+    assert len(detail.json()["entries"]) == detail.json()["entryCount"]
+
+    async def manual(source_id, snapshot_id):
+        value = _snapshot()
+        value["adapter_version"] = "manual-snapshot-v1"
+        return value
+
+    service.get_snapshot = manual
+    manual_response = client.get(
+        f"/api/market-sources/{SOURCE_ID}/snapshots/{SNAPSHOT_ID}"
+    )
+    assert manual_response.status_code == 200
+    assert manual_response.json()["captureMode"] == "manual"
+
+    async def unknown(source_id, snapshot_id):
+        value = _snapshot()
+        value["adapter_version"] = "untrusted-adapter-v99"
+        return value
+
+    service.get_snapshot = unknown
+    rejected = client.get(
+        f"/api/market-sources/{SOURCE_ID}/snapshots/{SNAPSHOT_ID}"
+    )
+    assert rejected.status_code == 503
+    assert rejected.json()["code"] == "MARKET_REFRESH_FAILED"
+
+    async def missing(source_id, snapshot_id):
+        value = _snapshot()
+        value.pop("adapter_version")
+        return value
+
+    service.get_snapshot = missing
+    missing_response = client.get(
+        f"/api/market-sources/{SOURCE_ID}/snapshots/{SNAPSHOT_ID}"
+    )
+    assert missing_response.status_code == 503
+    assert missing_response.json()["code"] == "MARKET_REFRESH_FAILED"
+
+
+def test_router_authority_tracks_all_and_only_registered_adapter_versions():
+    from backend.domain.routers.market_sources import _OFFICIAL_ADAPTER_VERSIONS
+
+    assert _OFFICIAL_ADAPTER_VERSIONS == official_adapter_versions()
+    assert len(_OFFICIAL_ADAPTER_VERSIONS) == 8
+    assert all(version and isinstance(version, str) for version in _OFFICIAL_ADAPTER_VERSIONS)
+
+
+@pytest.mark.asyncio
+async def test_snapshot_repository_reads_immutable_manifest_provenance_only():
+    class Session:
+        def __init__(self):
+            self.queries = []
+
+        async def fetchall(self, query, params):
+            self.queries.append(query)
+            if "market_snapshot_entries" in query:
+                return [
+                    {
+                        "rank_number": 1,
+                        "title": "雾港天文钟",
+                        "author": "合成作者甲",
+                        "category": "奇幻",
+                        "work_url": "https://www.qidian.com/book/900000001/",
+                        "public_metrics_json": "{}",
+                    }
+                ]
+            return [_snapshot()]
+
+        async def fetchone(self, query, params):
+            self.queries.append(query)
+            return _snapshot()
+
+    session = Session()
+    repository = MarketRepository()
+    summaries = await repository.list_snapshots(session, SOURCE_ID)
+    detail = await repository.get_snapshot(session, SOURCE_ID, SNAPSHOT_ID)
+
+    assert summaries[0]["adapter_version"] == "qq-reading-public-rank-v1"
+    assert detail["adapter_version"] == "qq-reading-public-rank-v1"
+    provenance_queries = [query for query in session.queries if "market_snapshot_entries" not in query]
+    assert all("JOIN market_snapshot_manifests manifest" in query for query in provenance_queries)
+    assert all("manifest.snapshot_hash=snapshot.content_hash" in query for query in provenance_queries)
+    assert all("market_sources" not in query for query in provenance_queries)
 
 
 class FakeService:
@@ -265,6 +375,8 @@ def test_market_source_routes_expose_only_inventory_status_history_detail_and_co
         "sourceURL",
         "contentHash",
         "entryCount",
+        "captureMode",
+        "adapterVersion",
         "entries",
     }
     assert set(detail["entries"][0]) == {

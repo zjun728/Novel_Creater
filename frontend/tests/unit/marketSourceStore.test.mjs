@@ -25,19 +25,42 @@ const source = {
   id: 'qidian',
   stableKey: 'qidian-newsign',
   displayName: '起点新人签约榜',
+  adapterKey: 'qidian_public_rank',
   platform: 'qidian',
   rankingName: 'newsign',
   category: 'male',
   policyStatus: 'verified_public',
+  policyVersion: 'public-rank-policy-v1',
+  checkedAt: 1_752_700_000,
+  evidenceURL: 'https://www.qidian.com/',
   automaticRefreshAllowed: true,
-  refreshStatus: 'failed',
+  canManualImport: true,
+  canRefresh: true,
+  canSchedule: false,
+  refreshStatus: 'idle',
+  lastAttemptedAt: null,
   lastSucceededAt: 1_752_800_000,
   lastSnapshotId: 'snapshot-1',
   publicErrorCode: 'MARKET_FETCH_FAILED',
-  scheduleRevision: 3,
-  scheduleEnabled: false,
-  scheduleIntervalMinutes: 360,
-  scheduleNextRunAt: null,
+}
+
+function snapshotSummary(id = 'snapshot-1', entryCount = 1) {
+  return {
+    id, sourceId: 'qidian', capturedAt: 1_752_800_000,
+    platform: 'qidian', rankingName: 'newsign', category: 'male',
+    sourceURL: 'https://www.qidian.com/rank/newsign/', contentHash: 'a'.repeat(64),
+    entryCount, captureMode: 'network', adapterVersion: 'qidian-public-rank-v1',
+  }
+}
+
+function snapshotDetail(id = 'snapshot-1') {
+  return {
+    ...snapshotSummary(id),
+    entries: [{
+      rank: 1, title: '雾港天文钟', author: '合成作者甲', category: '奇幻',
+      workURL: 'https://www.qidian.com/book/1/', publicMetrics: {},
+    }],
+  }
 }
 
 test('source inventory retains last success and visible failure beside immutable snapshot freshness', async () => {
@@ -46,13 +69,7 @@ test('source inventory retains last success and visible failure beside immutable
   await withFetch(async url => {
     if (String(url).endsWith('/market-sources')) return response([source])
     if (String(url).endsWith('/market-sources/qidian/snapshots')) {
-      return response([{
-        id: 'snapshot-1',
-        sourceId: 'qidian',
-        capturedAt: 1_752_800_000,
-        contentHash: 'a'.repeat(64),
-        entryCount: 20,
-      }])
+      return response([snapshotSummary('snapshot-1')])
     }
     throw new Error(`unexpected request ${url}`)
   }, () => store.loadSources())
@@ -73,14 +90,7 @@ test('manual import and per-source refresh publish only returned snapshot facts'
       method: options.method,
       body: JSON.parse(options.body),
     })
-    return response({
-      id: options.method === 'POST' ? `snapshot-${requests.length}` : 'snapshot',
-      sourceId: 'qidian',
-      capturedAt: 123,
-      contentHash: 'c'.repeat(64),
-      entryCount: 1,
-      entries: [],
-    })
+    return response(snapshotDetail(`snapshot-${requests.length}`))
   }, async () => {
     await store.importManualSnapshot('qidian', {
       platform: 'qidian',
@@ -120,14 +130,7 @@ test('snapshot success and later failure both reload authoritative source freshn
 
   await withFetch(async (url, options) => {
     if (options.method === 'POST' && phase === 'success') {
-      return response({
-        id: 'snapshot-2',
-        sourceId: 'qidian',
-        capturedAt: 1_752_900_000,
-        contentHash: 'e'.repeat(64),
-        entryCount: 1,
-        entries: [],
-      })
+      return response(snapshotDetail('snapshot-2'))
     }
     if (options.method === 'POST') {
       return response({
@@ -140,7 +143,7 @@ test('snapshot success and later failure both reload authoritative source freshn
     if (phase === 'success') {
       return response({
         ...source,
-        refreshStatus: 'succeeded',
+        refreshStatus: 'idle',
         lastSucceededAt: 1_752_900_001,
         lastSnapshotId: 'snapshot-2',
         publicErrorCode: null,
@@ -148,7 +151,7 @@ test('snapshot success and later failure both reload authoritative source freshn
     }
     return response({
       ...source,
-      refreshStatus: 'failed',
+        refreshStatus: 'idle',
       lastSucceededAt: 1_752_900_001,
       lastSnapshotId: 'snapshot-2',
       publicErrorCode: 'MARKET_FETCH_FAILED',
@@ -189,4 +192,144 @@ test('global market state does not expose removed project analysis or scheduling
   ]) {
     assert.equal(property in store, false, `${property} should not be public`)
   }
+})
+
+test('store rejects unparsed API payloads before they enter state', async () => {
+  setActivePinia(createPinia())
+  const store = useMarketSourceStore()
+  await withFetch(async () => response([{ ...source, secret: 'sensitive' }]), async () => {
+    await assert.rejects(store.loadSources(), TypeError)
+  })
+  assert.deepEqual(store.sources, [])
+})
+
+test('snapshot detail cache requires matching source identity and retains immutable success on failure', async () => {
+  setActivePinia(createPinia())
+  const store = useMarketSourceStore()
+  let phase = 'success'
+  await withFetch(async () => {
+    if (phase === 'success') return response(snapshotDetail())
+    if (phase === 'mismatch') return response({ ...snapshotDetail(), sourceId: 'other' })
+    return response({ code: 'MARKET_REFRESH_FAILED', message: 'failed' }, 503)
+  }, async () => {
+    const detail = await store.loadSnapshotDetail('qidian', 'snapshot-1')
+    assert.equal(Object.isFrozen(detail), true)
+    assert.equal(Object.isFrozen(detail.entries), true)
+
+    phase = 'mismatch'
+    await assert.rejects(store.loadSnapshotDetail('qidian', 'snapshot-1'), TypeError)
+    assert.equal(store.snapshotDetails[JSON.stringify(['qidian', 'snapshot-1'])], detail)
+
+    phase = 'failure'
+    await assert.rejects(store.loadSnapshotDetail('qidian', 'snapshot-1'))
+    assert.equal(store.snapshotDetails[JSON.stringify(['qidian', 'snapshot-1'])], detail)
+    assert.equal(store.snapshotDetailFailures[JSON.stringify(['qidian', 'snapshot-1'])].status, 503)
+  })
+})
+
+test('late independent snapshot detail response remains cached under its own composite key', async () => {
+  setActivePinia(createPinia())
+  const store = useMarketSourceStore()
+  let releaseFirst
+  const first = new Promise(resolve => { releaseFirst = resolve })
+  await withFetch(async url => {
+    if (String(url).endsWith('/snapshot-1')) {
+      await first
+      return response(snapshotDetail('snapshot-1'))
+    }
+    return response(snapshotDetail('snapshot-2'))
+  }, async () => {
+    const oldRequest = store.loadSnapshotDetail('qidian', 'snapshot-1')
+    const latest = await store.loadSnapshotDetail('qidian', 'snapshot-2')
+    releaseFirst()
+    await oldRequest
+    assert.equal(store.snapshotDetails[JSON.stringify(['qidian', 'snapshot-2'])], latest)
+    assert.equal(store.snapshotDetails[JSON.stringify(['qidian', 'snapshot-1'])].id, 'snapshot-1')
+  })
+})
+
+test('store fences source and history identity mismatches at the parsed client boundary', async () => {
+  setActivePinia(createPinia())
+  const store = useMarketSourceStore()
+  await withFetch(async url => {
+    if (String(url).endsWith('/market-sources/qidian')) return response({ ...source, id: 'other' })
+    if (String(url).endsWith('/snapshots')) return response([{ ...snapshotSummary(), sourceId: 'other' }])
+    return response([source])
+  }, async () => {
+    await assert.rejects(store.loadSource('qidian'), TypeError)
+    await assert.rejects(store.loadSources(), TypeError)
+  })
+})
+
+test('cache separates equal snapshot ids from different sources', async () => {
+  setActivePinia(createPinia())
+  const store = useMarketSourceStore()
+  await withFetch(async url => {
+    const isOther = String(url).includes('/other/')
+    return response({ ...snapshotDetail('same'), sourceId: isOther ? 'other' : 'qidian' })
+  }, async () => {
+    const qidian = await store.loadSnapshotDetail('qidian', 'same')
+    const other = await store.loadSnapshotDetail('other', 'same')
+    assert.equal(store.snapshotDetails[JSON.stringify(['qidian', 'same'])], qidian)
+    assert.equal(store.snapshotDetails[JSON.stringify(['other', 'same'])], other)
+  })
+})
+
+test('successful refresh reloads authoritative history for a first snapshot', async () => {
+  setActivePinia(createPinia())
+  const store = useMarketSourceStore()
+  await withFetch(async (url, options) => {
+    if (options.method === 'POST') return response(snapshotDetail('first'))
+    if (String(url).endsWith('/snapshots')) return response([snapshotSummary('first')])
+    return response(source)
+  }, async () => {
+    await store.refreshSource('qidian', 'r'.repeat(64))
+  })
+  assert.equal(store.snapshotHistory.qidian[0].id, 'first')
+})
+
+test('successful refresh keeps a first immutable history fallback when reread fails', async () => {
+  setActivePinia(createPinia())
+  const store = useMarketSourceStore()
+  await withFetch(async (url, options) => {
+    if (options.method === 'POST') return response(snapshotDetail('first'))
+    if (String(url).endsWith('/snapshots')) return response({ code: 'MARKET_REFRESH_FAILED' }, 503)
+    return response(source)
+  }, async () => { await store.refreshSource('qidian', 'r'.repeat(64)) })
+  assert.equal(store.snapshotHistory.qidian[0].id, 'first')
+  assert.equal(Object.hasOwn(store.snapshotHistory.qidian[0], 'entries'), false)
+  assert.equal(Object.isFrozen(store.snapshotHistory.qidian[0]), true)
+})
+
+test('bulk commit cannot invalidate a newer pending point source request', async () => {
+  setActivePinia(createPinia())
+  const store = useMarketSourceStore()
+  let releaseBulk
+  let releasePoint
+  const bulkGate = new Promise(resolve => { releaseBulk = resolve })
+  const pointGate = new Promise(resolve => { releasePoint = resolve })
+  let listCalls = 0
+  await withFetch(async url => {
+    const path = String(url)
+    if (path.endsWith('/market-sources')) {
+      listCalls += 1
+      await bulkGate
+      return response([{ ...source, displayName: 'bulk' }])
+    }
+    if (path.endsWith('/market-sources/qidian')) {
+      await pointGate
+      return response({ ...source, displayName: 'point' })
+    }
+    if (path.endsWith('/snapshots')) return response([snapshotSummary()])
+    throw new Error(`unexpected ${path}`)
+  }, async () => {
+    const bulk = store.loadSources()
+    const point = store.loadSource('qidian')
+    releaseBulk()
+    await bulk
+    releasePoint()
+    await point
+  })
+  assert.equal(listCalls, 1)
+  assert.equal(store.sources[0].displayName, 'point')
 })

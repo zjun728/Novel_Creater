@@ -19,7 +19,10 @@ from backend.gateways.market_sources.manual_snapshot import (
     MAX_MANUAL_SNAPSHOT_BYTES,
     ManualSnapshotAdapter,
 )
-from backend.gateways.market_sources.registry import build_market_adapters
+from backend.gateways.market_sources.registry import (
+    build_market_adapters,
+    official_adapter_versions,
+)
 from backend.repositories.market import MarketRepository
 from backend.services.market_snapshots import MarketSnapshotService
 from backend.services.market_sources import MarketSourceService
@@ -27,6 +30,9 @@ from backend.services.market_sources import MarketSourceService
 
 router = APIRouter(tags=["market-sources"])
 BoundedId = Annotated[str, Path(min_length=1, max_length=36)]
+
+_MANUAL_ADAPTER_VERSION = "manual-snapshot-v1"
+_OFFICIAL_ADAPTER_VERSIONS = official_adapter_versions()
 
 
 class _Request(BaseModel):
@@ -141,6 +147,16 @@ def _entry_view(row: dict) -> dict:
 
 
 def _snapshot_view(row: dict, *, detail: bool) -> dict:
+    try:
+        adapter_version = row["adapter_version"]
+    except (KeyError, TypeError):
+        raise MarketSourceFailure("MARKET_REFRESH_FAILED") from None
+    if adapter_version == _MANUAL_ADAPTER_VERSION:
+        capture_mode = "manual"
+    elif adapter_version in _OFFICIAL_ADAPTER_VERSIONS:
+        capture_mode = "network"
+    else:
+        raise MarketSourceFailure("MARKET_REFRESH_FAILED")
     value = {
         "id": row["id"],
         "sourceId": row["source_id"],
@@ -151,6 +167,8 @@ def _snapshot_view(row: dict, *, detail: bool) -> dict:
         "sourceURL": row["source_url"],
         "contentHash": row["content_hash"],
         "entryCount": row["entry_count"],
+        "captureMode": capture_mode,
+        "adapterVersion": adapter_version,
     }
     if detail:
         entries = row.get("entries")

@@ -4,6 +4,12 @@ import { ApiError, parseApiError } from './api-error.js'
 import { sha256Text } from '../../utils/sha256Text.js'
 import { unicodeScalarLength } from '../../utils/unicodeScalarText.js'
 import { parseProjectOverview } from '../../application/projects/projectOverview.js'
+import {
+  parseMarketSnapshotDetail,
+  parseMarketSnapshotList,
+  parseMarketSource,
+  parseMarketSourceList,
+} from '../../application/market/marketContracts.js'
 
 const BASE = (import.meta.env?.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api').replace(/\/+$/, '')
 const DEFAULT_TIMEOUT = 30000
@@ -2570,25 +2576,25 @@ export const api = {
   },
 
   marketSources: {
-    list: () => get('/market-sources'),
-    get: sourceId => get(`/market-sources/${segment(sourceId)}`),
-    snapshots: (sourceId) => get(
+    list: async () => parseMarketSourceList(await get('/market-sources')),
+    get: async sourceId => parseMarketSource(await get(`/market-sources/${segment(sourceId)}`)),
+    snapshots: async (sourceId) => parseMarketSnapshotList(await get(
       `/market-sources/${segment(sourceId)}/snapshots`,
-    ),
-    snapshot: (sourceId, snapshotId) => get(
+    )),
+    snapshot: async (sourceId, snapshotId) => parseMarketSnapshotDetail(await get(
       `/market-sources/${segment(sourceId)}/snapshots/${segment(snapshotId)}`,
-    ),
-    manualImport: (sourceId, data) => post(
+    )),
+    manualImport: async (sourceId, data) => parseMarketSnapshotDetail(await post(
       `/market-sources/${segment(sourceId)}/manual-import`,
       {
         idempotencyKey: data.idempotencyKey,
         snapshot: data.snapshot,
       },
-    ),
-    refresh: (sourceId, idempotencyKey) => post(
+    )),
+    refresh: async (sourceId, idempotencyKey) => parseMarketSnapshotDetail(await post(
       `/market-sources/${segment(sourceId)}/refresh`,
       { idempotencyKey },
-    ),
+    )),
   },
 
   topics: {
