@@ -196,6 +196,7 @@ async function saveSuggestion(kind, request, payload, index) {
 .new-discussion { display:grid; gap:7px; }.new-discussion label,.composer label { color:#765f48; font-size:11px; font-weight:700; }
 .new-discussion input,.composer textarea { min-width:0; border:1px solid #cfc0aa; padding:9px; color:#302923; background:#fffdf8; font:inherit; }
 .discussion-list { display:grid; gap:6px; max-height:410px; margin-top:14px; overflow-y:auto; }
+.discussion-list:focus-visible,.message-scroll:focus-visible { outline:2px solid #9a4938; outline-offset:2px; }
 .discussion-list button { min-width:0; padding:10px; border:1px solid transparent; text-align:left; color:#5e5449; background:transparent; cursor:pointer; }
 .discussion-list button.active { border-color:#c8b79f; background:#fffdf8; }.discussion-list strong,.discussion-list span{display:block;overflow:hidden;text-overflow:ellipsis}.discussion-list span{margin-top:3px;font-size:9px}
 .conversation { display:grid; min-width:0; grid-template-rows:auto auto auto minmax(230px,1fr) auto; padding:16px; }
@@ -209,5 +210,5 @@ async function saveSuggestion(kind, request, payload, index) {
 .suggestion { margin:12px 0; padding:14px; border:1px solid #c9d3c6; background:#f3f6f0; }.suggestion.candidate{border-color:#d8c4ac;background:#fff8ed}.suggestion h3{margin:5px 0;font:650 17px 'Noto Serif SC','Songti SC',serif}.suggestion p{color:#695f54;font-size:11px;line-height:1.65}
 .composer { display:grid; gap:7px; padding-top:13px; border-top:1px solid #e1d6c5; }.composer textarea{resize:vertical}.composer small{color:#8c7b68}.composer p{min-height:18px;margin:0;color:#48654f;font-size:10px}
 .compact .discussion-layout { grid-template-columns:1fr; }.compact .discussion-index{border-right:0;border-bottom:1px solid #e1d6c5}.compact .discussion-list{max-height:150px}.compact .message-scroll{max-height:360px}
-@media(max-width:720px){.discussion-panel{padding:16px}.discussion-layout{grid-template-columns:1fr}.discussion-index{border-right:0;border-bottom:1px solid #e1d6c5}.conversation{padding:12px}.message-scroll{max-height:440px;overflow-y:auto}.composer>div{align-items:flex-start;flex-direction:column}.composer :deep(.n-button){width:100%}}
+@media(max-width:720px){.discussion-panel{padding:16px}.discussion-layout{grid-template-columns:1fr}.discussion-index{border-right:0;border-bottom:1px solid #e1d6c5}.discussion-list{max-height:none;overflow-y:visible}.conversation{padding:12px}.message-scroll{max-height:none;overflow-y:visible}.composer>div{align-items:flex-start;flex-direction:column}.composer :deep(.n-button){width:100%}}
 </style>

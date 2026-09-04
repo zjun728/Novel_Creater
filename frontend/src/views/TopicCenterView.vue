@@ -70,7 +70,7 @@ onBeforeUnmount(() => topics.leaveSection())
     <p v-if="pageError" class="page-error" role="alert" aria-live="assertive">{{ pageError }}</p>
 
     <div v-if="activeSection === 'market'" class="market-workspace">
-      <MarketDiscoveryPanel v-model:selected-evidence="selectedEvidence" />
+      <MarketDiscoveryPanel class="market-discovery" v-model:selected-evidence="selectedEvidence" />
       <TopicDiscussionPanel :evidence="selectedEvidence" :subject="discussionSubject" compact @remove-evidence="removeEvidence" @clear-subject="discussionSubject = null" />
       <TopicCandidatesPanel class="market-candidates" compact @continue-discussion="continueDiscussion" />
     </div>
@@ -82,7 +82,7 @@ onBeforeUnmount(() => topics.leaveSection())
 
 <style scoped>
 .topic-center { min-width:0; min-height:100%; overflow-x:hidden; padding:clamp(24px,4vw,48px); color:#302923; background:radial-gradient(circle at 92% 2%,rgba(154,73,56,.08),transparent 27rem),linear-gradient(180deg,#fbf8f1 0%,#f4ecdf 100%); }
-.topic-center>:not(:first-child){margin-top:24px}.market-workspace{display:grid;grid-template-columns:minmax(360px,.78fr) minmax(500px,1.22fr);gap:14px;min-width:0}.market-candidates{grid-column:1/-1}.page-error{padding:12px;border-left:3px solid #9a4938;color:#6c342b;background:#fff4ef}.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+.topic-center>:not(:first-child){margin-top:24px}.market-workspace{display:grid;grid-template-columns:minmax(420px,1fr) minmax(420px,1fr);gap:14px;min-width:0}.market-discovery,.market-candidates{grid-column:1/-1}.page-error{padding:12px;border-left:3px solid #9a4938;color:#6c342b;background:#fff4ef}.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
 @media(max-width:1080px){.market-workspace{grid-template-columns:1fr}}
 @media(max-width:720px){.topic-center{padding:16px}.topic-center>:not(:first-child){margin-top:16px}.market-workspace{grid-template-columns:minmax(0,1fr)}}
 @media(prefers-reduced-motion:reduce){.topic-center *{scroll-behavior:auto!important;transition-duration:.01ms!important}}

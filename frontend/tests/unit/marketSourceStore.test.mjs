@@ -44,21 +44,31 @@ const source = {
   publicErrorCode: 'MARKET_FETCH_FAILED',
 }
 
-function snapshotSummary(id = 'snapshot-1', entryCount = 1) {
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
+function snapshotSummary(id = 'snapshot-1', entryCount = 1, sourceId = 'qidian', capturedAt = 1_752_800_000) {
   return {
-    id, sourceId: 'qidian', capturedAt: 1_752_800_000,
-    platform: 'qidian', rankingName: 'newsign', category: 'male',
-    sourceURL: 'https://www.qidian.com/rank/newsign/', contentHash: 'a'.repeat(64),
+    id, sourceId, capturedAt,
+    platform: sourceId, rankingName: 'newsign', category: 'male',
+    sourceURL: `https://www.qidian.com/${sourceId}/rank/newsign/`, contentHash: 'a'.repeat(64),
     entryCount, captureMode: 'network', adapterVersion: 'qidian-public-rank-v1',
   }
 }
 
-function snapshotDetail(id = 'snapshot-1') {
+function snapshotDetail(id = 'snapshot-1', sourceId = 'qidian', capturedAt = 1_752_800_000) {
   return {
-    ...snapshotSummary(id),
+    ...snapshotSummary(id, 1, sourceId, capturedAt),
     entries: [{
       rank: 1, title: '雾港天文钟', author: '合成作者甲', category: '奇幻',
-      workURL: 'https://www.qidian.com/book/1/', publicMetrics: {},
+      workURL: `https://www.qidian.com/${sourceId}/book/1/`, publicMetrics: {},
     }],
   }
 }
@@ -301,6 +311,31 @@ test('successful refresh keeps a first immutable history fallback when reread fa
   assert.equal(Object.isFrozen(store.snapshotHistory.qidian[0]), true)
 })
 
+test('POST success keeps source freshness available when both authoritative rereads fail', async () => {
+  setActivePinia(createPinia())
+  const store = useMarketSourceStore()
+  store.$patch({
+    sources: [Object.freeze({
+      ...source,
+      refreshStatus: 'leased',
+      lastAttemptedAt: 1_752_700_000,
+      lastSucceededAt: null,
+      lastSnapshotId: null,
+      publicErrorCode: 'MARKET_FETCH_FAILED',
+    })],
+  })
+  await withFetch(async (url, options = {}) => {
+    if (options.method === 'POST') return response(snapshotDetail('first'))
+    return response({ error: { code: 'MARKET_FETCH_FAILED', message: 'reread failed' } }, 503)
+  }, async () => { await store.refreshSource('qidian', 'r'.repeat(64)) })
+
+  assert.equal(store.sourceState('qidian').freshness, 'available')
+  assert.equal(store.sources[0].lastSucceededAt, snapshotDetail('first').capturedAt)
+  assert.equal(store.sources[0].lastSnapshotId, 'first')
+  assert.equal(store.sources[0].publicErrorCode, null)
+  assert.equal(store.sources[0].refreshStatus, 'idle')
+})
+
 test('bulk commit cannot invalidate a newer pending point source request', async () => {
   setActivePinia(createPinia())
   const store = useMarketSourceStore()
@@ -332,4 +367,95 @@ test('bulk commit cannot invalidate a newer pending point source request', async
   })
   assert.equal(listCalls, 1)
   assert.equal(store.sources[0].displayName, 'point')
+})
+
+test('source operations expose independent busy state for concurrent sources', async () => {
+  setActivePinia(createPinia())
+  const store = useMarketSourceStore()
+  const otherSource = Object.freeze({
+    ...source,
+    id: 'other',
+    stableKey: 'other-newsign',
+    displayName: '另一榜单',
+    platform: 'other',
+    lastSnapshotId: 'other-old',
+  })
+  store.$patch({ sources: [Object.freeze(source), otherSource] })
+  const qidianGate = deferred()
+  const otherGate = deferred()
+
+  await withFetch(async (url, options = {}) => {
+    const path = String(url)
+    if (options.method === 'POST' && path.includes('/qidian/refresh')) {
+      await qidianGate.promise
+      return response(snapshotDetail('qidian-new', 'qidian', 1_752_900_001))
+    }
+    if (options.method === 'POST' && path.includes('/other/refresh')) {
+      await otherGate.promise
+      return response(snapshotDetail('other-new', 'other', 1_752_900_002))
+    }
+    return response({ error: { code: 'MARKET_FETCH_FAILED', message: 'reread failed' } }, 503)
+  }, async () => {
+    const qidianRequest = store.refreshSource('qidian', 'q'.repeat(64))
+    assert.equal(store.isSourceBusy('qidian'), true)
+    assert.equal(store.isSourceBusy('other'), false)
+
+    const otherRequest = store.refreshSource('other', 'o'.repeat(64))
+    assert.equal(store.isSourceBusy('qidian'), true)
+    assert.equal(store.isSourceBusy('other'), true)
+
+    otherGate.resolve()
+    await otherRequest
+    assert.equal(store.isSourceBusy('other'), false)
+    assert.equal(store.isSourceBusy('qidian'), true)
+
+    qidianGate.resolve()
+    await qidianRequest
+    assert.equal(store.isSourceBusy('qidian'), false)
+  })
+})
+
+test('an older same-source completion cannot clear busy state or publish stale fallback', async () => {
+  setActivePinia(createPinia())
+  const store = useMarketSourceStore()
+  store.$patch({
+    sources: [Object.freeze({
+      ...source,
+      lastSucceededAt: null,
+      lastSnapshotId: null,
+      publicErrorCode: null,
+    })],
+  })
+  const olderGate = deferred()
+  const newerGate = deferred()
+  let refreshCalls = 0
+
+  await withFetch(async (url, options = {}) => {
+    if (options.method === 'POST') {
+      refreshCalls += 1
+      if (refreshCalls === 1) {
+        await olderGate.promise
+        return response(snapshotDetail('older', 'qidian', 1_752_900_001))
+      }
+      await newerGate.promise
+      return response(snapshotDetail('newer', 'qidian', 1_752_900_002))
+    }
+    return response({ error: { code: 'MARKET_FETCH_FAILED', message: 'reread failed' } }, 503)
+  }, async () => {
+    const olderRequest = store.refreshSource('qidian', 'a'.repeat(64))
+    const newerRequest = store.refreshSource('qidian', 'b'.repeat(64))
+
+    olderGate.resolve()
+    await olderRequest
+    assert.equal(store.isSourceBusy('qidian'), true)
+    assert.equal(store.sources[0].lastSnapshotId, null)
+    assert.equal(store.snapshotHistory.qidian, undefined)
+
+    newerGate.resolve()
+    await newerRequest
+    assert.equal(store.isSourceBusy('qidian'), false)
+    assert.equal(store.sources[0].lastSnapshotId, 'newer')
+    assert.equal(store.sources[0].lastSucceededAt, 1_752_900_002)
+    assert.equal(store.snapshotHistory.qidian[0].id, 'newer')
+  })
 })

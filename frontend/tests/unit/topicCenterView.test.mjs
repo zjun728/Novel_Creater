@@ -8,6 +8,7 @@ const files = [
   'src/views/TopicCenterView.vue',
   'src/components/topics/TopicCenterHeader.vue',
   'src/components/topics/MarketDiscoveryPanel.vue',
+  'src/components/topics/MarketSnapshotWorks.vue',
   'src/components/topics/TopicDiscussionPanel.vue',
   'src/components/topics/TopicDirectionsPanel.vue',
   'src/components/topics/TopicCandidatesPanel.vue',
@@ -31,12 +32,27 @@ test('topic center has four truthful destinations and an information-first page 
 })
 
 test('market and discussion surfaces preserve explicit evidence and explicit saves', async () => {
-  const [, , market, discussion] = await sources()
-  assert.match(market, /手动刷新/)
-  assert.match(market, /手动导入快照/)
+  const [, , market, works, discussion] = await sources()
+  const presentation = await readFile(path.join(root, 'src/application/market/marketSourcePresentation.js'), 'utf8')
+  assert.match(presentation, /网络刷新/)
+  assert.match(presentation, /人工导入/)
   assert.match(market, /上次成功/)
   assert.match(market, /最新刷新失败/)
+  assert.match(market, /查看榜单作品/)
+  assert.match(market, /data-market-source-key/)
+  assert.match(market, /data-market-source-status/)
+  assert.match(market, /`刷新\$\{source\.displayName\}`/)
+  assert.match(market, /刷新\{\{ source\.displayName \}\}/)
+  assert.match(market, /source\.canRefresh/)
+  assert.match(market, /source\.canManualImport/)
+  assert.doesNotMatch(market, /source\.policyStatus/)
+  assert.match(market, /`导入\$\{source\.displayName\}`/)
+  assert.match(market, /导入\{\{ source\.displayName \}\}/)
+  assert.match(market, /`查看榜单作品：\$\{source\.displayName\}`/)
+  assert.match(market, /marketFailureCopy\(source, market\.snapshotHistory\[source\.id\] \|\| \[\]\)/)
+  assert.match(market, /marketCapabilityPresentation\(source\)/)
   assert.doesNotMatch(market, /自动刷新|定时|每隔/)
+  assert.match(works, /MarketSnapshotWorks|榜单作品/)
   assert.match(discussion, /从空白想法开始/)
   assert.match(discussion, /移除证据/)
   assert.match(discussion, /保存为方向/)
@@ -49,7 +65,7 @@ test('market and discussion surfaces preserve explicit evidence and explicit sav
 })
 
 test('direction and candidate detail show author fields, version history, and guarded handoff', async () => {
-  const [, , , , directions, candidates, dialog] = await sources()
+  const [, , , , , directions, candidates, dialog] = await sources()
   for (const label of ['题材机会', '目标读者', '读者承诺', '差异化', '长篇发展空间', '风险', '证据摘要']) {
     assert.match(directions, new RegExp(label))
   }
@@ -77,4 +93,16 @@ test('topic panels own independent scrolling and responsive layout without page 
   assert.match(text, /aria-live="(?:polite|assertive)"/)
   assert.match(text, /aria-label=/)
   assert.doesNotMatch(text, /<main\b/)
+})
+
+test('narrow market page leaves vertical scrolling to the page alone', async () => {
+  const [, , market, works, discussion, , candidates] = await sources()
+  assert.match(market, /@media\(max-width:720px\)[\s\S]*\.source-list\{max-height:none;overflow-y:visible\}/)
+  assert.match(works, /@media\(max-width:720px\)/)
+  assert.match(discussion, /@media\(max-width:720px\)[\s\S]*\.discussion-list\{max-height:none;overflow-y:visible\}/)
+  assert.match(discussion, /@media\(max-width:720px\)[\s\S]*\.message-scroll\{max-height:none;overflow-y:visible\}/)
+  assert.match(candidates, /@media\(max-width:720px\)[\s\S]*\.record-list\{max-height:none;overflow-y:visible/)
+  assert.match(market, /\.source-list:focus-visible/)
+  assert.match(discussion, /\.discussion-list:focus-visible.*\.message-scroll:focus-visible/)
+  assert.match(candidates, /\.record-list:focus-visible/)
 })

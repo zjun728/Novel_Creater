@@ -2,7 +2,12 @@
 import { computed, ref } from 'vue'
 import { NAlert, NButton, NEmpty, NSpin, NTag } from 'naive-ui'
 
+import {
+  marketCapabilityPresentation,
+  marketFailureCopy,
+} from '@/application/market/marketSourcePresentation'
 import { useMarketSourceStore } from '@/stores/marketSourceStore'
+import MarketSnapshotWorks from './MarketSnapshotWorks.vue'
 
 const props = defineProps({
   selectedEvidence: { type: Array, default: () => [] },
@@ -12,6 +17,22 @@ const market = useMarketSourceStore()
 const fileInput = ref(null)
 const importSource = ref(null)
 const actionError = ref('')
+const selectedSnapshot = ref(null)
+const detailLoadingRequest = ref(null)
+let selectionIntentGeneration = 0
+let detailRequestGeneration = 0
+
+const selectedSource = computed(() => (
+  market.sources.find(source => source.id === selectedSnapshot.value?.sourceId) || null
+))
+const selectedDetailKey = computed(() => (
+  selectedSnapshot.value
+    ? JSON.stringify([selectedSnapshot.value.sourceId, selectedSnapshot.value.snapshotId])
+    : ''
+))
+const selectedDetail = computed(() => market.snapshotDetails[selectedDetailKey.value] || null)
+const selectedDetailFailure = computed(() => market.snapshotDetailFailures[selectedDetailKey.value] || null)
+const detailLoading = computed(() => detailLoadingRequest.value?.key === selectedDetailKey.value)
 
 const latestSnapshots = computed(() => market.sources.map(source => {
   const snapshot = market.snapshotHistory[source.id]?.[0]
@@ -51,31 +72,69 @@ function toggleEvidence(snapshot) {
   ].slice(-4))
 }
 
+async function viewLatestSnapshot(source) {
+  const sourceId = source.id
+  const latest = market.snapshotHistory[sourceId]?.[0]
+  if (!latest) return
+  selectionIntentGeneration += 1
+  const requestGeneration = ++detailRequestGeneration
+  const key = JSON.stringify([sourceId, latest.id])
+  selectedSnapshot.value = { sourceId, snapshotId: latest.id }
+  detailLoadingRequest.value = { key, generation: requestGeneration }
+  try {
+    await market.loadSnapshotDetail(sourceId, latest.id)
+  } catch {
+    // The reader owns the scoped failure state and keeps any cached success visible.
+  } finally {
+    if (detailLoadingRequest.value?.generation === requestGeneration) {
+      detailLoadingRequest.value = null
+    }
+  }
+}
+
 async function refresh(source) {
+  const sourceId = source.id
+  const displayName = source.displayName
+  const intentGeneration = ++selectionIntentGeneration
   actionError.value = ''
   try {
-    await market.refreshSource(source.id, commandKey())
+    const snapshot = await market.refreshSource(sourceId, commandKey())
+    if (selectionIntentGeneration === intentGeneration) {
+      selectedSnapshot.value = { sourceId, snapshotId: snapshot.id }
+    }
   } catch (failure) {
-    actionError.value = failure?.message || `${source.displayName} 刷新失败`
+    if (selectionIntentGeneration === intentGeneration) {
+      actionError.value = failure?.message || `${displayName} 刷新失败`
+    }
   }
 }
 
 function chooseImport(source) {
-  importSource.value = source
+  importSource.value = {
+    sourceId: source.id,
+    displayName: source.displayName,
+    intentGeneration: ++selectionIntentGeneration,
+  }
   fileInput.value?.click()
 }
 
 async function importSnapshot(event) {
   const file = event.target.files?.[0]
   event.target.value = ''
-  if (!file || !importSource.value) return
+  const selection = importSource.value
+  importSource.value = null
+  if (!file || !selection) return
+  const { sourceId, intentGeneration } = selection
   actionError.value = ''
   try {
-    await market.importManualSnapshot(importSource.value.id, JSON.parse(await file.text()), commandKey())
+    const snapshot = await market.importManualSnapshot(sourceId, JSON.parse(await file.text()), commandKey())
+    if (selectionIntentGeneration === intentGeneration) {
+      selectedSnapshot.value = { sourceId, snapshotId: snapshot.id }
+    }
   } catch (failure) {
-    actionError.value = failure instanceof SyntaxError ? '导入文件不是有效的 JSON 快照' : failure?.message || '快照导入失败'
-  } finally {
-    importSource.value = null
+    if (selectionIntentGeneration === intentGeneration) {
+      actionError.value = failure instanceof SyntaxError ? '导入文件不是有效的 JSON 快照' : failure?.message || '快照导入失败'
+    }
   }
 }
 </script>
@@ -92,34 +151,42 @@ async function importSnapshot(event) {
       {{ actionError || '市场来源暂时无法完整加载，你仍可从空白想法开始讨论。' }}
     </n-alert>
     <n-spin :show="market.loading">
-      <div v-if="market.sources.length" class="source-list" tabindex="0" aria-label="市场来源列表">
-        <article v-for="source in market.sources" :key="source.id" class="source-card">
+      <div v-if="market.sources.length" class="evidence-browser">
+       <div class="source-list" tabindex="0" aria-label="市场来源列表">
+        <article
+          v-for="source in market.sources"
+          :key="source.id"
+          class="source-card"
+          :class="{ active: selectedSnapshot?.sourceId === source.id }"
+          :data-market-source-key="source.stableKey"
+          :data-market-source-status="market.sourceState(source.id).freshness"
+        >
           <header>
             <div><span>{{ source.platform }} · {{ source.rankingName }}</span><h3>{{ source.displayName }}</h3></div>
-            <n-tag size="small" :type="source.policyStatus === 'verified_public' ? 'success' : 'warning'">
-              {{ source.policyStatus === 'verified_public' ? '支持手动刷新' : '仅支持导入' }}
+            <n-tag size="small" :type="marketCapabilityPresentation(source).tagType">
+              {{ marketCapabilityPresentation(source).label }}
             </n-tag>
           </header>
           <dl>
             <div><dt>数据状态</dt><dd>{{ freshness(source) }}</dd></div>
             <div><dt>上次成功</dt><dd>{{ timeLabel(source.lastSucceededAt) }}</dd></div>
-            <div v-if="source.publicErrorCode"><dt>本次失败</dt><dd>来源暂不可用，历史快照仍保留</dd></div>
+            <div v-if="source.publicErrorCode"><dt>本次失败</dt><dd>{{ marketFailureCopy(source, market.snapshotHistory[source.id] || []) }}</dd></div>
           </dl>
           <div class="card-actions">
-            <n-button size="small" :disabled="source.policyStatus !== 'verified_public'" :loading="market.sourceOperationId === source.id" @click="refresh(source)">手动刷新</n-button>
-            <n-button size="small" :disabled="market.sourceOperationId === source.id" @click="chooseImport(source)">手动导入快照</n-button>
+            <n-button size="small" :aria-label="`刷新${source.displayName}`" :disabled="!source.canRefresh" :loading="market.isSourceBusy(source.id)" @click="refresh(source)">刷新{{ source.displayName }}</n-button>
+            <n-button size="small" :aria-label="`导入${source.displayName}`" :disabled="!source.canManualImport || market.isSourceBusy(source.id)" @click="chooseImport(source)">导入{{ source.displayName }}</n-button>
+            <n-button size="small" :aria-label="`查看榜单作品：${source.displayName}`" :disabled="!market.snapshotHistory[source.id]?.[0]" @click="viewLatestSnapshot(source)">查看榜单作品</n-button>
           </div>
-          <button
-            v-if="market.snapshotHistory[source.id]?.[0]"
-            type="button"
-            class="evidence-toggle"
-            :class="{ selected: isSelected(market.snapshotHistory[source.id][0]) }"
-            :aria-pressed="isSelected(market.snapshotHistory[source.id][0])"
-            @click="toggleEvidence({ ...market.snapshotHistory[source.id][0], source })"
-          >
-            {{ isSelected(market.snapshotHistory[source.id][0]) ? '已附加到讨论' : '附加最新快照到讨论' }}
-          </button>
         </article>
+       </div>
+       <MarketSnapshotWorks
+         :snapshot="selectedDetail"
+         :source="selectedSource"
+         :loading="detailLoading"
+         :error="selectedDetailFailure"
+         :attached="selectedDetail ? isSelected(selectedDetail) : false"
+         @toggle-attachment="selectedDetail && toggleEvidence({ ...selectedDetail, source: selectedSource })"
+       />
       </div>
       <n-empty v-else-if="!market.loading" description="暂无已登记的市场来源；AI 讨论仍可从空白想法开始。" />
     </n-spin>
@@ -134,15 +201,17 @@ async function importSnapshot(event) {
 .panel-heading h2 { margin:5px 0 0; font:650 25px 'Noto Serif SC','Songti SC',serif; }
 .panel-intro { margin:11px 0 18px; color:#786c5e; font-size:12px; line-height:1.7; }
 .panel-alert { margin-bottom:12px; }
-.source-list { display:grid; gap:11px; max-height:590px; overflow-y:auto; padding-right:5px; outline:none; scrollbar-gutter:stable; }
-.source-card { padding:16px; border:1px solid #e1d6c5; background:#fbf7ef; }
-.source-card h3 { margin:4px 0 0; font:650 17px 'Noto Serif SC','Songti SC',serif; }
-.source-card dl { display:grid; gap:6px; margin:14px 0; }
+.evidence-browser { display:grid; grid-template-columns:minmax(300px,.38fr) minmax(0,1fr); gap:12px; min-width:0; }
+.source-list { display:grid; align-content:start; gap:8px; max-height:680px; overflow-y:auto; padding-right:5px; outline:none; scrollbar-gutter:stable; }
+.source-list:focus-visible { outline:2px solid #9a4938; outline-offset:2px; }
+.source-card { padding:12px 13px; border:1px solid #e1d6c5; background:#fbf7ef; }
+.source-card.active { border-color:#ae7667; box-shadow:inset 3px 0 #9a4938; background:#fffdf8; }
+.source-card h3 { margin:3px 0 0; font:650 15px 'Noto Serif SC','Songti SC',serif; }
+.source-card dl { display:grid; gap:4px; margin:10px 0; }
 .source-card dl div { display:grid; grid-template-columns:76px minmax(0,1fr); gap:10px; font-size:11px; }
 .source-card dt { color:#92775c; }.source-card dd { margin:0; color:#514940; }
 .card-actions { justify-content:flex-start; flex-wrap:wrap; }
-.evidence-toggle { width:100%; min-height:38px; margin-top:12px; border:1px dashed #baa88f; color:#65594d; background:transparent; cursor:pointer; }
-.evidence-toggle.selected { border-style:solid; border-color:#426a52; color:#31553f; background:#eef3eb; }
 .visually-hidden { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); }
-@media(max-width:720px){.market-panel{padding:16px}.source-list{max-height:none;overflow-y:visible}.panel-heading{align-items:flex-start}}
+@media(max-width:1080px){.evidence-browser{grid-template-columns:minmax(270px,.42fr) minmax(0,1fr)}}
+@media(max-width:720px){.market-panel{padding:16px}.evidence-browser{grid-template-columns:1fr}.source-list{max-height:none;overflow-y:visible}.panel-heading{align-items:flex-start}}
 </style>

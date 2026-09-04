@@ -10,14 +10,14 @@ export const useMarketSourceStore = defineStore('market-sources', () => {
   const snapshotDetails = ref({})
   const snapshotDetailFailures = ref({})
   const loading = ref(false)
-  const sourceOperationId = ref('')
+  const sourceOperationTokens = ref({})
   const error = ref(null)
   const loadGuard = createLatestRequestGuard()
   const sourceGuards = new Map()
   const detailGuards = new Map()
   const historyGuards = new Map()
   const mutationEpochs = new Map()
-  let operationGeneration = 0
+  const sourceOperationGenerations = new Map()
   const sourceKey = (sourceId, snapshotId) => JSON.stringify([sourceId, snapshotId])
   const bumpMutation = sourceId => mutationEpochs.set(sourceId, (mutationEpochs.get(sourceId) || 0) + 1)
 
@@ -58,19 +58,59 @@ export const useMarketSourceStore = defineStore('market-sources', () => {
     }
   }
 
-  async function loadSource(sourceId) {
+  function reconcileSnapshotSuccess(sourceId, snapshot) {
+    const source = sources.value.find(item => item.id === sourceId)
+    if (!source) return
+    upsertSource(Object.freeze({
+      ...source,
+      refreshStatus: 'idle',
+      lastSucceededAt: snapshot.capturedAt,
+      lastSnapshotId: snapshot.id,
+      publicErrorCode: null,
+    }))
+  }
+
+  function beginSourceOperation(sourceId) {
+    const generation = (sourceOperationGenerations.get(sourceId) || 0) + 1
+    sourceOperationGenerations.set(sourceId, generation)
+    sourceOperationTokens.value = {
+      ...sourceOperationTokens.value,
+      [sourceId]: generation,
+    }
+    return generation
+  }
+
+  function isCurrentSourceOperation(sourceId, generation) {
+    return sourceOperationGenerations.get(sourceId) === generation
+  }
+
+  function finishSourceOperation(sourceId, generation) {
+    if (!isCurrentSourceOperation(sourceId, generation)) return
+    const { [sourceId]: ignored, ...remaining } = sourceOperationTokens.value
+    sourceOperationTokens.value = remaining
+  }
+
+  function isSourceBusy(sourceId) {
+    return Object.hasOwn(sourceOperationTokens.value, sourceId)
+  }
+
+  async function readSource(sourceId, canCommit) {
     bumpMutation(sourceId)
     const guard = sourceGuards.get(sourceId) || createLatestRequestGuard()
     sourceGuards.set(sourceId, guard)
     const generation = guard.begin()
     const source = trusted(await api.marketSources.get(sourceId))
     if (source.id !== sourceId) throw new TypeError('Market source identity mismatch')
-    if (!guard.isCurrent(generation)) return source
+    if (!guard.isCurrent(generation) || !canCommit()) return source
     upsertSource(source)
     return source
   }
 
-  async function loadHistory(sourceId) {
+  function loadSource(sourceId) {
+    return readSource(sourceId, () => true)
+  }
+
+  async function loadHistory(sourceId, canCommit = () => true) {
     bumpMutation(sourceId)
     const guard = historyGuards.get(sourceId) || createLatestRequestGuard()
     historyGuards.set(sourceId, guard)
@@ -78,7 +118,7 @@ export const useMarketSourceStore = defineStore('market-sources', () => {
     const history = await api.marketSources.snapshots(sourceId)
     if (!Array.isArray(history) || !Object.isFrozen(history)) throw new TypeError('Market API client must return a frozen DTO')
     history.forEach(item => { trusted(item); if (item.sourceId !== sourceId) throw new TypeError('Market snapshot source mismatch') })
-    if (guard.isCurrent(generation)) {
+    if (guard.isCurrent(generation) && canCommit()) {
       snapshotHistory.value = { ...snapshotHistory.value, [sourceId]: history }
     }
     return history
@@ -165,33 +205,38 @@ export const useMarketSourceStore = defineStore('market-sources', () => {
 
   async function sourceOperation(sourceId, operation) {
     bumpMutation(sourceId)
-    const generation = ++operationGeneration
-    sourceOperationId.value = sourceId
+    const generation = beginSourceOperation(sourceId)
+    const isCurrent = () => isCurrentSourceOperation(sourceId, generation)
     error.value = null
     try {
       const snapshot = trusted(await operation())
+      if (!isCurrent()) return snapshot
       addSnapshot(sourceId, snapshot)
+      reconcileSnapshotSuccess(sourceId, snapshot)
       try {
-        await loadHistory(sourceId)
+        await loadHistory(sourceId, isCurrent)
       } catch {
         // Snapshot detail remains authoritative if history reread fails.
       }
+      if (!isCurrent()) return snapshot
       try {
-        await loadSource(sourceId)
+        await readSource(sourceId, isCurrent)
       } catch {
         // The immutable snapshot remains usable when the status reread fails.
       }
       return snapshot
     } catch (failure) {
-      error.value = failure
-      try {
-        await loadSource(sourceId)
-      } catch {
-        // Preserve and rethrow the original operation failure.
+      if (isCurrent()) {
+        error.value = failure
+        try {
+          await readSource(sourceId, isCurrent)
+        } catch {
+          // Preserve and rethrow the original operation failure.
+        }
       }
       throw failure
     } finally {
-      if (operationGeneration === generation) sourceOperationId.value = ''
+      finishSourceOperation(sourceId, generation)
     }
   }
 
@@ -236,13 +281,13 @@ export const useMarketSourceStore = defineStore('market-sources', () => {
     snapshotDetails,
     snapshotDetailFailures,
     loading,
-    sourceOperationId,
     error,
     loadSources,
     loadSource,
     loadSnapshotDetail,
     importManualSnapshot,
     refreshSource,
+    isSourceBusy,
     sourceState,
   }
 })
