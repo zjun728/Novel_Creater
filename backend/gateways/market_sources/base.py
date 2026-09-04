@@ -11,7 +11,7 @@ from typing import Awaitable, Callable, Mapping
 from urllib.parse import urljoin, urlsplit
 import warnings
 
-from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
+from bs4 import BeautifulSoup, Comment, XMLParsedAsHTMLWarning
 from pydantic import ValidationError
 
 from backend.domain.json_contracts import canonical_hash
@@ -303,22 +303,45 @@ async def fetch_public_document(
         captured_at=captured_at,
     )
     text = _decode_html(response)
-    folded = " ".join(text.casefold().split())
-    if any(
-        token in folded
-        for token in (
-            "captcha",
-            "请登录",
-            "登录后",
-            "人机验证",
-            "请完成人机验证",
-            "安全验证",
-        )
-    ):
-        raise MarketSourceFailure("MARKET_INTERSTITIAL_REJECTED")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", XMLParsedAsHTMLWarning)
         soup = BeautifulSoup(text, "html.parser")
+    excluded_tags = {"script", "style", "template", "noscript"}
+    block_tags = {
+        "address", "article", "aside", "blockquote", "div", "footer", "form",
+        "h1", "h2", "h3", "h4", "h5", "h6", "header", "li", "main", "nav",
+        "p", "section", "table", "td", "th", "tr", "ul",
+    }
+    fragments: dict[int, list[str]] = {}
+    for value in soup.find_all(string=True):
+        if (
+            isinstance(value, Comment)
+            or not value.strip()
+            or any(
+                ancestor.name in excluded_tags
+                or ancestor.has_attr("hidden")
+                or str(ancestor.get("aria-hidden", "")).casefold() == "true"
+                for ancestor in value.parents
+            )
+        ):
+            continue
+        container = next(
+            (ancestor for ancestor in value.parents if ancestor.name in block_tags),
+            value.parent,
+        )
+        fragments.setdefault(id(container), []).append(value.strip())
+    visible_text = " ".join(" ".join(values) for values in fragments.values())
+    folded = " ".join(visible_text.casefold().split())
+    compact_fragments = tuple("".join(values) for values in fragments.values())
+    if (
+        "captcha" in folded
+        or any(
+            token in fragment
+            for fragment in compact_fragments
+            for token in ("人机验证", "请完成人机验证", "安全验证", "请登录后查看排行榜")
+        )
+    ):
+        raise MarketSourceFailure("MARKET_INTERSTITIAL_REJECTED")
     return PublicHTMLDocument(url=response.url, text=text, soup=soup)
 
 

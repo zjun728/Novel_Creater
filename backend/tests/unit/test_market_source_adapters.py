@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from importlib import import_module
 from pathlib import Path
 import re
 
@@ -37,6 +38,12 @@ def _policy(
     if platform == "qidian":
         default_origins = ("https://www.qidian.com",)
         default_prefixes = ("/rank/newsign/",)
+    elif platform == "qimao":
+        default_origins = ("https://www.qimao.com",)
+        default_prefixes = ("/paihang/boy/update/date/",)
+    elif platform == "jjwxc":
+        default_origins = ("https://www.jjwxc.net",)
+        default_prefixes = ("/topten.php",)
     else:
         default_origins = ("https://book.qq.com",)
         default_prefixes = ("/book-rank",)
@@ -112,13 +119,6 @@ def test_market_entry_public_metrics_are_deeply_immutable():
             "qidian",
             "雾港天文钟",
         ),
-        (
-            "QQReadingPublicRankAdapter",
-            "qq_male_popular.html",
-            "https://book.qq.com/book-rank",
-            "qq_reading",
-            "盐原回声",
-        ),
     ),
 )
 async def test_public_adapters_parse_only_normalized_fixture_facts(
@@ -128,13 +128,8 @@ async def test_public_adapters_parse_only_normalized_fixture_facts(
     from backend.gateways.market_sources.qidian_public_rank import (
         QidianPublicRankAdapter,
     )
-    from backend.gateways.market_sources.qq_reading_public_rank import (
-        QQReadingPublicRankAdapter,
-    )
-
     adapter_class = {
         "QidianPublicRankAdapter": QidianPublicRankAdapter,
-        "QQReadingPublicRankAdapter": QQReadingPublicRankAdapter,
     }[adapter_name]
     body = (FIXTURES / fixture).read_bytes()
     transport = RecordingTransport(_response(body, url=url))
@@ -168,12 +163,6 @@ async def test_public_adapters_parse_only_normalized_fixture_facts(
             "https://www.qidian.com/rank/newsign/",
             "qidian",
         ),
-        (
-            "QQReadingPublicRankAdapter",
-            "qq_male_popular.html",
-            "https://book.qq.com/book-rank",
-            "qq_reading",
-        ),
     ),
 )
 @pytest.mark.parametrize("damage", ("first-entry-only", "unclosed-container"))
@@ -189,13 +178,8 @@ async def test_public_adapters_reject_well_formed_partial_and_truncated_pages(
     from backend.gateways.market_sources.qidian_public_rank import (
         QidianPublicRankAdapter,
     )
-    from backend.gateways.market_sources.qq_reading_public_rank import (
-        QQReadingPublicRankAdapter,
-    )
-
     adapter_class = {
         "QidianPublicRankAdapter": QidianPublicRankAdapter,
-        "QQReadingPublicRankAdapter": QQReadingPublicRankAdapter,
     }[adapter_name]
     text = (FIXTURES / fixture).read_text(encoding="utf-8")
     if damage == "first-entry-only":
@@ -455,8 +439,353 @@ async def test_document_accepts_declared_supported_charset_without_policy_age_ex
     assert document.soup.get_text() == "小说排行榜"
 
 
+def _official_rank_adapter(module_name: str, class_name: str):
+    return getattr(import_module(module_name), class_name)
+
+
+async def _fetch_single_page_adapter(
+    module_name: str,
+    class_name: str,
+    platform: str,
+    source_url: str,
+    text: str,
+):
+    from backend.domain.json_contracts import canonical_hash
+
+    adapter_class = _official_rank_adapter(module_name, class_name)
+    policy = _policy(platform=platform)
+    return await adapter_class(
+        RecordingTransport(_response(text.encode("utf-8"), url=source_url))
+    ).fetch(
+        policy=policy,
+        policy_hash=canonical_hash(policy),
+        captured_at=NOW,
+    )
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("body", (b"captcha", "请完成人机验证".encode("utf-8")))
+@pytest.mark.parametrize(
+    (
+        "module_name",
+        "class_name",
+        "fixture",
+        "source_url",
+        "platform",
+        "ranking_name",
+        "adapter_version",
+        "work_urls",
+        "first_fields",
+        "last_fields",
+        "expected_metrics",
+    ),
+    (
+        (
+            "backend.gateways.market_sources.qq_reading_public_rank",
+            "QQReadingPublicRankAdapter",
+            "qq_rank_official_shape.html",
+            "https://book.qq.com/book-rank",
+            "qq_reading",
+            "male_popular",
+            "qq-reading-public-rank-v1",
+            tuple(f"https://book.qq.com/book-detail/{rank}" for rank in range(1, 11)),
+            ("作品一", "作者一", "玄幻"),
+            ("作品十", "作者十", "玄幻"),
+            {"intro": "公开简介", "status": "连载", "wordCount": "58.5万字"},
+        ),
+        (
+            "backend.gateways.market_sources.qimao_public_rank",
+            "QimaoPublicRankAdapter",
+            "qimao_rank_official_shape.html",
+            "https://www.qimao.com/paihang/boy/update/date/",
+            "qimao",
+            "boy_update",
+            "qimao-public-rank-v1",
+            tuple(f"https://www.qimao.com/shuku/{rank}/" for rank in range(1, 11)),
+            ("作品一", "作者一", "玄幻奇幻"),
+            ("作品十", "作者十", "玄幻奇幻"),
+            {"status": "连载中", "wordCount": "200万字", "intro": "公开简介"},
+        ),
+        (
+            "backend.gateways.market_sources.jjwxc_public_rank",
+            "JJWXCPublicRankAdapter",
+            "jjwxc_rank_official_shape.html",
+            "https://www.jjwxc.net/topten.php?orderstr=4",
+            "jjwxc",
+            "quarterly_score",
+            "jjwxc-public-rank-v1",
+            tuple(
+                f"https://www.jjwxc.net/onebook.php?novelid={rank}"
+                for rank in range(1, 11)
+            ),
+            ("作品一", "作者一", "原创-言情-架空历史-爱情"),
+            ("作品十", "作者十", "原创-言情-架空历史-爱情"),
+            {
+                "status": "完结",
+                "wordCount": "348925",
+                "score": "3016198144",
+                "publishedAt": "2026-09-01 12:34:56",
+            },
+        ),
+    ),
+)
+async def test_single_page_official_adapters_parse_ten_complete_rows(
+    module_name,
+    class_name,
+    fixture,
+    source_url,
+    platform,
+    ranking_name,
+    adapter_version,
+    work_urls,
+    first_fields,
+    last_fields,
+    expected_metrics,
+):
+    from backend.domain.json_contracts import canonical_hash
+
+    adapter_class = _official_rank_adapter(module_name, class_name)
+    policy = _policy(platform=platform)
+    transport = RecordingTransport(
+        _response((FIXTURES / fixture).read_bytes(), url=source_url)
+    )
+
+    snapshot = await adapter_class(transport).fetch(
+        policy=policy,
+        policy_hash=canonical_hash(policy),
+        captured_at=NOW,
+    )
+
+    assert snapshot.platform == platform
+    assert snapshot.source_url == source_url
+    assert snapshot.ranking_name == ranking_name
+    assert adapter_class.adapter_version == adapter_version
+    assert [entry.rank for entry in snapshot.entries] == list(range(1, 11))
+    assert all(entry.title and entry.author and entry.category for entry in snapshot.entries)
+    assert [entry.work_url for entry in snapshot.entries] == list(work_urls)
+    assert (
+        snapshot.entries[0].title,
+        snapshot.entries[0].author,
+        snapshot.entries[0].category,
+    ) == first_fields
+    assert (
+        snapshot.entries[-1].title,
+        snapshot.entries[-1].author,
+        snapshot.entries[-1].category,
+    ) == last_fields
+    assert all(dict(entry.public_metrics) == expected_metrics for entry in snapshot.entries)
+    suffixes = ("一", "二", "三", "四", "五", "六", "七", "八", "九", "十")
+    assert [
+        (
+            entry.rank,
+            entry.title,
+            entry.author,
+            entry.category,
+            entry.work_url,
+            dict(entry.public_metrics),
+        )
+        for entry in snapshot.entries
+    ] == [
+        (
+            rank,
+            f"作品{suffix}",
+            f"作者{suffix}",
+            first_fields[2],
+            work_urls[rank - 1],
+            expected_metrics,
+        )
+        for rank, suffix in enumerate(suffixes, start=1)
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("module_name", "class_name", "fixture", "source_url", "platform"),
+    (
+        (
+            "backend.gateways.market_sources.qq_reading_public_rank",
+            "QQReadingPublicRankAdapter",
+            "qq_rank_official_shape.html",
+            "https://book.qq.com/book-rank",
+            "qq_reading",
+        ),
+        (
+            "backend.gateways.market_sources.qimao_public_rank",
+            "QimaoPublicRankAdapter",
+            "qimao_rank_official_shape.html",
+            "https://www.qimao.com/paihang/boy/update/date/",
+            "qimao",
+        ),
+        (
+            "backend.gateways.market_sources.jjwxc_public_rank",
+            "JJWXCPublicRankAdapter",
+            "jjwxc_rank_official_shape.html",
+            "https://www.jjwxc.net/topten.php?orderstr=4",
+            "jjwxc",
+        ),
+    ),
+)
+async def test_single_page_official_adapters_reject_incomplete_rows(
+    module_name, class_name, fixture, source_url, platform
+):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.base import MarketSourceFailure
+
+    adapter_class = _official_rank_adapter(module_name, class_name)
+    policy = _policy(platform=platform)
+    text = (FIXTURES / fixture).read_text(encoding="utf-8").replace(
+        "作品十", "", 1
+    )
+    transport = RecordingTransport(_response(text.encode("utf-8"), url=source_url))
+
+    with pytest.raises(MarketSourceFailure) as captured:
+        await adapter_class(transport).fetch(
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            captured_at=NOW,
+        )
+
+    assert captured.value.code == "MARKET_PAGE_INCOMPLETE"
+
+
+@pytest.mark.asyncio
+async def test_qq_reads_only_one_rank_container_and_ignores_outside_recommendations():
+    text = (FIXTURES / "qq_rank_official_shape.html").read_text(encoding="utf-8")
+    snapshot = await _fetch_single_page_adapter(
+        "backend.gateways.market_sources.qq_reading_public_rank",
+        "QQReadingPublicRankAdapter",
+        "qq_reading",
+        "https://book.qq.com/book-rank",
+        text.replace(
+            "</body>",
+            '<div class="rank-book"><a class="wrap" href="//book.qq.com/book-detail/99"><h4 class="title">站外推荐</h4></a></div></body>',
+        ),
+    )
+
+    assert [entry.title for entry in snapshot.entries] == [
+        "作品一",
+        "作品二",
+        "作品三",
+        "作品四",
+        "作品五",
+        "作品六",
+        "作品七",
+        "作品八",
+        "作品九",
+        "作品十",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mutated_text",
+    (
+        lambda text: text.replace(
+            "</body>",
+            '<div class="book-rank main"><div class="tabs"><div class="tabs-content"><div class="rank-book"></div></div></div></div></body>',
+        ),
+        lambda text: text.replace("tabs-content", "not-tabs-content", 1),
+        lambda text: text.replace('class="title">作品十', 'class="missing-title">作品十', 1),
+    ),
+)
+async def test_qq_rejects_ambiguous_container_and_missing_required_selector(mutated_text):
+    from backend.gateways.market_sources.base import MarketSourceFailure
+
+    text = (FIXTURES / "qq_rank_official_shape.html").read_text(encoding="utf-8")
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await _fetch_single_page_adapter(
+            "backend.gateways.market_sources.qq_reading_public_rank",
+            "QQReadingPublicRankAdapter",
+            "qq_reading",
+            "https://book.qq.com/book-rank",
+            mutated_text(text),
+        )
+
+    assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
+
+
+@pytest.mark.asyncio
+async def test_qimao_ignores_decorative_metrics_nodes():
+    text = (FIXTURES / "qimao_rank_official_shape.html").read_text(encoding="utf-8")
+    snapshot = await _fetch_single_page_adapter(
+        "backend.gateways.market_sources.qimao_public_rank",
+        "QimaoPublicRankAdapter",
+        "qimao",
+        "https://www.qimao.com/paihang/boy/update/date/",
+        text.replace(
+            "<em>连载中</em>",
+            '<em class="badge">推荐</em><em class="">噪声</em><em>连载中</em>',
+            1,
+        ),
+    )
+
+    assert dict(snapshot.entries[0].public_metrics) == {
+        "status": "连载中",
+        "wordCount": "200万字",
+        "intro": "公开简介",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mutated_text",
+    (
+        lambda text: text.replace("<em>连载中</em>", "", 1),
+        lambda text: text.replace("<em>200万字</em>", "<em>200万字</em><em>额外</em>", 1),
+        lambda text: text.replace('class="rank-number">1', 'class="rank-number">11', 1),
+        lambda text: text.replace("https://www.qimao.com/shuku/1/", "https://evil.example/book/1", 1),
+    ),
+)
+async def test_qimao_rejects_nonsemantic_metrics_bad_rank_and_nonofficial_url(mutated_text):
+    from backend.gateways.market_sources.base import MarketSourceFailure
+
+    text = (FIXTURES / "qimao_rank_official_shape.html").read_text(encoding="utf-8")
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await _fetch_single_page_adapter(
+            "backend.gateways.market_sources.qimao_public_rank",
+            "QimaoPublicRankAdapter",
+            "qimao",
+            "https://www.qimao.com/paihang/boy/update/date/",
+            mutated_text(text),
+        )
+
+    assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_row",
+    (
+        '<tr><td>11</td><td>作者</td><td><a class="tooltip" href="onebook.php?novelid=11">坏行</a></td><td>原创</td><td>完结</td><td>1</td><td>2</td></tr>',
+        '<tr><td>11</td><td>作者</td><td><a class="tooltip">坏行</a></td><td>原创</td><td>完结</td><td>1</td><td>2</td><td>2026-09-01</td></tr>',
+        '<tr><td>11</td><td></td><td><a class="tooltip" href="onebook.php?novelid=11">坏行</a></td><td>原创</td><td>完结</td><td>1</td><td>2</td><td>2026-09-01</td></tr>',
+    ),
+)
+async def test_jjwxc_rejects_any_invalid_observed_row_including_trailing_rows(bad_row):
+    from backend.gateways.market_sources.base import MarketSourceFailure
+
+    text = (FIXTURES / "jjwxc_rank_official_shape.html").read_text(encoding="utf-8")
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await _fetch_single_page_adapter(
+            "backend.gateways.market_sources.jjwxc_public_rank",
+            "JJWXCPublicRankAdapter",
+            "jjwxc",
+            "https://www.jjwxc.net/topten.php?orderstr=4",
+            text.replace("</tbody>", f"{bad_row}</tbody>"),
+        )
+
+    assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    (
+        b"captcha",
+        "请完成人机验证".encode("utf-8"),
+        "人机验证".encode("utf-8"),
+        "安全验证".encode("utf-8"),
+    ),
+)
 async def test_document_rejects_interstitials(body):
     from backend.domain.json_contracts import canonical_hash
     from backend.gateways.market_sources.base import MarketSourceFailure
@@ -474,6 +803,108 @@ async def test_document_rejects_interstitials(body):
         )
 
     assert rejected.value.code == "MARKET_INTERSTITIAL_REJECTED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    (
+        "<main>CAPTCHA验证</main>",
+        "<main>人机<span>验证</span></main>",
+        "<main>请登录后<span>查看排行榜</span></main>",
+    ),
+)
+async def test_document_rejects_visible_compact_challenge_phrases(body):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.base import MarketSourceFailure
+
+    policy = _policy(platform="qidian")
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await _fetch_public_document()(
+            RecordingTransport(
+                _response(body.encode("utf-8"), url="https://www.qidian.com/rank/newsign/")
+            ),
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            url="https://www.qidian.com/rank/newsign/",
+            captured_at=NOW,
+        )
+
+    assert rejected.value.code == "MARKET_INTERSTITIAL_REJECTED"
+
+
+@pytest.mark.asyncio
+async def test_qq_fixture_rejects_visible_captcha_challenge():
+    from backend.gateways.market_sources.base import MarketSourceFailure
+
+    text = (FIXTURES / "qq_rank_official_shape.html").read_text(encoding="utf-8")
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await _fetch_single_page_adapter(
+            "backend.gateways.market_sources.qq_reading_public_rank",
+            "QQReadingPublicRankAdapter",
+            "qq_reading",
+            "https://book.qq.com/book-rank",
+            text.replace("</body>", "<div>CAPTCHA验证</div></body>"),
+        )
+
+    assert rejected.value.code == "MARKET_INTERSTITIAL_REJECTED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    (
+        "<main>公开排行榜</main><footer>双新用户登录后1-20天可参与排行</footer>",
+        "<main><p>人机</p><p>验证</p></main>",
+        "<main>公开排行榜</main><div hidden>captcha 人机验证</div>",
+        '<main>公开排行榜</main><div aria-hidden="true">captcha 人机验证</div>',
+    ),
+)
+async def test_document_ignores_normal_footer_and_hidden_challenge_text(body):
+    from backend.domain.json_contracts import canonical_hash
+
+    policy = _policy(platform="qidian")
+    document = await _fetch_public_document()(
+        RecordingTransport(
+            _response(body.encode("utf-8"), url="https://www.qidian.com/rank/newsign/")
+        ),
+        policy=policy,
+        policy_hash=canonical_hash(policy),
+        url="https://www.qidian.com/rank/newsign/",
+        captured_at=NOW,
+    )
+
+    assert document.soup.find("main") is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    (
+        "<main>公开排行榜</main><footer>登录后可收藏作品</footer>",
+        "<main>公开排行榜</main><script>smCaptchaStatus = 'idle'</script>",
+        "<main>公开排行榜</main><!-- captcha 人机验证 -->",
+        "<main>公开排行榜</main><style>.captcha { display: none; }</style>",
+        "<main>公开排行榜</main><script><span>captcha 人机验证</span></script>",
+        "<main>公开排行榜</main><template><section>captcha 人机验证</section></template>",
+        "<main>公开排行榜</main><noscript><section>captcha 人机验证</section></noscript>",
+    ),
+)
+async def test_document_ignores_normal_visible_footer_and_non_body_challenge_tokens(body):
+    from backend.domain.json_contracts import canonical_hash
+
+    policy = _policy(platform="qidian")
+    document = await _fetch_public_document()(
+        RecordingTransport(
+            _response(body.encode("utf-8"), url="https://www.qidian.com/rank/newsign/")
+        ),
+        policy=policy,
+        policy_hash=canonical_hash(policy),
+        url="https://www.qidian.com/rank/newsign/",
+        captured_at=NOW,
+    )
+
+    assert "公开排行榜" in document.soup.get_text()
 
 
 def test_text_normalizer_rejects_private_use_font_obfuscation():
