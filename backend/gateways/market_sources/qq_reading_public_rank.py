@@ -4,6 +4,7 @@ from backend.gateways.market_sources.base import (
     MarketSourceFailure,
     OfficialRankAdapter,
     market_entry_from_fields,
+    normalized_public_excerpt,
 )
 
 
@@ -47,7 +48,10 @@ class QQReadingPublicRankAdapter(OfficialRankAdapter):
                         base_url=self.source_url,
                         work_origins=self.work_origins,
                         metrics={
-                            "intro": _text(row.select_one(".intro")),
+                            "intro": normalized_public_excerpt(
+                                _text(row.select_one(".intro")),
+                                source_limit=2_000,
+                            ),
                             "status": _text_at(metadata, 0),
                             "wordCount": _text_at(metadata, 1),
                         },

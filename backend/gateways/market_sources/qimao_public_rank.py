@@ -4,6 +4,7 @@ from backend.gateways.market_sources.base import (
     MarketSourceFailure,
     OfficialRankAdapter,
     market_entry_from_fields,
+    normalized_public_excerpt,
 )
 
 
@@ -47,7 +48,10 @@ class QimaoPublicRankAdapter(OfficialRankAdapter):
                         metrics={
                             "status": _text_at(metrics, 0),
                             "wordCount": _text_at(metrics, 1),
-                            "intro": _text(row.select_one(".s-book-intro")),
+                            "intro": normalized_public_excerpt(
+                                _text(row.select_one(".s-book-intro")),
+                                source_limit=2_000,
+                            ),
                         },
                     )
                 )

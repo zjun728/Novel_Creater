@@ -24,7 +24,9 @@ class ZonghengPublicRankAdapter(DetailEnrichedRankAdapter):
     work_origins = (work_origin,)
 
     def parse_rank_candidates(self, rank_page):
-        containers = rank_page.soup.select(".zh-modules-rank-box")
+        containers = _monthly_ticket_containers(
+            rank_page.soup.select(".zh-modules-rank-box")
+        )
         if len(containers) != 1:
             raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
         rows = [
@@ -33,14 +35,14 @@ class ZonghengPublicRankAdapter(DetailEnrichedRankAdapter):
             if "zh-modules-rank-book" in child.get("class", ())
         ]
         candidates: list[RankCandidate] = []
-        for row in rows:
+        for position, row in enumerate(rows, start=1):
             titles = row.select(".book-rank--title a[href]")
             ranks = row.select(".book-rank--num")
             if len(titles) != 1 or len(ranks) != 1:
                 raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
             candidates.append(
                 RankCandidate(
-                    rank=_rank(_text(ranks[0])),
+                    rank=_rank(ranks[0], position=position),
                     title=_text(titles[0]),
                     detail_url=titles[0].get("href"),
                 )
@@ -97,7 +99,38 @@ def _text(node) -> str:
     return node.get_text(" ", strip=True) if node is not None else ""
 
 
-def _rank(value: str) -> int:
-    if re.fullmatch(r"[1-9][0-9]*", value) is None:
+def _monthly_ticket_containers(containers):
+    matched = []
+    for container in containers:
+        markers = [
+            node
+            for node in container.find_all(string=True)
+            if " ".join(str(node).split()) == "月票榜"
+            and not _inside_rank_row(node, container)
+        ]
+        if len(markers) > 1:
+            raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
+        if markers:
+            matched.append(container)
+    return matched
+
+
+def _inside_rank_row(node, container) -> bool:
+    parent = node.parent
+    while parent is not None and parent is not container:
+        if "zh-modules-rank-book" in parent.get("class", ()):
+            return True
+        parent = parent.parent
+    return False
+
+
+def _rank(node, *, position: int) -> int:
+    value = _text(node)
+    elements = node.find_all(recursive=False)
+    if position <= 3:
+        if value or len(elements) != 1 or elements[0].name != "img":
+            raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
+        return position
+    if elements or value != f"{position:02d}" or re.fullmatch(r"[0-9]{2}", value) is None:
         raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
-    return int(value)
+    return position

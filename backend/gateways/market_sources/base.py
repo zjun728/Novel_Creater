@@ -189,6 +189,20 @@ def normalized_public_text(value: object, limit: int = 300) -> str:
     return normalized
 
 
+def normalized_public_excerpt(
+    value: object,
+    *,
+    source_limit: int,
+    limit: int = 200,
+) -> str:
+    """Validate a bounded full field before returning its display excerpt."""
+
+    if source_limit < limit:
+        raise MarketSourceFailure("MARKET_SNAPSHOT_INVALID")
+    normalized = normalized_public_text(value, limit=source_limit)
+    return normalized[:limit].rstrip()
+
+
 def _response_charset(response: TransportResponse) -> str:
     headers = {
         str(key).casefold(): str(value)
