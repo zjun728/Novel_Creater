@@ -13,6 +13,8 @@
     "test:e2e:p0-c": "node e2e/run-p0-c.mjs",
     "test:browser:p0-c": "node ../scripts/run-tests.mjs browser-p0-c",
     "test:browser:p0-d": "node ../scripts/run-tests.mjs browser-p0-d",
+    "test:e2e:topic-center-live": "node e2e/run-topic-center-live.mjs --base-url http://127.0.0.1:5173",
+    "test:browser:topic-center-live": "node ../scripts/run-tests.mjs browser-topic-center-live",
     "test:e2e:phase2a": "node e2e/run-phase2a.mjs",
     "test:e2e:phase2b": "node e2e/run-phase2b.mjs",
     "test:e2e:phase2c": "node e2e/run-phase2c.mjs",

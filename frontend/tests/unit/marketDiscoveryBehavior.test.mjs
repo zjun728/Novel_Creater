@@ -150,6 +150,32 @@ test('mounted source actions expose visible phrases inside their accessible name
   } finally { item.dispose() }
 })
 
+test('failed refresh cannot replace the old snapshot evidence attributes', async () => {
+  const refreshGate = deferred()
+  const item = await mountedWithState(async () => {
+    await refreshGate.promise
+    return response({ error: { code: 'MARKET_TRANSPORT_FAILED', message: '刷新失败' } }, 503)
+  }, [source('a', '甲榜')])
+  try {
+    const card = find(item.target, candidate => candidate.props['data-market-source-key'] === 'a.rank')
+    assert.equal(card.props['data-market-latest-snapshot-id'], 'a-old')
+    assert.equal(card.props['data-market-latest-captured-at'], 1_752_800_000)
+    assert.equal(card.props['data-market-latest-entry-count'], 1)
+
+    const intent = button(item.target, '刷新甲榜').props.onClick()
+    await flush()
+    assert.equal(card.props['data-market-source-busy'], 'true')
+    refreshGate.resolve()
+    await intent
+    await flush()
+
+    assert.equal(card.props['data-market-source-busy'], 'false')
+    assert.equal(card.props['data-market-latest-snapshot-id'], 'a-old')
+    assert.equal(card.props['data-market-latest-captured-at'], 1_752_800_000)
+    assert.equal(card.props['data-market-latest-entry-count'], 1)
+  } finally { item.dispose() }
+})
+
 test('a later explicit view wins over an earlier refresh completion', async () => {
   const refreshGate = deferred()
   const item = await mountedWithState(async (url, options = {}) => {

@@ -160,6 +160,11 @@ async function importSnapshot(event) {
           :class="{ active: selectedSnapshot?.sourceId === source.id }"
           :data-market-source-key="source.stableKey"
           :data-market-source-status="market.sourceState(source.id).freshness"
+          :data-market-source-busy="String(market.isSourceBusy(source.id))"
+          :data-market-latest-snapshot-id="market.snapshotHistory[source.id]?.[0]?.id || ''"
+          :data-market-latest-captured-at="market.snapshotHistory[source.id]?.[0]?.capturedAt || ''"
+          :data-market-latest-entry-count="market.snapshotHistory[source.id]?.[0]?.entryCount || ''"
+          :data-market-last-succeeded-at="source.lastSucceededAt || ''"
         >
           <header>
             <div><span>{{ source.platform }} · {{ source.rankingName }}</span><h3>{{ source.displayName }}</h3></div>

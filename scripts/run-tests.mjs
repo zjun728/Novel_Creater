@@ -21,6 +21,7 @@ const suiteNames = [
   'browser-product-shell',
   'browser-p0-c',
   'browser-p0-d',
+  'browser-topic-center-live',
   'browser-phase2a',
   'browser-phase2b',
   'browser-phase2c',
@@ -240,6 +241,11 @@ function createSuites(rootDirectory, environment) {
   const browserProductShell = [[node, ['frontend/e2e/run-product-shell.mjs']]]
   const browserP0C = [[node, ['frontend/e2e/run-p0-c.mjs']]]
   const browserP0D = [[node, ['frontend/e2e/run-p0-d.mjs']]]
+  const browserTopicCenterLive = [[node, [
+    'frontend/e2e/run-topic-center-live.mjs',
+    '--base-url',
+    'http://127.0.0.1:5173',
+  ]]]
   const browserPhase2A = [[node, ['frontend/e2e/run-phase2a.mjs']]]
   const browserPhase2B = [[node, ['frontend/e2e/run-phase2b.mjs']]]
   const browserPhase2C = [[node, ['frontend/e2e/run-phase2c.mjs']]]
@@ -267,6 +273,7 @@ function createSuites(rootDirectory, environment) {
       'browser-product-shell': browserProductShell,
       'browser-p0-c': browserP0C,
       'browser-p0-d': browserP0D,
+      'browser-topic-center-live': browserTopicCenterLive,
       'browser-phase2a': browserPhase2A,
       'browser-phase2b': browserPhase2B,
       'browser-phase2c': browserPhase2C,

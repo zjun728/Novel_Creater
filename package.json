@@ -14,6 +14,7 @@
     "test:browser:product-shell": "node scripts/run-tests.mjs browser-product-shell",
     "test:browser:p0-c": "node scripts/run-tests.mjs browser-p0-c",
     "test:browser:p0-d": "node scripts/run-tests.mjs browser-p0-d",
+    "test:browser:topic-center-live": "node scripts/run-tests.mjs browser-topic-center-live",
     "test:browser:phase2a": "node scripts/run-tests.mjs browser-phase2a",
     "test:browser:phase2b": "node scripts/run-tests.mjs browser-phase2b",
     "test:browser:phase2c": "node scripts/run-tests.mjs browser-phase2c",
