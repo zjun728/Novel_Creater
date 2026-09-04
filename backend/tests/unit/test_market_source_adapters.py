@@ -25,6 +25,25 @@ class RecordingTransport:
         return self.response
 
 
+class RankAndDetailTransport:
+    """Local-only response sequence for detail-enriched rank adapters."""
+
+    def __init__(self, *, rank_url, rank_body, detail_body_for_url):
+        self.rank_url = rank_url
+        self.rank_body = rank_body
+        self.detail_body_for_url = detail_body_for_url
+        self.requests = []
+
+    async def __call__(self, request):
+        self.requests.append(request)
+        if request.url == self.rank_url:
+            return _response(self.rank_body, url=request.url)
+        body = self.detail_body_for_url(request.url)
+        if isinstance(body, BaseException):
+            raise body
+        return _response(body, url=request.url)
+
+
 def _policy(
     *,
     platform: str,
@@ -44,6 +63,12 @@ def _policy(
     elif platform == "jjwxc":
         default_origins = ("https://www.jjwxc.net",)
         default_prefixes = ("/topten.php",)
+    elif platform == "zongheng":
+        default_origins = ("https://www.zongheng.com",)
+        default_prefixes = ("/rank", "/detail/")
+    elif platform == "heiyan":
+        default_origins = ("https://www.heiyan.com",)
+        default_prefixes = ("/top/", "/book/")
     else:
         default_origins = ("https://book.qq.com",)
         default_prefixes = ("/book-rank",)
@@ -390,6 +415,794 @@ async def test_public_adapter_accepts_xhtml_with_utf8_charset():
     )
 
     assert len(snapshot.entries) == 2
+
+
+_DETAIL_ENRICHED_ADAPTERS = (
+    (
+        "backend.gateways.market_sources.zongheng_public_rank",
+        "ZonghengPublicRankAdapter",
+        "zongheng",
+        "zongheng_rank_official_shape.html",
+        "zongheng_detail_official_shape.html",
+        "https://www.zongheng.com/rank?nav=default",
+        '<div class="zh-modules-rank-box"></div>',
+    ),
+    (
+        "backend.gateways.market_sources.heiyan_public_rank",
+        "HeiyanPublicRankAdapter",
+        "heiyan",
+        "heiyan_rank_official_shape.html",
+        "heiyan_detail_official_shape.html",
+        "https://www.heiyan.com/top/",
+        '<div class="pattern-rank"></div>',
+    ),
+)
+
+
+def _detail_fixture_body(fixture: str, *, title: str, url: str) -> bytes:
+    return (
+        (FIXTURES / fixture)
+        .read_text(encoding="utf-8")
+        .replace("{{TITLE}}", title)
+        .replace("{{URL}}", url)
+        .encode("utf-8")
+    )
+
+
+def _detail_title_for_url(url: str) -> str:
+    return f"作品{url.rstrip('/').rsplit('/', 1)[-1]}"
+
+
+def _detail_policy_prefixes(platform: str) -> tuple[str, str]:
+    return ("/rank", "/detail/") if platform == "zongheng" else ("/top/", "/book/")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "module_name,class_name,platform,rank_fixture,detail_fixture,source_url,_"
+    ),
+    _DETAIL_ENRICHED_ADAPTERS,
+)
+async def test_detail_enrichment_fetches_one_rank_page_and_exactly_ten_same_origin_details(
+    module_name,
+    class_name,
+    platform,
+    rank_fixture,
+    detail_fixture,
+    source_url,
+    _,
+):
+    from backend.domain.json_contracts import canonical_hash
+
+    adapter_class = _official_rank_adapter(module_name, class_name)
+    rank_body = (FIXTURES / rank_fixture).read_bytes()
+    transport = RankAndDetailTransport(
+        rank_url=source_url,
+        rank_body=rank_body,
+        detail_body_for_url=lambda url: _detail_fixture_body(
+            detail_fixture,
+            title=_detail_title_for_url(url),
+            url=url,
+        ),
+    )
+    adapter = adapter_class(transport)
+    policy = _policy(
+        platform=platform,
+        prefixes=_detail_policy_prefixes(platform),
+    )
+
+    snapshot = await adapter.fetch(
+        policy=policy,
+        policy_hash=canonical_hash(policy),
+        captured_at=NOW,
+    )
+
+    assert len(snapshot.entries) == 10
+    assert all(entry.author and entry.category for entry in snapshot.entries)
+    detail_requests = transport.requests[1:]
+    assert len(detail_requests) == 10
+    assert all(request.url.startswith(adapter.work_origin) for request in detail_requests)
+    detail_path = "/detail/" if platform == "zongheng" else "/book/"
+    assert [request.url for request in transport.requests] == [
+        source_url,
+        *(f"{adapter.work_origin}{detail_path}{rank}" for rank in range(1, 11)),
+    ]
+    assert len({request.url for request in detail_requests}) == 10
+    expected_metrics = (
+        {
+            "status": "连载",
+            "description": "公开简介",
+            "tags": "标签甲 标签乙",
+            "numbers": "12万字 3000点击",
+        }
+        if platform == "zongheng"
+        else {
+            "status": "完结",
+            "description": "公开简介",
+            "counters": "12万字 3000点击",
+        }
+    )
+    assert all(dict(entry.public_metrics) == expected_metrics for entry in snapshot.entries)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "module_name,class_name,platform,rank_fixture,detail_fixture,source_url,_"
+    ),
+    _DETAIL_ENRICHED_ADAPTERS,
+)
+async def test_detail_enrichment_never_starts_an_eleventh_detail_request(
+    module_name,
+    class_name,
+    platform,
+    rank_fixture,
+    detail_fixture,
+    source_url,
+    _,
+):
+    from backend.domain.json_contracts import canonical_hash
+
+    rank_text = (FIXTURES / rank_fixture).read_text(encoding="utf-8")
+    extra = rank_text.replace('data-rank-row="1"', 'data-rank-row="11"', 1)
+    extra = extra.replace(">1<", ">11<", 1).replace("作品1", "作品11", 1)
+    rank_body = rank_text.replace("</body>", extra[extra.index("<article"):extra.index("</article>") + 10] + "</body>")
+    adapter_class = _official_rank_adapter(module_name, class_name)
+    transport = RankAndDetailTransport(
+        rank_url=source_url,
+        rank_body=rank_body.encode("utf-8"),
+        detail_body_for_url=lambda url: _detail_fixture_body(
+            detail_fixture,
+            title=_detail_title_for_url(url),
+            url=url,
+        ),
+    )
+    policy = _policy(
+        platform=platform,
+        prefixes=_detail_policy_prefixes(platform),
+    )
+
+    snapshot = await adapter_class(transport).fetch(
+        policy=policy,
+        policy_hash=canonical_hash(policy),
+        captured_at=NOW,
+    )
+
+    assert len(snapshot.entries) == 10
+    assert len(transport.requests) == 11
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "module_name,class_name,platform,rank_fixture,detail_fixture,source_url,_"
+    ),
+    _DETAIL_ENRICHED_ADAPTERS,
+)
+async def test_detail_enrichment_fails_closed_if_its_detail_limit_is_relaxed(
+    module_name,
+    class_name,
+    platform,
+    rank_fixture,
+    detail_fixture,
+    source_url,
+    _,
+):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.base import MarketSourceFailure
+
+    transport = RankAndDetailTransport(
+        rank_url=source_url,
+        rank_body=(FIXTURES / rank_fixture).read_bytes(),
+        detail_body_for_url=lambda url: AssertionError("detail transport must not open"),
+    )
+    adapter = _official_rank_adapter(module_name, class_name)(transport)
+    adapter.detail_limit = 11
+    policy = _policy(
+        platform=platform,
+        prefixes=_detail_policy_prefixes(platform),
+    )
+
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await adapter.fetch(
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            captured_at=NOW,
+        )
+
+    assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
+    assert len(transport.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "module_name,class_name,platform,rank_fixture,detail_fixture,source_url,_"
+    ),
+    _DETAIL_ENRICHED_ADAPTERS,
+)
+async def test_detail_enrichment_rejects_off_origin_candidate_before_detail_transport(
+    module_name,
+    class_name,
+    platform,
+    rank_fixture,
+    detail_fixture,
+    source_url,
+    _,
+):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.base import MarketSourceFailure
+
+    rank_body = (FIXTURES / rank_fixture).read_text(encoding="utf-8").replace(
+        'href="/detail/1"', 'href="https://evil.example/book/1"', 1
+    ).replace('href="/book/1"', 'href="https://evil.example/book/1"', 1).encode("utf-8")
+    transport = RankAndDetailTransport(
+        rank_url=source_url,
+        rank_body=rank_body,
+        detail_body_for_url=lambda url: AssertionError("detail transport must not open"),
+    )
+    policy = _policy(
+        platform=platform,
+        prefixes=_detail_policy_prefixes(platform),
+    )
+
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await _official_rank_adapter(module_name, class_name)(transport).fetch(
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            captured_at=NOW,
+        )
+
+    assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
+    assert len(transport.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "module_name,class_name,platform,rank_fixture,detail_fixture,source_url,_"
+    ),
+    _DETAIL_ENRICHED_ADAPTERS,
+)
+async def test_detail_enrichment_rejects_duplicate_canonical_detail_urls_before_transport(
+    module_name,
+    class_name,
+    platform,
+    rank_fixture,
+    detail_fixture,
+    source_url,
+    _,
+):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.base import MarketSourceFailure
+
+    detail_path = "/detail/" if platform == "zongheng" else "/book/"
+    rank_body = (FIXTURES / rank_fixture).read_text(encoding="utf-8").replace(
+        f'href="{detail_path}2"', f'href="{detail_path}1"', 1
+    ).encode("utf-8")
+    transport = RankAndDetailTransport(
+        rank_url=source_url,
+        rank_body=rank_body,
+        detail_body_for_url=lambda url: _detail_fixture_body(
+            detail_fixture,
+            title=_detail_title_for_url(url),
+            url=url,
+        ),
+    )
+    policy = _policy(platform=platform, prefixes=_detail_policy_prefixes(platform))
+
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await _official_rank_adapter(module_name, class_name)(transport).fetch(
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            captured_at=NOW,
+        )
+
+    assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
+    assert len(transport.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "module_name,class_name,platform,rank_fixture,detail_fixture,source_url,_"
+    ),
+    _DETAIL_ENRICHED_ADAPTERS,
+)
+async def test_detail_enrichment_rejects_fragment_alias_candidates_before_transport(
+    module_name,
+    class_name,
+    platform,
+    rank_fixture,
+    detail_fixture,
+    source_url,
+    _,
+):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.base import MarketSourceFailure
+
+    detail_path = "/detail/" if platform == "zongheng" else "/book/"
+    rank_text = (FIXTURES / rank_fixture).read_text(encoding="utf-8")
+    for rank in range(1, 11):
+        rank_text = rank_text.replace(
+            f'href="{detail_path}{rank}"', f'href="{detail_path}1#{rank}"', 1
+        )
+    transport = RankAndDetailTransport(
+        rank_url=source_url,
+        rank_body=rank_text.encode("utf-8"),
+        detail_body_for_url=lambda url: AssertionError("detail transport must not open"),
+    )
+    policy = _policy(platform=platform, prefixes=_detail_policy_prefixes(platform))
+
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await _official_rank_adapter(module_name, class_name)(transport).fetch(
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            captured_at=NOW,
+        )
+
+    assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
+    assert len(transport.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "module_name,class_name,platform,rank_fixture,detail_fixture,source_url,_"
+    ),
+    _DETAIL_ENRICHED_ADAPTERS,
+)
+async def test_detail_enrichment_rejects_sixth_candidate_outside_policy_before_transport(
+    module_name,
+    class_name,
+    platform,
+    rank_fixture,
+    detail_fixture,
+    source_url,
+    _,
+):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.base import MarketSourceFailure
+
+    detail_path = "/detail/" if platform == "zongheng" else "/book/"
+    rank_body = (FIXTURES / rank_fixture).read_text(encoding="utf-8").replace(
+        f'href="{detail_path}6"', 'href="/outside-policy/6"', 1
+    ).encode("utf-8")
+    transport = RankAndDetailTransport(
+        rank_url=source_url,
+        rank_body=rank_body,
+        detail_body_for_url=lambda url: AssertionError("detail transport must not open"),
+    )
+    policy = _policy(platform=platform, prefixes=_detail_policy_prefixes(platform))
+
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await _official_rank_adapter(module_name, class_name)(transport).fetch(
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            captured_at=NOW,
+        )
+
+    assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
+    assert len(transport.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "module_name,class_name,platform,rank_fixture,detail_fixture,source_url,_"
+    ),
+    _DETAIL_ENRICHED_ADAPTERS,
+)
+async def test_detail_enrichment_canonicalizes_relative_and_protocol_relative_og_urls(
+    module_name,
+    class_name,
+    platform,
+    rank_fixture,
+    detail_fixture,
+    source_url,
+    _,
+):
+    from backend.domain.json_contracts import canonical_hash
+
+    adapter_class = _official_rank_adapter(module_name, class_name)
+    adapter = adapter_class(None)
+    rank_text = (FIXTURES / rank_fixture).read_text(encoding="utf-8")
+    first_href = "/detail/1" if platform == "zongheng" else "/book/1"
+    rank_body = rank_text.replace(
+        f'href="{first_href}"', f'href="{first_href}/"', 1
+    ).encode("utf-8")
+
+    def detail_body_for_url(url):
+        path = "/" + url.split("/", 3)[-1]
+        og_url = path if url.endswith("/") else f"//{url.split('/')[2]}{path}"
+        return _detail_fixture_body(
+            detail_fixture,
+            title=_detail_title_for_url(url),
+            url=og_url,
+        )
+
+    transport = RankAndDetailTransport(
+        rank_url=source_url,
+        rank_body=rank_body,
+        detail_body_for_url=detail_body_for_url,
+    )
+    adapter = adapter_class(transport)
+    policy = _policy(
+        platform=platform,
+        prefixes=_detail_policy_prefixes(platform),
+    )
+
+    snapshot = await adapter.fetch(
+        policy=policy,
+        policy_hash=canonical_hash(policy),
+        captured_at=NOW,
+    )
+
+    assert snapshot.entries[0].work_url.endswith("/")
+    assert len(transport.requests) == 11
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "module_name,class_name,platform,rank_fixture,detail_fixture,source_url,_"
+    ),
+    _DETAIL_ENRICHED_ADAPTERS,
+)
+@pytest.mark.parametrize("og_url", ("//evil.example/book/1", "/%2e%2e/private"))
+async def test_detail_enrichment_rejects_off_origin_or_ambiguous_og_urls(
+    module_name,
+    class_name,
+    platform,
+    rank_fixture,
+    detail_fixture,
+    source_url,
+    _,
+    og_url,
+):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.base import MarketSourceFailure
+
+    transport = RankAndDetailTransport(
+        rank_url=source_url,
+        rank_body=(FIXTURES / rank_fixture).read_bytes(),
+        detail_body_for_url=lambda url: _detail_fixture_body(
+            detail_fixture,
+            title=_detail_title_for_url(url),
+            url=og_url,
+        ),
+    )
+    policy = _policy(
+        platform=platform,
+        prefixes=_detail_policy_prefixes(platform),
+    )
+
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await _official_rank_adapter(module_name, class_name)(transport).fetch(
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            captured_at=NOW,
+        )
+
+    assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
+    assert len(transport.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_heiyan_detail_requires_one_book_info_container():
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.base import MarketSourceFailure
+    from backend.gateways.market_sources.heiyan_public_rank import (
+        HeiyanPublicRankAdapter,
+    )
+
+    source_url = HeiyanPublicRankAdapter.source_url
+    transport = RankAndDetailTransport(
+        rank_url=source_url,
+        rank_body=(FIXTURES / "heiyan_rank_official_shape.html").read_bytes(),
+        detail_body_for_url=lambda url: _detail_fixture_body(
+            "heiyan_detail_official_shape.html",
+            title=_detail_title_for_url(url),
+            url=url,
+        ).replace(
+            b"</body>",
+            b'<div class="book-info"><span class="book-count">extra</span></div></body>',
+            1,
+        ),
+    )
+    policy = _policy(platform="heiyan", prefixes=("/top/", "/book/"))
+
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await HeiyanPublicRankAdapter(transport).fetch(
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            captured_at=NOW,
+        )
+
+    assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
+    assert len(transport.requests) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "module_name,class_name,platform,rank_fixture,detail_fixture,source_url,_"
+    ),
+    _DETAIL_ENRICHED_ADAPTERS,
+)
+@pytest.mark.parametrize(
+    "bad_candidate",
+    ("empty-title", "missing-href", "off-origin-href", "ambiguous-path", "bad-rank"),
+)
+async def test_detail_enrichment_rejects_bad_rank_candidates_before_all_detail_transport(
+    module_name,
+    class_name,
+    platform,
+    rank_fixture,
+    detail_fixture,
+    source_url,
+    _,
+    bad_candidate,
+):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.base import MarketSourceFailure
+
+    rank_text = (FIXTURES / rank_fixture).read_text(encoding="utf-8")
+    detail_path = "/detail/1" if platform == "zongheng" else "/book/1"
+    if bad_candidate == "empty-title":
+        rank_text = rank_text.replace(">作品1<", "><", 1)
+    elif bad_candidate == "missing-href":
+        rank_text = rank_text.replace(f' href="{detail_path}"', "", 1)
+    elif bad_candidate == "off-origin-href":
+        rank_text = rank_text.replace(
+            f'href="{detail_path}"', 'href="https://evil.example/book/1"', 1
+        )
+    elif bad_candidate == "ambiguous-path":
+        rank_text = rank_text.replace(
+            f'href="{detail_path}"', 'href="/%2e%2e/private"', 1
+        )
+    else:
+        rank_text = rank_text.replace(">2<", ">3<", 1)
+    transport = RankAndDetailTransport(
+        rank_url=source_url,
+        rank_body=rank_text.encode("utf-8"),
+        detail_body_for_url=lambda url: AssertionError("detail transport must not open"),
+    )
+    policy = _policy(
+        platform=platform,
+        prefixes=_detail_policy_prefixes(platform),
+    )
+
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await _official_rank_adapter(module_name, class_name)(transport).fetch(
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            captured_at=NOW,
+        )
+
+    assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
+    assert len(transport.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "module_name,class_name,platform,rank_fixture,detail_fixture,source_url,_"
+    ),
+    _DETAIL_ENRICHED_ADAPTERS,
+)
+async def test_detail_enrichment_stops_at_the_sixth_failed_detail_without_snapshot(
+    module_name,
+    class_name,
+    platform,
+    rank_fixture,
+    detail_fixture,
+    source_url,
+    _,
+):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.base import MarketSourceFailure
+
+    adapter_class = _official_rank_adapter(module_name, class_name)
+
+    class SnapshotSpyAdapter(adapter_class):
+        def __init__(self, transport):
+            super().__init__(transport)
+            self.snapshot_calls = 0
+
+        def snapshot(self, entries, *, captured_at):
+            self.snapshot_calls += 1
+            return super().snapshot(entries, captured_at=captured_at)
+
+    def detail_body_for_url(url):
+        body = _detail_fixture_body(
+            detail_fixture,
+            title=_detail_title_for_url(url),
+            url=url,
+        )
+        if url.rstrip("/").endswith("/6"):
+            return body.replace(b'content="\xe5\x85\xac\xe5\xbc\x80author"', b'content=""', 1)
+        return body
+
+    transport = RankAndDetailTransport(
+        rank_url=source_url,
+        rank_body=(FIXTURES / rank_fixture).read_bytes(),
+        detail_body_for_url=detail_body_for_url,
+    )
+    adapter = SnapshotSpyAdapter(transport)
+    policy = _policy(
+        platform=platform,
+        prefixes=_detail_policy_prefixes(platform),
+    )
+
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await adapter.fetch(
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            captured_at=NOW,
+        )
+
+    assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
+    assert adapter.snapshot_calls == 0
+    assert len(transport.requests) == 7
+    assert transport.requests[-1].url.rstrip("/").endswith("/6")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "module_name,class_name,platform,rank_fixture,detail_fixture,source_url,_"
+    ),
+    _DETAIL_ENRICHED_ADAPTERS,
+)
+async def test_detail_enrichment_rejects_oversized_detail_pages(
+    module_name,
+    class_name,
+    platform,
+    rank_fixture,
+    detail_fixture,
+    source_url,
+    _,
+):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.base import MarketSourceFailure
+
+    transport = RankAndDetailTransport(
+        rank_url=source_url,
+        rank_body=(FIXTURES / rank_fixture).read_bytes(),
+        detail_body_for_url=lambda url: b"x" * (512 * 1024 + 1),
+    )
+    policy = _policy(
+        platform=platform,
+        prefixes=_detail_policy_prefixes(platform),
+    )
+
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await _official_rank_adapter(module_name, class_name)(transport).fetch(
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            captured_at=NOW,
+        )
+
+    assert rejected.value.code == "MARKET_BODY_TOO_LARGE"
+    assert len(transport.requests) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "missing_field", ("author", "category")
+)
+@pytest.mark.parametrize(
+    (
+        "module_name,class_name,platform,rank_fixture,detail_fixture,source_url,_"
+    ),
+    _DETAIL_ENRICHED_ADAPTERS,
+)
+async def test_detail_enrichment_rejects_missing_required_detail_metadata(
+    module_name,
+    class_name,
+    platform,
+    rank_fixture,
+    detail_fixture,
+    source_url,
+    _,
+    missing_field,
+):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.base import MarketSourceFailure
+
+    detail_text = (FIXTURES / detail_fixture).read_text(encoding="utf-8")
+    detail_text = detail_text.replace(
+        f'og:novel:{missing_field}" content="公开{missing_field}"',
+        f'og:novel:{missing_field}" content=""',
+        1,
+    )
+    transport = RankAndDetailTransport(
+        rank_url=source_url,
+        rank_body=(FIXTURES / rank_fixture).read_bytes(),
+        detail_body_for_url=lambda url: (
+            detail_text.replace("{{TITLE}}", f"作品{url.rsplit('/', 1)[-1]}")
+            .replace("{{URL}}", url)
+            .encode("utf-8")
+        ),
+    )
+    policy = _policy(
+        platform=platform,
+        prefixes=_detail_policy_prefixes(platform),
+    )
+
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await _official_rank_adapter(module_name, class_name)(transport).fetch(
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            captured_at=NOW,
+        )
+
+    assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
+    assert len(transport.requests) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "module_name,class_name,platform,rank_fixture,detail_fixture,source_url,extra_container"
+    ),
+    _DETAIL_ENRICHED_ADAPTERS,
+)
+@pytest.mark.parametrize(
+    "damage", ("fewer", "ambiguous", "bad-rank", "detail-title", "detail-url")
+)
+async def test_detail_enrichment_rejects_incomplete_or_mismatched_pages(
+    module_name,
+    class_name,
+    platform,
+    rank_fixture,
+    detail_fixture,
+    source_url,
+    extra_container,
+    damage,
+):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.base import MarketSourceFailure
+
+    rank_text = (FIXTURES / rank_fixture).read_text(encoding="utf-8")
+    if damage == "fewer":
+        rank_text = re.sub(
+            r'\s*<article[^>]*data-rank-row="10".*?</article>',
+            "",
+            rank_text,
+            count=1,
+            flags=re.DOTALL,
+        )
+    elif damage == "ambiguous":
+        rank_text = rank_text.replace("</body>", extra_container + "</body>")
+    elif damage == "bad-rank":
+        rank_text = rank_text.replace(">2<", ">3<", 1)
+    detail_title = "不一致作品" if damage == "detail-title" else None
+    og_url = "https://evil.example/book/1" if damage == "detail-url" else None
+    transport = RankAndDetailTransport(
+        rank_url=source_url,
+        rank_body=rank_text.encode("utf-8"),
+        detail_body_for_url=lambda url: _detail_fixture_body(
+            detail_fixture,
+            title=detail_title or f"作品{url.rsplit('/', 1)[-1]}",
+            url=og_url or url,
+        ),
+    )
+    policy = _policy(
+        platform=platform,
+        prefixes=_detail_policy_prefixes(platform),
+    )
+
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await _official_rank_adapter(module_name, class_name)(transport).fetch(
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            captured_at=NOW,
+        )
+
+    assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
 
 
 def _fetch_public_document():
@@ -1153,6 +1966,28 @@ def test_canonical_work_url_maps_malformed_urls_to_market_failure(work_url):
         )
 
     assert rejected.value.code == "MARKET_URL_NOT_ALLOWED"
+
+
+@pytest.mark.parametrize("fragment", ("#1", "#detail-alias"))
+def test_canonical_work_url_rejects_fragments_but_preserves_legal_queries(fragment):
+    from backend.gateways.market_sources.base import (
+        MarketSourceFailure,
+        canonical_work_url,
+    )
+
+    with pytest.raises(MarketSourceFailure) as rejected:
+        canonical_work_url(
+            f"/book/1{fragment}",
+            base_url="https://www.qidian.com/rank/newsign/",
+            work_origins=("https://www.qidian.com",),
+        )
+
+    assert rejected.value.code == "MARKET_URL_NOT_ALLOWED"
+    assert canonical_work_url(
+        "/book/1?rank=weekly",
+        base_url="https://www.qidian.com/rank/newsign/",
+        work_origins=("https://www.qidian.com",),
+    ) == "https://www.qidian.com/book/1?rank=weekly"
 
 
 def _market_entry(rank: int):

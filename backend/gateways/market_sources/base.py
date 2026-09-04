@@ -363,6 +363,7 @@ def canonical_work_url(
         raise MarketSourceFailure("MARKET_URL_NOT_ALLOWED") from None
     if (
         _has_url_controls(work_url)
+        or parsed.fragment
         or not _path_is_unambiguous(parsed.path)
         or origin not in work_origins
     ):
@@ -622,6 +623,124 @@ class OfficialRankAdapter:
             )
         except ValidationError:
             raise MarketSourceFailure("MARKET_SNAPSHOT_INVALID") from None
+
+
+@dataclass(frozen=True)
+class RankCandidate:
+    """One rank-page fact that must be verified against its detail page."""
+
+    rank: int
+    title: str
+    detail_url: str
+
+
+class DetailEnrichedRankAdapter(OfficialRankAdapter):
+    """Fetch a complete ten-work rank and enrich it serially, never beyond ten."""
+
+    detail_limit = 10
+    work_origin = ""
+    work_origins: tuple[str, ...] = ()
+
+    async def fetch(
+        self,
+        *,
+        policy: SourcePolicy | None,
+        policy_hash: str | None,
+        captured_at: int,
+    ):
+        rank_page = await self.document(
+            self.source_url,
+            policy=policy,
+            policy_hash=policy_hash,
+            captured_at=captured_at,
+        )
+        try:
+            candidates = tuple(self.parse_rank_candidates(rank_page))
+        except MarketSourceFailure:
+            raise
+        except Exception:
+            raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE") from None
+        if self.detail_limit != 10:
+            raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
+        selected = candidates[:10]
+        if len(selected) != 10:
+            raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
+
+        origins = self.work_origins or ((self.work_origin,) if self.work_origin else ())
+        if not origins:
+            raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
+        validated_candidates: list[tuple[RankCandidate, str, str]] = []
+        for expected_rank, candidate in enumerate(selected, start=1):
+            if (
+                not isinstance(candidate, RankCandidate)
+                or candidate.rank != expected_rank
+            ):
+                raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
+            try:
+                expected_title = normalized_public_text(candidate.title)
+                detail_url = canonical_work_url(
+                    candidate.detail_url,
+                    base_url=self.source_url,
+                    work_origins=origins,
+                )
+            except MarketSourceFailure:
+                raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE") from None
+            validated_candidates.append((candidate, detail_url, expected_title))
+        if len({detail_url for _, detail_url, _ in validated_candidates}) != 10:
+            raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
+        for _, detail_url, _ in validated_candidates:
+            try:
+                verify_transport_policy(
+                    policy,
+                    policy_hash,
+                    source_url=detail_url,
+                    captured_at=captured_at,
+                )
+            except MarketSourceFailure as failure:
+                if failure.code == "MARKET_URL_NOT_ALLOWED":
+                    raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE") from None
+                raise
+
+        entries: list[MarketEntry] = []
+        detail_requests = 0
+        for expected_rank, (candidate, detail_url, expected_title) in enumerate(
+            validated_candidates,
+            start=1,
+        ):
+            if detail_requests >= 10:
+                raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
+            detail_requests += 1
+            detail_page = await self.document(
+                detail_url,
+                policy=policy,
+                policy_hash=policy_hash,
+                captured_at=captured_at,
+            )
+            try:
+                entry = self.parse_detail(candidate, detail_page)
+                if (
+                    not isinstance(entry, MarketEntry)
+                    or entry.rank != expected_rank
+                    or entry.title != expected_title
+                    or entry.work_url != detail_url
+                ):
+                    raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
+            except MarketSourceFailure:
+                raise
+            except Exception:
+                raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE") from None
+            entries.append(entry)
+        return self.snapshot(tuple(entries), captured_at=captured_at)
+
+    def parse_rank_candidates(self, rank_page: PublicHTMLDocument):
+        raise NotImplementedError
+
+    def parse_detail(
+        self,
+        candidate: RankCandidate,
+        detail_page: PublicHTMLDocument,
+    ) -> MarketEntry:
+        raise NotImplementedError
 
 
 class PublicRankAdapter:
