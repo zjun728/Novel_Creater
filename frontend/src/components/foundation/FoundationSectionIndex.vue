@@ -39,7 +39,7 @@ function navigate(item) {
 </template>
 
 <style scoped>
-.foundation-section-index { --foundation-status-filled:#496750; --foundation-status-suggested:#60420f; min-width:0; padding:16px 0; overflow-wrap:anywhere; }
+.foundation-section-index { --foundation-status-filled:#496750; --foundation-status-suggested:#60420f; min-width:0; padding:16px 0; overflow-wrap:anywhere; touch-action:pan-y; overscroll-behavior:auto; }
 .foundation-section-index__label { margin:0 0 10px; color:var(--nc-vermilion); font:700 10px Georgia,'Noto Serif SC',serif; letter-spacing:.16em; }
 ol { display:grid; gap:3px; margin:0; padding:0; list-style:none; }
 button { display:grid; grid-template-columns:minmax(0,1fr) auto; width:100%; min-width:0; gap:8px; padding:10px 0 10px 10px; border:0; border-left:2px solid transparent; color:var(--nc-ink); background:transparent; font:inherit; text-align:left; cursor:pointer; }

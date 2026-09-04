@@ -14,13 +14,34 @@ const titleId = `${useId()}-title`
 const mounted = ref(false)
 let focusGeneration = 0
 let componentMounted = false
+let pageScrollSnapshot = null
 const focusManager = createModalFocusManager({
   getDialog: () => dialog.value,
   getInitialFocus: () => dialog.value,
 })
 
+function capturePageScroll() {
+  if (pageScrollSnapshot) return
+  const target = globalThis.document?.querySelector?.('#main-content')
+  if (!target) return
+  pageScrollSnapshot = { target, top: target.scrollTop || 0, left: target.scrollLeft || 0 }
+}
+
+function restorePageScroll() {
+  const snapshot = pageScrollSnapshot
+  pageScrollSnapshot = null
+  if (!snapshot || snapshot.target.isConnected === false) return
+  if (typeof snapshot.target.scrollTo === 'function') {
+    snapshot.target.scrollTo({ top: snapshot.top, left: snapshot.left, behavior: 'auto' })
+    return
+  }
+  snapshot.target.scrollTop = snapshot.top
+  snapshot.target.scrollLeft = snapshot.left
+}
+
 async function mountFocus() {
   const generation = ++focusGeneration
+  capturePageScroll()
   await nextTick()
   if (generation !== focusGeneration || !componentMounted || !props.open || !dialog.value) return
   dialog.value.scrollTop = 0
@@ -30,6 +51,7 @@ async function mountFocus() {
 function cancelFocus() {
   focusGeneration += 1
   focusManager.unmount()
+  restorePageScroll()
 }
 
 function close() { if (!props.closeDisabled) emit('close') }
@@ -70,7 +92,7 @@ onBeforeUnmount(() => { componentMounted = false; cancelFocus() })
 
 <style scoped>
 .foundation-confirmation-dialog__overlay { position:fixed; z-index:34; inset:0; display:grid; min-width:0; padding:24px; place-items:center; background:color-mix(in srgb,var(--nc-ink) 40%,transparent); }
-.foundation-confirmation-dialog { width:min(640px,100%); max-height:calc(100vh - 48px); min-width:0; overflow:auto; padding:clamp(22px,4vw,34px); overflow-wrap:anywhere; color:var(--nc-ink); border:1px solid var(--nc-vermilion); background:var(--nc-paper); box-shadow:0 24px 64px color-mix(in srgb,var(--nc-ink) 24%,transparent); }
+.foundation-confirmation-dialog { box-sizing:border-box; width:min(640px,100%); max-height:calc(100vh - 48px); min-width:0; overflow:auto; overscroll-behavior:contain; padding:clamp(22px,4vw,34px); overflow-wrap:anywhere; color:var(--nc-ink); border:1px solid var(--nc-vermilion); background:var(--nc-paper); box-shadow:0 24px 64px color-mix(in srgb,var(--nc-ink) 24%,transparent); }
 .foundation-confirmation-dialog__kicker { margin:0; color:var(--nc-vermilion); font:700 10px Georgia,'Noto Serif SC',serif; letter-spacing:.17em; }.foundation-confirmation-dialog h2 { margin:7px 0 18px; font:600 clamp(26px,4vw,38px)/1.2 Georgia,'Noto Serif SC',serif; }.foundation-confirmation-dialog__snapshot,.foundation-confirmation-dialog__source { min-width:0; padding:13px; border-left:2px solid var(--nc-vermilion); background:color-mix(in srgb,var(--nc-paper) 82%,var(--nc-canvas)); }.foundation-confirmation-dialog__source { margin-top:12px; color:var(--nc-muted); font-size:13px; line-height:1.65; }.foundation-confirmation-dialog__actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:10px; margin-top:22px; }.foundation-confirmation-dialog :deep(button) { min-height:40px; border:1px solid var(--nc-border); padding:8px 13px; color:var(--nc-ink); background:var(--nc-paper); font:600 14px Georgia,'Noto Serif SC',serif; cursor:pointer; }.foundation-confirmation-dialog :deep(button):focus-visible { outline:2px solid var(--nc-vermilion); outline-offset:3px; }
 @media (max-width:760px) { .foundation-confirmation-dialog__overlay { padding:12px; } .foundation-confirmation-dialog { max-height:calc(100vh - 24px); } .foundation-confirmation-dialog__actions { align-items:stretch; flex-direction:column-reverse; } }
 @media (prefers-reduced-motion:reduce) { .foundation-confirmation-dialog, .foundation-confirmation-dialog * { scroll-behavior:auto !important; transition:none !important; animation:none !important; } }

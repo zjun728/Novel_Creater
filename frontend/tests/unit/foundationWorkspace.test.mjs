@@ -35,7 +35,7 @@ function node(type, value = '') {
   return {
     type, text: value, props: {}, children: [], parent: null, isConnected: true,
     scrollTop: type === 'section' ? 480 : 0,
-    focus() { globalThis.document.activeElement = this },
+    focus(options) { this.focusOptions = options; globalThis.document.activeElement = this },
     hasAttribute(name) { return Object.hasOwn(this.props, name) },
     getAttribute(name) { return this.props[name] ?? null },
     setAttribute(name, value) { this.props[name] = value },
@@ -135,14 +135,14 @@ test('foundation status rail stays beside the document on desktop and precedes i
       title: '创作契约', purpose: '把长期承诺写成可复核的正文。', statusLabel: '工作稿',
     }, {
       index: () => h('nav', '目录内容'),
-      status: () => h('div', { style: 'height:240px' }, '容量与准备度摘要'),
+      status: () => h('button', { style: 'height:240px;transition:opacity 2s' }, '容量与准备度摘要'),
       document: () => h('article', { style: 'height:4200px' }, '长篇正文'),
     }),
   }))
   const browser = await chromium.launch({ headless: true })
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
   try {
-    await page.setContent(`<style>:root{--nc-paper:#fff;--nc-ink:#111;--nc-muted:#555;--nc-border:#ccc;--nc-vermilion:#a33;--nc-jade:#496750;--nc-canvas:#f5f2eb}${css}</style>${body}`)
+    await page.setContent(`<style>:root{--nc-paper:#fff;--nc-ink:#111;--nc-muted:#555;--nc-border:#ccc;--nc-vermilion:#a33;--nc-jade:#496750;--nc-canvas:#f5f2eb}html,body{margin:0;height:100%}#main-content{box-sizing:border-box;width:100%;height:500px;overflow-y:auto}${css}</style><main id="main-content">${body}</main>`)
     const geometry = async () => page.locator('.foundation-workspace__grid').evaluate(grid => {
       const index = grid.querySelector('.foundation-workspace__index').getBoundingClientRect()
       const status = grid.querySelector('aside.foundation-workspace__status').getBoundingClientRect()
@@ -156,11 +156,24 @@ test('foundation status rail stays beside the document on desktop and precedes i
     const desktop = await geometry()
     assert.ok(Math.abs(desktop.statusTop - desktop.documentTop) <= 2, JSON.stringify(desktop))
     assert.equal(desktop.statusPosition, 'sticky')
+    const main = page.locator('#main-content')
+    await page.locator('.foundation-workspace__index').hover()
+    await page.mouse.wheel(0, 360)
+    await page.waitForFunction(() => document.querySelector('#main-content').scrollTop > 0)
+    assert.ok(await main.evaluate(element => element.scrollTop > 0))
+    assert.deepEqual(await page.locator('.foundation-workspace__index').evaluate(element => ({
+      overflowY: getComputedStyle(element).overflowY,
+      touchAction: getComputedStyle(element).touchAction,
+    })), { overflowY: 'visible', touchAction: 'pan-y' })
 
     await page.setViewportSize({ width: 360, height: 800 })
     const mobile = await geometry()
     assert.ok(mobile.indexTop < mobile.statusTop, JSON.stringify(mobile))
     assert.ok(mobile.statusTop < mobile.documentTop, JSON.stringify(mobile))
+    assert.equal(await main.evaluate(element => element.scrollWidth <= element.clientWidth), true)
+
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    assert.equal(await page.locator('.foundation-workspace__status button').evaluate(element => getComputedStyle(element).transitionDuration), '0s')
   } finally {
     await browser.close()
   }
@@ -202,11 +215,14 @@ test('section index renders all author-facing states, emits stable keys, and hon
     for (const label of ['当前', '已填写', '建议补充', '阻塞']) assert.match(text(root), new RegExp(label))
     const button = walk(root).find(item => item.type === 'button' && text(item).includes('核心命题'))
     assert.ok(button)
+    assert.equal(button.props.type, 'button')
+    assert.notEqual(button.props.tabindex, '-1')
     globalThis.matchMedia = () => ({ matches: false })
     button.props.onClick({ preventDefault() {} })
     assert.deepEqual(emitted, ['premise'])
     assert.deepEqual(headings.get('premise').scrollOptions, { block: 'start', behavior: 'smooth' })
     assert.equal(globalThis.document.activeElement, headings.get('premise'))
+    assert.deepEqual(headings.get('premise').focusOptions, { preventScroll: true })
     globalThis.matchMedia = () => ({ matches: true })
     walk(root).find(item => item.type === 'button' && text(item).includes('世界规则')).props.onClick({ preventDefault() {} })
     assert.deepEqual(headings.get('world').scrollOptions, { block: 'start', behavior: 'auto' })
@@ -311,6 +327,38 @@ test('confirmation dialog opens at its heading, traps focus, and restores its tr
     dialog.props.onKeydown({ key: 'Escape', preventDefault() {} })
     await nextTick()
     assert.notEqual(appRoot.inert, true)
+    assert.equal(globalThis.document.activeElement, trigger)
+  } finally { globalThis.document = originalDocument }
+})
+
+test('confirmation dialog restores the real page scroller after closing', async () => {
+  const Dialog = await component('components/foundation/FoundationConfirmationDialog.vue')
+  const body = node('body')
+  const main = node('main'); main.props.id = 'main-content'; main.scrollTop = 640; main.scrollLeft = 19
+  main.scrollTo = ({ top, left }) => { main.scrollTop = top; main.scrollLeft = left }
+  const appRoot = node('div'); appRoot.props.id = 'app'; appRoot.parent = main; main.children.push(appRoot); main.parent = body; body.children.push(main)
+  const trigger = node('button')
+  const originalDocument = globalThis.document
+  globalThis.document = {
+    activeElement: trigger,
+    body,
+    querySelector: selector => ({ '#app': appRoot, '#main-content': main, body })[selector] ?? null,
+  }
+  const open = ref(true)
+  try {
+    const app = renderer.createApp(defineComponent({
+      setup: () => () => h(Dialog, { open: open.value, title: '确认创作契约', onClose: () => { open.value = false } }, {
+        action: () => h('button', '关闭'),
+      }),
+    }))
+    app.provide(ssrContextKey, { modules: new Set() }); app.mount(appRoot)
+    await nextTick(); await nextTick()
+    const dialog = walk(body).find(item => item.props.role === 'dialog')
+    main.scrollTop = 0; main.scrollLeft = 0
+    dialog.props.onKeydown({ key: 'Escape', preventDefault() {} })
+    await nextTick()
+    assert.equal(main.scrollTop, 640)
+    assert.equal(main.scrollLeft, 19)
     assert.equal(globalThis.document.activeElement, trigger)
   } finally { globalThis.document = originalDocument }
 })
@@ -424,6 +472,10 @@ test('each foundation component owns its responsive safety CSS', async () => {
   assert.match(workspace, /overflow-wrap:\s*anywhere/)
   assert.match(workspace, /@media\s*\(max-width:\s*760px\)/)
   assert.match(workspace, /prefers-reduced-motion:\s*reduce/)
+  assert.match(workspace, /box-sizing:\s*border-box/)
+  assert.match(workspace, /overflow-x:\s*clip/)
+  assert.match(workspace, /\.foundation-workspace__index[^}]*touch-action:\s*pan-y/)
+  assert.match(workspace, /\.foundation-workspace__status[^}]*touch-action:\s*pan-y/)
   assert.match(workspace, /grid-template-columns:\s*minmax\(168px,\.72fr\)\s+minmax\(0,2\.5fr\)\s+minmax\(196px,\.86fr\)/)
   assert.match(workspace, /@media\s*\(max-width:760px\)/)
   assert.match(workspace, /grid-template-areas:'index'\s+'status'\s+'document';\s*grid-template-columns:minmax\(0,1fr\)/)
@@ -434,6 +486,7 @@ test('each foundation component owns its responsive safety CSS', async () => {
   assert.ok(workspaceTemplate.indexOf('<aside class="foundation-workspace__status"') < workspaceTemplate.indexOf('foundation-workspace__document'))
   assert.match(index, /overflow-wrap:\s*anywhere/)
   assert.match(index, /@media\s*\(max-width:\s*760px\)/)
+  assert.match(index, /touch-action:\s*pan-y/)
   assert.match(index, /--foundation-status-suggested:\s*#60420f/)
   assert.match(index, /color:var\(--foundation-status-suggested\)/)
   assert.match(index, /--foundation-status-filled:\s*#496750/)
@@ -445,8 +498,74 @@ test('each foundation component owns its responsive safety CSS', async () => {
   assert.match(section, /@media\s*\(max-width:\s*760px\)/)
   assert.match(dialog, /max-height/)
   assert.match(dialog, /overflow:\s*auto/)
+  assert.match(dialog, /overscroll-behavior:\s*contain/)
   assert.match(dialog, /@media\s*\(max-width:\s*760px\)/)
   assert.match(dialog, /prefers-reduced-motion:\s*reduce/)
+})
+
+test('foundation drawers keep overflow inside bounded bodies and leave page scrolling local', async () => {
+  const [seedDrawer, contractDrawer, bibleDrawer] = await Promise.all([
+    'components/seeds/SeedOtherCandidatesDrawer.vue',
+    'components/project/contract/ContractHistoryDrawer.vue',
+    'components/bible/BibleHistoryDrawer.vue',
+  ].map(path => readFile(source(path), 'utf8')))
+
+  assert.match(seedDrawer, /min-width:\s*0/)
+  assert.doesNotMatch(seedDrawer, /overflow(?:-y)?:\s*(?:auto|scroll|hidden)/)
+  assert.match(contractDrawer, /:block-scroll="false"/)
+  assert.match(contractDrawer, /class="contract-history-drawer"/)
+  assert.match(contractDrawer, /content-class="contract-history-drawer__body"/)
+  assert.match(contractDrawer, /max-height:\s*100dvh/)
+  assert.match(contractDrawer, /overflow-y:\s*auto/)
+  assert.match(bibleDrawer, /max-height:\s*100dvh/)
+  assert.match(bibleDrawer, /overflow-y:\s*auto/)
+  assert.match(bibleDrawer, /prefers-reduced-motion:\s*reduce/)
+})
+
+test('contract history drawer disables only its own root and mask motion for reduced-motion users', async () => {
+  const { chromium } = await import('@playwright/test')
+  const sourceText = await readFile(source('components/project/contract/ContractHistoryDrawer.vue'), 'utf8')
+  const componentCss = [...sourceText.matchAll(/<style>([\s\S]*?)<\/style>/g)].map(match => match[1]).join('\n')
+  const browser = await chromium.launch({ headless: true })
+  const page = await browser.newPage({ viewport: { width: 800, height: 600 } })
+  try {
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await page.setContent(`<style>
+      .n-drawer { transition: transform .3s ease; animation: drawer-in .3s ease; }
+      .n-drawer-mask { transition: opacity .3s ease; animation: mask-in .3s ease; }
+      ${componentCss}
+    </style>
+    <div class="n-drawer-container owned"><div class="n-drawer-mask"></div><div><aside class="n-drawer contract-history-drawer"></aside></div></div>
+    <div class="n-drawer-container unrelated"><div class="n-drawer-mask"></div><div><aside class="n-drawer"></aside></div></div>`)
+    const motion = async locator => locator.evaluate(element => ({
+      transitionDuration: getComputedStyle(element).transitionDuration,
+      transitionProperty: getComputedStyle(element).transitionProperty,
+      animationName: getComputedStyle(element).animationName,
+    }))
+    for (const selector of ['.owned .contract-history-drawer', '.owned > .n-drawer-mask']) {
+      const computed = await motion(page.locator(selector))
+      assert.equal(computed.transitionDuration, '0s', `${selector}: ${JSON.stringify(computed)}`)
+      assert.equal(computed.animationName, 'none', `${selector}: ${JSON.stringify(computed)}`)
+    }
+    assert.equal((await motion(page.locator('.unrelated .n-drawer'))).transitionDuration, '0.3s')
+    assert.equal((await motion(page.locator('.unrelated > .n-drawer-mask'))).transitionDuration, '0.3s')
+  } finally {
+    await browser.close()
+  }
+})
+
+test('modal errors use one live-region semantic and busy drawers retain a Tab focus fallback', async () => {
+  const [contractDrawer, bibleDrawer] = await Promise.all([
+    'components/project/contract/ContractHistoryDrawer.vue',
+    'components/bible/BibleHistoryDrawer.vue',
+  ].map(path => readFile(source(path), 'utf8')))
+
+  assert.match(contractDrawer, /role="alert"/)
+  assert.doesNotMatch(contractDrawer, /role="alert"[^>]*aria-live=/)
+  assert.match(bibleDrawer, /role="alert"/)
+  assert.doesNotMatch(bibleDrawer, /role="alert"[^>]*aria-live=/)
+  assert.match(bibleDrawer, /event\.key === 'Tab'\s*&&\s*!focusManager\.trapTab\(event\)/)
+  assert.match(bibleDrawer, /dialog\.value\?\.focus\?\.\(\{ preventScroll: true \}\)/)
 })
 
 test('Seed, Contract, and Bible expose the same complete Chinese author-state contract', async () => {

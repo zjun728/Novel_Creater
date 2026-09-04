@@ -15,6 +15,8 @@ const store = useCreationContractStore()
 const errorMessage = ref('')
 const errorRegion = ref(null)
 const historyRequestGuard = createLatestRequestGuard()
+let restoreTarget = null
+let pageScrollSnapshot = null
 
 const rows = computed(() => [...store.history].sort((a, b) => b.revision - a.revision))
 
@@ -36,6 +38,32 @@ function reasonLabel(reason) {
 function focusControl(reference, options = { preventScroll: false }) {
   const target = typeof reference?.focus === 'function' ? reference : reference?.$el
   target?.focus?.(options)
+}
+
+function captureDrawerContext() {
+  const documentRef = globalThis.document
+  restoreTarget = documentRef?.activeElement?.isConnected !== false ? documentRef?.activeElement : null
+  const target = documentRef?.querySelector?.('#main-content')
+  pageScrollSnapshot = target
+    ? { target, top: target.scrollTop || 0, left: target.scrollLeft || 0 }
+    : null
+}
+
+function restoreDrawerContext() {
+  const focusTarget = restoreTarget
+  const scrollSnapshot = pageScrollSnapshot
+  restoreTarget = null
+  pageScrollSnapshot = null
+  void nextTick().then(() => {
+    if (focusTarget?.isConnected !== false) focusTarget?.focus?.({ preventScroll: true })
+    if (!scrollSnapshot || scrollSnapshot.target.isConnected === false) return
+    if (typeof scrollSnapshot.target.scrollTo === 'function') {
+      scrollSnapshot.target.scrollTo({ top: scrollSnapshot.top, left: scrollSnapshot.left, behavior: 'auto' })
+      return
+    }
+    scrollSnapshot.target.scrollTop = scrollSnapshot.top
+    scrollSnapshot.target.scrollLeft = scrollSnapshot.left
+  })
 }
 
 async function loadHistory({ append = false } = {}) {
@@ -80,25 +108,31 @@ watch(
   ([show, projectId], previous = []) => {
     const [wasShowing, previousProjectId] = previous
     if (!show) {
-      if (wasShowing) resetDrawerState()
+      if (wasShowing) { resetDrawerState(); restoreDrawerContext() }
       return
     }
+    if (!wasShowing) captureDrawerContext()
     if (wasShowing && projectId !== previousProjectId) resetDrawerState()
     void loadHistory()
   },
   { immediate: true },
 )
 
-onBeforeUnmount(() => resetDrawerState())
+onBeforeUnmount(() => { resetDrawerState(); restoreDrawerContext() })
 </script>
 
 <template>
   <n-drawer
+    class="contract-history-drawer"
     :show="props.show"
     width="min(620px, 100vw)"
     placement="right"
     :mask-closable="true"
     :close-on-esc="true"
+    :block-scroll="false"
+    :trap-focus="true"
+    :auto-focus="true"
+    content-class="contract-history-drawer__body"
     @update:show="handleShowUpdate"
   >
     <n-drawer-content title="创作契约历史" :closable="true">
@@ -109,7 +143,7 @@ onBeforeUnmount(() => resetDrawerState())
         ref="errorRegion"
         tabindex="-1"
         type="error"
-        aria-live="assertive"
+        role="alert"
       >
         <p class="history-error__message">{{ errorMessage }}</p>
         <n-button class="history-error__action" size="small" @click="loadHistory">重新加载</n-button>
@@ -226,6 +260,7 @@ onBeforeUnmount(() => resetDrawerState())
 </template>
 
 <style scoped>
+:deep(.contract-history-drawer__body) { box-sizing: border-box; max-height: 100dvh; min-width: 0; overflow-x: clip; overflow-y: auto; overscroll-behavior: contain; }
 .drawer-intro { margin: 0 0 18px; color: var(--muted, #786e60); font-size: 12px; line-height: 1.8; }
 .history-error__message { margin: 0; }
 .history-error__action { margin-top: 10px; }
@@ -262,4 +297,15 @@ onBeforeUnmount(() => resetDrawerState())
 .history-card footer small { color: var(--muted, #927568); font-size: 11px; }
 .history-load-more { margin-top: 2px; color: var(--jade, #47675a); }
 @media (max-width: 520px) { .history-facts { grid-template-columns: 1fr; } .history-card footer { align-items: stretch; flex-direction: column; } }
+@media (prefers-reduced-motion: reduce) { :deep(.contract-history-drawer__body), :deep(.contract-history-drawer__body *) { scroll-behavior: auto !important; transition: none !important; animation: none !important; } }
+</style>
+
+<style>
+@media (prefers-reduced-motion: reduce) {
+  .contract-history-drawer.n-drawer,
+  .n-drawer-container:has(.contract-history-drawer.n-drawer) > .n-drawer-mask {
+    transition: none !important;
+    animation: none !important;
+  }
+}
 </style>

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 import { createModalFocusManager } from '../../src/components/common/modalFocusManager.js'
@@ -79,4 +80,28 @@ test('a proposal review focus domain restores its author action after an indepen
   const manager = createModalFocusManager({ getDocument: () => documentRef, getDialog: () => review, getInitialFocus: () => reviewAction })
   manager.mount(); assert.equal(documentRef.activeElement, reviewAction); assert.equal(review.scrollTop, 360)
   manager.unmount(); assert.equal(documentRef.activeElement, proposalTrigger); assert.equal(root.inert, false)
+})
+
+test('foundation-owned modal surfaces explicitly restore the custom page scroller', async () => {
+  const sources = await Promise.all([
+    '../../src/components/foundation/FoundationConfirmationDialog.vue',
+    '../../src/components/bible/BibleHistoryDrawer.vue',
+  ].map(path => readFile(new URL(path, import.meta.url), 'utf8')))
+
+  for (const source of sources) {
+    assert.match(source, /#main-content/)
+    assert.match(source, /scrollTop/)
+    assert.match(source, /scrollLeft/)
+    assert.match(source, /scrollTo\(\{\s*top:/)
+    assert.match(source, /focusManager\.unmount\(\)[\s\S]*restorePageScroll\(\)/)
+  }
+})
+
+test('the contract history drawer restores its own trigger and custom page scroll', async () => {
+  const source = await readFile(new URL('../../src/components/project/contract/ContractHistoryDrawer.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /#main-content/)
+  assert.match(source, /restoreTarget/)
+  assert.match(source, /focus\?\.\(\{ preventScroll: true \}\)/)
+  assert.match(source, /scrollTo\(\{\s*top:/)
 })
