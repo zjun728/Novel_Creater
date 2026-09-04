@@ -69,6 +69,15 @@ def _policy(
     elif platform == "heiyan":
         default_origins = ("https://www.heiyan.com",)
         default_prefixes = ("/top/", "/book/")
+    elif platform == "fanqie":
+        default_origins = ("https://fanqienovel.com",)
+        default_prefixes = ("/rank/1",)
+    elif platform == "17k":
+        default_origins = ("https://www.17k.com",)
+        default_prefixes = ("/top/",)
+    elif platform == "hongxiu":
+        default_origins = ("https://www.hongxiu.com",)
+        default_prefixes = ("/rank",)
     else:
         default_origins = ("https://book.qq.com",)
         default_prefixes = ("/book-rank",)
@@ -97,6 +106,50 @@ def _response(body: bytes, *, url: str, status=200, headers=None):
             else headers
         ),
         body=body,
+    )
+
+
+def _candidate_rank_html(
+    platform: str,
+    *,
+    href_for_rank=None,
+    extra_field: str = "",
+    extra_container: str = "",
+) -> str:
+    if platform == "fanqie":
+        opening = '<section class="fanqie-authoritative">'
+        closing = "</section>"
+        href = lambda rank: f"/page/{rank}"
+    elif platform == "17k":
+        opening = '<section class="TYPE"><div class="BOX Top1">'
+        closing = "</div></section>"
+        href = lambda rank: f"/book/{rank}.html"
+    else:
+        opening = '<section class="rank-list"><div class="book-rank-list">'
+        closing = "</div></section>"
+        href = lambda rank: f"/book/{rank}.html"
+    rows = "".join(
+        f'''<article class="rank-book-item">
+          <span class="rank-number">{rank}</span>
+          <a class="book-name" href="{(href_for_rank or href)(rank)}">作品{rank}</a>
+          <span class="author-name">作者{rank}</span>{extra_field if rank == 1 else ""}
+          <span class="book-category">玄幻</span>
+        </article>'''
+        for rank in range(1, 11)
+    )
+    return f"<html><body>{opening}{rows}{closing}{extra_container}</body></html>"
+
+
+async def _fetch_candidate(adapter_class, platform: str, text: str):
+    from backend.domain.json_contracts import canonical_hash
+
+    policy = _policy(platform=platform)
+    return await adapter_class(
+        RecordingTransport(_response(text.encode(), url=adapter_class.source_url))
+    ).fetch(
+        policy=policy,
+        policy_hash=canonical_hash(policy),
+        captured_at=NOW,
     )
 
 
@@ -131,6 +184,358 @@ def test_market_entry_public_metrics_are_deeply_immutable():
     )
     with pytest.raises(TypeError):
         entry_without_metrics.public_metrics["heat"] = 1
+
+
+def test_candidate_adapter_registry_has_only_bounded_candidates():
+    from backend.gateways.market_sources.fanqie_public_rank import FanqiePublicRankAdapter
+    from backend.gateways.market_sources.heiyan_public_rank import HeiyanPublicRankAdapter
+    from backend.gateways.market_sources.hongxiu_public_rank import HongxiuPublicRankAdapter
+    from backend.gateways.market_sources.jjwxc_public_rank import JJWXCPublicRankAdapter
+    from backend.gateways.market_sources.qimao_public_rank import QimaoPublicRankAdapter
+    from backend.gateways.market_sources.qq_reading_public_rank import QQReadingPublicRankAdapter
+    from backend.gateways.market_sources.registry import (
+        build_market_adapters,
+        candidate_adapter_factories,
+    )
+    from backend.gateways.market_sources.seventeen_k_public_rank import SeventeenKPublicRankAdapter
+    from backend.gateways.market_sources.zongheng_public_rank import ZonghengPublicRankAdapter
+
+    factories = candidate_adapter_factories()
+
+    assert dict(factories) == {
+        "fanqie_public_rank": FanqiePublicRankAdapter,
+        "qimao_public_rank": QimaoPublicRankAdapter,
+        "qq_reading_public_rank": QQReadingPublicRankAdapter,
+        "17k_public_rank": SeventeenKPublicRankAdapter,
+        "zongheng_public_rank": ZonghengPublicRankAdapter,
+        "hongxiu_public_rank": HongxiuPublicRankAdapter,
+        "jjwxc_public_rank": JJWXCPublicRankAdapter,
+        "heiyan_public_rank": HeiyanPublicRankAdapter,
+    }
+    with pytest.raises(TypeError):
+        factories["qidian_public_rank"] = object
+    transport = object()
+    assert all(
+        adapter.transport is transport
+        for adapter in build_market_adapters(transport).values()
+    )
+
+
+@pytest.mark.asyncio
+async def test_fanqie_rejects_private_use_font_text_without_publishing_garbled_entry():
+    from backend.domain.json_contracts import canonical_hash
+    from backend.domain.market_sources import MarketSourceFailure
+    from backend.gateways.market_sources.fanqie_public_rank import (
+        FanqiePublicRankAdapter,
+    )
+
+    adapter = FanqiePublicRankAdapter
+    policy = _policy(platform="fanqie")
+    transport = RecordingTransport(
+        _response(
+            (FIXTURES / "fanqie_obfuscated_official_shape.html").read_bytes(),
+            url=adapter.source_url,
+        )
+    )
+
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await adapter(transport).fetch(
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            captured_at=NOW,
+        )
+
+    assert rejected.value.code == "MARKET_HTML_UNKNOWN"
+    assert len(transport.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_fanqie_reads_one_direct_authoritative_batch_with_observed_ranks():
+    from backend.domain.market_sources import MarketSourceFailure
+    from backend.gateways.market_sources.fanqie_public_rank import FanqiePublicRankAdapter
+
+    snapshot = await _fetch_candidate(
+        FanqiePublicRankAdapter,
+        "fanqie",
+        _candidate_rank_html("fanqie"),
+    )
+    assert [entry.rank for entry in snapshot.entries] == list(range(1, 11))
+
+    hidden_duplicate = (
+        '<section hidden><article class="rank-book-item">'
+        '<span class="rank-number">11</span>'
+        '<a class="book-name" href="/page/11">重复容器作品</a>'
+        '<span class="author-name">重复作者</span>'
+        '<span class="book-category">玄幻</span>'
+        '</article></section>'
+    )
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await _fetch_candidate(
+            FanqiePublicRankAdapter,
+            "fanqie",
+            _candidate_rank_html("fanqie", extra_container=hidden_duplicate),
+        )
+    assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("module_name", "class_name", "fixture", "platform"),
+    (
+        (
+            "backend.gateways.market_sources.seventeen_k_public_rank",
+            "SeventeenKPublicRankAdapter",
+            "seventeen_k_rank_official_shape.html",
+            "17k",
+        ),
+        (
+            "backend.gateways.market_sources.hongxiu_public_rank",
+            "HongxiuPublicRankAdapter",
+            "hongxiu_rank_official_shape.html",
+            "hongxiu",
+        ),
+    ),
+)
+async def test_candidate_rank_pages_without_observed_author_fail_closed(
+    module_name, class_name, fixture, platform
+):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.domain.market_sources import MarketSourceFailure
+
+    adapter_class = _official_rank_adapter(module_name, class_name)
+    policy = _policy(platform=platform)
+    transport = RecordingTransport(
+        _response(
+            (FIXTURES / fixture).read_bytes(),
+            url=adapter_class.source_url,
+        )
+    )
+
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await adapter_class(transport).fetch(
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            captured_at=NOW,
+        )
+
+    assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
+    assert len(transport.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("module_name", "class_name", "container_class", "platform"),
+    (
+        (
+            "backend.gateways.market_sources.seventeen_k_public_rank",
+            "SeventeenKPublicRankAdapter",
+            "TYPE\"><div class=\"BOX Top1",
+            "17k",
+        ),
+        (
+            "backend.gateways.market_sources.hongxiu_public_rank",
+            "HongxiuPublicRankAdapter",
+            "rank-list\"><div class=\"book-rank-list",
+            "hongxiu",
+        ),
+    ),
+)
+async def test_candidate_adapters_publish_only_complete_observed_rank_rows(
+    module_name, class_name, container_class, platform
+):
+    from backend.domain.json_contracts import canonical_hash
+
+    adapter_class = _official_rank_adapter(module_name, class_name)
+    rows = "".join(
+        f'''<article class="rank-book-item">
+          <a class="book-name" href="/book/{rank}.html">作品{rank}</a>
+          <span class="author-name">作者{rank}</span>
+          <span class="book-category">玄幻</span>
+        </article>'''
+        for rank in range(1, 11)
+    )
+    text = f'<html><body><section class="{container_class}">{rows}</div></section></body></html>'
+    policy = _policy(platform=platform)
+
+    snapshot = await adapter_class(
+        RecordingTransport(_response(text.encode(), url=adapter_class.source_url))
+    ).fetch(
+        policy=policy,
+        policy_hash=canonical_hash(policy),
+        captured_at=NOW,
+    )
+
+    assert [entry.rank for entry in snapshot.entries] == list(range(1, 11))
+    assert snapshot.entries[0].author == "作者1"
+    assert snapshot.entries[-1].category == "玄幻"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("module_name", "class_name", "platform", "bad_paths"),
+    (
+        (
+            "backend.gateways.market_sources.fanqie_public_rank",
+            "FanqiePublicRankAdapter",
+            "fanqie",
+            ("/book/1.html", "/page/1/extra", "/page/nope", "/page/1?tab=rank", "/page/1#alias"),
+        ),
+        (
+            "backend.gateways.market_sources.seventeen_k_public_rank",
+            "SeventeenKPublicRankAdapter",
+            "17k",
+            ("/rank", "/book/1.html/extra", "/book/nope.html", "/book/1.html?tab=rank", "/book/1.html#alias"),
+        ),
+        (
+            "backend.gateways.market_sources.hongxiu_public_rank",
+            "HongxiuPublicRankAdapter",
+            "hongxiu",
+            ("/rank", "/book/1.html/extra", "/book/nope.html", "/book/1.html?tab=rank", "/book/1.html#alias"),
+        ),
+    ),
+)
+async def test_candidate_adapters_reject_noncanonical_work_paths(
+    module_name, class_name, platform, bad_paths
+):
+    from backend.domain.market_sources import MarketSourceFailure
+
+    adapter_class = _official_rank_adapter(module_name, class_name)
+    for bad_path in bad_paths:
+        with pytest.raises(MarketSourceFailure) as rejected:
+            await _fetch_candidate(
+                adapter_class,
+                platform,
+                _candidate_rank_html(
+                    platform,
+                    href_for_rank=lambda rank: bad_path if rank == 1 else (
+                        f"/page/{rank}" if platform == "fanqie" else f"/book/{rank}.html"
+                    ),
+                ),
+            )
+        assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("module_name", "class_name", "platform"),
+    (
+        (
+            "backend.gateways.market_sources.fanqie_public_rank",
+            "FanqiePublicRankAdapter",
+            "fanqie",
+        ),
+        (
+            "backend.gateways.market_sources.seventeen_k_public_rank",
+            "SeventeenKPublicRankAdapter",
+            "17k",
+        ),
+        (
+            "backend.gateways.market_sources.hongxiu_public_rank",
+            "HongxiuPublicRankAdapter",
+            "hongxiu",
+        ),
+    ),
+)
+async def test_candidate_adapters_reject_duplicate_canonical_work_urls(
+    module_name, class_name, platform
+):
+    from backend.domain.market_sources import MarketSourceFailure
+
+    adapter_class = _official_rank_adapter(module_name, class_name)
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await _fetch_candidate(
+            adapter_class,
+            platform,
+            _candidate_rank_html(
+                platform,
+                href_for_rank=lambda rank: (
+                    "/page/1" if platform == "fanqie" else "/book/1.html"
+                ) if rank == 2 else (
+                    f"/page/{rank}" if platform == "fanqie" else f"/book/{rank}.html"
+                ),
+            ),
+        )
+    assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("module_name", "class_name", "platform", "field"),
+    tuple(
+        (module_name, class_name, platform, field)
+        for module_name, class_name, platform in (
+            (
+                "backend.gateways.market_sources.seventeen_k_public_rank",
+                "SeventeenKPublicRankAdapter",
+                "17k",
+            ),
+            (
+                "backend.gateways.market_sources.hongxiu_public_rank",
+                "HongxiuPublicRankAdapter",
+                "hongxiu",
+            ),
+        )
+        for field in ("book-name", "author-name", "book-category")
+    ),
+)
+async def test_candidate_adapters_do_not_ignore_duplicate_obfuscated_required_fields(
+    module_name, class_name, platform, field
+):
+    from backend.domain.market_sources import MarketSourceFailure
+
+    adapter_class = _official_rank_adapter(module_name, class_name)
+    duplicate = (
+        f'<a class="{field}" href="/book/99.html">\ue000</a>'
+        if field == "book-name"
+        else f'<span class="{field}">\ue000</span>'
+    )
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await _fetch_candidate(
+            adapter_class,
+            platform,
+            _candidate_rank_html(platform, extra_field=duplicate),
+        )
+    assert rejected.value.code == "MARKET_HTML_UNKNOWN"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("module_name", "class_name", "platform", "field"),
+    tuple(
+        (module_name, class_name, platform, field)
+        for module_name, class_name, platform in (
+            (
+                "backend.gateways.market_sources.seventeen_k_public_rank",
+                "SeventeenKPublicRankAdapter",
+                "17k",
+            ),
+            (
+                "backend.gateways.market_sources.hongxiu_public_rank",
+                "HongxiuPublicRankAdapter",
+                "hongxiu",
+            ),
+        )
+        for field in ("book-name", "author-name", "book-category")
+    ),
+)
+async def test_candidate_adapters_reject_duplicate_required_fields(
+    module_name, class_name, platform, field
+):
+    from backend.domain.market_sources import MarketSourceFailure
+
+    adapter_class = _official_rank_adapter(module_name, class_name)
+    duplicate = (
+        f'<a class="{field}" href="/book/99.html">重复</a>'
+        if field == "book-name"
+        else f'<span class="{field}">重复</span>'
+    )
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await _fetch_candidate(
+            adapter_class,
+            platform,
+            _candidate_rank_html(platform, extra_field=duplicate),
+        )
+    assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
 
 
 @pytest.mark.asyncio
@@ -2072,6 +2477,36 @@ def test_official_rank_adapter_snapshot_uses_rank_source_and_requires_ten_entrie
     assert snapshot.source_url == adapter.source_url
     with pytest.raises(MarketSourceFailure) as rejected:
         adapter.snapshot(entries[:9], captured_at=NOW)
+    assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
+
+
+def test_official_rank_adapter_snapshot_rejects_duplicate_canonical_work_urls():
+    from backend.domain.market import MarketEntry
+    from backend.gateways.market_sources.base import (
+        MarketSourceFailure,
+        OfficialRankAdapter,
+    )
+
+    class SyntheticOfficialAdapter(OfficialRankAdapter):
+        source_url = "https://www.qidian.com/rank/newsign/"
+        platform = "qidian"
+        ranking_name = "newsign"
+        category = "male"
+
+    entries = list(_market_entry(rank) for rank in range(1, 11))
+    entries[1] = MarketEntry(
+        rank=2,
+        title="公开作品2",
+        author="公开作者",
+        category="奇幻",
+        workURL=entries[0].work_url,
+        publicMetrics={},
+    )
+    with pytest.raises(MarketSourceFailure) as rejected:
+        SyntheticOfficialAdapter(RecordingTransport(None)).snapshot(
+            tuple(entries),
+            captured_at=NOW,
+        )
     assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
 
 

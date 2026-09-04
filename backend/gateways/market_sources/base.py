@@ -612,6 +612,8 @@ class OfficialRankAdapter:
 
         if not 10 <= len(entries) <= MAX_MARKET_ENTRIES:
             raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
+        if len({entry.work_url for entry in entries}) != len(entries):
+            raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
         try:
             return MarketSnapshot(
                 platform=self.platform,

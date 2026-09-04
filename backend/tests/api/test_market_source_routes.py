@@ -161,6 +161,25 @@ def _client():
     )
 
 
+def test_market_service_builds_candidate_adapters_from_the_central_registry(monkeypatch):
+    from backend.domain.routers import market_sources
+
+    called = []
+    adapters = {"qimao_public_rank": object()}
+
+    def build(transport):
+        called.append(transport)
+        return adapters
+
+    monkeypatch.setattr(market_sources, "build_market_adapters", build)
+
+    service = market_sources.get_market_source_service()
+
+    assert called
+    assert service.snapshot_service.adapters == adapters
+    assert "qidian_public_rank" not in service.snapshot_service.adapters
+
+
 def test_market_source_routes_expose_only_inventory_status_history_detail_and_commands():
     client, service, _, market_sources = _client()
     manual_payload = {

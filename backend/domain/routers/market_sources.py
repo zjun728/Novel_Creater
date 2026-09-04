@@ -19,12 +19,7 @@ from backend.gateways.market_sources.manual_snapshot import (
     MAX_MANUAL_SNAPSHOT_BYTES,
     ManualSnapshotAdapter,
 )
-from backend.gateways.market_sources.qidian_public_rank import (
-    QidianPublicRankAdapter,
-)
-from backend.gateways.market_sources.qq_reading_public_rank import (
-    QQReadingPublicRankAdapter,
-)
+from backend.gateways.market_sources.registry import build_market_adapters
 from backend.repositories.market import MarketRepository
 from backend.services.market_snapshots import MarketSnapshotService
 from backend.services.market_sources import MarketSourceService
@@ -175,10 +170,7 @@ def get_market_source_service() -> MarketSourceService:
         repository,
         transaction_factory=transaction,
         connection_factory=connection,
-        adapters={
-            "qidian_public_rank": QidianPublicRankAdapter(transport),
-            "qq_reading_public_rank": QQReadingPublicRankAdapter(transport),
-        },
+        adapters=build_market_adapters(transport),
         manual_adapter=ManualSnapshotAdapter(),
     )
     return MarketSourceService(
