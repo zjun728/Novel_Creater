@@ -135,7 +135,8 @@ test('the real controller makes a missing draft editable and saves its first loc
   }, async () => {
     setActivePinia(createPinia()); const store = useBibleStore(); const workspace = createBibleWorkspaceController({ store, projectId: () => 'project-1' })
     await workspace.hydrate(); assert.equal(workspace.editable.value, true)
-    workspace.edit({ ...workspace.working.value, premiseAndPromise: 'first local' }); await workspace.save()
+    const { privateField: _privateField, ...complete } = bible()
+    workspace.edit({ ...complete, premiseAndPromise: 'first local' }); await workspace.save()
     assert.equal(bodies.length, 1); assert.equal(bodies[0].expectedDraftVersion, 0)
   })
 })

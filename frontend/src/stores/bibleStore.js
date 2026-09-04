@@ -19,6 +19,19 @@ const BASIS_FIELDS = [
   'creationContractId', 'creationHash', 'styleContractId', 'styleHash',
   'bindingRevisionId', 'bindingHash', 'policyVersion',
 ]
+const BIBLE_AUTHOR_FIELDS = [
+  ['premiseAndPromise', '作品承诺', 'scalar'],
+  ['worldRules', '世界规则', 'list'],
+  ['powerOrProgressionSystem', '力量／成长体系', 'scalar'],
+  ['protagonist', '主角', 'scalar'],
+  ['coreCast', '核心人物', 'list'],
+  ['factions', '势力', 'list'],
+  ['longTermConflicts', '长期冲突', 'list'],
+  ['relationshipDynamics', '关系动力', 'list'],
+  ['toneAndNarrativeBoundaries', '基调与叙事边界', 'scalar'],
+  ['continuityGuardrails', '连贯性护栏', 'list'],
+  ['openDesignQuestions', '开放设计问题', 'list'],
+]
 const GENERATION_ATTEMPT_FIELDS = [
   'id', 'projectId', 'status', 'attemptVersion', 'providerId', 'modelNameSnapshot',
   'inputManifestHash', 'resultHash', 'publicErrorCode', 'createdAt', 'completedAt',
@@ -35,6 +48,50 @@ function invalidResponse() {
 function validText(value, maximum) {
   if (typeof value !== 'string' || value.length === 0 || value !== value.trim()) return false
   try { return unicodeScalarLength(value) <= maximum } catch { return false }
+}
+
+function authorTextIssue(value, label) {
+  if (typeof value !== 'string' || !value.trim()) return `请先补全“${label}”：填写有效文本。`
+  try {
+    if (unicodeScalarLength(value.trim()) > 4_000) return `“${label}”不能超过 4000 个字符。`
+  } catch { return `“${label}”包含无效字符，请重新输入。` }
+  return ''
+}
+
+// Mirrors backend/domain/bibles.py for author-entered payloads without normalizing them.
+export function validateBiblePayload(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { valid: false, message: '请先建立完整的创作圣经文档。' }
+  }
+  const expectedFields = BIBLE_AUTHOR_FIELDS.map(([field]) => field)
+  if (Object.keys(value).length !== expectedFields.length || expectedFields.some(field => !hasOwn(value, field))) {
+    return { valid: false, message: '创作圣经包含无法识别的字段，请刷新页面后重试。' }
+  }
+  for (const [field, label, type] of BIBLE_AUTHOR_FIELDS) {
+    if (type === 'scalar') {
+      const message = authorTextIssue(value[field], label)
+      if (message) return { valid: false, field, message }
+      continue
+    }
+    const items = value[field]
+    if (!Array.isArray(items) || items.length < 1) return { valid: false, field, message: `请先补全“${label}”：至少填写 1 条有效内容。` }
+    if (items.length > 20) return { valid: false, field, message: `“${label}”最多填写 20 条。` }
+    const ids = new Set()
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index]
+      if (!item || typeof item !== 'object' || Array.isArray(item)
+        || Object.keys(item).length !== 2 || !hasOwn(item, 'id') || !hasOwn(item, 'text')) {
+        return { valid: false, field, message: `“${label}”第 ${index + 1} 条包含无法识别的字段，请删除后重新新增。` }
+      }
+      const id = typeof item?.id === 'string' ? item.id.trim() : ''
+      if (!ITEM_ID_PATTERN.test(id)) return { valid: false, field, message: `“${label}”第 ${index + 1} 条的标识格式无效，请删除后重新新增。` }
+      if (ids.has(id)) return { valid: false, field, message: `“${label}”中的标识不能重复，请删除重复条目。` }
+      ids.add(id)
+      const message = authorTextIssue(item?.text, `${label}第 ${index + 1} 条`)
+      if (message) return { valid: false, field, message }
+    }
+  }
+  return { valid: true, message: '' }
 }
 
 function strictProposalBible(value) {

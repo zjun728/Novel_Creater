@@ -1,6 +1,7 @@
 import { computed, nextTick, ref, toRef } from 'vue'
 import { bibleReasonLabel, presentBibleReasons } from './bibleStatusPresentation.js'
 import { adoptBibleProposal, bibleProposalScope } from './bibleProposalScopes.js'
+import { validateBiblePayload } from '../../stores/bibleStore.js'
 
 export { bibleReasonLabel }
 
@@ -46,8 +47,15 @@ export function createBibleWorkspaceController({
   const activeBible = computed(() => activeArtifact.value?.draft ?? activeArtifact.value?.bible ?? (store.draft?.canEdit === true ? emptyBible() : null))
   const activeStatus = computed(() => activeArtifact.value?.status || '')
   const activeReasons = computed(() => [...(activeArtifact.value?.reasons || [])])
+  const activeBasis = computed(() => activeArtifact.value?.basis || null)
   const editable = computed(() => (mode.value === 'draft' || mode.value === 'first') && store.canEdit === true)
-  const canSave = computed(() => editable.value && store.dirty === true && !busy.value)
+  const payloadValidation = computed(() => validateBiblePayload(working.value))
+  const canSave = computed(() => editable.value && store.dirty === true && payloadValidation.value.valid && !busy.value)
+  const saveDisabledReason = computed(() => (
+    editable.value && store.dirty === true && !payloadValidation.value.valid
+      ? payloadValidation.value.message
+      : ''
+  ))
   const canConfirm = computed(() => editable.value && store.canConfirm === true && store.dirty !== true && !busy.value)
   const canGenerate = toRef(() => editable.value && planningReady() === true && store.dirty !== true && !busy.value)
   function canPropose(scopeKey) {
@@ -295,5 +303,5 @@ export function createBibleWorkspaceController({
   }
   function requestLeave() { if (busy.value) return false; return store.dirty !== true || confirmLeave() }
   function beforeUnload(event) { if (store.dirty !== true && !busy.value) return undefined; event.preventDefault(); event.returnValue = ''; return '' }
-  return { working, confirmOpen, historyOpen, proposalOpen, requestedScope, proposalSnapshot, errorSummary, recoveryCommand, busy, mode, activeStatus, activeReasons, editable, canSave, canConfirm, canGenerate, canPropose, generationDisabledReason, confirmPreview, reasonLabels, hydrate, edit, save, openConfirm, closeConfirm, confirm, generate, propose, adoptProposal, cancelProposal, openHistory, showHistoryDetail, loadMoreHistory, retryFailure, requestLeave, beforeUnload, confirmLeave: requestLeave }
+  return { working, confirmOpen, historyOpen, proposalOpen, requestedScope, proposalSnapshot, errorSummary, recoveryCommand, busy, mode, activeStatus, activeReasons, activeBasis, editable, canSave, saveDisabledReason, canConfirm, canGenerate, canPropose, generationDisabledReason, confirmPreview, reasonLabels, hydrate, edit, save, openConfirm, closeConfirm, confirm, generate, propose, adoptProposal, cancelProposal, openHistory, showHistoryDetail, loadMoreHistory, retryFailure, requestLeave, beforeUnload, confirmLeave: requestLeave }
 }

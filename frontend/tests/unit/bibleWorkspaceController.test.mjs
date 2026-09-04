@@ -15,7 +15,12 @@ const emptyBible = () => ({
   worldRules: [], coreCast: [], factions: [], longTermConflicts: [], relationshipDynamics: [],
   continuityGuardrails: [], openDesignQuestions: [],
 })
-const bible = () => ({ ...emptyBible(), premiseAndPromise: 'promise', worldRules: [{ id: 'world-1', text: 'rule' }] })
+const bible = () => ({
+  premiseAndPromise: 'promise', powerOrProgressionSystem: 'power', protagonist: 'hero', toneAndNarrativeBoundaries: 'tone',
+  worldRules: [{ id: 'world-1', text: 'rule' }], coreCast: [{ id: 'cast-1', text: 'cast' }], factions: [{ id: 'faction-1', text: 'faction' }],
+  longTermConflicts: [{ id: 'conflict-1', text: 'conflict' }], relationshipDynamics: [{ id: 'relation-1', text: 'relation' }],
+  continuityGuardrails: [{ id: 'guard-1', text: 'guard' }], openDesignQuestions: [{ id: 'question-1', text: 'question' }],
+})
 const revision = number => ({ revision: number, bible: bible() })
 
 function error(status, message = 'failed') { return Object.assign(new Error(message), { status }) }
@@ -190,19 +195,50 @@ test('state machine creates an empty first Bible only without a head, and never 
   assert.equal(store.calls.save.length, 0)
   assert.equal(workspace.editable.value, true)
   workspace.edit({ ...workspace.working.value, premiseAndPromise: 'first' })
+  assert.equal(workspace.canSave.value, false)
+  assert.equal(workspace.saveDisabledReason.value, '请先补全“世界规则”：至少填写 1 条有效内容。')
+  assert.equal(await workspace.save(), undefined)
+  assert.equal(store.calls.save.length, 0)
+})
+
+test('manual save accepts only a complete backend-valid 11-field Bible without changing its payload', async () => {
+  const store = makeStore(); const workspace = controller(store)
+  await workspace.hydrate()
+  const exact = { ...bible(), premiseAndPromise: '😀'.repeat(4_000), worldRules: Array.from({ length: 20 }, (_, index) => ({ id: `world-${index + 1}`, text: `规则 ${index + 1}` })) }
+  const before = JSON.parse(JSON.stringify(exact))
+  workspace.edit(exact)
   assert.equal(workspace.canSave.value, true)
+  assert.equal(workspace.saveDisabledReason.value, '')
+  await workspace.save()
+  assert.deepEqual(store.calls.save.at(-1)[1], before)
+  assert.deepEqual(exact, before)
+
+  workspace.edit({ ...bible(), premiseAndPromise: '😀'.repeat(4_001) })
+  assert.equal(workspace.canSave.value, false)
+  assert.equal(workspace.saveDisabledReason.value, '“作品承诺”不能超过 4000 个字符。')
+  workspace.edit({ ...bible(), worldRules: Array.from({ length: 21 }, (_, index) => ({ id: `world-${index + 1}`, text: '规则' })) })
+  assert.equal(workspace.saveDisabledReason.value, '“世界规则”最多填写 20 条。')
+  workspace.edit({ ...bible(), coreCast: [{ id: 'same-id', text: '甲' }, { id: 'same-id', text: '乙' }] })
+  assert.equal(workspace.saveDisabledReason.value, '“核心人物”中的标识不能重复，请删除重复条目。')
+  workspace.edit({ ...bible(), factions: [{ id: 'bad id', text: '势力' }] })
+  assert.equal(workspace.saveDisabledReason.value, '“势力”第 1 条的标识格式无效，请删除后重新新增。')
+  workspace.edit({ ...bible(), unexpectedField: '不得发送' })
+  assert.equal(workspace.saveDisabledReason.value, '创作圣经包含无法识别的字段，请刷新页面后重试。')
+  workspace.edit({ ...bible(), factions: [{ id: 'faction-1', text: '势力', unexpectedField: '不得发送' }] })
+  assert.equal(workspace.saveDisabledReason.value, '“势力”第 1 条包含无法识别的字段，请删除后重新新增。')
 })
 
 test('active status and reasons are selected from the artifact being displayed', async () => {
-  const store = makeStore({ draft: { draftVersion: null, draft: null, status: 'missing', canEdit: true, canConfirm: false, reasons: [] }, head: { ...revision(7), status: 'current', reasons: ['bible_head_changed'] }, reasons: [] })
+  const store = makeStore({ draft: { draftVersion: null, draft: null, status: 'missing', basis: { contractRevision: 99 }, canEdit: true, canConfirm: false, reasons: [] }, head: { ...revision(7), status: 'current', basis: { contractRevision: 7 }, reasons: ['bible_head_changed'] }, reasons: [] })
   const workspace = controller(store); await workspace.hydrate()
   assert.equal(workspace.activeStatus.value, 'current')
   assert.deepEqual(workspace.activeReasons.value, ['bible_head_changed'])
+  assert.deepEqual(workspace.activeBasis.value, { contractRevision: 7 })
   store.head = { ...store.head, status: 'superseded', reasons: ['contract_unavailable', 'contract_basis_invalid'] }
   assert.equal(workspace.activeStatus.value, 'superseded')
-  assert.deepEqual(workspace.reasonLabels.value, ['请完成或重新签署创作契约。'])
+  assert.deepEqual(workspace.reasonLabels.value, ['当前项目契约状态异常，请查看来源与诊断。'])
   store.head = { ...store.head, reasons: ['bible_confirmed', 'contract_unavailable', 'contract_basis_invalid', 'unknown_reason_sentinel'] }
-  assert.deepEqual(workspace.reasonLabels.value, ['请完成或重新签署创作契约。', '创作圣经状态需要重新读取。'])
+  assert.deepEqual(workspace.reasonLabels.value, ['当前项目契约状态异常，请查看来源与诊断。', '创作圣经状态需要重新读取。'])
   assert.doesNotMatch(workspace.reasonLabels.value.join(' '), /bible_confirmed|contract_unavailable|contract_basis_invalid|unknown_reason_sentinel/)
 })
 
@@ -294,7 +330,7 @@ test('busy state blocks duplicate actions, every async action focuses errors, an
   await assert.rejects(workspace.save())
   await Promise.resolve()
   assert.equal(focused[0], 'error')
-  assert.deepEqual(workspace.reasonLabels.value, ['请选择种子后继续。', '请完成或重新签署创作契约。', '内容已固定为项目永久基线，请查看历史记录。', '项目已归档，只能查阅。', '创作圣经状态需要重新读取。'])
+  assert.deepEqual(workspace.reasonLabels.value, ['请选择种子后继续。', '当前项目契约状态异常，请查看来源与诊断。', '内容已固定为项目永久基线，请查看历史记录。', '项目已归档，只能查阅。', '创作圣经状态需要重新读取。'])
 })
 
 test('AI Not Ready does not override manual permissions and leave protection handles beforeunload', async () => {

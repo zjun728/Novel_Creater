@@ -5,7 +5,7 @@ import { bibleHistoryStatusLabel, bibleModeLabel, bibleReasonLabel, presentBible
 
 const reasonLabels = {
   selection_missing: '请选择种子后继续。', seed_missing: '请选择种子后继续。',
-  contract_missing: '请完成或重新签署创作契约。', contract_not_ready: '请完成或重新签署创作契约。', contract_revision_replaced: '请完成或重新签署创作契约。', contract_basis_invalid: '请完成或重新签署创作契约。', contract_unavailable: '请完成或重新签署创作契约。',
+  contract_missing: '当前项目契约状态异常，请查看来源与诊断。', contract_not_ready: '当前项目契约状态异常，请查看来源与诊断。', contract_revision_replaced: '当前项目契约状态异常，请查看来源与诊断。', contract_basis_invalid: '当前项目契约状态异常，请查看来源与诊断。', contract_unavailable: '当前项目契约状态异常，请查看来源与诊断。',
   selection_revision_changed: '内容已固定为项目永久基线，请查看历史记录。', seed_identity_changed: '内容已固定为项目永久基线，请查看历史记录。', seed_revision_changed: '内容已固定为项目永久基线，请查看历史记录。', seed_generation_changed: '内容已固定为项目永久基线，请查看历史记录。', contract_revision_changed: '内容已固定为项目永久基线，请查看历史记录。', creation_contract_changed: '内容已固定为项目永久基线，请查看历史记录。', style_contract_changed: '内容已固定为项目永久基线，请查看历史记录。', bible_policy_changed: '内容已固定为项目永久基线，请查看历史记录。', bible_head_changed: '内容已固定为项目永久基线，请查看历史记录。', bible_revision_replaced: '内容已固定为项目永久基线，请查看历史记录。',
   project_archived: '项目已归档，只能查阅。', bible_read_only: '项目已归档，只能查阅。',
 }
@@ -13,7 +13,7 @@ const reasonLabels = {
 test('reason presentation preserves every author guidance, omits confirmed, and deduplicates visible guidance', () => {
   for (const [reason, label] of Object.entries(reasonLabels)) assert.equal(bibleReasonLabel(reason), label)
   assert.equal(bibleReasonLabel('bible_confirmed'), null)
-  assert.deepEqual(presentBibleReasons(['bible_confirmed', 'contract_unavailable', 'contract_basis_invalid']), ['请完成或重新签署创作契约。'])
+  assert.deepEqual(presentBibleReasons(['bible_confirmed', 'contract_unavailable', 'contract_basis_invalid']), ['当前项目契约状态异常，请查看来源与诊断。'])
 })
 
 test('reason presentation is frozen, fail-closed, and never echoes untrusted inputs', () => {
@@ -32,7 +32,7 @@ test('reason presentation is frozen, fail-closed, and never echoes untrusted inp
     assert.ok(Object.isFrozen(labels))
     assert.doesNotMatch(labels.join(' '), /raw-token|__proto__|constructor|toString/)
   }
-  assert.deepEqual(presentBibleReasons(['contract_unavailable', unknown, 'contract_basis_invalid']), ['请完成或重新签署创作契约。', expected])
+  assert.deepEqual(presentBibleReasons(['contract_unavailable', unknown, 'contract_basis_invalid']), ['当前项目契约状态异常，请查看来源与诊断。', expected])
 })
 
 test('status presentation rejects coercible non-strings without touching their conversion hooks', () => {

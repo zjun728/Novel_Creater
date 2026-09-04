@@ -70,3 +70,13 @@ test('the modal stack preserves pre-existing inert state and skips disconnected 
   outer.unmount(); inner.unmount()
   assert.equal(root.inert, true); assert.equal(root.getAttribute('inert'), 'locked'); assert.equal(documentRef.activeElement, connectedFallback)
 })
+
+test('a proposal review focus domain restores its author action after an independently scrolled review closes', () => {
+  const root = appRoot(); const documentRef = { activeElement: null, querySelector: selector => selector === '#app' ? root : null }
+  const proposalTrigger = element('proposal-trigger', documentRef); const reviewAction = element('review-action', documentRef)
+  const review = { scrollTop: 360, querySelectorAll: () => [reviewAction] }
+  documentRef.activeElement = proposalTrigger
+  const manager = createModalFocusManager({ getDocument: () => documentRef, getDialog: () => review, getInitialFocus: () => reviewAction })
+  manager.mount(); assert.equal(documentRef.activeElement, reviewAction); assert.equal(review.scrollTop, 360)
+  manager.unmount(); assert.equal(documentRef.activeElement, proposalTrigger); assert.equal(root.inert, false)
+})
