@@ -85,30 +85,20 @@ export const ALLOWED_BROWSER_STEPS = Object.freeze([
   'assets-visible',
   'corpus-imported',
   'market-snapshots-imported',
-  'seed-a-selected',
-  'seed-b-selected',
-  'seed-a-reselected',
+  'seed-a-created',
+  'seed-b-created',
+  'seed-a-confirmed',
   'contract-workspace-visible',
   'story-engines-recorded',
   'asset-recommendations-returned',
   'contract-scope-selected',
   'contract-confirmed',
   'bible-workspace-visible',
-  'bible-generation-returned',
-  'bible-generation-http-ok',
-  'bible-generation-notice-visible',
-  'bible-generation-succeeded',
-  'bible-first-saved',
-  'bible-first-confirmed',
-  'bible-adjustment-created',
-  'bible-failure-state-captured',
-  'bible-failure-instructions-set',
-  'bible-failure-ready',
-  'bible-failure-submitted',
-  'bible-failure-returned',
-  'bible-failure-preserved',
-  'bible-second-saved',
-  'bible-second-confirmed',
+  'bible-whole-proposal-returned',
+  'bible-whole-saved',
+  'bible-section-proposal-returned',
+  'bible-section-saved',
+  'bible-confirmed',
   'navigation-boundaries-verified',
   'preparation-boundary-visible',
   'archive-project-card-visible',
@@ -259,8 +249,8 @@ function classify(messages) {
     instruction?.task
       === 'Rank only the supplied eligible asset and corpus candidates.'
   ) return { kind: 'asset-ranking', evidence }
-  if (instruction?.task === 'Generate one complete creation Bible') {
-    return { kind: 'bible', evidence }
+  if (instruction?.task === 'Propose one complete creation Bible') {
+    return { kind: 'bible-' + instruction.proposalScope, evidence }
   }
   return null
 }
@@ -278,8 +268,8 @@ function assetRankingResponse(evidence) {
   }
 }
 
-function bibleResponse() {
-  return {
+function bibleResponse(kind, evidence) {
+  const whole = {
     premiseAndPromise: '一名穿越者借散落典籍解决现实危机，也在每次取舍中重建人与知识的关系。',
     worldRules: [
       { id: 'world-record-cost', text: '知识只能通过可验证的记录兑现，每次公开都会改变既有利益关系。' },
@@ -309,6 +299,14 @@ function bibleResponse() {
       { id: 'question-catalogue', text: '永乐大典的散佚是意外、权力斗争，还是更长远计划的一部分？' },
     ],
   }
+  if (kind === 'bible-whole') return whole
+  if (kind === 'bible-premise') {
+    return {
+      ...evidence.currentBible,
+      premiseAndPromise: '每次公开知识都必须让沈砚承担更具体的人物与制度代价。',
+    }
+  }
+  return null
 }
 
 const server = http.createServer(async (request, response) => {
@@ -337,7 +335,7 @@ const server = http.createServer(async (request, response) => {
       sendJson(response, 422, { error: { code: 'unsupported_fixture_request' } })
       return
     }
-    if (classified.kind === 'bible') {
+    if (classified.kind.startsWith('bible-')) {
       const serializedPrompt = JSON.stringify(body.messages)
       if (
         !serializedPrompt.includes(promptSentinel)
@@ -348,23 +346,15 @@ const server = http.createServer(async (request, response) => {
         return
       }
     }
-    if (
-      classified.kind === 'bible'
-      && String(classified.evidence?.authorInstructions || '').includes('FAIL_SAFE')
-    ) {
-      recordCounter('bible-failure')
-      sendJson(response, 503, { error: { code: 'fixture_provider_unavailable' } })
-      return
-    }
     const content = classified.kind === 'asset-ranking'
       ? assetRankingResponse(classified.evidence)
-      : bibleResponse()
+      : bibleResponse(classified.kind, classified.evidence)
     if (!content) {
       recordCounter('provider-rejected-content')
       sendJson(response, 422, { error: { code: 'unsupported_fixture_request' } })
       return
     }
-    const token = classified.kind === 'bible'
+    const token = classified.kind.startsWith('bible-')
       ? 'bible-success'
       : 'asset-ranking'
     recordCounter(token)
@@ -389,6 +379,11 @@ const DATABASE_EVIDENCE_SOURCE = String.raw`
 import asyncio
 import os
 
+from backend.config import (
+    clear_runtime_configuration,
+    install_runtime_configuration,
+    load_runtime_configuration,
+)
 from backend.database import close_pool, connection
 
 async def main():
@@ -405,12 +400,12 @@ async def main():
         )
         assert styles == {"count": 10}
         assert cards == {"count": 64}
-        assert sources == {"count": 2}
+        assert sources == {"count": 5}
         assert providers == {"count": 1}
     print("database_identity=verified")
     print("style_count=10")
     print("card_count=64")
-    print("source_count=2")
+    print("source_count=5")
     print("provider_count=1")
 
 async def program():
@@ -419,7 +414,12 @@ async def program():
     finally:
         await close_pool()
 
-asyncio.run(program())
+snapshot = load_runtime_configuration()
+install_runtime_configuration(snapshot)
+try:
+    asyncio.run(program())
+finally:
+    clear_runtime_configuration(snapshot)
 `
 
 
@@ -668,8 +668,8 @@ export function verifyGatewayCounterLedger(ledger) {
   const expected = Object.freeze({
     'provider-attempt': 4,
     'asset-ranking': 2,
-    'bible-success': 1,
-    'bible-failure': 1,
+    'bible-success': 2,
+    'bible-failure': 0,
     'provider-rejected-auth': 0,
     'provider-rejected-json': 0,
     'provider-rejected-classify': 0,

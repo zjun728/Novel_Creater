@@ -107,7 +107,7 @@ const canRequestProposal = computed(() => workspace.canPropose(proposalScope.val
 const proposalActionLabel = computed(() => hasSavedDraft.value ? 'AI 补充/重写本区' : 'AI 生成初稿')
 const proposalDisabledReason = computed(() => {
   if (!editable.value) return '当前创作圣经不可编辑。'
-  if (!planningReady.value) return '请先为 planning 任务配置可用模型。'
+  if (!planningReady.value) return '请先为创作规划任务配置可用模型。'
   if (busy.value) return '请等待当前操作完成。'
   if (!canRequestProposal.value && store.dirty) return '请先保存本地编辑，再请求 AI 建议。'
   if (!canRequestProposal.value) return '请先保存完整草稿，再请求本区 AI 建议。'

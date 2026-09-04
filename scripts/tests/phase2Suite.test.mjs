@@ -403,40 +403,16 @@ test('Phase 2 Playwright source is UI-only and uses the runtime observer', () =>
     source,
     /scanRuntimeEvidence\(\{\s*\.\.\.audited,\s*requests:\s*\[\],\s*\}, OUTPUT_ONLY_SENTINELS\)/u,
   )
-  assert.match(
-    source,
-    /保持人物欲望、群像关系和现实代价具体。 \$\{PROMPT_SENTINEL\}/u,
-  )
-  assert.match(source, /FAIL_SAFE \$\{PROMPT_SENTINEL\}/u)
   assert.equal(
-    source.match(
-      /generationPanel\.getByLabel\('作者补充要求（可选）'\)\s+\.fill\(''\)/gu,
-    )?.length,
+    source.match(/=== `\/api\/projects\/\$\{projectId\}\/bible\/proposals`/gu)?.length,
     2,
   )
+  assert.match(source, /完整创作圣经建议对照/u)
+  assert.match(source, /作品承诺建议对照/u)
+  assert.match(source, /采纳前不会改动草稿/u)
   assert.match(
     source,
-    /recordStep\('bible-generation-succeeded'\)\s+await generationPanel\.getByLabel\('作者补充要求（可选）'\)\s+\.fill\(''\)\s+await bibleScalar\(page, '主角'\)\.fill/u,
-  )
-  assert.match(
-    source,
-    /const failedResponse = await failed\s+await generationPanel\.getByLabel\('作者补充要求（可选）'\)\s+\.fill\(''\)\s+recordStep\('bible-failure-returned'\)\s+expect\(failedResponse\.status\(\)\)/u,
-  )
-  assert.match(
-    source,
-    /async function bibleEditorSnapshot\(scope\) \{\s+const textareas = scope\.locator\('textarea'\)\s+const fields = await textareas\.all\(\)\s+return \{\s+textareaCount: fields\.length,\s+textareaValues: await Promise\.all\(\s*fields\.map\(field => field\.inputValue\(\)\),\s*\),\s+\}\s+\}/u,
-  )
-  assert.match(
-    source,
-    /const preserved = await bibleEditorSnapshot\(bibleEditor\(page\)\)[\s\S]*?expect\(preserved\.textareaCount\)\.toBeGreaterThanOrEqual\(11\)[\s\S]*?expect\(await bibleEditorSnapshot\(bibleEditor\(page\)\)\)\s+\.toEqual\(preserved\)/u,
-  )
-  assert.match(
-    source,
-    /expect\(preserved\.textareaCount\)\.toBeGreaterThanOrEqual\(11\)\s+recordStep\('bible-failure-state-captured'\)[\s\S]*?\.fill\(`FAIL_SAFE \$\{PROMPT_SENTINEL\}`\)\s+recordStep\('bible-failure-instructions-set'\)[\s\S]*?await expect\(failureButton\)\.toBeEnabled\(\)\s+recordStep\('bible-failure-ready'\)[\s\S]*?await failureButton\.click\(\)\s+recordStep\('bible-failure-submitted'\)\s+const failedResponse = await failed[\s\S]*?recordStep\('bible-failure-returned'\)/u,
-  )
-  assert.match(
-    source,
-    /const expectedRevisionTwo = await bibleEditorSnapshot\(bibleEditor\(page\)\)[\s\S]*?history\.locator\('\.history-detail'\)[\s\S]*?expect\(await bibleEditorSnapshot\(\s*history\.locator\('\.history-detail'\),\s*\)\)\.toEqual\(expectedRevisionTwo\)/u,
+    /recordStep\('bible-whole-proposal-returned'\)[\s\S]*?recordStep\('bible-whole-saved'\)[\s\S]*?recordStep\('bible-section-proposal-returned'\)[\s\S]*?recordStep\('bible-section-saved'\)[\s\S]*?recordStep\('bible-confirmed'\)/u,
   )
   assert.match(source, /BROWSER_RUNTIME_AUDIT_DIAGNOSTIC/u)
   assert.match(source, /\bwriteRuntimeAuditDiagnostic\b/u)
@@ -448,7 +424,10 @@ test('Phase 2 Playwright source is UI-only and uses the runtime observer', () =>
     source,
     /const evidence = await runtime\.finish\(\)\s+writeRuntimeAuditDiagnostic\(evidence, projectId\)\s+await auditRuntime\(evidence, checkpoints, projectId, \{\s+recordProgress: bodyError === null,\s*\}\)/u,
   )
-  assert.match(source, /selectSeed\(page, projectId, '雾港错钟', 3\)/u)
+  assert.equal(
+    source.match(/selectSeed\(page, projectId, '雾港错钟'\)/gu)?.length,
+    1,
+  )
   assert.match(
     source,
     /async function confirmContract\(page, projectId: string\) \{[\s\S]*?recordStep\('contract-workspace-visible'\)[\s\S]*?await fillManualEngines\(page, projectId\)[\s\S]*?recordStep\('story-engines-recorded'\)[\s\S]*?recordStep\('asset-recommendations-returned'\)[\s\S]*?await enterCapacity\(page, projectId\)[\s\S]*?recordStep\('contract-scope-selected'\)[\s\S]*?recordStep\('contract-confirmed'\)/u,
@@ -465,11 +444,8 @@ test('Phase 2 Playwright source is UI-only and uses the runtime observer', () =>
     source,
     /await auditRuntime\(evidence, checkpoints, projectId, \{\s*recordProgress: bodyError === null,\s*\}\)/u,
   )
-  assert.match(source, /生成创作圣经/u)
-  assert.match(source, /FAIL_SAFE/u)
-  assert.match(source, /调整未来设计/u)
-  assert.match(source, /修订历史/u)
-  assert.match(source, /phase_boundary_planning/u)
+  assert.match(source, /AI 生成初稿/u)
+  assert.doesNotMatch(source, /FAIL_SAFE|调整未来设计/u)
   assert.match(source, /page\.reload\(/u)
   assert.match(source, /page\.goBack\(/u)
   assert.match(source, /page\.goForward\(/u)
@@ -619,14 +595,14 @@ test('Phase 2 browser progress ledger is closed and contains no diagnostics', as
     ],
   )
   assert.deepEqual(
-    runner.ALLOWED_BROWSER_STEPS.slice(21, 27),
+    runner.ALLOWED_BROWSER_STEPS.slice(14, 20),
     [
-      'bible-adjustment-created',
-      'bible-failure-state-captured',
-      'bible-failure-instructions-set',
-      'bible-failure-ready',
-      'bible-failure-submitted',
-      'bible-failure-returned',
+      'bible-workspace-visible',
+      'bible-whole-proposal-returned',
+      'bible-whole-saved',
+      'bible-section-proposal-returned',
+      'bible-section-saved',
+      'bible-confirmed',
     ],
   )
   const runnerSource = readWorkspaceFile('frontend/e2e/run-phase2.mjs')
@@ -1147,7 +1123,11 @@ test('Phase 2 runner owns snapshots and validates the exact fake gateway calls',
   assert.match(source, /BROWSER_QIDIAN_SNAPSHOT_PATH/u)
   assert.match(source, /BROWSER_QQ_SNAPSHOT_PATH/u)
   assert.match(source, /BROWSER_FAKE_COUNTER_PATH/u)
-  assert.match(source, /Generate one complete creation Bible/u)
+  assert.match(source, /Propose one complete creation Bible/u)
+  assert.match(
+    source,
+    /snapshot = load_runtime_configuration\(\)[\s\S]*?install_runtime_configuration\(snapshot\)[\s\S]*?asyncio\.run\(program\(\)\)[\s\S]*?clear_runtime_configuration\(snapshot\)/u,
+  )
   assert.match(source, /Rank only the supplied eligible asset and corpus candidates/u)
   assert.match(source, /bible-success/u)
   assert.match(source, /bible-failure/u)
@@ -1174,7 +1154,7 @@ test('Phase 2 runner owns snapshots and validates the exact fake gateway calls',
   )
   assert.match(
     source,
-    /classified\.kind === 'bible'[\s\S]*?JSON\.stringify\(body\.messages\)[\s\S]*?includes\(promptSentinel\)[\s\S]*?includes\(corpusTextSentinel\)[\s\S]*?recordCounter\('provider-rejected-content'\)[\s\S]*?sendJson\(response, 422/u,
+    /classified\.kind\.startsWith\('bible-'\)[\s\S]*?JSON\.stringify\(body\.messages\)[\s\S]*?includes\(promptSentinel\)[\s\S]*?includes\(corpusTextSentinel\)[\s\S]*?recordCounter\('provider-rejected-content'\)[\s\S]*?sendJson\(response, 422/u,
   )
   assert.match(
     source,
@@ -1187,13 +1167,13 @@ test('Phase 2 runner owns snapshots and validates the exact fake gateway calls',
       'provider-attempt\nasset-ranking\n'
         + 'provider-attempt\nasset-ranking\n'
         + 'provider-attempt\nbible-success\n'
-        + 'provider-attempt\nbible-failure\n',
+        + 'provider-attempt\nbible-success\n',
     ),
     {
       'provider-attempt': 4,
       'asset-ranking': 2,
-      'bible-success': 1,
-      'bible-failure': 1,
+      'bible-success': 2,
+      'bible-failure': 0,
       'provider-rejected-auth': 0,
       'provider-rejected-json': 0,
       'provider-rejected-classify': 0,
@@ -1202,17 +1182,17 @@ test('Phase 2 runner owns snapshots and validates the exact fake gateway calls',
   )
   for (const invalid of [
     '',
-    'asset-ranking\nbible-success\nbible-failure\n',
+    'asset-ranking\nbible-success\nbible-success\n',
     'provider-attempt\nprovider-attempt\nprovider-attempt\n'
-      + 'asset-ranking\nasset-ranking\nbible-success\nbible-failure\n',
+      + 'asset-ranking\nasset-ranking\nbible-success\nbible-success\n',
     'provider-attempt\nprovider-attempt\nprovider-attempt\nprovider-attempt\n'
       + 'provider-attempt\nasset-ranking\nasset-ranking\n'
-      + 'bible-success\nbible-failure\n',
+      + 'bible-success\nbible-success\n',
     'provider-attempt\nprovider-attempt\nprovider-attempt\nprovider-attempt\n'
-      + 'asset-ranking\nasset-ranking\nbible-success\nbible-failure\n'
+      + 'asset-ranking\nasset-ranking\nbible-success\nbible-success\n'
       + 'provider-rejected-auth\n',
     'provider-attempt\nprovider-attempt\nprovider-attempt\nprovider-attempt\n'
-      + 'asset-ranking\nasset-ranking\nbible-success\nbible-failure\nunknown\n',
+      + 'asset-ranking\nasset-ranking\nbible-success\nbible-success\nunknown\n',
   ]) {
     assert.throws(
       () => runner.verifyGatewayCounterLedger(invalid),

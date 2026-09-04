@@ -26,13 +26,15 @@ async def test_prepare_delegates_schema_and_exact_phase2_packages_in_order():
         return 0
 
     async def market_runner(argv, **kwargs):
+        assert callable(kwargs["transaction_factory"])
         calls.append(("market", argv, kwargs["connection_config"]))
         kwargs["output"](
-            "mode=execute\nsource_count=2\npackage_hash=" + "a" * 64
+            "mode=execute\nsource_count=5\npackage_hash=" + "a" * 64
         )
         return 0
 
     async def asset_runner(argv, **kwargs):
+        assert callable(kwargs["transaction_factory"])
         calls.append(("assets", argv, kwargs["connection_config"]))
         kwargs["output"](
             "mode=execute\npackage_version=writer-assets-v1\n"
@@ -75,6 +77,10 @@ async def test_prepare_delegates_schema_and_exact_phase2_packages_in_order():
         "user": "root",
         "password": "test-only",
         "db": DATABASE,
+        "charset": "utf8mb4",
+        "autocommit": True,
+        "minsize": 1,
+        "maxsize": 10,
     }
     assert calls[1][1] == [
         "--execute",
@@ -90,7 +96,7 @@ async def test_prepare_delegates_schema_and_exact_phase2_packages_in_order():
     assert calls[3][2] == expected_config
     assert output == [
         "action=prepared",
-        "source_count=2",
+        "source_count=5",
         "style_count=10",
         "card_count=64",
         "provider_count=1",
@@ -221,7 +227,7 @@ async def test_invalid_fixture_receipt_drops_exact_owned_database(provider_recei
         return 0
 
     async def market_runner(_argv, **kwargs):
-        kwargs["output"]("source_count=2")
+        kwargs["output"]("source_count=5")
         return 0
 
     async def asset_runner(_argv, **kwargs):

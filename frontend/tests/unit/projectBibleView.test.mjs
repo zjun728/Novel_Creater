@@ -326,6 +326,7 @@ test('failed same-project binding refresh disables proposals but preserves manua
     await assert.rejects(bindingStore.getBindingStatus('stale', { force: true }))
     await flush()
     assert.equal(byText(root, 'AI 补充/重写本区').props.disabled, true)
+    assert.match(text(root), /请先为创作规划任务配置可用模型/)
     assert.equal(byText(root, '预览并确认').props.disabled, false)
 
     const editor = walk(root).find(value => value.type === 'textarea' && value.props.value === 'promise')

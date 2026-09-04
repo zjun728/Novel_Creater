@@ -67,7 +67,7 @@ export function createBibleWorkspaceController({
   const generationDisabledReason = toRef(() => {
     if (store.dirty === true) return '请先保存本地编辑，再使用 AI 生成。'
     if (!editable.value) return '当前创作圣经不可编辑。'
-    if (planningReady() !== true) return '请先为 planning 任务配置可用模型。'
+    if (planningReady() !== true) return '请先为创作规划任务配置可用模型。'
     if (busy.value) return '请等待当前操作完成。'
     return ''
   })

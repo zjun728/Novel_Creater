@@ -9,6 +9,11 @@ import pytest
 
 from backend.domain.bibles import BiblePayload, canonical_bible_hash
 from backend.domain.json_contracts import canonical_hash, canonical_json
+from backend.domain.seeds import (
+    SeedPayload,
+    build_seed_provenance,
+    seed_revision_document,
+)
 from backend.gateways.bible_provider import (
     BibleProviderError,
     BibleProviderHTTPError,
@@ -645,6 +650,27 @@ async def test_proposal_replays_validated_result_without_a_second_provider_call(
 
     assert replay == first
     assert replay.proposal == _bible()
+    assert gateway.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_proposal_accepts_a_seed_revision_with_verified_provenance():
+    service, repository, _, _, gateway, _ = _harness()
+    seed = SeedPayload.model_validate(_seed(), strict=True)
+    provenance = build_seed_provenance(
+        kind="manual",
+        snapshots=(),
+        analysis=None,
+        inspiration_attempt=None,
+        public_notes=("作者从项目种子页显式保存。",),
+    )
+    repository.seed["payload_json"] = canonical_json(
+        seed_revision_document(seed, provenance)
+    )
+
+    result = await service.propose(_proposal())
+
+    assert result.status == "succeeded"
     assert gateway.calls == 1
 
 

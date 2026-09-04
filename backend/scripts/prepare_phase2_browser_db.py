@@ -224,12 +224,16 @@ async def run_cli(
     # Validate all private fixture inputs before creating any resource.
     fake_provider_command(source)
     database_config = {
-        "host": mysql["host"],
-        "port": mysql["port"],
-        "user": mysql["user"],
-        "password": mysql["password"],
+        **mysql,
         "db": args.database,
+        "minsize": 1,
+        "maxsize": 10,
     }
+    transaction_factory = partial(
+        _explicit_mysql_session,
+        database_config,
+        transactional=True,
+    )
     seed_args = [
         "--execute",
         "--database",
@@ -252,11 +256,13 @@ async def run_cli(
         await market_operation(
             seed_args,
             connection_config=database_config,
+            transaction_factory=transaction_factory,
             output=receipts.append,
         )
         await asset_operation(
             seed_args,
             connection_config=database_config,
+            transaction_factory=transaction_factory,
             output=receipts.append,
         )
         await provider_operation(
@@ -269,7 +275,7 @@ async def run_cli(
         card_count = _receipt_value(receipts, "card_count")
         provider_count = _receipt_value(receipts, "provider_count")
         if (source_count, style_count, card_count, provider_count) != (
-            "2",
+            "5",
             "10",
             "64",
             "1",
@@ -278,7 +284,7 @@ async def run_cli(
                 "Phase 2 fixture counts do not match the approved package"
             )
         output("action=prepared")
-        output("source_count=2")
+        output("source_count=5")
         output("style_count=10")
         output("card_count=64")
         output("provider_count=1")

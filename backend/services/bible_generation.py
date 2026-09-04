@@ -16,7 +16,7 @@ from pydantic import ValidationError
 from backend.domain.bibles import BiblePayload, canonical_bible_hash
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.provider_policy import provider_is_generation_ready
-from backend.domain.seeds import SeedPayload
+from backend.domain.seeds import decode_seed_revision
 from backend.gateways.bible_provider import (
     BibleProviderError,
     BibleProviderHTTPError,
@@ -574,9 +574,8 @@ class BibleGenerationService:
                 or seed_row.get("seed_hash") != basis["seed_hash"]
             ):
                 raise ValueError("seed drift")
-            seed = SeedPayload.model_validate(
-                _json_mapping(seed_row["payload_json"]),
-                strict=True,
+            seed, _provenance = decode_seed_revision(
+                seed_row["payload_json"]
             )
 
             experience_cards = []

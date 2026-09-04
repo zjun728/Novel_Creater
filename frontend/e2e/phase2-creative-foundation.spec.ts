@@ -54,26 +54,26 @@ const OUTPUT_ONLY_SENTINELS = [
 const STRICT_UUID = String.raw`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`
 const PROJECT_TITLE = 'Phase 2 创作地基验收'
 const SEED_A = Object.freeze([
-  ['种子标题', '雾港错钟'],
-  ['题材类型', '历史穿越'],
+  ['标题', '雾港错钟'],
+  ['题材', '历史穿越'],
   ['一句话故事', '守钟学徒发现潮汐钟会提前刻下尚未发生的海难。'],
-  ['主角底色', '谨慎克制，但无法坐视同伴被当作代价。'],
+  ['主角', '谨慎克制，但无法坐视同伴被当作代价。'],
   ['核心欲望', '找回失踪导师并证明错误钟鸣来自人为篡改。'],
   ['核心冲突', '每次用测量证据破局，都会让港务议会更快封存钟室。'],
   ['世界压力', '风暴季、商会船期与失踪者家属共同挤压选择空间。'],
-  ['开篇抓手', '第三声钟鸣提前落下，整座港口却在无风夜里退潮。'],
-  ['差异化支点', '钟表误差是制造伦理选择的证据，不是万能解谜外挂。'],
+  ['开篇钩子', '第三声钟鸣提前落下，整座港口却在无风夜里退潮。'],
+  ['差异化', '钟表误差是制造伦理选择的证据，不是万能解谜外挂。'],
 ])
 const SEED_B = Object.freeze([
-  ['种子标题', '盐税暗潮'],
-  ['题材类型', '历史穿越'],
+  ['标题', '盐税暗潮'],
+  ['题材', '历史穿越'],
   ['一句话故事', '账房学徒发现每次减免盐税都会把灾民名册交给走私同盟。'],
-  ['主角底色', '精于账目，却对公开承担责任心存畏惧。'],
+  ['主角', '精于账目，却对公开承担责任心存畏惧。'],
   ['核心欲望', '找回被删去的赈灾账本并保护证人。'],
   ['核心冲突', '每公开一笔假账，都会让一处合法救济仓失去保护。'],
   ['世界压力', '盐荒、漕运封锁与地方豪强共同压缩调查时间。'],
-  ['开篇抓手', '一袋官盐里缝着一页写有未来死者姓名的账纸。'],
-  ['差异化支点', '会计证据只改变责任分配，不能直接消除政治代价。'],
+  ['开篇钩子', '一袋官盐里缝着一页写有未来死者姓名的账纸。'],
+  ['差异化', '会计证据只改变责任分配，不能直接消除政治代价。'],
 ])
 
 
@@ -83,14 +83,12 @@ function recordStep(step: string) {
 
 
 function seedCard(page, name: string) {
-  return page.locator('.seed-record').filter({
-    has: page.getByRole('heading', { name, exact: true }),
-  })
+  return page.locator('.seed-card').filter({ hasText: name })
 }
 
 
 function sourceCard(page, name: string) {
-  return page.locator('.source-sheet').filter({
+  return page.locator('.source-card').filter({
     has: page.getByRole('heading', { name, exact: true }),
   })
 }
@@ -431,21 +429,34 @@ async function importSnapshot(page, sourceName: string, filePath: string) {
 
 
 async function createSeed(page, projectId: string, fields) {
-  await page.getByRole('button', { name: /已存种子/u }).click()
-  await page.getByRole('button', { name: '新建种子', exact: true }).click()
-  const editor = page.getByRole('region', { name: '种子九字段编辑器' })
-  await expect(editor).toBeVisible()
-  for (const [label, value] of fields) {
-    const field = editor.locator('label').filter({ hasText: label })
-    await expect(field).toHaveCount(1)
-    await field.locator('input, textarea').fill(value)
+  await page.getByRole('button', { name: '新建候选种子', exact: true }).click()
+  for (const sectionId of [
+    'seed-positioning',
+    'seed-core',
+    'seed-pressure',
+    'seed-promise',
+  ]) {
+    const target = page.locator(`#${sectionId}`).locator('..').locator('..')
+    await target.getByRole('button', { name: '编辑本区', exact: true }).click()
+    for (const [label, value] of fields) {
+      const field = target.locator('label').filter({ hasText: label })
+      if (await field.count()) await field.locator('textarea').fill(value)
+    }
+    await target.getByRole('button', {
+      name: '完成本区编辑',
+      exact: true,
+    }).click()
   }
   const created = page.waitForResponse(response => (
     response.request().method() === 'POST'
     && new URL(response.url()).pathname === `/api/projects/${projectId}/seeds`
   ))
-  await editor.getByRole('button', { name: '保存种子', exact: true }).click()
+  await page.getByRole('button', {
+    name: '创建候选种子',
+    exact: true,
+  }).click()
   expect((await created).status()).toBe(200)
+  await page.getByRole('button', { name: '返回候选列表', exact: true }).click()
   await expect(seedCard(page, fields[0][1])).toBeVisible()
 }
 
@@ -454,26 +465,35 @@ async function selectSeed(
   page,
   projectId: string,
   name: string,
-  expectedSelectionRevision: number,
 ) {
+  await seedCard(page, name)
+    .getByRole('button', { name: /查看完整内容/u })
+    .click()
+  await page.getByRole('button', { name: '确认项目种子', exact: true }).click()
+  const dialog = page.getByRole('dialog', {
+    name: '确认项目种子',
+    exact: true,
+  })
   const selected = page.waitForResponse(response => (
     response.request().method() === 'PUT'
     && new URL(response.url()).pathname
       === `/api/projects/${projectId}/selected-seed`
   ))
-  await seedCard(page, name)
-    .getByRole('button', { name: '立即选定', exact: true })
-    .click()
+  await dialog.getByRole('button', {
+    name: '确认项目种子',
+    exact: true,
+  }).click()
   expect((await selected).status()).toBe(200)
-  await expect(page.getByText(
-    `选定代次 ${expectedSelectionRevision}`,
-    { exact: true },
-  )).toBeVisible()
+  await expect(page.getByText('当前选定 · 已冻结', { exact: true })).toBeVisible()
 }
 
 
 async function prepareMarketAndSeeds(page, projectId: string) {
-  await page.goto(`/projects/${projectId}/seeds`)
+  await page.goto('/topics/market')
+  await expect(page.locator('.topic-header').getByRole('heading', {
+    name: '选题中心',
+    exact: true,
+  })).toBeVisible()
   const qidian = sourceCard(page, '起点新签榜')
   const qq = sourceCard(page, 'QQ 阅读男生人气榜')
   await expect(qidian).toBeVisible()
@@ -483,24 +503,28 @@ async function prepareMarketAndSeeds(page, projectId: string) {
   await expect(page.getByText('2 份可用快照', { exact: true })).toBeVisible()
   recordStep('market-snapshots-imported')
 
+  await page.goto(`/projects/${projectId}/seeds`)
+  await expect(page.getByRole('heading', {
+    name: '创作种子',
+    exact: true,
+  })).toBeVisible()
   await createSeed(page, projectId, SEED_A)
-  await selectSeed(page, projectId, '雾港错钟', 1)
-  recordStep('seed-a-selected')
+  recordStep('seed-a-created')
   await createSeed(page, projectId, SEED_B)
-  await selectSeed(page, projectId, '盐税暗潮', 2)
-  recordStep('seed-b-selected')
-  await selectSeed(page, projectId, '雾港错钟', 3)
-  recordStep('seed-a-reselected')
+  recordStep('seed-b-created')
+  await selectSeed(page, projectId, '雾港错钟')
+  recordStep('seed-a-confirmed')
 }
 
 
 async function fillManualEngines(page, projectId: string) {
-  await page.locator('label').filter({ hasText: '渠道定位标识' })
+  const engine = await openContractSection(page, 'contract-section-engine')
+  await engine.locator('label').filter({ hasText: '渠道定位标识' })
     .locator('input').fill('phase2-manual-channel')
-  await page.locator('label').filter({ hasText: '题材定位标识' })
+  await engine.locator('label').filter({ hasText: '题材定位标识' })
     .locator('input').fill('历史穿越')
-  await page.getByRole('button', { name: '普通字段手动录入' }).click()
-  const sheet = page.locator('.manual-sheet')
+  await engine.getByRole('button', { name: '普通字段手动录入' }).click()
+  const sheet = engine.locator('.manual-sheet')
   const labels = [
     ['方案名称', option => option.name],
     ['故事承诺', option => option.storyPromise],
@@ -535,29 +559,21 @@ async function fillManualEngines(page, projectId: string) {
   ))
   await sheet.getByRole('button', { name: '建立手动三案' }).click()
   expect((await manualBatch).status()).toBe(201)
-  await expect(page.getByRole('radio')).toHaveCount(3)
-  await page.getByRole('radio', { name: /潮钟追凶/u }).click()
+  await expect(engine.getByRole('radio')).toHaveCount(3)
+  await engine.getByRole('radio', { name: /潮钟追凶/u }).click()
   const draftSaved = page.waitForResponse(response => (
     response.request().method() === 'PUT'
     && new URL(response.url()).pathname
       === `/api/projects/${projectId}/contract-draft`
   ))
-  const recommendationsLoaded = page.waitForResponse(response => (
-    response.request().method() === 'POST'
-    && new URL(response.url()).pathname
-      === `/api/projects/${projectId}/asset-recommendations`
-  ))
-  await page.getByRole('button', { name: '保存草稿并继续' }).click()
+  await engine.getByRole('button', { name: '保存本节', exact: true }).click()
   expect((await draftSaved).status()).toBe(200)
-  expect((await recommendationsLoaded).status()).toBe(200)
 }
 
 
 async function selectStyles(page, projectId: string) {
-  await expect(page.getByRole('heading', { name: '先定阅读感受，再谈写法' }))
-    .toBeVisible()
-  const selectionPanel = page.locator('section.selection-panel')
-  const selectGrid = selectionPanel.locator('.select-grid')
+  const style = await openContractSection(page, 'contract-section-style')
+  const selectGrid = style.locator('section.selection-panel .select-grid')
   await chooseVisibleSelectOption(
     page,
     selectGrid.locator('label').filter({ hasText: '主风格' }),
@@ -573,35 +589,34 @@ async function selectStyles(page, projectId: string) {
     && new URL(response.url()).pathname
       === `/api/projects/${projectId}/contract-draft`
   ))
-  await page.getByRole('button', { name: '保存草稿并继续' }).click()
+  await style.getByRole('button', { name: '保存本节', exact: true }).click()
   expect((await saved).status()).toBe(200)
 }
 
 
 async function selectAssets(page, projectId: string) {
-  await expect(page.getByRole('heading', { name: '逐项授权，片段级冻结' }))
-    .toBeVisible()
-  const experience = page.locator('label.library-selector').filter({
+  const assets = await openContractSection(page, 'contract-section-assets')
+  const experience = assets.locator('label.library-selector').filter({
     hasText: '完整经验库',
   })
   await chooseVisibleSelectOption(
     page,
     experience,
-    '目标旁边放私人成本 · plot_organization',
+    '目标旁边放私人成本',
   )
-  const sources = page.locator('.source-list button')
+  const sources = assets.locator('.source-list button')
   await expect(sources).toHaveCount(1)
   await sources.click()
   await chooseVisibleSelectOption(
     page,
-    page.locator('.fragment-browser header .n-select'),
+    assets.locator('.fragment-browser header .n-select'),
     '01 · 第一章 雾港错钟',
   )
-  const fragment = page.locator('.fragment-browser article').filter({
+  const fragment = assets.locator('.fragment-browser article').filter({
     hasText: '片段 1',
   })
   await fragment.getByRole('button', { name: '选择片段' }).click()
-  const rangeRow = page.locator('.range-ledger article')
+  const rangeRow = assets.locator('.range-ledger article')
   await rangeRow.locator('label').filter({ hasText: '起' })
     .locator('input').fill('0')
   await rangeRow.locator('label').filter({ hasText: '止' })
@@ -612,35 +627,58 @@ async function selectAssets(page, projectId: string) {
     && new URL(response.url()).pathname
       === `/api/projects/${projectId}/contract-draft`
   ))
-  await page.getByRole('button', { name: '保存草稿并继续' }).click()
+  await assets.getByRole('button', { name: '保存本节', exact: true }).click()
   expect((await saved).status()).toBe(200)
 }
 
 
 async function enterCapacity(page, projectId: string) {
-  await expect(page.getByRole('heading', { name: '给长篇一副可调整的骨架' }))
-    .toBeVisible()
+  const capacity = await openContractSection(page, 'contract-section-capacity')
   for (const [label, value] of [
-    ['目标总字数', '720000'],
-    ['预计卷数', '8'],
-    ['预计章节数', '240'],
-    ['下限', '2200'],
-    ['上限', '3200'],
+    ['目标总字数', '2400000'],
+    ['预计卷数', '24'],
+    ['预计章节数', '720'],
+    ['下限', '2800'],
+    ['上限', '4200'],
   ]) {
-    await page.locator('label').filter({ hasText: label })
+    await capacity.locator('label').filter({ hasText: label })
       .locator('input').fill(value)
   }
-  await page.locator('label').filter({ hasText: '禁止方向' }).locator('textarea')
-    .fill('不写无代价升级\n不把配角当作一次性工具')
-  await page.locator('label').filter({ hasText: '作者备注' }).locator('textarea')
+  await capacity.locator('label').filter({ hasText: '作者备注' }).locator('textarea')
     .fill('让每次知识兑现都改变群像关系。')
   const saved = page.waitForResponse(response => (
     response.request().method() === 'PUT'
     && new URL(response.url()).pathname
       === `/api/projects/${projectId}/contract-draft`
   ))
-  await page.getByRole('button', { name: '保存草稿并继续' }).click()
+  await capacity.getByRole('button', { name: '保存本节', exact: true }).click()
   expect((await saved).status()).toBe(200)
+
+  const prohibitions = await openContractSection(
+    page,
+    'contract-section-prohibitions',
+  )
+  await prohibitions.locator('label').filter({ hasText: '禁止方向' })
+    .locator('textarea').fill('不写无代价升级\n不把配角当作一次性工具')
+  const prohibitionSaved = page.waitForResponse(response => (
+    response.request().method() === 'PUT'
+    && new URL(response.url()).pathname
+      === `/api/projects/${projectId}/contract-draft`
+  ))
+  await prohibitions.getByRole('button', {
+    name: '保存本节',
+    exact: true,
+  }).click()
+  expect((await prohibitionSaved).status()).toBe(200)
+}
+
+
+async function openContractSection(page, id: string) {
+  const target = page.locator(`#${id}`).locator('..').locator('..')
+  await target.scrollIntoViewIfNeeded()
+  const edit = target.getByRole('button', { name: '编辑本节', exact: true })
+  if (await edit.count()) await edit.click()
+  return target
 }
 
 
@@ -650,183 +688,128 @@ async function confirmContract(page, projectId: string) {
   recordStep('contract-workspace-visible')
   await fillManualEngines(page, projectId)
   recordStep('story-engines-recorded')
-  recordStep('asset-recommendations-returned')
   await selectStyles(page, projectId)
   await selectAssets(page, projectId)
+  recordStep('asset-recommendations-returned')
   await enterCapacity(page, projectId)
   recordStep('contract-scope-selected')
-  await expect(page.getByRole('heading', { name: '预览全部变化，再一次确认' }))
-    .toBeVisible()
+  const previewResponse = page.waitForResponse(response => (
+    response.request().method() === 'POST'
+    && new URL(response.url()).pathname
+      === `/api/projects/${projectId}/contracts/preview`
+  ))
+  await page.getByRole('navigation', { name: '文档章节' })
+    .getByRole('button', { name: /完整预览/u }).click()
+  expect((await previewResponse).status()).toBe(200)
+  const preview = page.locator('#contract-section-preview').locator('..').locator('..')
+  await expect(preview.getByText('服务器允许签印', { exact: true })).toBeVisible()
+  await preview.getByRole('button', {
+    name: '核对并签印完整契约',
+    exact: true,
+  }).click()
   const confirmed = page.waitForResponse(response => (
     response.request().method() === 'POST'
     && new URL(response.url()).pathname
       === `/api/projects/${projectId}/contracts/confirm`
   ))
-  await page.getByRole('button', { name: '一次确认完整契约' }).click()
+  const dialog = page.getByRole('dialog', {
+    name: '确认签印这份完整创作契约',
+    exact: true,
+  })
+  await dialog.getByRole('button', {
+    name: '一次确认完整契约',
+    exact: true,
+  }).click()
   expect((await confirmed).status()).toBe(201)
-  await expect(page.getByRole('heading', { name: '当前生效的创作契约' }))
+  await expect(page.getByText('已签印 · 第 1 版', { exact: true }).first())
     .toBeVisible()
   recordStep('contract-confirmed')
-}
-
-
-function bibleEditor(page) {
-  return page.getByRole('region', { name: '创作圣经编辑器' })
-}
-
-
-function bibleScalar(page, label: string) {
-  return bibleEditor(page).locator('label').filter({ hasText: label })
-    .locator('textarea')
-}
-
-
-async function bibleEditorSnapshot(scope) {
-  const textareas = scope.locator('textarea')
-  const fields = await textareas.all()
-  return {
-    textareaCount: fields.length,
-    textareaValues: await Promise.all(
-      fields.map(field => field.inputValue()),
-    ),
-  }
-}
-
-
-async function confirmBible(page) {
-  await page.getByRole('button', { name: '预览并确认', exact: true }).click()
-  const dialog = page.getByRole('dialog', { name: '确认新的未来设计' })
-  await expect(dialog).toBeVisible()
-  const confirmation = page.waitForResponse(response => (
-    response.request().method() === 'POST'
-    && /\/api\/projects\/[^/]+\/bible\/confirm$/u.test(
-      new URL(response.url()).pathname,
-    )
-  ))
-  await dialog.getByRole('button', { name: '确认签印', exact: true }).click()
-  expect((await confirmation).status()).toBe(201)
-  await expect(page.getByText('已确认新的创作圣经修订', { exact: true }))
-    .toBeVisible()
 }
 
 
 async function completeBible(page, projectId: string) {
   await page.goto(`/projects/${projectId}/bible`)
   await expect(page.getByRole('heading', {
-    name: `${PROJECT_TITLE} 的创作圣经`,
+    name: `${PROJECT_TITLE} · 创作圣经`,
     exact: true,
   })).toBeVisible()
-  await expect(page.getByLabel('AI 辅助状态')).toContainText('Ready')
   recordStep('bible-workspace-visible')
-  const generationPanel = page.getByRole('region', { name: 'AI 生成创作圣经' })
-  await generationPanel.getByLabel('作者补充要求（可选）')
-    .fill(`保持人物欲望、群像关系和现实代价具体。 ${PROMPT_SENTINEL}`)
-  const generated = page.waitForResponse(response => (
+
+  const wholeProposal = page.waitForResponse(response => (
     response.request().method() === 'POST'
     && new URL(response.url()).pathname
-      === `/api/projects/${projectId}/bible/generate`
+      === `/api/projects/${projectId}/bible/proposals`
   ))
-  await generationPanel.getByRole('button', { name: '生成创作圣经' }).click()
-  const generatedResponse = await generated
-  recordStep('bible-generation-returned')
-  expect(generatedResponse.status()).toBe(200)
-  recordStep('bible-generation-http-ok')
-  await expect(page.getByText('已生成新的创作圣经草稿', { exact: true }))
+  const authorInstructions = page.getByLabel('作者补充要求（可选）')
+  await authorInstructions.fill(PROMPT_SENTINEL)
+  await page.getByRole('button', { name: 'AI 生成初稿', exact: true }).click()
+  expect((await wholeProposal).status()).toBe(200)
+  await authorInstructions.fill('')
+  recordStep('bible-whole-proposal-returned')
+  const wholeDialog = page.getByRole('dialog', {
+    name: '完整创作圣经建议对照',
+    exact: true,
+  })
+  await expect(wholeDialog.getByText('采纳前不会改动草稿', { exact: true }))
     .toBeVisible()
-  recordStep('bible-generation-notice-visible')
-  await expect(bibleScalar(page, '主角')).toHaveValue(/沈砚谨慎/u)
-  recordStep('bible-generation-succeeded')
-  await generationPanel.getByLabel('作者补充要求（可选）')
-    .fill('')
-
-  await bibleScalar(page, '主角').fill(
-    '沈砚谨慎、重证据，却会为了眼前的人主动承担公开判断的代价。',
-  )
-  const savedFirst = page.waitForResponse(response => (
+  await wholeDialog.getByRole('button', { name: '采纳建议', exact: true }).click()
+  const wholeSaved = page.waitForResponse(response => (
     response.request().method() === 'PUT'
     && new URL(response.url()).pathname
       === `/api/projects/${projectId}/bible/draft`
   ))
   await page.getByRole('button', { name: '手动保存', exact: true }).click()
-  expect((await savedFirst).status()).toBe(200)
-  await expect(page.getByText('草稿已保存', { exact: true })).toBeVisible()
-  recordStep('bible-first-saved')
-  await confirmBible(page)
-  await expect(page.getByRole('button', { name: '调整未来设计' })).toBeVisible()
-  recordStep('bible-first-confirmed')
+  expect((await wholeSaved).status()).toBe(200)
+  recordStep('bible-whole-saved')
 
-  const cloned = page.waitForResponse(response => (
+  const sectionProposal = page.waitForResponse(response => (
     response.request().method() === 'POST'
     && new URL(response.url()).pathname
-      === `/api/projects/${projectId}/bible/draft/clone`
+      === `/api/projects/${projectId}/bible/proposals`
   ))
-  await page.getByRole('button', { name: '调整未来设计' }).click()
-  expect((await cloned).status()).toBe(200)
-  await expect(page.getByText('已创建未来设计草稿', { exact: true })).toBeVisible()
-  recordStep('bible-adjustment-created')
-  const preserved = await bibleEditorSnapshot(bibleEditor(page))
-  expect(preserved.textareaCount).toBeGreaterThanOrEqual(11)
-  recordStep('bible-failure-state-captured')
-  await generationPanel.getByLabel('作者补充要求（可选）')
-    .fill(`FAIL_SAFE ${PROMPT_SENTINEL}`)
-  recordStep('bible-failure-instructions-set')
-  const failureButton = generationPanel.getByRole('button', {
-    name: '生成创作圣经',
+  await authorInstructions.fill(PROMPT_SENTINEL)
+  await page.getByRole('button', {
+    name: 'AI 补充/重写本区',
+    exact: true,
+  }).click()
+  expect((await sectionProposal).status()).toBe(200)
+  await authorInstructions.fill('')
+  recordStep('bible-section-proposal-returned')
+  const sectionDialog = page.getByRole('dialog', {
+    name: '作品承诺建议对照',
+    exact: true,
   })
-  await expect(failureButton).toBeEnabled()
-  recordStep('bible-failure-ready')
-  const failed = page.waitForResponse(response => (
-    response.request().method() === 'POST'
-    && new URL(response.url()).pathname
-      === `/api/projects/${projectId}/bible/generate`
-  ))
-  await failureButton.click()
-  recordStep('bible-failure-submitted')
-  const failedResponse = await failed
-  await generationPanel.getByLabel('作者补充要求（可选）')
-    .fill('')
-  recordStep('bible-failure-returned')
-  expect(failedResponse.status()).toBe(200)
-  expect(await failedResponse.json()).toMatchObject({
-    attempt: {
-      status: 'failed',
-      publicErrorCode: 'BibleGenerationProviderFailed',
-    },
-  })
-  await expect(page.getByRole('alert')).toContainText('创作圣经操作失败')
-  expect(await bibleEditorSnapshot(bibleEditor(page)))
-    .toEqual(preserved)
-  recordStep('bible-failure-preserved')
-
-  await bibleScalar(page, '主角').fill(
-    '沈砚仍重证据，但第二版要求他先听完同伴的代价，再作公开判断。',
-  )
-  const expectedRevisionTwo = await bibleEditorSnapshot(bibleEditor(page))
-  const savedSecond = page.waitForResponse(response => (
+  await sectionDialog.getByRole('button', {
+    name: '采纳建议',
+    exact: true,
+  }).click()
+  const sectionSaved = page.waitForResponse(response => (
     response.request().method() === 'PUT'
     && new URL(response.url()).pathname
       === `/api/projects/${projectId}/bible/draft`
   ))
   await page.getByRole('button', { name: '手动保存', exact: true }).click()
-  expect((await savedSecond).status()).toBe(200)
-  recordStep('bible-second-saved')
-  await confirmBible(page)
-  recordStep('bible-second-confirmed')
+  expect((await sectionSaved).status()).toBe(200)
+  recordStep('bible-section-saved')
 
-  await page.getByRole('button', { name: '修订历史', exact: true }).click()
-  const history = page.getByRole('dialog', { name: '创作圣经历史' })
-  await expect(history.getByText('Revision 2', { exact: true })).toBeVisible()
-  await expect(history.getByText('Revision 1', { exact: true })).toBeVisible()
-  await history.locator('article').filter({ hasText: 'Revision 2' })
-    .getByRole('button', { name: '查看详情' }).click()
-  await expect(
-    history.locator('.history-detail')
-      .getByRole('heading', { name: 'Revision 2' }),
-  ).toBeVisible()
-  expect(await bibleEditorSnapshot(
-    history.locator('.history-detail'),
-  )).toEqual(expectedRevisionTwo)
-  await history.getByRole('button', { name: '关闭历史' }).click()
+  await page.getByRole('button', { name: '预览并确认', exact: true }).click()
+  const confirmation = page.getByRole('dialog', {
+    name: '确认创作圣经',
+    exact: true,
+  })
+  const confirmed = page.waitForResponse(response => (
+    response.request().method() === 'POST'
+    && new URL(response.url()).pathname
+      === `/api/projects/${projectId}/bible/confirm`
+  ))
+  await confirmation.getByRole('button', {
+    name: '确认签印',
+    exact: true,
+  }).click()
+  expect((await confirmed).status()).toBe(201)
+  await expect(page.getByText('已确认，作为项目永久基线。', { exact: true }))
+    .toBeVisible()
+  recordStep('bible-confirmed')
 }
 
 
@@ -842,7 +825,7 @@ async function verifyNavigationAndPreparation(page, projectId: string, runtime) 
   await settleNavigationBoundary(page, runtime)
   await page.reload()
   await expect(page.getByRole('heading', {
-    name: `${PROJECT_TITLE} 的创作圣经`,
+    name: `${PROJECT_TITLE} · 创作圣经`,
     exact: true,
   })).toBeVisible()
   await settleNavigationBoundary(page, runtime)
@@ -851,7 +834,7 @@ async function verifyNavigationAndPreparation(page, projectId: string, runtime) 
     page.locator('.product-app-shell[data-sidebar-collapsed="true"]'),
   ).toBeVisible()
   await expect(page.getByRole('heading', {
-    name: `${PROJECT_TITLE} 的创作圣经`,
+    name: `${PROJECT_TITLE} · 创作圣经`,
     exact: true,
   })).toBeVisible()
   await page.goto(overviewPath)
@@ -868,16 +851,17 @@ async function verifyNavigationAndPreparation(page, projectId: string, runtime) 
   await settleNavigationBoundary(page, runtime)
   recordStep('navigation-boundaries-verified')
 
-  const preparationResponse = page.waitForResponse(response => (
-    response.request().method() === 'GET'
-    && new URL(response.url()).pathname
-      === `/api/projects/${projectId}/preparation`
-  ))
   await page.goto(overviewPath)
-  const preparation = await preparationResponse
-  expect(preparation.status()).toBe(200)
-  expect((await preparation.json()).nextAction).toBe('phase_boundary_planning')
-  await expect(page.getByText('创作准备已完成', { exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', {
+    name: '创作模块',
+    exact: true,
+  })).toBeVisible()
+  await expect(page.locator('.overview-module').filter({
+    hasText: '创作圣经',
+  })).toContainText('当前正式版')
+  await expect(page.locator('.overview-module').filter({
+    hasText: '故事规划',
+  })).toContainText('尚未建立')
   await settleNavigationBoundary(page, runtime)
   recordStep('preparation-boundary-visible')
 }
@@ -903,14 +887,14 @@ async function archiveAndVerifyReadOnly(page, projectId: string, runtime) {
   await settleNavigationBoundary(page, runtime)
   recordStep('archive-returned')
   await page.goto(`/projects/${projectId}/overview`)
-  await expect(page.locator('.status-mark')).toHaveText('已归档')
+  await expect(page.getByText('已归档 · 只读', { exact: true })).toBeVisible()
   await settleNavigationBoundary(page, runtime)
   recordStep('archive-status-visible')
-  await page.getByRole('link', { name: '查看只读创作圣经', exact: true }).click()
+  await page.locator('.overview-module').filter({ hasText: '创作圣经' }).click()
   await expect(page.getByText('此项目或当前服务端状态为只读。', { exact: true }))
     .toBeVisible()
   recordStep('archive-bible-visible')
-  await expect(page.getByRole('button', { name: '生成创作圣经' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'AI 生成初稿' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: '手动保存' })).toHaveCount(0)
   await settleNavigationBoundary(page, runtime)
   recordStep('project-archived-read-only')
@@ -968,7 +952,7 @@ async function auditRuntime(evidence, checkpoints, projectId: string, {
       method: 'PUT',
       path: `/api/projects/${projectId}/selected-seed`,
       statuses: [200],
-      count: 3,
+      count: 1,
     },
     {
       method: 'POST',
@@ -986,7 +970,7 @@ async function auditRuntime(evidence, checkpoints, projectId: string, {
       method: 'PUT',
       path: `/api/projects/${projectId}/contract-draft`,
       statuses: [200],
-      count: 4,
+      count: 5,
     },
     {
       method: 'POST',
@@ -1002,7 +986,7 @@ async function auditRuntime(evidence, checkpoints, projectId: string, {
     },
     {
       method: 'POST',
-      path: `/api/projects/${projectId}/bible/generate`,
+      path: `/api/projects/${projectId}/bible/proposals`,
       statuses: [200],
       count: 2,
     },
@@ -1014,15 +998,9 @@ async function auditRuntime(evidence, checkpoints, projectId: string, {
     },
     {
       method: 'POST',
-      path: `/api/projects/${projectId}/bible/draft/clone`,
-      statuses: [200],
-      count: 1,
-    },
-    {
-      method: 'POST',
       path: `/api/projects/${projectId}/bible/confirm`,
       statuses: [201],
-      count: 2,
+      count: 1,
     },
     {
       method: 'POST',

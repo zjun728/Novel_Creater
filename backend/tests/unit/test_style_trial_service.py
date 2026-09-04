@@ -11,6 +11,11 @@ import httpx
 import pytest
 
 from backend.domain.json_contracts import canonical_hash
+from backend.domain.seeds import (
+    SeedPayload,
+    build_seed_provenance,
+    seed_revision_document,
+)
 from backend.domain.style_trials import (
     StyleTrialFailure,
     StyleTrialProviderOutput,
@@ -416,6 +421,30 @@ async def test_success_freezes_safe_manifest_and_validated_sample_without_side_e
     assert not {"contract", "candidate", "canon", "selected"} & set(
         json.loads(attempt["result_json"])
     )
+
+
+@pytest.mark.asyncio
+async def test_success_accepts_seed_revision_with_verified_provenance():
+    inputs = _inputs()
+    seed = SeedPayload.model_validate(_seed_payload(), strict=True)
+    provenance = build_seed_provenance(
+        kind="manual",
+        snapshots=(),
+        analysis=None,
+        inspiration_attempt=None,
+        public_notes=("作者从项目种子页显式保存。",),
+    )
+    inputs["selection"]["payload_json"] = json.dumps(
+        seed_revision_document(seed, provenance), ensure_ascii=False
+    )
+    service, _repo, gateway, _factories = _service(
+        repository=MemoryRepository(inputs)
+    )
+
+    result = await service.generate(_command())
+
+    assert result.status == "succeeded"
+    assert len(gateway.calls) == 1
 
 
 @pytest.mark.asyncio

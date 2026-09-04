@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from backend.domain.assets import StylePromptPayload
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.provider_policy import provider_is_generation_ready
-from backend.domain.seeds import SeedPayload
+from backend.domain.seeds import decode_seed_revision
 from backend.domain.story_engines import StoryEngineOption
 from backend.domain.style_trials import (
     GenerateStyleTrial,
@@ -187,9 +187,7 @@ class StyleTrialService:
         if provider_public_fields_contain_secret(public_identity, secrets):
             raise StyleTrialFailure("STYLE_TRIAL_NOT_READY")
         try:
-            SeedPayload.model_validate(
-                _json_mapping(selection["payload_json"]), strict=True
-            )
+            decode_seed_revision(selection["payload_json"])
             _parse_engine(engine["payload_json"])
             for row in styles:
                 _parse_style(row["payload_json"])
@@ -353,10 +351,11 @@ class StyleTrialService:
             provider["api_key"] = str(provider["api_key"]).strip()
             styles = tuple(inputs["styles"])
             try:
+                seed, _provenance = decode_seed_revision(
+                    inputs["selection"]["payload_json"]
+                )
                 messages = build_style_trial_messages(
-                    seed=SeedPayload.model_validate(
-                        _json_mapping(inputs["selection"]["payload_json"]), strict=True
-                    ),
+                    seed=seed,
                     engine=_parse_engine(inputs["engine"]["payload_json"]),
                     primary_style=_parse_style(styles[0]["payload_json"]),
                     secondary_style=(

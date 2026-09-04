@@ -353,6 +353,7 @@ test('generation requires only planning readiness, a clean editable draft, and n
   const workspace = controller(store, { planningReady: () => planningReady })
   await workspace.hydrate()
   assert.equal(workspace.canGenerate.value, false)
+  assert.equal(workspace.generationDisabledReason.value, '请先为创作规划任务配置可用模型。')
   assert.equal(workspace.editable.value, true)
   assert.equal(workspace.canSave.value, false)
 
