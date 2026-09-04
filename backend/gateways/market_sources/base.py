@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from html.parser import HTMLParser
+import math
 import re
 from typing import Awaitable, Callable, Mapping
 from urllib.parse import urljoin, urlsplit
+import warnings
 
+from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 from pydantic import ValidationError
 
 from backend.domain.json_contracts import canonical_hash
@@ -18,7 +21,27 @@ from backend.domain.market_sources import MarketSourceFailure, SourcePolicy
 
 MAX_BODY_BYTES = 512 * 1024
 TRANSPORT_TIMEOUT_SECONDS = 8.0
-MAX_POLICY_AGE_MS = 30 * 24 * 60 * 60 * 1000
+_SUPPORTED_HTML_CHARSETS = {
+    "utf-8": "utf-8",
+    "utf8": "utf-8",
+    "gb2312": "gb2312",
+    "gbk": "gbk",
+    "gb18030": "gb18030",
+}
+_DOCUMENT_CHARSET = re.compile(
+    r"<meta\b[^>]*\bcharset\s*=\s*[\"']?\s*([a-z0-9_-]+)",
+    re.IGNORECASE,
+)
+_DOCUMENT_CONTENT_CHARSET = re.compile(
+    r"<meta\b[^>]*\bcontent\s*=\s*[\"'][^>]*?\bcharset\s*=\s*([a-z0-9_-]+)",
+    re.IGNORECASE,
+)
+_XML_CHARSET = re.compile(
+    r"<\?xml\b[^>]*\bencoding\s*=\s*[\"']\s*([a-z0-9_-]+)",
+    re.IGNORECASE,
+)
+_PERCENT_ESCAPE = re.compile(r"%([0-9a-f]{2})", re.IGNORECASE)
+_INVALID_PERCENT_ESCAPE = re.compile(r"%(?![0-9a-f]{2})", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -38,6 +61,15 @@ class TransportResponse:
 
 
 Transport = Callable[[TransportRequest], Awaitable[TransportResponse]]
+
+
+@dataclass(frozen=True)
+class PublicHTMLDocument:
+    """One bounded, verified, non-interactive public HTML response."""
+
+    url: str
+    text: str
+    soup: BeautifulSoup
 
 
 class HttpxMarketTransport:
@@ -78,13 +110,44 @@ class HttpxMarketTransport:
 
 def _origin(url: str) -> str:
     parsed = urlsplit(url)
+    _ = parsed.port
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
+def _has_url_controls(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
+def _path_is_unambiguous(path: str) -> bool:
+    if "\\" in path or _INVALID_PERCENT_ESCAPE.search(path):
+        return False
+    if any(segment in {".", ".."} for segment in path.split("/")):
+        return False
+    return all(
+        int(match.group(1), 16) not in {0x25, 0x2E, 0x2F, 0x5C, 0x7F}
+        and int(match.group(1), 16) > 0x1F
+        for match in _PERCENT_ESCAPE.finditer(path)
+    )
+
+
+def _path_matches_prefix(path: str, prefix: str) -> bool:
+    if prefix.endswith("/"):
+        return path.startswith(prefix)
+    return path == prefix or path.startswith(f"{prefix}/")
+
+
 def _url_allowed(url: str, *, origins: tuple[str, ...], prefixes: tuple[str, ...]) -> bool:
-    parsed = urlsplit(url)
-    return _origin(url) in origins and any(
-        parsed.path.startswith(prefix) for prefix in prefixes
+    if _has_url_controls(url):
+        return False
+    try:
+        parsed = urlsplit(url)
+        origin = _origin(url)
+    except (TypeError, ValueError):
+        return False
+    return (
+        origin in origins
+        and _path_is_unambiguous(parsed.path)
+        and any(_path_matches_prefix(parsed.path, prefix) for prefix in prefixes)
     )
 
 
@@ -103,8 +166,7 @@ def verify_transport_policy(
         raise MarketSourceFailure("MARKET_POLICY_NOT_VERIFIED")
     if policy_hash != canonical_hash(policy):
         raise MarketSourceFailure("MARKET_POLICY_HASH_INVALID")
-    age = captured_at - policy.checked_at
-    if age < -5 * 60 * 1000 or age > MAX_POLICY_AGE_MS:
+    if captured_at - policy.checked_at < -5 * 60 * 1000:
         raise MarketSourceFailure("MARKET_POLICY_EXPIRED")
     if not _url_allowed(
         source_url,
@@ -112,6 +174,231 @@ def verify_transport_policy(
         prefixes=policy.path_prefixes,
     ):
         raise MarketSourceFailure("MARKET_URL_NOT_ALLOWED")
+
+
+def normalized_public_text(value: object, limit: int = 300) -> str:
+    """Return bounded display text while rejecting font-obfuscated HTML."""
+
+    if not isinstance(value, str) or limit < 1:
+        raise MarketSourceFailure("MARKET_SNAPSHOT_INVALID")
+    if any("\ue000" <= character <= "\uf8ff" for character in value):
+        raise MarketSourceFailure("MARKET_HTML_UNKNOWN")
+    normalized = " ".join(value.split())
+    if not normalized or len(normalized) > limit:
+        raise MarketSourceFailure("MARKET_SNAPSHOT_INVALID")
+    return normalized
+
+
+def _response_charset(response: TransportResponse) -> str:
+    headers = {
+        str(key).casefold(): str(value)
+        for key, value in response.headers.items()
+    }
+    content_type = headers.get("content-type", "")
+    parts = tuple(part.strip() for part in content_type.split(";"))
+    media_type = parts[0].casefold() if parts else ""
+    if media_type not in {"text/html", "application/xhtml+xml"}:
+        raise MarketSourceFailure("MARKET_CONTENT_TYPE_REJECTED")
+    charsets = tuple(
+        value.strip().strip("\"'").casefold()
+        for part in parts[1:]
+        if "=" in part
+        for key, value in (part.split("=", 1),)
+        if key.strip().casefold() == "charset"
+    )
+    if len(charsets) > 1:
+        raise MarketSourceFailure("MARKET_CONTENT_TYPE_REJECTED")
+    if charsets and charsets[0] not in _SUPPORTED_HTML_CHARSETS:
+        raise MarketSourceFailure("MARKET_CONTENT_TYPE_REJECTED")
+    return _SUPPORTED_HTML_CHARSETS[charsets[0]] if charsets else ""
+
+
+def _document_charset(body: bytes) -> str:
+    # Charset declarations are ASCII syntax, so this inspection never decodes
+    # response text permissively.
+    declaration = body[:8192].decode("latin-1")
+    values = {
+        _SUPPORTED_HTML_CHARSETS.get(match.group(1).casefold())
+        for pattern in (
+            _DOCUMENT_CHARSET,
+            _DOCUMENT_CONTENT_CHARSET,
+            _XML_CHARSET,
+        )
+        for match in pattern.finditer(declaration)
+    }
+    if None in values or len(values) > 1:
+        raise MarketSourceFailure("MARKET_HTML_UNKNOWN")
+    return values.pop() if values else ""
+
+
+def _decode_html(response: TransportResponse) -> str:
+    header_charset = _response_charset(response)
+    document_charset = _document_charset(response.body)
+    if header_charset and document_charset and header_charset != document_charset:
+        raise MarketSourceFailure("MARKET_HTML_UNKNOWN")
+    charset = header_charset or document_charset or "utf-8"
+    try:
+        return response.body.decode(charset, errors="strict")
+    except UnicodeDecodeError:
+        raise MarketSourceFailure("MARKET_HTML_UNKNOWN") from None
+
+
+async def _bounded_transport_response(
+    transport: Transport,
+    *,
+    policy: SourcePolicy | None,
+    policy_hash: str | None,
+    url: str,
+    captured_at: int,
+) -> TransportResponse:
+    verify_transport_policy(
+        policy,
+        policy_hash,
+        source_url=url,
+        captured_at=captured_at,
+    )
+    request = TransportRequest(url=url)
+    try:
+        async with asyncio.timeout(TRANSPORT_TIMEOUT_SECONDS):
+            response = await transport(request)
+    except TimeoutError:
+        raise MarketSourceFailure("MARKET_TRANSPORT_TIMEOUT") from None
+    except MarketSourceFailure:
+        raise
+    except Exception:
+        raise MarketSourceFailure("MARKET_TRANSPORT_FAILED") from None
+    if 300 <= response.status_code < 400:
+        raise MarketSourceFailure("MARKET_REDIRECT_REJECTED")
+    if response.status_code != 200:
+        raise MarketSourceFailure("MARKET_HTTP_FAILED")
+    if response.url != url:
+        raise MarketSourceFailure("MARKET_REDIRECT_REJECTED")
+    assert policy is not None
+    if not _url_allowed(
+        response.url,
+        origins=policy.allowed_origins,
+        prefixes=policy.path_prefixes,
+    ):
+        raise MarketSourceFailure("MARKET_URL_NOT_ALLOWED")
+    if len(response.body) > request.max_body_bytes:
+        raise MarketSourceFailure("MARKET_BODY_TOO_LARGE")
+    return response
+
+
+async def fetch_public_document(
+    transport: Transport,
+    *,
+    policy: SourcePolicy | None,
+    policy_hash: str | None,
+    url: str,
+    captured_at: int,
+) -> PublicHTMLDocument:
+    """Fetch only an approved public HTML document with strict decoding."""
+
+    response = await _bounded_transport_response(
+        transport,
+        policy=policy,
+        policy_hash=policy_hash,
+        url=url,
+        captured_at=captured_at,
+    )
+    text = _decode_html(response)
+    folded = " ".join(text.casefold().split())
+    if any(
+        token in folded
+        for token in (
+            "captcha",
+            "请登录",
+            "登录后",
+            "人机验证",
+            "请完成人机验证",
+            "安全验证",
+        )
+    ):
+        raise MarketSourceFailure("MARKET_INTERSTITIAL_REJECTED")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", XMLParsedAsHTMLWarning)
+        soup = BeautifulSoup(text, "html.parser")
+    return PublicHTMLDocument(url=response.url, text=text, soup=soup)
+
+
+def canonical_work_url(
+    href: object,
+    *,
+    base_url: str,
+    work_origins: tuple[str, ...],
+) -> str:
+    if not isinstance(href, str) or not href.strip():
+        raise MarketSourceFailure("MARKET_SNAPSHOT_INVALID")
+    if _has_url_controls(href) or _has_url_controls(base_url):
+        raise MarketSourceFailure("MARKET_URL_NOT_ALLOWED")
+    try:
+        work_url = urljoin(base_url, href.strip())
+        parsed = urlsplit(work_url)
+        origin = _origin(work_url)
+    except (TypeError, ValueError):
+        raise MarketSourceFailure("MARKET_URL_NOT_ALLOWED") from None
+    if (
+        _has_url_controls(work_url)
+        or not _path_is_unambiguous(parsed.path)
+        or origin not in work_origins
+    ):
+        raise MarketSourceFailure("MARKET_URL_NOT_ALLOWED")
+    return work_url
+
+
+def bounded_public_metrics(
+    values: object,
+) -> dict[str, str | int | float | bool]:
+    if not isinstance(values, Mapping) or len(values) > 32:
+        raise MarketSourceFailure("MARKET_SNAPSHOT_INVALID")
+    normalized: dict[str, str | int | float | bool] = {}
+    for key, value in values.items():
+        if not isinstance(key, str):
+            raise MarketSourceFailure("MARKET_SNAPSHOT_INVALID")
+        if isinstance(value, str):
+            normalized[key] = normalized_public_text(value, limit=200)
+        elif isinstance(value, bool | int):
+            normalized[key] = value
+        elif isinstance(value, float) and math.isfinite(value):
+            normalized[key] = value
+        else:
+            raise MarketSourceFailure("MARKET_SNAPSHOT_INVALID")
+    return normalized
+
+
+def market_entry_from_fields(
+    *,
+    rank: object,
+    title: object,
+    author: object,
+    category: object,
+    work_url: object,
+    base_url: str,
+    work_origins: tuple[str, ...],
+    metrics: object,
+) -> MarketEntry:
+    try:
+        normalized_rank = int(str(rank).strip())
+    except (TypeError, ValueError):
+        raise MarketSourceFailure("MARKET_SNAPSHOT_INVALID") from None
+    try:
+        return MarketEntry(
+            rank=normalized_rank,
+            title=normalized_public_text(title),
+            author=normalized_public_text(author, limit=200),
+            category=normalized_public_text(category, limit=160),
+            work_url=canonical_work_url(
+                work_url,
+                base_url=base_url,
+                work_origins=work_origins,
+            ),
+            public_metrics=bounded_public_metrics(metrics),
+        )
+    except MarketSourceFailure:
+        raise
+    except ValidationError:
+        raise MarketSourceFailure("MARKET_SNAPSHOT_INVALID") from None
 
 
 @dataclass
@@ -248,26 +535,70 @@ def parse_marked_entries(
         raise MarketSourceFailure("MARKET_SNAPSHOT_INVALID")
 
     entries: list[MarketEntry] = []
-    try:
-        for item in parser.entries:
-            work_url = urljoin(source_url, item.href.strip())
-            if _origin(work_url) not in work_origins:
-                raise MarketSourceFailure("MARKET_URL_NOT_ALLOWED")
-            entries.append(
-                MarketEntry(
-                    rank=item.rank,
-                    title=item.title.strip(),
-                    author=item.author.strip(),
-                    category=item.category.strip(),
-                    work_url=work_url,
-                    public_metrics=item.metrics or {},
-                )
+    for item in parser.entries:
+        entries.append(
+            market_entry_from_fields(
+                rank=item.rank,
+                title=item.title,
+                author=item.author,
+                category=item.category,
+                work_url=item.href,
+                base_url=source_url,
+                work_origins=work_origins,
+                metrics=item.metrics or {},
             )
-    except MarketSourceFailure:
-        raise
-    except ValidationError:
-        raise MarketSourceFailure("MARKET_SNAPSHOT_INVALID") from None
+        )
     return tuple(entries)
+
+
+class OfficialRankAdapter:
+    """Shared boundary for official ranking adapters with complete pages."""
+
+    source_url = ""
+    platform = ""
+    ranking_name = ""
+    category = ""
+
+    def __init__(self, transport: Transport) -> None:
+        self.transport = transport
+
+    async def document(
+        self,
+        url: str,
+        *,
+        policy: SourcePolicy | None,
+        policy_hash: str | None,
+        captured_at: int,
+    ) -> PublicHTMLDocument:
+        return await fetch_public_document(
+            self.transport,
+            policy=policy,
+            policy_hash=policy_hash,
+            url=url,
+            captured_at=captured_at,
+        )
+
+    def snapshot(
+        self,
+        entries: tuple[MarketEntry, ...],
+        *,
+        captured_at: int,
+    ):
+        from backend.domain.market import MarketSnapshot
+
+        if not 10 <= len(entries) <= MAX_MARKET_ENTRIES:
+            raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
+        try:
+            return MarketSnapshot(
+                platform=self.platform,
+                ranking_name=self.ranking_name,
+                category=self.category,
+                captured_at=captured_at,
+                source_url=self.source_url,
+                entries=entries,
+            )
+        except ValidationError:
+            raise MarketSourceFailure("MARKET_SNAPSHOT_INVALID") from None
 
 
 class PublicRankAdapter:
@@ -291,69 +622,15 @@ class PublicRankAdapter:
     ):
         from backend.domain.market import MarketSnapshot
 
-        verify_transport_policy(
-            policy,
-            policy_hash,
-            source_url=self.source_url,
+        document = await fetch_public_document(
+            self.transport,
+            policy=policy,
+            policy_hash=policy_hash,
+            url=self.source_url,
             captured_at=captured_at,
         )
-        request = TransportRequest(url=self.source_url)
-        try:
-            async with asyncio.timeout(TRANSPORT_TIMEOUT_SECONDS):
-                response = await self.transport(request)
-        except TimeoutError:
-            raise MarketSourceFailure("MARKET_TRANSPORT_TIMEOUT") from None
-        except MarketSourceFailure:
-            raise
-        except Exception:
-            raise MarketSourceFailure("MARKET_TRANSPORT_FAILED") from None
-        if 300 <= response.status_code < 400:
-            raise MarketSourceFailure("MARKET_REDIRECT_REJECTED")
-        if response.status_code != 200:
-            raise MarketSourceFailure("MARKET_HTTP_FAILED")
-        if response.url != self.source_url:
-            raise MarketSourceFailure("MARKET_REDIRECT_REJECTED")
-        assert policy is not None
-        if not _url_allowed(
-            response.url,
-            origins=policy.allowed_origins,
-            prefixes=policy.path_prefixes,
-        ):
-            raise MarketSourceFailure("MARKET_URL_NOT_ALLOWED")
-        if len(response.body) > request.max_body_bytes:
-            raise MarketSourceFailure("MARKET_BODY_TOO_LARGE")
-        headers = {
-            str(key).casefold(): str(value)
-            for key, value in response.headers.items()
-        }
-        content_type = headers.get("content-type", "")
-        parts = tuple(part.strip() for part in content_type.split(";"))
-        media_type = parts[0].casefold() if parts else ""
-        if media_type not in {"text/html", "application/xhtml+xml"}:
-            raise MarketSourceFailure("MARKET_CONTENT_TYPE_REJECTED")
-        charsets = tuple(
-            value.strip().strip("\"'").casefold()
-            for part in parts[1:]
-            if "=" in part
-            for key, value in (part.split("=", 1),)
-            if key.strip().casefold() == "charset"
-        )
-        if len(charsets) > 1 or (
-            charsets and charsets[0] not in {"utf-8", "utf8"}
-        ):
-            raise MarketSourceFailure("MARKET_CONTENT_TYPE_REJECTED")
-        try:
-            text = response.body.decode("utf-8")
-        except UnicodeDecodeError:
-            raise MarketSourceFailure("MARKET_HTML_UNKNOWN") from None
-        folded = " ".join(text.casefold().split())
-        if any(
-            token in folded
-            for token in ("captcha", "请登录", "登录后", "人机验证", "安全验证")
-        ):
-            raise MarketSourceFailure("MARKET_INTERSTITIAL_REJECTED")
         entries = parse_marked_entries(
-            text,
+            document.text,
             marker=self.marker,
             source_url=self.source_url,
             work_origins=self.work_origins,

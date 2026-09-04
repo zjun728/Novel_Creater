@@ -24,22 +24,29 @@ class RecordingTransport:
         return self.response
 
 
-def _policy(*, platform: str, status: str = "verified_public", checked_at=NOW - 1_000):
+def _policy(
+    *,
+    platform: str,
+    status: str = "verified_public",
+    checked_at=NOW - 1_000,
+    origins: tuple[str, ...] | None = None,
+    prefixes: tuple[str, ...] | None = None,
+):
     from backend.domain.market_sources import SourcePolicy
 
     if platform == "qidian":
-        origins = ("https://www.qidian.com",)
-        prefixes = ("/rank/newsign/",)
+        default_origins = ("https://www.qidian.com",)
+        default_prefixes = ("/rank/newsign/",)
     else:
-        origins = ("https://book.qq.com",)
-        prefixes = ("/book-rank",)
+        default_origins = ("https://book.qq.com",)
+        default_prefixes = ("/book-rank",)
     return SourcePolicy(
         status=status,
         checkedAt=checked_at,
         evidenceURL="https://evidence.example/public-policy",
         evidenceHash="a" * 64,
-        allowedOrigins=origins,
-        pathPrefixes=prefixes,
+        allowedOrigins=origins if origins is not None else default_origins,
+        pathPrefixes=prefixes if prefixes is not None else default_prefixes,
         requestIntervalSeconds=3600,
         policyVersion="public-rank-policy-v1",
         enabled=False,
@@ -52,7 +59,11 @@ def _response(body: bytes, *, url: str, status=200, headers=None):
     return TransportResponse(
         status_code=status,
         url=url,
-        headers=headers or {"content-type": "text/html; charset=utf-8"},
+        headers=(
+            {"content-type": "text/html; charset=utf-8"}
+            if headers is None
+            else headers
+        ),
         body=body,
     )
 
@@ -227,7 +238,7 @@ async def test_public_adapters_reject_well_formed_partial_and_truncated_pages(
             "MARKET_POLICY_NOT_VERIFIED",
         ),
         (
-            lambda: _policy(platform="qidian", checked_at=1),
+            lambda: _policy(platform="qidian", checked_at=NOW + 5 * 60 * 1000 + 1),
             None,
             "MARKET_POLICY_EXPIRED",
         ),
@@ -337,12 +348,11 @@ async def test_public_adapter_rejects_redirect_size_interstitial_and_unknown_htm
     "content_type",
     (
         "application/octet-stream",
-        "text/html; charset=gbk",
-        "text/html; charset = gbk",
-        "",
+        "text/html; charset=big5",
+        "text/html; charset=utf-8; charset=gbk",
     ),
 )
-async def test_public_adapter_requires_approved_utf8_html_content_type(
+async def test_public_adapter_requires_approved_html_content_type(
     content_type,
 ):
     from backend.domain.json_contracts import canonical_hash
@@ -352,11 +362,7 @@ async def test_public_adapter_requires_approved_utf8_html_content_type(
     )
 
     policy = _policy(platform="qidian")
-    headers = (
-        {"x-synthetic-header": "present"}
-        if not content_type
-        else {"content-type": content_type}
-    )
+    headers = {"content-type": content_type}
     transport = RecordingTransport(
         _response(
             (FIXTURES / "qidian_newsign.html").read_bytes(),
@@ -400,6 +406,407 @@ async def test_public_adapter_accepts_xhtml_with_utf8_charset():
     )
 
     assert len(snapshot.entries) == 2
+
+
+def _fetch_public_document():
+    from backend.gateways.market_sources import base
+
+    fetcher = getattr(base, "fetch_public_document", None)
+    assert callable(fetcher), "strict public HTML document fetcher is required"
+    return fetcher
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("charset", "encoding"),
+    (
+        ("UTF-8", "utf-8"),
+        ("UTF8", "utf-8"),
+        ("gb2312", "gb2312"),
+        ("GBK", "gbk"),
+        ("gb18030", "gb18030"),
+    ),
+)
+async def test_document_accepts_declared_supported_charset_without_policy_age_expiry(
+    charset, encoding
+):
+    from backend.domain.json_contracts import canonical_hash
+
+    policy = _policy(
+        platform="qimao",
+        checked_at=1_700_000_000_000,
+        origins=("https://www.qimao.com",),
+        prefixes=("/paihang/", "/shuku/"),
+    )
+    response = _response(
+        "小说排行榜".encode(encoding),
+        url="https://www.qimao.com/paihang/boy/update/date/",
+        headers={"content-type": f"text/html; charset={charset}"},
+    )
+    document = await _fetch_public_document()(
+        RecordingTransport(response),
+        policy=policy,
+        policy_hash=canonical_hash(policy),
+        url="https://www.qimao.com/paihang/boy/update/date/",
+        captured_at=1_800_000_000_000,
+    )
+
+    assert document.text == "小说排行榜"
+    assert document.soup.get_text() == "小说排行榜"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", (b"captcha", "请完成人机验证".encode("utf-8")))
+async def test_document_rejects_interstitials(body):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.base import MarketSourceFailure
+
+    policy = _policy(platform="qidian")
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await _fetch_public_document()(
+            RecordingTransport(
+                _response(body, url="https://www.qidian.com/rank/newsign/")
+            ),
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            url="https://www.qidian.com/rank/newsign/",
+            captured_at=NOW,
+        )
+
+    assert rejected.value.code == "MARKET_INTERSTITIAL_REJECTED"
+
+
+def test_text_normalizer_rejects_private_use_font_obfuscation():
+    from backend.gateways.market_sources import base
+
+    normalizer = getattr(base, "normalized_public_text", None)
+    assert callable(normalizer), "public text normalizer is required"
+    with pytest.raises(base.MarketSourceFailure) as rejected:
+        normalizer("小说\ue000排行榜")
+
+    assert rejected.value.code == "MARKET_HTML_UNKNOWN"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "expected_code"),
+    (
+        (
+            _response(
+                b"",
+                url="https://www.qidian.com/rank/newsign/",
+                status=302,
+                headers={"location": "https://www.qidian.com/rank/newsign/"},
+            ),
+            "MARKET_REDIRECT_REJECTED",
+        ),
+        (
+            _response(
+                b"x" * (512 * 1024 + 1),
+                url="https://www.qidian.com/rank/newsign/",
+            ),
+            "MARKET_BODY_TOO_LARGE",
+        ),
+        (
+            _response(b"<html></html>", url="https://evil.example/rank"),
+            "MARKET_REDIRECT_REJECTED",
+        ),
+    ),
+)
+async def test_document_preserves_bounded_transport_and_response_boundary(
+    response, expected_code
+):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.base import MarketSourceFailure
+
+    policy = _policy(platform="qidian")
+    transport = RecordingTransport(response)
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await _fetch_public_document()(
+            transport,
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            url="https://www.qidian.com/rank/newsign/",
+            captured_at=NOW,
+        )
+
+    assert rejected.value.code == expected_code
+    request = transport.requests[0]
+    assert request.follow_redirects is False
+    assert 0 < request.timeout_seconds <= 10
+    assert 0 < request.max_body_bytes <= 512 * 1024
+
+
+@pytest.mark.asyncio
+async def test_document_rejects_conflicting_declared_charset():
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.base import MarketSourceFailure
+
+    policy = _policy(platform="qidian")
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await _fetch_public_document()(
+            RecordingTransport(
+                _response(
+                    b'<meta charset="gbk">ranking',
+                    url="https://www.qidian.com/rank/newsign/",
+                )
+            ),
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            url="https://www.qidian.com/rank/newsign/",
+            captured_at=NOW,
+        )
+
+    assert rejected.value.code == "MARKET_HTML_UNKNOWN"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url",
+    (
+        "https://www.qidian.com/book/../private",
+        "https://www.qidian.com/book/%2e%2e/private",
+        "https://www.qidian.com/book/%2E%2E%2Fprivate",
+        "https://www.qidian.com/book/%252e%252e%252fprivate",
+        "https://www.qidian.com/book/%2fprivate",
+        "https://www.qidian.com/book/%5cprivate",
+        "https://www.qidian.com/book/%2e%2e%5cprivate",
+    ),
+)
+async def test_document_rejects_ambiguous_encoded_path_structure_before_transport(url):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.base import MarketSourceFailure
+
+    policy = _policy(
+        platform="qidian",
+        origins=("https://www.qidian.com",),
+        prefixes=("/book/",),
+    )
+    transport = RecordingTransport(AssertionError("transport must not open"))
+
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await _fetch_public_document()(
+            transport,
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            url=url,
+            captured_at=NOW,
+        )
+
+    assert rejected.value.code == "MARKET_URL_NOT_ALLOWED"
+    assert transport.requests == []
+
+
+@pytest.mark.asyncio
+async def test_document_allows_nonstructural_percent_encoded_public_path():
+    from backend.domain.json_contracts import canonical_hash
+
+    url = "https://www.qidian.com/book/%E5%85%AC%E5%BC%80"
+    policy = _policy(
+        platform="qidian",
+        origins=("https://www.qidian.com",),
+        prefixes=("/book/",),
+    )
+    transport = RecordingTransport(_response(b"public", url=url))
+
+    document = await _fetch_public_document()(
+        transport,
+        policy=policy,
+        policy_hash=canonical_hash(policy),
+        url=url,
+        captured_at=NOW,
+    )
+
+    assert document.url == url
+
+
+@pytest.mark.asyncio
+async def test_document_accepts_equivalent_multiple_charset_declarations(recwarn):
+    from backend.domain.json_contracts import canonical_hash
+
+    policy = _policy(platform="qidian")
+    response = _response(
+        b'<?xml version="1.0" encoding="UTF8"?><meta charset="utf-8">public',
+        url="https://www.qidian.com/rank/newsign/",
+        headers={"content-type": "application/xhtml+xml; charset=UTF-8"},
+    )
+
+    document = await _fetch_public_document()(
+        RecordingTransport(response),
+        policy=policy,
+        policy_hash=canonical_hash(policy),
+        url="https://www.qidian.com/rank/newsign/",
+        captured_at=NOW,
+    )
+
+    assert document.text.endswith("public")
+    assert not recwarn
+
+
+@pytest.mark.asyncio
+async def test_document_uses_meta_only_supported_charset_without_replacement():
+    from backend.domain.json_contracts import canonical_hash
+
+    policy = _policy(platform="qidian")
+    response = _response(
+        '<meta charset="gb18030">小说排行榜'.encode("gb18030"),
+        url="https://www.qidian.com/rank/newsign/",
+        headers={"content-type": "text/html"},
+    )
+
+    document = await _fetch_public_document()(
+        RecordingTransport(response),
+        policy=policy,
+        policy_hash=canonical_hash(policy),
+        url="https://www.qidian.com/rank/newsign/",
+        captured_at=NOW,
+    )
+
+    assert document.text.endswith("小说排行榜")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "expected_code"),
+    (
+        (b"\xff", "MARKET_HTML_UNKNOWN"),
+        (b'<meta charset="utf-8"><meta charset="gbk">public', "MARKET_HTML_UNKNOWN"),
+        (b"public", "MARKET_CONTENT_TYPE_REJECTED"),
+    ),
+)
+async def test_document_rejects_invalid_bytes_conflicting_declarations_and_missing_content_type(
+    body, expected_code
+):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.base import MarketSourceFailure
+
+    policy = _policy(platform="qidian")
+    headers = None if body != b"public" else {}
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await _fetch_public_document()(
+            RecordingTransport(
+                _response(
+                    body,
+                    url="https://www.qidian.com/rank/newsign/",
+                    headers=headers,
+                )
+            ),
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            url="https://www.qidian.com/rank/newsign/",
+            captured_at=NOW,
+        )
+
+    assert rejected.value.code == expected_code
+
+
+@pytest.mark.parametrize(
+    "work_url",
+    (
+        "https://[::1",
+        "https://www.qidian.com:bad/book/1",
+        "/book/\x00private",
+    ),
+)
+def test_canonical_work_url_maps_malformed_urls_to_market_failure(work_url):
+    from backend.gateways.market_sources.base import (
+        MarketSourceFailure,
+        canonical_work_url,
+    )
+
+    with pytest.raises(MarketSourceFailure) as rejected:
+        canonical_work_url(
+            work_url,
+            base_url="https://www.qidian.com/rank/newsign/",
+            work_origins=("https://www.qidian.com",),
+        )
+
+    assert rejected.value.code == "MARKET_URL_NOT_ALLOWED"
+
+
+def _market_entry(rank: int):
+    from backend.domain.market import MarketEntry
+
+    return MarketEntry(
+        rank=rank,
+        title=f"公开作品{rank}",
+        author="公开作者",
+        category="奇幻",
+        workURL=f"https://www.qidian.com/book/{rank}",
+        publicMetrics={},
+    )
+
+
+def test_market_entry_from_fields_normalizes_string_rank_with_public_keywords():
+    from backend.gateways.market_sources.base import market_entry_from_fields
+
+    entry = market_entry_from_fields(
+        rank=" 1 ",
+        title=" 公开作品 ",
+        author=" 公开作者 ",
+        category=" 奇幻 ",
+        work_url="/book/1",
+        metrics={"weeklyRecommendations": " 321 "},
+        base_url="https://www.qidian.com/rank/newsign/",
+        work_origins=("https://www.qidian.com",),
+    )
+
+    assert entry.rank == 1
+    assert entry.title == "公开作品"
+    assert entry.public_metrics == {"weeklyRecommendations": "321"}
+
+
+@pytest.mark.asyncio
+async def test_official_rank_adapter_document_accepts_bounded_detail_url():
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.base import OfficialRankAdapter
+
+    class SyntheticOfficialAdapter(OfficialRankAdapter):
+        source_url = "https://www.qidian.com/rank/newsign/"
+        platform = "qidian"
+        ranking_name = "newsign"
+        category = "male"
+
+    detail_url = "https://www.qidian.com/book/1"
+    policy = _policy(
+        platform="qidian",
+        origins=("https://www.qidian.com",),
+        prefixes=("/rank/", "/book/"),
+    )
+    transport = RecordingTransport(_response(b"<html>detail</html>", url=detail_url))
+
+    document = await SyntheticOfficialAdapter(transport).document(
+        detail_url,
+        policy=policy,
+        policy_hash=canonical_hash(policy),
+        captured_at=NOW,
+    )
+
+    assert document.url == detail_url
+    assert transport.requests[0].url == detail_url
+
+
+def test_official_rank_adapter_snapshot_uses_rank_source_and_requires_ten_entries():
+    from backend.gateways.market_sources.base import (
+        MarketSourceFailure,
+        OfficialRankAdapter,
+    )
+
+    class SyntheticOfficialAdapter(OfficialRankAdapter):
+        source_url = "https://www.qidian.com/rank/newsign/"
+        platform = "qidian"
+        ranking_name = "newsign"
+        category = "male"
+
+    adapter = SyntheticOfficialAdapter(RecordingTransport(None))
+    entries = tuple(_market_entry(rank) for rank in range(1, 11))
+
+    snapshot = adapter.snapshot(entries, captured_at=NOW)
+
+    assert snapshot.source_url == adapter.source_url
+    with pytest.raises(MarketSourceFailure) as rejected:
+        adapter.snapshot(entries[:9], captured_at=NOW)
+    assert rejected.value.code == "MARKET_PAGE_INCOMPLETE"
 
 
 @pytest.mark.asyncio
