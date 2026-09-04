@@ -783,6 +783,8 @@ class BibleGenerationService:
             )
             if project is None:
                 raise BibleGenerationNotReady()
+            if project.get("archived_at") is not None:
+                raise ProjectArchived()
             head = await self.repository.lock_bible_head(
                 session, command.project_id
             )
@@ -1114,41 +1116,81 @@ class BibleGenerationService:
             )
             return self._attempt_result(terminal)
 
-    async def generate(
-        self,
-        command: GenerateBibleDraft,
-    ) -> BibleGenerationAttemptResult:
-        if not isinstance(command, GenerateBibleDraft):
-            raise BibleGenerationNotReady()
-        self._validate(command)
-        identity = {}
-        try:
-            replay, context = await self._reserve(command, identity)
-        except asyncio.CancelledError:
-            if identity:
-                await self._settle_cancelled_attempt(
-                    {"identity": dict(identity)}
+    async def _complete_proposal(self, command, context, output):
+        """Persist a validated proposal attempt without touching Bible drafts."""
+        identity = context["identity"]
+        completed_at = self._clock()
+        async with self._transaction() as session:
+            project = await self.repository.lock_project(
+                session, command.project_id
+            )
+            attempt = await self.repository.lock_generation_attempt(
+                session,
+                command.project_id,
+                identity["attempt_id"],
+            )
+            if (
+                project is None
+                or project.get("archived_at") is not None
+                or attempt is None
+                or attempt.get("status") != "running"
+                or attempt.get("owner_token") != identity["owner_token"]
+                or int(attempt.get("attempt_version") or 0)
+                != identity["attempt_version"]
+            ):
+                raise BibleGenerationConflict()
+            try:
+                current = await self._load_inputs(
+                    session,
+                    command,
+                    build_prompt=False,
                 )
-            raise
-        except PublicDomainError:
-            raise
-        except Exception:
-            if identity:
-                try:
-                    return await asyncio.shield(
-                        self._terminalize(
-                            {"identity": dict(identity)},
-                            status="outcome_unknown",
-                            code=BibleGenerationRetryable.code,
-                        )
-                    )
-                except Exception:
-                    pass
-            raise BibleGenerationRetryable() from None
-        if replay is not None:
-            return replay
-        assert context is not None
+                if (
+                    canonical_hash(current["manifest"])
+                    != attempt["input_manifest_hash"]
+                    or current["basis"] != context["basis"]
+                ):
+                    raise BibleGenerationConflict()
+            except PublicDomainError:
+                changed = await self.repository.finish_generation_attempt(
+                    session,
+                    project_id=command.project_id,
+                    attempt_id=identity["attempt_id"],
+                    owner_token=identity["owner_token"],
+                    expected_attempt_version=identity["attempt_version"],
+                    status="failed",
+                    public_error_code=BibleGenerationConflict.code,
+                    completed_at=completed_at,
+                )
+                if not changed:
+                    raise BibleGenerationRetryable()
+                terminal = await self.repository.lock_generation_attempt(
+                    session,
+                    command.project_id,
+                    identity["attempt_id"],
+                )
+                return self._attempt_result(terminal)
 
+            if not await self.repository.succeed_generation_attempt(
+                session,
+                project_id=command.project_id,
+                attempt_id=identity["attempt_id"],
+                owner_token=identity["owner_token"],
+                expected_attempt_version=identity["attempt_version"],
+                result_json=canonical_json(output),
+                result_hash=canonical_bible_hash(output),
+                completed_at=completed_at,
+            ):
+                raise BibleGenerationConflict()
+            terminal = await self.repository.lock_generation_attempt(
+                session,
+                command.project_id,
+                identity["attempt_id"],
+            )
+            return self._attempt_result(terminal)
+
+    async def _provider_outcome(self, context):
+        """Return a terminal attempt result or a strict provider payload."""
         try:
             output = await self._gateway.generate(
                 provider=context["provider"],
@@ -1194,8 +1236,43 @@ class BibleGenerationService:
                 status="failed",
                 code=BibleGenerationParseFailed.code,
             )
+        return output
+
+    async def _run_generation(self, command, finalizer):
+        self._validate(command)
+        identity = {}
         try:
-            return await self._publish(command, context, output)
+            replay, context = await self._reserve(command, identity)
+        except asyncio.CancelledError:
+            if identity:
+                await self._settle_cancelled_attempt(
+                    {"identity": dict(identity)}
+                )
+            raise
+        except PublicDomainError:
+            raise
+        except Exception:
+            if identity:
+                try:
+                    return await asyncio.shield(
+                        self._terminalize(
+                            {"identity": dict(identity)},
+                            status="outcome_unknown",
+                            code=BibleGenerationRetryable.code,
+                        )
+                    )
+                except Exception:
+                    pass
+            raise BibleGenerationRetryable() from None
+        if replay is not None:
+            return replay
+        assert context is not None
+
+        output = await self._provider_outcome(context)
+        if isinstance(output, BibleGenerationAttemptResult):
+            return output
+        try:
+            return await finalizer(command, context, output)
         except asyncio.CancelledError:
             await self._settle_cancelled_attempt(context)
             raise
@@ -1215,6 +1292,22 @@ class BibleGenerationService:
                 status="outcome_unknown",
                 code=BibleGenerationRetryable.code,
             )
+
+    async def generate(
+        self,
+        command: GenerateBibleDraft,
+    ) -> BibleGenerationAttemptResult:
+        if not isinstance(command, GenerateBibleDraft):
+            raise BibleGenerationNotReady()
+        return await self._run_generation(command, self._publish)
+
+    async def propose(
+        self,
+        command: GenerateBibleProposal,
+    ) -> BibleGenerationAttemptResult:
+        if not isinstance(command, GenerateBibleProposal):
+            raise BibleGenerationNotReady()
+        return await self._run_generation(command, self._complete_proposal)
 
     async def get_attempt(
         self,

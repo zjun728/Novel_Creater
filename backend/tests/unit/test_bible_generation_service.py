@@ -16,6 +16,7 @@ from backend.gateways.bible_provider import (
     BibleProviderTimeoutError,
     BibleProviderTransportError,
 )
+from backend.http_errors import ProjectArchived
 from backend.services.bible_generation import (
     BIBLE_GENERATION_LEASE_MS,
     BibleGenerationConflict,
@@ -593,6 +594,158 @@ async def test_legacy_generate_rejects_proposals_before_any_side_effect():
     assert repository.draft is None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ("whole", "world_rules"))
+async def test_proposal_succeeds_without_changing_a_saved_bible_draft_or_head(
+    scope, monkeypatch
+):
+    service, repository, _, _, gateway, _ = _harness()
+    repository.draft = service._draft_row(
+        project_id=PROJECT_ID,
+        draft_id="saved-draft-1",
+        payload=_bible(),
+        basis=service._basis(_contract()),
+        binding_revision_id="binding-revision-1",
+        binding_hash="b" * 64,
+        base_head_revision=0,
+        draft_version=1,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    command = _proposal(scope=scope, expected_draft_version=1)
+    before_draft = deepcopy(repository.draft)
+    before_head = deepcopy(repository.head)
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("proposal must not publish a draft")
+
+    monkeypatch.setattr(repository, "insert_draft", forbidden)
+    monkeypatch.setattr(repository, "cas_update_draft", forbidden)
+    monkeypatch.setattr(repository, "deactivate_active_draft", forbidden)
+
+    result = await service.propose(command)
+
+    row = repository.attempts[result.attempt_id]
+    assert result.status == "succeeded"
+    assert result.proposal == _bible()
+    assert gateway.calls == 1
+    assert row["result_json"] == canonical_json(_bible())
+    assert row["result_hash"] == canonical_bible_hash(_bible())
+    assert repository.draft == before_draft
+    assert repository.head == before_head
+
+
+@pytest.mark.asyncio
+async def test_proposal_replays_validated_result_without_a_second_provider_call():
+    service, repository, _, _, gateway, _ = _harness()
+    command = _proposal()
+
+    first = await service.propose(command)
+    replay = await service.propose(command)
+
+    assert replay == first
+    assert replay.proposal == _bible()
+    assert gateway.calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "drift",
+    (
+        "binding",
+        "manifest",
+    ),
+)
+async def test_proposal_drift_fails_without_publishing_a_proposal(drift):
+    service, repository, contracts, _, gateway, _ = _harness()
+
+    def mutate_inputs():
+        if drift == "binding":
+            repository.binding["binding_hash"] = "z" * 64
+        else:
+            contracts.head["revision"] += 1
+
+    gateway.on_call = mutate_inputs
+    result = await service.propose(_proposal())
+
+    assert result.status == "failed"
+    assert result.proposal is None
+    assert result.public_error_code == BibleGenerationConflict.code
+    assert gateway.calls == 1
+    assert repository.draft is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "make_unavailable,error_type",
+    (
+        ("confirmed", BibleAlreadyConfirmed),
+        ("archived", ProjectArchived),
+        ("missing_contract", BibleGenerationNotReady),
+        ("unbound_provider", BibleGenerationNotReady),
+        ("unsaved_section", BibleGenerationNotReady),
+    ),
+)
+async def test_proposal_rejects_unavailable_inputs_before_provider_work(
+    make_unavailable, error_type
+):
+    service, repository, contracts, _, gateway, _ = _harness()
+    command = _proposal()
+    if make_unavailable == "confirmed":
+        repository.head["revision"] = 1
+    elif make_unavailable == "archived":
+        repository.project["archived_at"] = NOW
+    elif make_unavailable == "missing_contract":
+        contracts.head = None
+    elif make_unavailable == "unbound_provider":
+        repository.binding["resolution_status"] = "unbound"
+    else:
+        command = _proposal(scope="world_rules")
+
+    with pytest.raises(error_type):
+        await service.propose(command)
+
+    assert gateway.calls == 0
+    assert repository.attempts == {}
+    assert repository.draft is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure,status,code",
+    (
+        (BibleProviderHTTPError("provider failure"), "failed", BibleGenerationProviderFailed.code),
+        (BibleProviderTimeoutError("timeout"), "outcome_unknown", BibleGenerationRetryable.code),
+    ),
+)
+async def test_failed_or_unknown_proposal_keeps_the_existing_draft(
+    failure, status, code
+):
+    service, repository, _, _, _, _ = _harness(gateway_result=failure)
+    repository.draft = service._draft_row(
+        project_id=PROJECT_ID,
+        draft_id="saved-draft-1",
+        payload=_bible(),
+        basis=service._basis(_contract()),
+        binding_revision_id="binding-revision-1",
+        binding_hash="b" * 64,
+        base_head_revision=0,
+        draft_version=1,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    before_draft = deepcopy(repository.draft)
+
+    result = await service.propose(
+        _proposal(scope="world_rules", expected_draft_version=1)
+    )
+
+    assert result.status == status
+    assert result.public_error_code == code
+    assert result.proposal is None
+    assert repository.draft == before_draft
+
+
 @pytest.mark.parametrize("status", ("succeeded", "failed", "outcome_unknown", "running"))
 @pytest.mark.asyncio
 async def test_exact_legacy_draft_request_hash_replays_existing_attempt(status):
@@ -1100,6 +1253,167 @@ async def test_gateway_failures_are_safe_terminal_and_never_change_draft(
     assert gateway.calls == 1
     persisted = json.dumps(repository.attempts)
     assert "PRIVATE_" not in persisted
+
+
+@pytest.mark.parametrize(
+    ("failure", "status", "code"),
+    (
+        (
+            BibleProviderParseError("PRIVATE_RAW_BODY"),
+            "failed",
+            BibleGenerationParseFailed.code,
+        ),
+        (
+            BibleProviderTransportError("PRIVATE_TRANSPORT_DETAIL"),
+            "outcome_unknown",
+            BibleGenerationRetryable.code,
+        ),
+        (
+            RuntimeError("PRIVATE_CALL_DETAIL"),
+            "outcome_unknown",
+            BibleGenerationRetryable.code,
+        ),
+    ),
+)
+@pytest.mark.asyncio
+async def test_proposal_provider_outcomes_preserve_bible_state(
+    failure, status, code
+):
+    service, repository, _, _, gateway, _ = _harness(
+        gateway_result=failure
+    )
+    repository.draft = service._draft_row(
+        project_id=PROJECT_ID,
+        draft_id="saved-draft-1",
+        payload=_bible(),
+        basis=service._basis(_contract()),
+        binding_revision_id="binding-revision-1",
+        binding_hash="b" * 64,
+        base_head_revision=0,
+        draft_version=1,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    before_draft = deepcopy(repository.draft)
+    before_head = deepcopy(repository.head)
+    command = _proposal(scope="world_rules", expected_draft_version=1)
+
+    result = await service.propose(command)
+    replay = await service.propose(command)
+
+    assert result == replay
+    assert result.status == status
+    assert result.public_error_code == code
+    assert result.proposal is None
+    assert repository.draft == before_draft
+    assert repository.head == before_head
+    assert gateway.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_proposal_reservation_cancellation_preserves_bible_state():
+    service, repository, _, transactions, gateway, _ = _harness()
+    transactions.commit_failure = asyncio.CancelledError()
+    before_head = deepcopy(repository.head)
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.propose(_proposal())
+
+    [attempt] = repository.attempts.values()
+    assert attempt["status"] == "outcome_unknown"
+    assert attempt["result_json"] is None
+    assert repository.draft is None
+    assert repository.head == before_head
+    assert gateway.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_expired_proposal_lease_is_unknown_without_bible_mutation():
+    service, repository, _, _, gateway, clock = _harness()
+    command = _proposal()
+    before_head = deepcopy(repository.head)
+    row = {
+        "id": "proposal-expired",
+        "project_id": PROJECT_ID,
+        "selection_revision": 3,
+        "seed_id": "seed-1",
+        "seed_revision_id": "seed-revision-1",
+        "seed_hash": canonical_hash(_seed()),
+        "contract_revision": 2,
+        "creation_contract_id": "creation-contract-1",
+        "creation_hash": "f" * 64,
+        "style_contract_id": "style-contract-1",
+        "style_hash": "a" * 64,
+        "binding_revision_id": "binding-revision-1",
+        "binding_hash": "b" * 64,
+        "provider_id": "provider-1",
+        "model_name_snapshot": "novel-model",
+        "policy_version": "creation-bible-generation-v1",
+        "idempotency_key": command.idempotency_key,
+        "request_hash": service.request_hash(command),
+        "input_manifest_json": "{}",
+        "input_manifest_hash": canonical_hash({}),
+        "status": "running",
+        "owner_token": "expired-owner",
+        "lease_expires_at": clock(),
+        "attempt_version": 1,
+        "result_json": None,
+        "result_hash": None,
+        "public_error_code": None,
+        "created_at": clock() - BIBLE_GENERATION_LEASE_MS,
+        "completed_at": None,
+    }
+    await repository.insert_generation_attempt(None, row)
+
+    replay = await service.propose(command)
+
+    assert replay.status == "outcome_unknown"
+    assert replay.proposal is None
+    assert repository.draft is None
+    assert repository.head == before_head
+    assert gateway.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_proposal_completion_failure_preserves_bible_state():
+    service, repository, _, _, gateway, _ = _harness()
+    repository.fail_success = True
+    before_head = deepcopy(repository.head)
+
+    result = await service.propose(_proposal())
+
+    assert result.status == "outcome_unknown"
+    assert result.proposal is None
+    assert repository.draft is None
+    assert repository.head == before_head
+    assert gateway.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_real_proposal_task_cancellation_preserves_bible_state(monkeypatch):
+    service, repository, _, _, gateway, _ = _harness()
+    entered = asyncio.Event()
+    never = asyncio.Event()
+    before_head = deepcopy(repository.head)
+
+    async def block_completion(*_values):
+        entered.set()
+        await never.wait()
+
+    monkeypatch.setattr(service, "_complete_proposal", block_completion)
+    task = asyncio.create_task(service.propose(_proposal()))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    [attempt] = repository.attempts.values()
+    assert attempt["status"] == "outcome_unknown"
+    assert attempt["result_json"] is None
+    assert repository.draft is None
+    assert repository.head == before_head
+    assert gateway.calls == 1
 
 
 @pytest.mark.asyncio

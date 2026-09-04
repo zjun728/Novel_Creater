@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Body, Depends, Path, Query
 from pydantic import (
     BaseModel,
@@ -28,6 +30,7 @@ from backend.services.bible_generation import (
     BIBLE_AUTHOR_INSTRUCTIONS_MAX_LENGTH,
     BibleGenerationService,
     GenerateBibleDraft,
+    GenerateBibleProposal,
 )
 
 
@@ -126,6 +129,33 @@ class GenerateBibleBody(_StrictBody):
     )
 
 
+class GenerateBibleProposalBody(_StrictBody):
+    scope: Literal[
+        "whole",
+        "premise",
+        "world_rules",
+        "progression",
+        "core_characters",
+        "factions",
+        "long_term_conflicts",
+        "relationships",
+        "tone_boundaries",
+        "continuity_guardrails",
+        "open_questions",
+    ]
+    authorInstructions: str = Field(
+        default="",
+        max_length=BIBLE_AUTHOR_INSTRUCTIONS_MAX_LENGTH,
+    )
+    expectedDraftVersion: int = Field(ge=0)
+    expectedHeadRevision: int = Field(ge=0)
+    idempotencyKey: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+    )
+
+
 def _public_basis(basis):
     if basis is None:
         return None
@@ -208,7 +238,7 @@ def _public_head(result):
 
 
 def _public_generation_attempt(result):
-    return {
+    response = {
         "id": result.attempt_id,
         "projectId": result.project_id,
         "status": result.status,
@@ -221,6 +251,9 @@ def _public_generation_attempt(result):
         "createdAt": result.created_at,
         "completedAt": result.completed_at,
     }
+    if result.proposal is not None:
+        response["proposal"] = result.proposal.model_dump(mode="json")
+    return response
 
 
 @router.get("/projects/{pid}/bible/head")
@@ -316,6 +349,29 @@ async def generate_bible(
     result = await service.generate(
         GenerateBibleDraft(
             project_id=pid,
+            author_instructions=body.authorInstructions,
+            expected_draft_version=body.expectedDraftVersion,
+            expected_head_revision=body.expectedHeadRevision,
+            idempotency_key=body.idempotencyKey,
+        )
+    )
+    return {"attempt": _public_generation_attempt(result)}
+
+
+@router.post("/projects/{pid}/bible/proposals")
+async def propose_bible(
+    pid: str,
+    raw_body: object = Body(...),
+    service=Depends(get_bible_generation_service),
+):
+    try:
+        body = GenerateBibleProposalBody.model_validate(raw_body)
+    except ValidationError:
+        raise BibleRequestInvalid() from None
+    result = await service.propose(
+        GenerateBibleProposal(
+            project_id=pid,
+            scope=body.scope,
             author_instructions=body.authorInstructions,
             expected_draft_version=body.expectedDraftVersion,
             expected_head_revision=body.expectedHeadRevision,

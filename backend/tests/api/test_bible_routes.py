@@ -11,6 +11,7 @@ from backend.security.redaction import install_error_handlers
 from backend.services.bible_generation import (
     BibleGenerationAttemptNotFound,
     BibleGenerationNotReady,
+    GenerateBibleProposal,
 )
 from backend.tests.unit.test_bible_service import (
     HASH_A,
@@ -41,6 +42,7 @@ class GenerationHarness:
             api_key="must-not-publish",
             base_url="https://private.invalid/v1",
             result_json={"raw": "must-not-publish"},
+            proposal=bible_payload(),
         )
 
     async def generate(self, command):
@@ -55,6 +57,12 @@ class GenerationHarness:
             raise self.failure
         if project_id != "p1" or attempt_id != self.attempt.attempt_id:
             raise BibleGenerationAttemptNotFound()
+        return self.attempt
+
+    async def propose(self, command):
+        self.calls.append(("propose", command))
+        if self.failure is not None:
+            raise self.failure
         return self.attempt
 
 
@@ -438,6 +446,7 @@ def test_no_delete_or_reset_route_is_exposed():
         ("GET", "/api/projects/{pid}/bible/history"),
         ("GET", "/api/projects/{pid}/bible/history/{revision}"),
         ("POST", "/api/projects/{pid}/bible/generate"),
+        ("POST", "/api/projects/{pid}/bible/proposals"),
         (
             "GET",
             "/api/projects/{pid}/bible/generation-attempts/{attemptId}",
@@ -480,6 +489,7 @@ def test_generation_routes_accept_only_browser_command_and_return_safe_facts():
         "publicErrorCode",
         "createdAt",
         "completedAt",
+        "proposal",
     }
     command = generation.calls[0][1]
     assert command.project_id == "p1"
@@ -499,6 +509,59 @@ def test_generation_routes_accept_only_browser_command_and_return_safe_facts():
             "prompt",
         )
     )
+
+
+def test_proposal_route_is_strict_and_returns_only_a_validated_proposal():
+    client, _, generation = make_client()
+    body = {
+        "scope": "world_rules",
+        "authorInstructions": "补足世界规则的代价链。",
+        "expectedDraftVersion": 1,
+        "expectedHeadRevision": 0,
+        "idempotencyKey": "proposal-key-1",
+    }
+
+    response = client.post("/api/projects/p1/bible/proposals", json=body)
+    invalid = client.post(
+        "/api/projects/p1/bible/proposals",
+        json={**body, "scope": "unknown", "providerId": "private"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["attempt"]["proposal"] == bible_payload().model_dump(
+        mode="json"
+    )
+    assert invalid.status_code == 422
+    assert invalid.json()["code"] == "BibleRequestInvalid"
+    command = generation.calls[0][1]
+    assert isinstance(command, GenerateBibleProposal)
+    assert command.scope == "world_rules"
+    assert [call[0] for call in generation.calls] == ["propose"]
+    rendered = str(response.json()).lower()
+    assert all(
+        forbidden not in rendered
+        for forbidden in ("api_key", "base_url", "private.invalid", "raw")
+    )
+
+
+def test_generation_attempt_omits_proposal_for_non_successful_outcomes():
+    client, _, generation = make_client()
+    generation.attempt.status = "failed"
+    generation.attempt.proposal = None
+
+    response = client.post(
+        "/api/projects/p1/bible/proposals",
+        json={
+            "scope": "whole",
+            "authorInstructions": "",
+            "expectedDraftVersion": 0,
+            "expectedHeadRevision": 0,
+            "idempotencyKey": "proposal-failed-1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "proposal" not in response.json()["attempt"]
 
 
 def test_generation_body_forbids_selection_assets_binding_and_provider_fields():

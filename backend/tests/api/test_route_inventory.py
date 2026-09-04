@@ -78,6 +78,7 @@ APPROVED_FORMAL_ROUTES = {
     ("POST", "/api/projects/{pid}/bible/draft/clone"),
     ("POST", "/api/projects/{pid}/bible/confirm"),
     ("POST", "/api/projects/{pid}/bible/generate"),
+    ("POST", "/api/projects/{pid}/bible/proposals"),
     ("GET", "/api/projects/{pid}/bible/generation-attempts/{attemptId}"),
     ("GET", "/api/projects/{pid}/bible/history"),
     ("GET", "/api/projects/{pid}/bible/history/{revision}"),
