@@ -448,3 +448,24 @@ test('each foundation component owns its responsive safety CSS', async () => {
   assert.match(dialog, /@media\s*\(max-width:\s*760px\)/)
   assert.match(dialog, /prefers-reduced-motion:\s*reduce/)
 })
+
+test('Seed, Contract, and Bible expose the same complete Chinese author-state contract', async () => {
+  const pages = await Promise.all([
+    'views/ProjectSeedsView.vue',
+    'components/project/CreationContractWizard.vue',
+    'views/ProjectBibleView.vue',
+  ].map(path => readFile(source(path), 'utf8')))
+
+  for (const page of pages) {
+    for (const label of ['用途', '生命周期', '上游摘要', '可编辑性', '完整内容', '来源与诊断']) {
+      assert.match(page, new RegExp(label), `missing shared author-state label: ${label}`)
+    }
+    assert.match(page, /confirmationAdapter/)
+    assert.doesNotMatch(page, /重新签署|确认并进入|下一步/)
+  }
+
+  assert.match(pages[0], /title="创作种子"/)
+  assert.match(pages[1], /title="本书创作契约"/)
+  assert.match(pages[2], /创作圣经/)
+  assert.doesNotMatch(pages.join('\n'), />\s*(?:CONTRACT DOCUMENT|IMMUTABLE REVISION|SIGNED SEED|CONFIRMED SEED|Contract basis)\b/)
+})

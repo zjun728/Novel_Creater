@@ -28,6 +28,18 @@ function wordRange(value) {
   if (!Array.isArray(value) || value.length !== 2) return '—'
   return `${count(value[0])} ～ ${count(value[1])} 字`
 }
+
+const authorProfileLabels = Object.freeze({
+  serial: '长篇连载', 'serial-fiction': '长篇连载', historical: '历史', mystery: '悬疑',
+  fantasy: '奇幻', xianxia: '仙侠', wuxia: '武侠', romance: '言情', urban: '都市',
+  horror: '惊悚', science_fiction: '科幻',
+})
+function authorProfileLabel(value) {
+  const text = String(value || '').trim()
+  if (!text) return '—'
+  if (/^[\u3400-\u9fff]/u.test(text)) return text
+  return authorProfileLabels[text] || '已配置'
+}
 </script>
 
 <template>
@@ -44,9 +56,9 @@ function wordRange(value) {
     <details :open="!props.compact" class="decision-group">
       <summary>创作坐标与容量</summary>
       <dl class="decision-grid">
-        <div><dt>渠道</dt><dd>{{ readable(props.creationContract?.channelProfileKey) }}</dd></div>
-        <div><dt>题材</dt><dd>{{ readable(props.creationContract?.genreProfileKey) }}</dd></div>
-        <div><dt>质量章程</dt><dd>{{ readable(props.creationContract?.qualityCharterVersion) }}</dd></div>
+        <div><dt>渠道</dt><dd>{{ authorProfileLabel(props.creationContract?.channelProfileKey) }}</dd></div>
+        <div><dt>题材</dt><dd>{{ authorProfileLabel(props.creationContract?.genreProfileKey) }}</dd></div>
+        <div><dt>质量章程</dt><dd>{{ props.creationContract?.qualityCharterVersion ? '已冻结' : '—' }}</dd></div>
         <div><dt>目标总字数</dt><dd>{{ count(props.creationContract?.targetTotalWords) }} 字</dd></div>
         <div><dt>预计卷数</dt><dd>{{ count(props.creationContract?.expectedVolumeCount) }} 卷</dd></div>
         <div><dt>预计章数</dt><dd>{{ count(props.creationContract?.expectedChapterCount) }} 章</dd></div>

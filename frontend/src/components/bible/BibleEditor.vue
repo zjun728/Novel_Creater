@@ -49,6 +49,9 @@ function hasContent(section) {
     ? (value.value[field] || []).some(item => String(item?.text || '').trim())
     : Boolean(String(value.value[field] || '').trim()))
 }
+function readableItems(field) {
+  return (value.value[field] || []).filter(item => String(item?.text || '').trim())
+}
 function finishSection() { emit('complete-section-edit', clone(value.value)) }
 </script>
 
@@ -72,8 +75,9 @@ function finishSection() { emit('complete-section-edit', clone(value.value)) }
       <div v-for="[field, label, type] in section.fields" :key="field" class="bible-field">
         <h3 v-if="section.fields.length > 1">{{ label }}</h3>
         <template v-if="readOnly">
-          <textarea v-if="type === 'scalar'" :value="value[field] || ''" :readonly="true" :disabled="disabled" :aria-label="label" />
-          <textarea v-for="item in value[field] || []" v-else :key="item.id" :value="item.text" :readonly="true" :disabled="disabled" :aria-label="`${label}：${item.id}`" />
+          <p v-if="type === 'scalar' && value[field]" class="bible-field__text">{{ value[field] }}</p>
+          <ol v-else-if="type === 'list' && readableItems(field).length" class="bible-field__list"><li v-for="item in readableItems(field)" :key="item.id">{{ item.text }}</li></ol>
+          <p v-else class="bible-field__empty">尚未填写</p>
         </template>
         <template v-else-if="editingSection === section.key">
           <textarea v-if="type === 'scalar'" :value="value[field] || ''" :disabled="disabled" :aria-label="label" @input="update(field, $event.target.value)" />

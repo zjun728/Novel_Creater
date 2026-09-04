@@ -193,17 +193,34 @@ test('the Vite-loaded BibleEditor edits one section at a time and completes with
   } finally { await vite.close() }
 })
 
-test('read-only BibleEditor keeps textareas focusable/copyable but does not emit edits or show list controls', async () => {
+test('read-only BibleEditor renders the same complete semantic document without form or edit controls', async () => {
   const vite = await createProjectBibleViteServer()
   try {
     const Editor = (await vite.ssrLoadModule('/src/components/bible/BibleEditor.vue')).default; Editor.render = await clientRender('components/bible/BibleEditor.vue')
-    const emitted = []; const root = node('root'); const app = renderer.createApp(Editor, { modelValue: bible(), readOnly: true, 'onUpdate:modelValue': value => emitted.push(value) })
+    const emitted = []; const root = node('root'); const app = renderer.createApp(Editor, { modelValue: bible(), readOnly: true, 'onUpdate:modelValue': value => emitted.push(value), onBeginSectionEdit: value => emitted.push(value), onCompleteSectionEdit: value => emitted.push(value) })
     app.provide(ssrContextKey, { modules: new Set() }); app.mount(root)
-    const areas = walk(root).filter(item => item.type === 'textarea')
-    assert.equal(areas.length, 11); assert.ok(areas.every(item => item.props.readonly === true && item.props.disabled !== true))
-    assert.equal(walk(root).some(item => item.type === 'button' && /新增|删除/.test(text(item))), false)
-    assert.equal(areas[0].props.onInput, undefined); assert.equal(emitted.length, 0)
+    assert.equal(walk(root).some(item => ['input', 'textarea', 'select'].includes(item.type)), false)
+    assert.equal(walk(root).filter(item => item.type === 'section' && String(item.props.class || '').includes('bible-section')).length, 10)
+    assert.equal(walk(root).filter(item => item.type === 'ol' && String(item.props.class || '').includes('bible-field__list')).length, 7)
+    for (const value of Object.values(bible()).flatMap(item => Array.isArray(item) ? item.map(row => row.text) : [item])) assert.match(text(root), new RegExp(value))
+    assert.equal(walk(root).some(item => item.type === 'button'), false)
+    assert.equal(emitted.length, 0)
+
+    const emptyRoot = node('root'); const emptyApp = renderer.createApp(Editor, { modelValue: {}, readOnly: true })
+    emptyApp.provide(ssrContextKey, { modules: new Set() }); emptyApp.mount(emptyRoot)
+    assert.equal((text(emptyRoot).match(/尚未填写/g) || []).length, 11)
   } finally { await vite.close() }
+})
+
+test('ProjectBibleView reuses BibleEditor as the only ten-section field mapping for editable and read-only documents', async () => {
+  const [page, editor] = await Promise.all([
+    readFile(source('views/ProjectBibleView.vue'), 'utf8'),
+    readFile(source('components/bible/BibleEditor.vue'), 'utf8'),
+  ])
+  assert.doesNotMatch(page, /readonlySections|bible-readonly-document/)
+  assert.match(page, /<BibleEditor\s+v-if="working"/)
+  assert.equal((editor.match(/const sections = Object\.freeze/g) || []).length, 1)
+  for (const field of Object.keys(bible())) assert.match(editor, new RegExp(`'${field}'`))
 })
 
 test('compiled workspace template exposes an inert busy region and a sibling live status overlay', async () => {
@@ -225,6 +242,15 @@ test('formal Bible document uses the shared shell, section directory, status rai
   assert.match(page, /存在未保存修改/)
 })
 
+test('Bible confirmation adapter owns the saved document, draft version, Contract basis, and server capability', async () => {
+  const page = await readFile(source('views/ProjectBibleView.vue'), 'utf8')
+  assert.match(page, /const confirmationAdapter = computed/)
+  for (const member of ['snapshot', 'draftVersion', 'contractBasis', 'canConfirm']) {
+    assert.match(page, new RegExp(member))
+  }
+  assert.match(page, /confirmationAdapter\.snapshot/)
+})
+
 test('confirmed head basis remains the displayed source when the missing draft carries a newer drifting basis', async () => {
   const vite = await createProjectBibleViteServer()
   const originalFetch = global.fetch; const originalWindow = global.window
@@ -243,8 +269,8 @@ test('confirmed head basis remains the displayed source when the missing draft c
     const app = renderer.createApp({ render: () => h(RouterView) }); app.use(createPinia()); app.use(router); app.provide(ssrContextKey, { modules: new Set() })
     await router.push('/projects/basis/bible'); await router.isReady(); const root = node('root'); app.mount(root)
     await waitFor(() => text(root).includes('creation-head'), () => text(root))
-    assert.match(text(root), /契约版本：7/); assert.match(text(root), /creation-head/); assert.match(text(root), /style-head/)
-    assert.doesNotMatch(text(root), /creation-drift|style-drift|契约版本：99/)
+    assert.match(text(root), /契约依据：第 7 版/); assert.match(text(root), /creation-head/); assert.match(text(root), /style-head/)
+    assert.doesNotMatch(text(root), /creation-drift|style-drift|契约依据：第 99 版/)
     const page = await readFile(source('views/ProjectBibleView.vue'), 'utf8')
     assert.match(page, /sourceBasis\s*=\s*computed\(\(\)\s*=>\s*workspace\.activeBasis\.value\s*\|\|\s*\{\}\)/)
     assert.ok((page.match(/sourceBasis\.contractRevision/g) || []).length >= 2, 'summary and confirmation adapter must share the displayed basis')
@@ -443,12 +469,12 @@ test('mounted ProjectBibleView presents every mode label without exposing raw st
     assert.match(text(root), /当前项目契约状态异常，请查看来源与诊断。/)
     assert.match(text(root), /创作圣经状态需要重新读取。/)
     assert.doesNotMatch(text(root), /bible_confirmed|contract_unavailable|contract_basis_invalid|unknown-current-reason-sentinel/)
-    await router.push('/projects/head/bible'); await waitFor(() => modeStatus() && text(modeStatus()) === '已确认', () => text(root)); assert.match(text(root), /已确认，作为项目永久基线/); area = walk(root).find(value => value.type === 'textarea'); assert.equal(area.props.readonly, true); assert.equal(area.props.disabled, false); assert.equal(byText(root, '调整未来设计'), undefined)
+    await router.push('/projects/head/bible'); await waitFor(() => modeStatus() && text(modeStatus()) === '已确认', () => text(root)); assert.match(text(root), /已确认，作为项目永久基线/); assert.match(text(root), /promise/); assert.equal(walk(root).some(value => ['input', 'textarea', 'select'].includes(value.type)), false); assert.equal(byText(root, '调整未来设计'), undefined)
     const confirmedActions = walk(root).filter(value => value.type === 'button').map(value => text(value).trim())
     assert.ok(confirmedActions.includes('修订历史'))
     assert.equal(confirmedActions.some(label => /AI |手动保存|预览并确认|编辑本区|完成本区编辑/.test(label)), false)
     await router.push('/projects/super/bible'); await waitFor(() => modeStatus() && text(modeStatus()) === '历史修订', () => text(root)); assert.match(text(root), /此修订已被替代/); assert.equal(byText(root, '调整未来设计'), undefined)
-    await router.push('/projects/archived/bible'); await waitFor(() => modeStatus() && text(modeStatus()) === '只读归档', () => text(root)); assert.match(text(root), /此项目或当前服务端状态为只读/); area = walk(root).find(value => value.type === 'textarea' && value.props.value === 'ARCHIVED HEAD'); assert.ok(area); assert.equal(area.props.readonly, true)
+    await router.push('/projects/archived/bible'); await waitFor(() => modeStatus() && text(modeStatus()) === '只读归档', () => text(root)); assert.match(text(root), /此项目或当前服务端状态为只读/); assert.match(text(root), /ARCHIVED HEAD/); assert.equal(walk(root).some(value => ['input', 'textarea', 'select'].includes(value.type)), false)
     assert.doesNotMatch(text(modeStatus()), /\b(?:current|head|superseded|archived)\b|bible_confirmed/)
   } finally { global.fetch = originalFetch; global.window = originalWindow; await vite.close() }
 })
@@ -555,6 +581,9 @@ test('real store recovery retries save, confirm, and history without leaving the
     await byText(confirmDialog, '重试确认').props.onClick(); await waitFor(() => confirms.length === 2, 'confirm retry did not issue POST')
     assert.equal(confirms[0].idempotencyKey, confirms[1].idempotencyKey)
     await waitFor(() => !walk(body).some(value => value.props?.class === 'foundation-confirmation-dialog'), 'confirm dialog did not close after retry success')
+    assert.match(text(root), /HEAD 8/)
+    assert.equal(walk(root).some(value => ['input', 'textarea', 'select'].includes(value.type)), false)
+    for (const label of ['AI 生成初稿', 'AI 补充/重写本区', '手动保存', '预览并确认', '编辑本区', '完成本区编辑']) assert.equal(byText(root, label), undefined)
     const historyTrigger = byText(root, '修订历史'); global.document.activeElement = historyTrigger; historyTrigger.props.onClick()
     let historyDialog = await waitFor(() => walk(body).find(value => value.type === 'aside' && value.props.role === 'dialog'), 'history dialog did not open')
     const historyError = await waitFor(() => walk(historyDialog).find(value => value.props?.class === 'modal-error-summary'), 'history error did not render in drawer')

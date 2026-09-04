@@ -169,7 +169,7 @@ test('candidate detail offers the author document confirmation CTA only after ex
   assert.match(source, /@open="startCandidate"/)
   assert.doesNotMatch(source, /startCandidate\(selectedCandidate\.value\)/)
   assert.match(source, /请先保存本地修改/)
-  assert.match(source, /种子修订：\{\{ selectionTarget\.revision \}\}/)
+  assert.match(source, /种子修订：\{\{ confirmationAdapter\.candidateRevision \}\}/)
 })
 
 test('authoritative reload keeps the local work copy when refresh fails', async () => {
@@ -189,7 +189,7 @@ test('archived unselected candidates remain inspectable but no longer editable',
 test('opened candidate detail uses the author document confirmation CTA', async () => {
   const source = await readFile(new URL('../../src/views/ProjectSeedsView.vue', import.meta.url), 'utf8')
   for (const value of Object.values(payload)) assert.match(source, /confirmationFields/)
-  assert.match(source, /待确认/)
+  assert.match(source, /候选校订中/)
   assert.match(source, /确认项目种子/)
   assert.doesNotMatch(source, /进入创作契约/)
 })
@@ -201,6 +201,29 @@ test('selected seed is read-only under the existing one-time confirmation author
   const source = await readFile(new URL('../../src/components/seeds/SeedOtherCandidatesDrawer.vue', import.meta.url), 'utf8')
   assert.match(source, /其他候选（只读）/)
   assert.doesNotMatch(html, /新建候选种子|编辑本区|保存种子|确认项目种子|归档|恢复|永久删除|<(?:input|textarea|select)\b/)
+})
+
+test('one lifecycle label keeps archived confirmed and project-archived Seed views consistent', async () => {
+  for (const html of [
+    await render({ selected: true, seedStatus: 'archived' }),
+    await render({ selected: true, archived: true, seedStatus: 'candidate' }),
+  ]) {
+    assert.ok((html.match(/只读归档/g) || []).length >= 2)
+    assert.doesNotMatch(html, /待确认|已确认 \/ 已冻结|已确认并永久冻结/)
+  }
+  const page = await readFile(new URL('../../src/views/ProjectSeedsView.vue', import.meta.url), 'utf8')
+  assert.match(page, /const lifecycleStatus = computed/)
+  assert.match(page, /:status-label="lifecycleStatus\.label"/)
+  assert.match(page, /<p>\{\{ lifecycleStatus\.description \}\}<\/p>/)
+})
+
+test('Seed confirmation adapter owns revision, complete payload, provenance, and server selection capability', async () => {
+  const source = await readFile(new URL('../../src/views/ProjectSeedsView.vue', import.meta.url), 'utf8')
+  assert.match(source, /const confirmationAdapter = computed/)
+  for (const member of ['candidateRevision', 'payload', 'provenance', 'canConfirm']) {
+    assert.match(source, new RegExp(member))
+  }
+  assert.match(source, /confirmationAdapter\.value\.candidate/)
 })
 
 test('main readiness rail translates every stable Seed reason without exposing raw codes', async () => {
@@ -577,8 +600,48 @@ test('mounted selection outcome reconciliation closes the modal, fails closed, a
     assert.match(nodeText(root), /当前选定/)
     assert.match(nodeText(root), new RegExp(payload.title))
     assert.equal(globalThis.document.activeElement?.props.id, 'seed-document-heading')
+    for (const label of ['新建候选种子', '保存种子', '确认项目种子', '编辑本区', '归档', '恢复', '永久删除']) assert.equal(button(root, label), undefined)
+    assert.equal(walk(root).some(node => ['input', 'textarea', 'select'].includes(node.type)), false)
     app.unmount()
   } finally { globalThis.fetch = originalFetch; globalThis.document = originalDocument; globalThis.confirm = originalConfirm }
+})
+
+test('successful Seed confirmation immediately removes every candidate write control and input', async () => {
+  await installClientTemplates()
+  const originalFetch = globalThis.fetch; const originalDocument = globalThis.document
+  const original = seed('s1')
+  globalThis.fetch = async (url, options = {}) => {
+    const path = new URL(String(url), 'http://example.test').pathname
+    if (path.endsWith('/seeds') && (!options.method || options.method === 'GET')) return new Response(JSON.stringify([original]))
+    if (path.endsWith('/selected-seed') && options.method === 'PUT') {
+      return new Response(JSON.stringify({ ...original, isSelected: true, selectionRevision: 1 }))
+    }
+    if (path.endsWith('/selected-seed')) {
+      return new Response(JSON.stringify({ activeSelection: null, seedReady: false, contractReady: false, reasons: ['seed_not_selected'] }))
+    }
+    throw new Error(`unexpected ${options.method || 'GET'} ${path}`)
+  }
+  try {
+    const shell = await vite.ssrLoadModule('/src/components/layout/productShell.js')
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/projects/:projectId/seeds', component: ProjectSeedsView, props: route => ({ projectId: String(route.params.projectId) }) }] })
+    const app = clientRenderer.createApp({ render: () => h(RouterView) }); const pinia = createPinia(); const state = ref('active')
+    app.use(pinia); app.use(router); app.provide(ssrContextKey, { modules: new Set() }); app.provide(shell.SHELL_PROJECT_CONTEXT, { state, project: ref({ id: 'p1', archivedAt: null }), error: ref(null), reload: async () => null })
+    await router.push('/projects/p1/seeds'); await router.isReady(); const root = testNode('root'); const body = testNode('body'); globalThis.document = { activeElement: null, querySelector: selector => selector === 'body' ? body : null, getElementById: id => [...walk(root), ...walk(body)].find(node => node.props.id === id) || null }; app.mount(root); await flush(); await flush()
+
+    buttonContaining(root, '查看完整内容').props.onClick(); await flush(); button(root, '确认项目种子').props.onClick(); await flush()
+    const confirm = [...walk(root), ...walk(body)].find(node => node.type === 'button' && nodeText(node).trim() === '确认项目种子' && node !== button(root, '确认项目种子'))
+    assert.ok(confirm); confirm.props.onClick()
+    assert.equal(await waitFor(() => /项目种子已确认|已确认并永久冻结/.test(nodeText(root))), true)
+
+    assert.match(nodeText(root), /项目种子已确认|已确认并永久冻结/)
+    assert.equal([...walk(root), ...walk(body)].some(node => node.props.role === 'dialog'), false)
+    for (const label of [
+      '新建候选种子', '编辑本区', '保存种子', '确认项目种子',
+      '归档', '恢复', '永久删除', '生成候选', 'AI 生成',
+    ]) assert.equal(button(root, label), undefined, `write control remained: ${label}`)
+    assert.equal(walk(root).some(node => ['input', 'textarea', 'select'].includes(node.type)), false)
+    app.unmount()
+  } finally { globalThis.fetch = originalFetch; globalThis.document = originalDocument }
 })
 
 test('mounted selection conflict also enters the same fail-closed reconciliation state', async () => {

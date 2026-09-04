@@ -85,7 +85,6 @@ const seedSummary = computed(() => {
       title: frozen.title,
       logline: frozen.logline,
       genre: frozen.genre,
-      revision: head.seedRef?.revisionId,
       selectionRevision: head.selectionRevision,
       frozen: true,
     }
@@ -198,7 +197,7 @@ const sectionItems = computed(() => sections.value.map(section => ({
     ? (contractStore.previewing ? '核对中' : contractStore.previewResult ? '已加载' : '待核对')
     : activeSectionKey.value === section.key
       ? '编辑中'
-      : ({ filled: '已记录', suggested: section.open ? '待填写' : '待解锁', blocked: '服务端阻断' }[section.status] || section.status),
+      : ({ filled: '已记录', suggested: section.open ? '待填写' : '待解锁', blocked: '服务端阻断' }[section.status] || '状态待核对'),
 })))
 const operationLabel = computed(() => {
   if (contractStore.confirming) return '正在签印创作契约'
@@ -208,15 +207,21 @@ const operationLabel = computed(() => {
   return '正在保存创作契约草稿'
 })
 const workspaceStatus = computed(() => {
-  if (hasArchivedSignedContract.value) return `最后签印的历史契约 · R${contractStore.head.revision}`
-  if (baselineLocked.value) return `已签印 · R${contractStore.head.revision}`
+  if (hasArchivedSignedContract.value) return `最后签印的历史契约 · 第 ${contractStore.head.revision} 版`
+  if (baselineLocked.value) return `已签印 · 第 ${contractStore.head.revision} 版`
   if (props.readOnly) return '只读档案'
   return contractDocument.value.draftVersion.value
     ? `草稿 · ${contractDocument.value.draftVersion.label} ${contractDocument.value.draftVersion.value}`
     : '尚未建立草稿'
 })
+const confirmationAdapter = computed(() => ({
+  preview: contractStore.previewResult,
+  draftVersion: contractStore.activeDraftVersion,
+  contentHash: contractStore.draft?.contentHash || '',
+  canConfirm: Boolean(contractStore.serverCanConfirm && !interactionLocked.value),
+}))
 
-function reasonLabel(reason) { return reasonLabels[reason] || String(reason) }
+function reasonLabel(reason) { return reasonLabels[reason] || '状态需要重新核对' }
 function projectionUnavailable(reason) {
   return contractStore.draft?.documentProjection?.unavailableReasons?.includes(reason) === true
 }
@@ -227,8 +232,19 @@ function focusControl(reference, options = { preventScroll: false }) {
 function readable(value) {
   if (value === null || value === undefined || value === '') return '—'
   if (Array.isArray(value)) return value.length ? value.map(readable).join('；') : '未选择'
-  if (typeof value === 'object') return value.name || value.title || value.id || JSON.stringify(value)
+  if (typeof value === 'object') return value.name || value.title || '已记录结构化内容'
   return String(value)
+}
+const profileLabels = Object.freeze({
+  serial: '长篇连载', 'serial-fiction': '长篇连载', historical: '历史', mystery: '悬疑',
+  fantasy: '奇幻', xianxia: '仙侠', wuxia: '武侠', romance: '言情', urban: '都市',
+  horror: '惊悚', science_fiction: '科幻', author: '作者指定片段', fragments: '指定片段', full: '完整引用',
+})
+function authorLabel(value) {
+  const text = String(value || '').trim()
+  if (!text) return '未标注'
+  if (/^[\u3400-\u9fff]/u.test(text)) return text
+  return profileLabels[text] || '已配置（详情见来源与诊断）'
 }
 function count(value) {
   const number = Number(value)
@@ -241,30 +257,26 @@ function wordRange(value) {
 }
 function referenceLabel(value) {
   if (!value || typeof value !== 'object') return readable(value)
-  const identity = value.name || value.title || value.id || '未命名引用'
+  const identity = value.name || value.title || '已冻结引用'
   const revision = value.revision ?? value.revisionId
-  const role = value.selectionMode ? ` · ${value.selectionMode}` : ''
+  const role = value.selectionMode ? ` · ${authorLabel(value.selectionMode)}` : ''
   const fragments = Array.isArray(value.fragments) && value.fragments.length
     ? `（${value.fragments.map(fragment => (
-        `${fragment.fragmentId || fragment.id || '未命名片段'} · ${fragment.chapterCharStart ?? '—'}–${fragment.chapterCharEnd ?? '—'} · ${fragment.referenceUse || '未标注用途'}`
+        `位置 ${fragment.chapterCharStart ?? '—'}–${fragment.chapterCharEnd ?? '—'} · ${authorLabel(fragment.referenceUse)}`
       )).join('；')}）`
     : ''
   return `${identity}${revision ? ` · R${revision}` : ''}${role}${fragments}`
-}
-function shortHash(value) {
-  const text = String(value || '')
-  return text ? `${text.slice(0, 12)}…` : '—'
 }
 function sectionByKey(key) { return sections.value.find(section => section.key === key) }
 function confirmDiscard() {
   if (documentReadOnly.value) return true
   if (writeBusy.value) {
-    busyNotice.value = '正式操作正在提交，请等待结果明确后再切换章节或离开项目。'
+    busyNotice.value = '正式操作正在提交，请等待结果明确后再切换分区或离开项目。'
     return false
   }
   if (!contractStore.hasUnsavedChanges) return true
   if (typeof window === 'undefined') return false
-  const accepted = window.confirm('当前章节有尚未保存的修改。放弃这些修改并离开吗？')
+  const accepted = window.confirm('当前分区有尚未保存的修改。放弃这些修改并离开吗？')
   if (accepted) contractStore.discardUnsavedChanges()
   return accepted
 }
@@ -279,7 +291,7 @@ function focusSection(key) {
 function navigateSection(key) {
   const section = sectionByKey(key)
   if (!section || writeBusy.value) {
-    busyNotice.value = writeBusy.value ? '正式操作正在提交，暂不能切换章节。' : ''
+    busyNotice.value = writeBusy.value ? '正式操作正在提交，暂不能切换分区。' : ''
     return
   }
   if (interactionLocked.value) {
@@ -290,7 +302,7 @@ function navigateSection(key) {
   if (key !== activeSectionKey.value && !confirmDiscard()) return
   busyNotice.value = ''
   const previewAvailable = section.key === 'preview'
-    && (section.canPreview || Boolean(contractStore.previewResult))
+    && (section.canPreview || Boolean(confirmationAdapter.value.preview))
   activeSectionKey.value = !documentReadOnly.value
     && section.open
     && (section.writeFields.length || previewAvailable)
@@ -437,12 +449,12 @@ onBeforeUnmount(() => {
       <template v-else>
         <aside v-if="selectedSeed || baselineLocked" class="seed-summary" :aria-label="seedSummary.frozen ? '签印时冻结的创作种子，只读摘要' : '已选创作种子，只读摘要'">
           <div>
-            <span>{{ seedSummary.frozen ? 'SIGNED SEED / 签印冻结依据' : 'CONFIRMED SEED / 当前只读引用' }}</span>
+            <span>上游摘要 · {{ seedSummary.frozen ? '签印冻结种子' : '当前确认种子' }}</span>
             <strong>{{ seedSummary.title }}</strong>
             <p>{{ seedSummary.logline }}</p>
           </div>
           <dl>
-            <div><dt>种子修订</dt><dd>{{ seedSummary.revision ?? '—' }}</dd></div>
+            <div><dt>{{ seedSummary.frozen ? '种子状态' : '种子修订' }}</dt><dd>{{ seedSummary.frozen ? '已冻结' : (seedSummary.revision ?? '—') }}</dd></div>
             <div><dt>题材</dt><dd>{{ seedSummary.genre || '未标注' }}</dd></div>
             <div><dt>选择代次</dt><dd>R{{ seedSummary.selectionRevision || '—' }}</dd></div>
           </dl>
@@ -466,21 +478,22 @@ onBeforeUnmount(() => {
         </n-alert>
         <p class="workspace-live" aria-live="polite">{{ busyNotice || liveStatus }}</p>
 
+        <p class="document-kicker">完整内容</p>
         <FoundationDocumentSection
           v-for="section in sections"
           :key="section.key"
           :target-id="`contract-section-${section.key}`"
           :title="section.label"
-          :eyebrow="`CONTRACT / ${section.key.toUpperCase()}`"
+          :eyebrow="`创作契约 · ${section.label}`"
           :read-only="documentReadOnly || !section.open || (section.key !== 'preview' && Boolean(section.blockedReasons.length))"
         >
           <template #read>
             <p class="section-responsibility">{{ sectionResponsibilities[section.key] }}</p>
             <dl v-if="section.key === 'engine'" class="section-readout">
-              <div><dt>采用方案</dt><dd>{{ readable(documentPayload.engineOptionId) }}</dd></div>
-              <div><dt>内容摘要</dt><dd>{{ shortHash(documentPayload.engineHash) }}</dd></div>
-              <div><dt>渠道</dt><dd>{{ readable(documentPayload.channelProfileKey) }}</dd></div>
-              <div><dt>题材</dt><dd>{{ readable(documentPayload.genreProfileKey) }}</dd></div>
+              <div><dt>采用方案</dt><dd>{{ readable(documentPayload.selectedEngine?.name || (documentPayload.engineOptionId ? '已选择故事发动机' : '—')) }}</dd></div>
+              <div><dt>版本校验</dt><dd>{{ documentPayload.engineHash ? '已由服务端核验' : '待核验' }}</dd></div>
+              <div><dt>渠道</dt><dd>{{ authorLabel(documentPayload.channelProfileKey) }}</dd></div>
+              <div><dt>题材</dt><dd>{{ authorLabel(documentPayload.genreProfileKey) }}</dd></div>
               <div class="section-readout__wide"><dt>方案名称</dt><dd>{{ readable(documentPayload.selectedEngine?.name) }}</dd></div>
               <div class="section-readout__wide"><dt>故事承诺</dt><dd>{{ readable(documentPayload.selectedEngine?.storyPromise) }}</dd></div>
               <div><dt>持续压力</dt><dd>{{ readable(documentPayload.selectedEngine?.sustainedPressure) }}</dd></div>
@@ -523,13 +536,13 @@ onBeforeUnmount(() => {
                 :dislikes="contractStore.head?.dislikes"
                 heading="已签印的作者约定"
               />
-              <p v-else class="preview-placeholder">服务器快照只在本节开放后加载；页面不会根据本地完整度推断可确认状态。</p>
+            <p v-else class="preview-placeholder">服务器快照只在本节开放后加载；页面不会根据本地完整度推断可确认状态。</p>
             </template>
             <aside v-if="!baselineLocked && (!section.open || section.blockedReasons.length)" class="section-lock" role="note" :aria-label="`${section.label}锁定说明`">
               <strong>{{ section.blockedReasons.length ? '服务器阻断本节写入' : '本节等待服务端前置状态' }}</strong>
               <p>{{ sectionPrerequisites[section.key] }}</p>
               <ul v-if="section.blockedReasons.length">
-                <li v-for="reason in section.blockedReasons" :key="reason">{{ reasonLabel(reason) }} <code>{{ reason }}</code></li>
+                <li v-for="reason in section.blockedReasons" :key="reason">{{ reasonLabel(reason) }}</li>
               </ul>
             </aside>
             <n-button
@@ -591,7 +604,7 @@ onBeforeUnmount(() => {
             <ContractPreviewStep
               v-else-if="section.key === 'preview' && activeSectionKey === section.key && section.open && (section.canPreview || contractStore.previewResult)"
               :project-id="props.projectId"
-              :can-confirm="section.canConfirm"
+              :confirmation="confirmationAdapter"
               :interaction-locked="interactionLocked"
               @reload="requestAuthoritativeReload"
               @confirmed="handleConfirmed"
@@ -605,8 +618,10 @@ onBeforeUnmount(() => {
       <FoundationStatusRail :read-only="documentReadOnly">
         <template #summary>
           <div class="status-summary">
-            <span v-if="baselineLocked">IMMUTABLE REVISION · R{{ contractStore.head.revision }}</span>
-            <span v-else>CONTRACT DOCUMENT</span>
+            <strong>用途</strong>
+            <p>把种子、故事发动机、长篇容量、正式资产与风格边界签印为后续创作依据。</p>
+            <span v-if="baselineLocked">永久基线 · 第 {{ contractStore.head.revision }} 版</span>
+            <span v-else>创作契约正文</span>
             <strong v-if="hasArchivedSignedContract">最后签印的历史契约</strong>
             <strong v-else-if="baselineLocked">已确认，作为项目永久基线</strong>
             <strong v-else>连续作者文档</strong>
@@ -620,7 +635,12 @@ onBeforeUnmount(() => {
           </div>
         </template>
         <template #status>
+          <strong>生命周期</strong>
           <p>{{ workspaceStatus }}</p>
+          <p v-if="confirmationAdapter.draftVersion">草稿版本：{{ confirmationAdapter.draftVersion }}</p>
+          <p v-if="!baselineLocked">完整性校验：{{ confirmationAdapter.contentHash ? '服务器已记录' : '等待服务器记录' }}</p>
+          <strong class="rail-heading">可编辑性</strong>
+          <p>{{ documentReadOnly ? '全文只读' : interactionLocked ? '等待重新核对权威状态' : '可按分区编辑并保存' }}</p>
           <n-tag v-if="selectionDrift" type="warning" :bordered="false">种子漂移</n-tag>
           <n-tag v-else-if="baselineLocked" type="success" :bordered="false">全文只读</n-tag>
           <n-tag v-else :type="contractStore.serverCanConfirm ? 'success' : 'default'" :bordered="false">
@@ -628,6 +648,8 @@ onBeforeUnmount(() => {
           </n-tag>
         </template>
         <template #source>
+          <strong>来源与诊断</strong>
+          <p><b>上游摘要：</b>{{ seedSummary.title || '尚未确认创作种子' }}{{ seedSummary.genre ? ` · ${seedSummary.genre}` : '' }}</p>
           <p>确认权限、冻结引用和阻断原因均来自服务器；本页只负责呈现，不从本地字段完整度推断。</p>
           <ul v-if="archivedInvalidReasons.length"><li v-for="reason in archivedInvalidReasons" :key="reason">{{ reasonLabel(reason) }}</li></ul>
         </template>
@@ -636,7 +658,7 @@ onBeforeUnmount(() => {
   </FoundationWorkspace>
 
   <aside v-if="writeBusy" class="contract-operation-overlay" role="status" aria-live="polite" aria-busy="true">
-    <div><span aria-hidden="true">作</span><strong>{{ operationLabel }}</strong><small>请等待结果明确，期间不会切换章节。</small></div>
+    <div><span aria-hidden="true">作</span><strong>{{ operationLabel }}</strong><small>请等待结果明确，期间不会切换分区。</small></div>
   </aside>
   <ContractHistoryDrawer v-model:show="historyOpen" :project-id="props.projectId" />
   <FoundationConfirmationDialog
@@ -660,6 +682,7 @@ onBeforeUnmount(() => {
 .seed-summary span,.status-summary>span { color:var(--nc-vermilion); font:700 10px Georgia,'Noto Serif SC',serif; letter-spacing:.16em; }.seed-summary strong { display:block; margin-top:7px; font:600 clamp(22px,3vw,31px)/1.25 Georgia,'Noto Serif SC',serif; }.seed-summary p { max-width:60ch; margin:8px 0 0; color:var(--nc-muted); line-height:1.75; }.seed-summary dl { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); margin:0; border:1px solid var(--nc-border); }.seed-summary dl div { min-width:0; padding:11px; border-left:1px solid var(--nc-border); }.seed-summary dl div:first-child { border-left:0; }.seed-summary dt { color:var(--nc-muted); font-size:10px; }.seed-summary dd { margin:4px 0 0; font:600 12px Georgia,'Noto Serif SC',serif; overflow-wrap:anywhere; }
 .seed-required,.checkpoint-alert { margin:18px; }.checkpoint-alert p { margin:0; }.checkpoint-alert__action { margin-top:10px; }.seed-cta { display:inline-flex; min-height:40px; align-items:center; padding:0 15px; color:#fff; background:var(--nc-vermilion); text-decoration:none; }.seed-cta:focus-visible,.section-edit-button:focus-visible { outline:2px solid var(--nc-vermilion); outline-offset:3px; }
 .workspace-live { min-height:1.4em; margin:0; padding:0 24px; color:var(--nc-muted); font-size:12px; line-height:1.5; }.section-responsibility { max-width:68ch; margin:0; color:var(--nc-muted); font:14px/1.8 Georgia,'Noto Serif SC',serif; }
+.document-kicker { margin:0; padding:18px 30px 0; color:var(--nc-vermilion); font:700 10px Georgia,'Noto Serif SC',serif; letter-spacing:.16em; }.rail-heading { display:block; margin-top:12px; }
 .section-readout { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1px; margin:18px 0 0; padding:1px; background:var(--nc-border); }.section-readout>div { min-width:0; padding:12px 14px; background:var(--nc-paper); }.section-readout__wide { grid-column:1 / -1; }.section-readout dt { color:var(--nc-muted); font-size:11px; }.section-readout dd { margin:5px 0 0; font:600 13px/1.65 Georgia,'Noto Serif SC',serif; overflow-wrap:anywhere; }.projection-unavailable,.preview-placeholder { margin:18px 0 0; padding:14px; border-left:2px solid var(--nc-vermilion); color:var(--nc-muted); background:color-mix(in srgb,var(--nc-paper) 82%,var(--nc-canvas)); line-height:1.7; }
 .section-lock { margin-top:18px; padding:15px 16px; border:1px solid var(--nc-border); border-left:3px solid var(--nc-vermilion); background:color-mix(in srgb,var(--nc-paper) 82%,var(--nc-canvas)); }.section-lock strong { font:600 14px Georgia,'Noto Serif SC',serif; }.section-lock p,.section-lock li { color:var(--nc-muted); font-size:12px; line-height:1.7; }.section-lock p { margin:7px 0 0; }.section-lock ul { margin:8px 0 0; padding-left:18px; }.section-lock code { color:var(--nc-vermilion); }.section-edit-button { margin-top:18px; }
 .status-summary { display:grid; gap:7px; }.status-summary strong { font:600 16px/1.35 Georgia,'Noto Serif SC',serif; }.status-summary p { margin:0; color:var(--nc-muted); font-size:12px; line-height:1.65; }.capacity-summary { display:grid; gap:6px; margin:8px 0 0; padding-top:10px; border-top:1px solid var(--nc-border); }.capacity-summary div { display:grid; grid-template-columns:1fr; }.capacity-summary dt { color:var(--nc-muted); font-size:10px; }.capacity-summary dd { margin:2px 0 0; font:600 12px Georgia,'Noto Serif SC',serif; }.contract-operation-overlay { position:absolute; z-index:32; inset:auto 20px 20px auto; max-width:360px; padding:14px; border:1px solid var(--nc-vermilion); background:var(--nc-paper); box-shadow:0 16px 40px color-mix(in srgb,var(--nc-ink) 18%,transparent); }.contract-operation-overlay div { display:grid; grid-template-columns:auto 1fr; gap:3px 10px; }.contract-operation-overlay span { grid-row:1 / 3; display:grid; width:34px; height:34px; place-items:center; color:#fff; background:var(--nc-vermilion); font-family:Georgia,'Noto Serif SC',serif; }.contract-operation-overlay small { color:var(--nc-muted); }

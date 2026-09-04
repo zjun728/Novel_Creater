@@ -96,6 +96,12 @@ const summary = computed(() => ({
   factions: working.value?.factions?.length || 0,
   questions: working.value?.openDesignQuestions?.length || 0,
 }))
+const confirmationAdapter = computed(() => ({
+  snapshot: confirmPreview.value,
+  draftVersion: draftVersion.value,
+  contractBasis: sourceBasis.value,
+  canConfirm: Boolean(canConfirm.value),
+}))
 const proposalScope = computed(() => hasSavedDraft.value ? activeSection.value : 'whole')
 const canRequestProposal = computed(() => workspace.canPropose(proposalScope.value))
 const proposalActionLabel = computed(() => hasSavedDraft.value ? 'AI 补充/重写本区' : 'AI 生成初稿')
@@ -214,6 +220,7 @@ onBeforeUnmount(() => { historyRestoreTarget = null; window.removeEventListener(
             <p v-if="store.baselineLocked" ref="statusTarget" class="document-note" tabindex="-1">已确认，作为项目永久基线。</p>
             <p v-if="mode === 'superseded'" class="document-note">此修订已被替代，内容仅供复制与查阅。</p>
             <p v-if="mode === 'archived'" class="document-note">此项目或当前服务端状态为只读。</p>
+            <p v-if="working" class="document-kicker">完整内容</p>
             <BibleEditor
               v-if="working"
               :model-value="working"
@@ -229,9 +236,9 @@ onBeforeUnmount(() => { historyRestoreTarget = null; window.removeEventListener(
           </template>
           <template #status>
             <FoundationStatusRail :read-only="documentReadOnly">
-              <template #summary><strong>完整度摘要</strong><dl class="summary-grid"><div><dt>世界规则</dt><dd>{{ summary.world }}</dd></div><div><dt>核心人物</dt><dd>{{ summary.cast }}</dd></div><div><dt>势力</dt><dd>{{ summary.factions }}</dd></div><div><dt>开放问题</dt><dd>{{ summary.questions }}</dd></div></dl></template>
-              <template #status><strong>{{ store.dirty ? '存在未保存修改' : draftVersion === null ? '尚未建立草稿' : '当前草稿已保存' }}</strong><p>草稿 CAS 版本：{{ draftVersion ?? '—' }}</p><p>AI 辅助：{{ planningReady ? '已就绪' : '未就绪' }}（不影响手动保存与确认）</p></template>
-              <template #source><strong>Contract basis</strong><p>契约版本：{{ sourceBasis.contractRevision ?? '—' }}</p><p>创作契约：{{ sourceBasis.creationContractId || '—' }}</p><p>风格契约：{{ sourceBasis.styleContractId || '—' }}</p><p v-for="reason in reasonLabels" :key="reason">{{ reason }}</p><button ref="historyTrigger" type="button" :disabled="busy" @click="openHistory($event)">修订历史</button></template>
+              <template #summary><strong>用途</strong><p>统一世界、人物、冲突与连续性，为分卷规划和逐章写作提供永久依据。</p><strong class="rail-heading">上游摘要</strong><p>采用已确认创作契约第 {{ sourceBasis.contractRevision ?? '—' }} 版。</p><strong class="rail-heading">完整度摘要</strong><dl class="summary-grid"><div><dt>世界规则</dt><dd>{{ summary.world }}</dd></div><div><dt>核心人物</dt><dd>{{ summary.cast }}</dd></div><div><dt>势力</dt><dd>{{ summary.factions }}</dd></div><div><dt>开放问题</dt><dd>{{ summary.questions }}</dd></div></dl></template>
+              <template #status><strong>生命周期</strong><p>{{ modeLabel }}</p><strong class="rail-heading">可编辑性</strong><p>{{ documentReadOnly ? '全文只读' : store.dirty ? '可编辑 · 存在未保存修改' : '可编辑 · 当前草稿已保存' }}</p><p>草稿版本：{{ draftVersion ?? '—' }}</p><p v-if="!documentReadOnly">AI 辅助：{{ planningReady ? '已就绪' : '未就绪' }}（不影响手动保存与确认）</p></template>
+              <template #source><strong>来源与诊断</strong><p>契约依据：第 {{ sourceBasis.contractRevision ?? '—' }} 版</p><p>创作契约来源：{{ sourceBasis.creationContractId || '未记录' }}</p><p>风格契约来源：{{ sourceBasis.styleContractId || '未记录' }}</p><p v-for="reason in reasonLabels" :key="reason">{{ reason }}</p><button ref="historyTrigger" type="button" :disabled="busy" @click="openHistory($event)">修订历史</button></template>
               <template #action>
                 <label for="bible-author-instructions">作者补充要求（可选）</label><textarea id="bible-author-instructions" v-model="authorInstructions" :disabled="busy" maxlength="4000" rows="4" />
                 <button type="button" :disabled="!canRequestProposal" @click="requestProposal">{{ proposalActionLabel }}</button><p v-if="proposalDisabledReason" class="action-note">{{ proposalDisabledReason }}</p>
@@ -247,9 +254,9 @@ onBeforeUnmount(() => { historyRestoreTarget = null; window.removeEventListener(
     </section>
 
     <FoundationConfirmationDialog :open="confirmOpen" :close-disabled="busy" title="确认创作圣经" @close="workspace.closeConfirm">
-      <template #snapshot><section v-if="errorSummary" ref="confirmErrorTarget" class="modal-error-summary" tabindex="-1" role="alert" aria-live="assertive"><strong>{{ errorSummary.message }}</strong><span v-if="errorSummary.correlationId">参考编号：{{ errorSummary.correlationId }}</span><button v-if="hasConflict" type="button" :disabled="busy" @click="reloadAuthoritative">重新加载权威版本</button><button v-else type="button" :disabled="busy" @click="retryFailure">{{ recoveryLabel }}</button></section><p>确认后将作为项目永久基线。请核对已保存的完整快照。</p><BibleEditor v-if="confirmPreview" :model-value="confirmPreview" read-only :disabled="busy" /></template>
-      <template #source><strong>Contract basis</strong><p>草稿 CAS 版本：{{ draftVersion ?? '—' }}</p><p>契约版本：{{ sourceBasis.contractRevision ?? '—' }}</p><p>服务端确认能力：{{ canConfirm ? '允许' : '不允许' }}</p><p v-for="reason in reasonLabels" :key="reason">{{ reason }}</p></template>
-      <template #action><button type="button" :disabled="busy" @click="workspace.closeConfirm">返回编辑</button><button ref="confirmTarget" type="button" :disabled="!canConfirm" @click="confirm">确认签印</button></template>
+      <template #snapshot><section v-if="errorSummary" ref="confirmErrorTarget" class="modal-error-summary" tabindex="-1" role="alert" aria-live="assertive"><strong>{{ errorSummary.message }}</strong><span v-if="errorSummary.correlationId">参考编号：{{ errorSummary.correlationId }}</span><button v-if="hasConflict" type="button" :disabled="busy" @click="reloadAuthoritative">重新加载权威版本</button><button v-else type="button" :disabled="busy" @click="retryFailure">{{ recoveryLabel }}</button></section><p>确认后将作为项目永久基线。请核对已保存的完整快照。</p><BibleEditor v-if="confirmationAdapter.snapshot" :model-value="confirmationAdapter.snapshot" read-only :disabled="busy" /></template>
+      <template #source><strong>契约依据</strong><p>草稿版本：{{ confirmationAdapter.draftVersion ?? '—' }}</p><p>契约版本：{{ confirmationAdapter.contractBasis.contractRevision ?? '—' }}</p><p>服务端确认能力：{{ confirmationAdapter.canConfirm ? '允许' : '不允许' }}</p><p v-for="reason in reasonLabels" :key="reason">{{ reason }}</p></template>
+      <template #action><button type="button" :disabled="busy" @click="workspace.closeConfirm">返回编辑</button><button ref="confirmTarget" type="button" :disabled="!confirmationAdapter.canConfirm" @click="confirm">确认签印</button></template>
     </FoundationConfirmationDialog>
     <BibleProposalReview :open="proposalOpen" :snapshot="proposalSnapshot" :busy="busy" @adopt="adoptProposal" @cancel="cancelProposal" />
     <BibleHistoryDrawer :history="store.history" :history-next-before-revision="store.historyNextBeforeRevision" :history-detail="store.historyDetail" :open="historyOpen" :busy="busy" :error="errorSummary" :retry-label="recoveryLabel" @close="closeHistory" @detail="showHistoryDetail" @more="loadMoreHistory" @retry="retryFailure" />
@@ -263,6 +270,7 @@ onBeforeUnmount(() => { historyRestoreTarget = null; window.removeEventListener(
 .error-summary,.modal-error-summary { display:grid; gap:8px; }.error-summary { border-color:var(--nc-vermilion); }.modal-error-summary { margin:0 0 12px; padding:12px; border:1px solid var(--nc-vermilion); background:color-mix(in srgb,var(--nc-paper) 92%,var(--nc-canvas)); }
 .bible-notice { position:sticky; z-index:8; top:8px; width:min(760px,calc(100% - 32px)); margin:8px auto -52px; padding:11px 14px; color:var(--nc-ink); border:1px solid var(--nc-border); background:var(--nc-paper); box-shadow:0 8px 24px color-mix(in srgb,var(--nc-ink) 10%,transparent); }
 .document-note { margin:0; padding:12px clamp(22px,4vw,38px); color:var(--nc-muted); border-bottom:1px solid var(--nc-border); background:color-mix(in srgb,var(--nc-paper) 88%,var(--nc-canvas)); }
+.document-kicker { margin:0; padding:18px clamp(22px,4vw,38px) 0; color:var(--nc-vermilion); font:700 10px Georgia,'Noto Serif SC',serif; letter-spacing:.16em; }.rail-heading { display:block; margin-top:12px; }
 .summary-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:10px 0 0; }.summary-grid div { padding:8px; border:1px solid var(--nc-border); }.summary-grid dt { color:var(--nc-muted); font-size:11px; }.summary-grid dd { margin:3px 0 0; color:var(--nc-vermilion); font:700 20px Georgia,serif; }
 .bible-page :deep(button) { min-height:38px; border:1px solid var(--nc-border); padding:7px 12px; color:var(--nc-ink); background:var(--nc-paper); font:600 13px Georgia,'Noto Serif SC',serif; cursor:pointer; }.bible-page :deep(button:disabled) { cursor:not-allowed; opacity:.48; }.bible-page :deep(button:focus-visible) { outline:2px solid var(--nc-vermilion); outline-offset:2px; }
 .bible-page :deep(.foundation-status-rail textarea) { width:100%; resize:vertical; border:1px solid var(--nc-border); padding:9px; color:var(--nc-ink); background:var(--nc-paper); font:13px/1.55 Georgia,'Noto Serif SC',serif; }.bible-page :deep(.foundation-status-rail p) { margin:7px 0 0; line-height:1.55; }.action-note { color:var(--nc-muted); font-size:12px; }
