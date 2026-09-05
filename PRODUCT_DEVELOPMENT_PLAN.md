@@ -1,6 +1,6 @@
 # 产品开发规划
 
-> 当前有效规划。日期：`2026-08-09`。
+> 本文为 2026-08-09 的历史阶段规划，以下状态表和“下一步”不代表当前进度。2026-09-05 接管状态、决定来源与待办见 [CURRENT_PROJECT_STATE.md](CURRENT_PROJECT_STATE.md)；后续产品目标见 [P0 总设计](docs/superpowers/specs/2026-08-30-p0-author-product-design.md)。保留正文用于追溯，不把历史未完成项重复立项。
 
 ## 1. 产品目标
 

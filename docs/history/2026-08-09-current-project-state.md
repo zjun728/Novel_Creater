@@ -1,0 +1,176 @@
+# 当前项目状态
+
+> 新任务或上下文压缩后先读本文件。事实日期：`2026-08-09`。
+
+## 当前权威
+
+按以下顺序判断产品事实：
+
+1. `STORY_QUALITY_CHARTER.md`：内容质量最高原则。
+2. `docs/superpowers/specs/2026-07-18-product-rebuild-and-writer-loop-design.md`：
+   产品、交互和写作闭环主规格。
+3. `docs/superpowers/specs/2026-07-24-phase-3-story-planning-design.md`：
+   当前 Phase 3 领域设计。
+4. `docs/superpowers/specs/2026-08-09-lean-product-scope-and-phase4b3-selection-tools-design.md`：
+   当前产品边界精简与 Phase 4B3 设计。
+5. `docs/superpowers/specs/2026-08-09-phase4c-candidate-load-compare-design.md`：
+   Phase 4C Candidate load 与双候选只读比较设计。
+6. `docs/superpowers/specs/2026-08-09-phase5-atomic-finalization-design.md`：
+   Phase 5 最小质量审核、作者确认与原子定稿设计。
+7. 当前阶段实施计划及其验收报告。
+8. `docs/testing/test-gate-policy.md`：当前测试证据分层、复用与失效规则。
+9. 本文件、`PRODUCT_DEVELOPMENT_PLAN.md` 和 `DEVELOPMENT_LOG.md`：
+   已取得的证据与下一步。
+
+旧 Writer Core 路线、phase-e shadow QA、旧 runner、旧 artifact 和其他 worktree
+都不是当前运行事实，也不得作为兼容或 Ready 证据。
+
+## 当前结论
+
+- Canonical release branch：`main`。
+- Phase 2 验收链已进入 `main`，链末提交：
+  `f11faad531f04250f2a987390a468dfd14bf06a3`。
+- 当前完成交付包：**Phase 3 Story Planning**、**Phase 4 lean Writer Loop** 与
+  **Phase 5 lean atomic finalization**。Phase 4B1–B3 仅以注入 fake provider 验收；
+  Phase 4C 不启动 Provider；Phase 5 仅以注入 fake quality/extraction Provider 验收。
+- 当前开发分支：`codex/phase3d-boundary-acceptance`。
+- Phase 3D 与 Phase 3 已完成：Future Plan/Actual Progress/Canon Projection 同 revision 只读组合与完整 Phase 3 门禁。
+- **Phase 5 lean quality review / FinalizationChangeSet / atomic finalization 已完成 Phase 级
+  完整门禁**；下一产品阶段为 Phase 6 下载、备份、预检与导入。
+- 交付基线：`main@e8aebd9eb851ccc64f160022984342344905cd15`。
+- Phase 4 门禁快照：`840d90a`。
+- Phase 5 门禁快照：`8edc651`。
+- 当前自动证据边界：Real Provider calls `0`、Product DB reads/writes `0/0`；
+  Phase 4B2 `generate_new` streaming/reconnect/cancel 与 Phase 4B3 exact-selection local
+  tools/one-step undo 仅以注入 fake streaming provider 验收；Phase 4C load/compare 不启动
+  Provider。Phase 5 作者审查、更正、整体确认和原子提交仅以注入 fake quality/extraction
+  Provider 验收。Full-draft rewrite、candidate fusion、general recovery browsing、
+  real-provider quality、product-database readiness、export/backup 和 Content Quality
+  仍未就绪。
+
+## Phase 2 已完成能力
+
+- 创作资产：10 套批准风格模板、64 张批准经验卡和受管本地语料。
+- Provider/模型设置保持公共响应无明文秘密，并具有项目模型绑定与 fallback。
+- 市场来源、不可变快照、趋势分析、种子保存与单一活动种子选择。
+- 故事发动机、创作契约、创作圣经及其不可变 revision、上游绑定与
+  superseded 围栏。
+- 项目中心和正式导航中的创作地基入口。
+- 正常启动只验证 Schema，不执行历史兼容 DDL。
+
+Phase 2 的 committed acceptance 见：
+
+- `docs/acceptance/2026-07-18-phase-2a-assets-providers.md`
+- `docs/acceptance/2026-07-18-phase-2b-market-seeds.md`
+- `docs/acceptance/2026-07-18-phase-2c-contract.md`
+- `docs/acceptance/2026-07-23-phase-2-creative-foundation.md`
+
+上述报告记录了当时的自动门禁结果；本文件没有重新运行这些门禁，也不把报告范围
+外推为产品数据库、真实模型或小说内容质量事实。
+
+## Phase 3A 已完成能力
+
+- `writer-core-v1.5.0` Planning/Outline 闭合领域模型和完整 Schema。
+- Planning Draft、显式保存、幂等确认、不可变历史、稳定节点身份、canonical
+  hash、完整 CAS 和事务回滚。
+- Seed/Contract/Style/Bible generation fence；A → B → A 不复活旧 Planning。
+- ChapterSession 精确钉住当前 Planning、Outline、Canon 与 Projection；
+  existing-session 快速路径不能绕过权威重校验。
+- 当前 schema 同版本开发重置；v1.1/v1.4 迁移、旧 Planning 表、旧 Store 和旧
+  生成链已从当前运行面退役。
+
+Phase 3A committed acceptance 见：
+
+- `docs/acceptance/2026-07-24-phase-3a-planning-aggregate.md`
+
+## Phase 3B 已完成能力
+
+- 正式 `/planning/volumes` 与 `/planning/plots` 路由，共享一个
+  `ProjectPlanningView`、一个 Planning workspace 和一个 `planningStore`。
+- 作者可以手工创建、编辑、排序、退役并保存 Volume/Plot Draft；模型未就绪不影响
+  手工工作。
+- AI Planning 使用 production gateway 边界、冻结故事 manifest、两段短事务、
+  幂等键、租约、fencing token 与精确 Draft CAS；迟到结果不覆盖作者编辑。
+- Planning history 的 current/superseded/archived 状态及项目下一步均由后端权威
+  计算；归档和被取代历史可读不可写。
+- 正式 UI-only 浏览器门禁覆盖手工、AI、并发漂移、未知结果恢复、历史只读、
+  canonical route、后端下一步和秘密扫描。
+- 最终门禁：focused Python `193`、focused Node `59`；完整 Python
+  `2542 passed, 6 skipped`、Node `216 passed`、frontend `415 passed`；
+  integration `317 passed`，数据库 `316/316/0`；browser 数据库 `2/2/0`；
+  build `2949 modules transformed`。
+
+Phase 3B committed acceptance 见：
+
+- `docs/acceptance/2026-07-24-phase-3b-volumes-plots.md`
+
+## Phase 3C 已完成能力
+
+- 唯一 `planning-v1` 聚合、唯一 `planningStore` 和第三个 Planning tab 现已覆盖
+  StoryBlock、Stage 与 SceneTask；Planning 不保存 target chapter count、
+  completed 或 manual actual progress。
+- 作者可手工创建、CAS 保存、确认和查看 ChapterOutline 历史；显式 AI 生成只经过
+  fake 外部边界，不自动确认 Outline，也不创建 ChapterSession。
+- authority drift 会 supersede 迟到结果；当前章节由后端权威算法决定，每个项目最多
+  一个 drafting Session。
+- 已存在 Session 保留创建时的 Planning/Outline pins，并可按相同 authority
+  幂等重放。
+- Overview、Outline、Session 和 Writer 均使用后端 `targetPath` 与权威章节；
+  Writer 只读 Outline 摘要并从空 WorkingDraft 进入。
+- 最终门禁：focused Python `250 passed`、focused Node `144/144 passed`；
+  browser `7` 场景；完整 Python `2814 passed, 6 skipped`、root Node `243/243`、
+  frontend Node `522/522`；integration `342 passed`；build
+  `2956 modules transformed`。
+
+Phase 3 acceptance 见：
+
+- `docs/acceptance/2026-07-26-phase-3c-story-blocks-outlines.md`
+- `docs/acceptance/2026-07-30-phase-3-story-planning.md`
+- `docs/acceptance/2026-07-31-phase-3-immutable-boundary-alignment.md`
+
+## 当前 Schema 与数据库边界
+
+- 当前开发分支源码 Schema：`writer-core-v1.12.0`。
+- Phase 4B1 持久化 Draft Operation / Recovery Schema 与正式 `generate_new`：
+  **已验收（仅注入 fake provider）**；不外推为真实 Provider 或产品数据库验收。
+- Phase 4B2 的 streaming / reconnect / cancel 持久化 Schema、provider/runtime 与 UI：
+  **已验收（仅注入 fake streaming provider）**；不宣称真实 Provider 或产品数据库已完成。
+- Phase 4B3 只扩展既有 operation/replacement CHECK 枚举，没有新增表或列；精确选区四工具、
+  局部取消保留原稿与一步追加式撤销已验收（仅注入 fake streaming provider）。
+- Phase 4C 为 recovery 增加 Candidate source 外键与互斥 CHECK；Candidate load 和最多两份
+  Candidate 只读比较已在无 Provider browser 中验收。
+- Phase 5 用 compact quality report、finalization ChangeSet/revision、finalization record 和
+  final chapter 记录替换占位表；作者确认后的正文、Canon、Projection、Planning progress 与
+  Session final 在一个事务中提交，并以 fake quality/extraction Provider browser 验收。
+- Phase 3B 没有 Schema 变更、迁移或兼容路径。
+- Phase 3C 没有 Schema 变更、迁移或兼容路径。
+- Phase 3D 将 Candidate 依据身份纳入 `writer-core-v1.6.0`；没有 migration 或 compatibility path。
+- 产品数据库现存 Schema 未读取、未重建、未验证。
+- 源码 Schema 版本不得推导为产品数据库现存版本。
+- 既有数据库只能通过显式 reinitialize 使用 `writer-core-v1.12.0`；不添加 runtime
+  migration 或 compatibility path，也不读取产品数据库。
+- 不迁移旧数据，不保留旧 Planning 表兼容查询。
+- Phase 3 自动集成只能使用随机命名的 Disposable MySQL 测试库。
+
+## 尚未完成
+
+- Phase 4 旧扩展范围中仍未验收：full-draft rewrite、candidate fusion 与通用 recovery 浏览；
+  按精简产品策略没有在 Phase 4 close 中扩展实现。
+- Phase 6：小说下载、安全项目备份、预检和导入。
+- Phase 7：产品数据库、真实 Provider、自由浏览器探索和《典镇山河》前 30 章
+  人工内容验收。
+
+## 当前工程切片
+
+**Phase 5 lean atomic finalization 已完成完整 Phase 门禁**；下一产品阶段是 Phase 6 小说
+下载、安全备份、预检与导入。Candidate fusion、full-draft rewrite 与 general recovery
+browsing 继续延期。自动门禁继续禁止真实 Provider、产品数据库和 live 网站。
+受控 DeepSeek V3 Flash smoke 仍须用户另行明确批准和有效 token，且不是自动门禁。
+Seed、Contract 与 Bible 的已确认内容保持永久基线；未来 Planning 只处理尚未实现的内容。
+正文定稿前对应大纲可以调整，正文定稿后大纲与事实不可修改，均以已实现和规格明确支持
+的范围为准。Phase 5 已把作者确认的 ChangeSet 原子写入 Canon 并重建 Projection；独立的
+Setting/知识库浏览体验不在本阶段声称已完成。
+
+测试执行遵循 `docs/testing/test-gate-policy.md`：开发与 review 使用 focused/slice evidence，
+未改代码的 review 复用同次 fresh 证据；完整 unit、disposable-MySQL、build、正式 browser 与
+资源残留门禁只在 Phase 收口时串行运行一次。Release 候选另运行 release matrix。

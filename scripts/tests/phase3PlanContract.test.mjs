@@ -379,7 +379,7 @@ test('Phase 3 remains historical while the lean Phase 5 gate is complete', async
     phase3bAcceptance,
     phase3cAcceptance,
   ] = await Promise.all([
-    readProjectFile('CURRENT_PROJECT_STATE.md'),
+    readProjectFile('docs/history/2026-08-09-current-project-state.md'),
     readProjectFile('PRODUCT_DEVELOPMENT_PLAN.md'),
     readProjectFile('DEVELOPMENT_LOG.md'),
     readProjectFile('STORY_QUALITY_CHARTER.md'),
@@ -881,7 +881,7 @@ test('Phase 3 immutable-boundary acceptance remains historical after lean Phase 
   const [acceptance, alignment, currentState, productPlan, developmentLog] = await Promise.all([
     readProjectFile('docs/acceptance/2026-07-30-phase-3-story-planning.md'),
     readProjectFile('docs/acceptance/2026-07-31-phase-3-immutable-boundary-alignment.md'),
-    readProjectFile('CURRENT_PROJECT_STATE.md'),
+    readProjectFile('docs/history/2026-08-09-current-project-state.md'),
     readProjectFile('PRODUCT_DEVELOPMENT_PLAN.md'),
     readProjectFile('DEVELOPMENT_LOG.md'),
   ]);
