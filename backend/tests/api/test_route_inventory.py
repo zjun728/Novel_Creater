@@ -36,6 +36,7 @@ APPROVED_FORMAL_ROUTES = {
     ("GET", "/api/project-imports/{command_id}"),
     ("GET", "/api/projects/{project_id}/preparation"),
     ("PUT", "/api/projects/{project_id}"),
+    ("PUT", "/api/projects/{project_id}/settings"),
     ("POST", "/api/projects/{project_id}/archive"),
     ("POST", "/api/projects/{project_id}/restore"),
     ("DELETE", "/api/projects/{project_id}"),
