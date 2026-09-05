@@ -141,11 +141,27 @@ export function createProjectStore(projectApi = api.projects, storeId = 'project
       overviewError.value = null
     }
 
-    async function createProject(title) {
-      const created = await projectApi.create({ title })
+    async function createProject(metadata) {
+      const input = typeof metadata === 'string' ? { title: metadata } : metadata
+      const created = await projectApi.create(input)
       activeListGuard.invalidate()
       activeProjects.value = upsertFirst(activeProjects.value, created)
       return created
+    }
+
+    function updateProjectSettings(projectId, metadata) {
+      return enqueueProjectMutation(projectId, async () => {
+        const updated = await projectApi.updateSettings(projectId, metadata)
+        activeListGuard.invalidate()
+        archivedListGuard.invalidate()
+        activeProjects.value = replaceExisting(activeProjects.value, updated)
+        archivedProjects.value = replaceExisting(archivedProjects.value, updated)
+        if (routeProjectId === String(updated.id)) {
+          projectGuard.invalidate()
+          currentProject.value = updated
+        }
+        return updated
+      })
     }
 
     function renameProject(projectId, title) {
@@ -230,6 +246,7 @@ export function createProjectStore(projectApi = api.projects, storeId = 'project
       loadOverview,
       clearOverview,
       createProject,
+      updateProjectSettings,
       renameProject,
       archiveProject,
       restoreProject,

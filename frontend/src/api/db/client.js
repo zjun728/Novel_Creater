@@ -5,6 +5,10 @@ import { sha256Text } from '../../utils/sha256Text.js'
 import { unicodeScalarLength } from '../../utils/unicodeScalarText.js'
 import { parseProjectOverview } from '../../application/projects/projectOverview.js'
 import {
+  projectMetadataPayload,
+  projectMetadataUpdatePayload,
+} from '../../application/projects/projectMetadata.js'
+import {
   parseMarketSnapshotDetail,
   parseMarketSnapshotList,
   parseMarketSource,
@@ -2490,7 +2494,7 @@ export const api = {
   projects: {
     listActive: () => get('/projects'),
     listArchived: () => get('/projects/archived'),
-    create: ({ title }) => post('/projects', { title }),
+    create: metadata => post('/projects', projectMetadataPayload(metadata)),
     get: projectId => get(`/projects/${segment(projectId)}`),
     preparation: (projectId, options = {}) => request(
       'GET', `/projects/${segment(projectId)}/preparation`, undefined, DEFAULT_TIMEOUT, options?.signal,
@@ -2514,6 +2518,10 @@ export const api = {
     rename: (projectId, { title }) => put(
       `/projects/${segment(projectId)}`,
       { title },
+    ),
+    updateSettings: (projectId, metadata) => put(
+      `/projects/${segment(projectId)}/settings`,
+      projectMetadataUpdatePayload(metadata),
     ),
     archive: (projectId, expectedLifecycleRevision) => post(
       `/projects/${segment(projectId)}/archive`,

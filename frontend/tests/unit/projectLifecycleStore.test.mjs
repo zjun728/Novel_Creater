@@ -91,6 +91,48 @@ test('loads separate lists and commits create and rename only after success', as
   ])
 })
 
+test('complete metadata create and update commit only authoritative responses', async () => {
+  const original = project('active-1', { title: '旧名', lifecycleRevision: 4 })
+  const pendingUpdate = deferred()
+  const calls = []
+  const store = createStore({
+    listActive: async () => [original],
+    listArchived: async () => [],
+    get: async () => original,
+    create: async input => {
+      calls.push(['create', structuredClone(input)])
+      return project('active-2', { title: input.title })
+    },
+    updateSettings: (projectId, input) => {
+      calls.push(['update', projectId, structuredClone(input)])
+      return pendingUpdate.promise
+    },
+  })
+  await store.loadActiveProjects()
+  await store.loadProject('active-1')
+
+  const metadata = {
+    title: '典镇山河', genre: '东方奇幻', description: '长篇简介',
+    targetWords: 3_000_000, targetChapters: 900,
+  }
+  await store.createProject(metadata)
+  const updating = store.updateProjectSettings('active-1', {
+    ...metadata,
+    expectedLifecycleRevision: 4,
+  })
+  assert.equal(store.currentProject.title, '旧名')
+  const updated = { ...original, ...metadata, lifecycleRevision: 5 }
+  pendingUpdate.resolve(updated)
+  await updating
+
+  assert.deepEqual(store.currentProject, updated)
+  assert.deepEqual(store.activeProjects.find(row => row.id === 'active-1'), updated)
+  assert.deepEqual(calls, [
+    ['create', metadata],
+    ['update', 'active-1', { ...metadata, expectedLifecycleRevision: 4 }],
+  ])
+})
+
 test('archive and restore move a project only after successful responses', async () => {
   const active = project('project-1', { lifecycleRevision: 4 })
   const pendingArchive = deferred()

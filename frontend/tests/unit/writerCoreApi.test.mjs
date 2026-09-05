@@ -235,12 +235,24 @@ test('project lifecycle client uses narrow endpoints and CAS request bodies', as
     await api.projects.create({
       title: '  典镇山河  ',
       genre: 'must-not-send',
+      description: '项目简介',
+      targetWords: 3_000_000,
+      targetChapters: 900,
       apiKey: 'must-not-send',
     })
     await api.projects.get('project/one')
     await api.projects.rename('project/one', {
       title: '山河新章',
       description: 'must-not-send',
+    })
+    await api.projects.updateSettings('project/one', {
+      title: '山河新章',
+      genre: '东方奇幻',
+      description: '项目简介',
+      targetWords: 3_000_000,
+      targetChapters: 900,
+      expectedLifecycleRevision: 2,
+      apiKey: 'must-not-send',
     })
     await api.projects.archive('project/one', 3)
     await api.projects.restore('project/one', 4)
@@ -253,19 +265,34 @@ test('project lifecycle client uses narrow endpoints and CAS request bodies', as
     ['POST', '/api/projects'],
     ['GET', '/api/projects/project%2Fone'],
     ['PUT', '/api/projects/project%2Fone'],
+    ['PUT', '/api/projects/project%2Fone/settings'],
     ['POST', '/api/projects/project%2Fone/archive'],
     ['POST', '/api/projects/project%2Fone/restore'],
     ['DELETE', '/api/projects/project%2Fone'],
   ])
   assert.equal(bodyOf(calls[0]), undefined)
   assert.equal(bodyOf(calls[1]), undefined)
-  assert.deepEqual(bodyOf(calls[2]), { title: '  典镇山河  ' })
+  assert.deepEqual(bodyOf(calls[2]), {
+    title: '典镇山河',
+    genre: 'must-not-send',
+    description: '项目简介',
+    targetWords: 3_000_000,
+    targetChapters: 900,
+  })
   assert.equal(bodyOf(calls[3]), undefined)
   assert.deepEqual(bodyOf(calls[4]), { title: '山河新章' })
-  assert.deepEqual(bodyOf(calls[5]), { expectedLifecycleRevision: 3 })
-  assert.deepEqual(bodyOf(calls[6]), { expectedLifecycleRevision: 4 })
-  assert.deepEqual(bodyOf(calls[7]), { expectedLifecycleRevision: 5 })
-  assert.equal(new URL(calls[7].url).search, '')
+  assert.deepEqual(bodyOf(calls[5]), {
+    title: '山河新章',
+    genre: '东方奇幻',
+    description: '项目简介',
+    targetWords: 3_000_000,
+    targetChapters: 900,
+    expectedLifecycleRevision: 2,
+  })
+  assert.deepEqual(bodyOf(calls[6]), { expectedLifecycleRevision: 3 })
+  assert.deepEqual(bodyOf(calls[7]), { expectedLifecycleRevision: 4 })
+  assert.deepEqual(bodyOf(calls[8]), { expectedLifecycleRevision: 5 })
+  assert.equal(new URL(calls[8].url).search, '')
 })
 
 test('seed CRUD and selection expose exact CAS payloads', async () => {
@@ -2624,6 +2651,10 @@ test('project and provider writes use explicit transport allowlists', async () =
 
   assert.deepEqual(bodyOf(calls[0]), {
     title: 'Project',
+    genre: '玄幻',
+    description: 'Description',
+    targetWords: 100000,
+    targetChapters: 100,
   })
   assert.deepEqual(bodyOf(calls[1]), {
     name: '联通云', providerType: 'openai-compatible', model: 'deepseek-v4-flash',
