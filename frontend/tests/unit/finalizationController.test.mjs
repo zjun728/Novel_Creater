@@ -55,6 +55,39 @@ function committed(chapterNumber = 4) {
   }
 }
 
+test('preflight conflicts explain unconfirmed review recovery without exposing backend details', async () => {
+  for (const operation of ['correct', 'confirm']) {
+    const failure = Object.assign(new Error('private protected outline detail'), {
+      status: 409, code: 'FinalizationPreflightConflict',
+    })
+    const controller = createFinalizationController({
+      getReview: async () => structuredClone(review),
+      [operation]: async () => { throw failure },
+    })
+    await controller.load()
+    const action = operation === 'correct'
+      ? () => controller.correctChangeSet(payload)
+      : () => controller.confirmChangeSet()
+    await assert.rejects(action, error => error === failure)
+    assert.equal(controller.error.value, '规划调整不符合当前定稿依据，请在未确认时放弃本次审查并重新审查。')
+    assert.deepEqual(controller.review.value, review)
+    assert.equal(controller.primaryAction.value, 'confirm')
+  }
+})
+
+test('a confirmed review still cannot be cancelled', async () => {
+  let cancelCalls = 0
+  const confirmed = { ...review, confirmation: { revision: 1, contentHash: HASH_A } }
+  const controller = createFinalizationController({
+    getReview: async () => structuredClone(confirmed),
+    cancel: async () => { cancelCalls += 1 },
+  })
+  await controller.load()
+  await assert.rejects(controller.cancelReview(), TypeError)
+  assert.equal(cancelCalls, 0)
+  assert.deepEqual(controller.review.value, confirmed)
+})
+
 
 test('prepare, correct, confirm and commit expose one fenced primary action', async () => {
   const calls = []

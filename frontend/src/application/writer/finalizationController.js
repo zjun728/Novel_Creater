@@ -208,7 +208,11 @@ export function createFinalizationController({
       const value = await action(active)
       return active() ? value : null
     } catch (failure) {
-      if (!disposed && token === generation) error.value = message
+      if (!disposed && token === generation) {
+        error.value = failure?.code === 'FinalizationPreflightConflict'
+          ? '规划调整不符合当前定稿依据，请在未确认时放弃本次审查并重新审查。'
+          : message
+      }
       throw failure
     } finally {
       if (!disposed && token === generation) busy.value = false

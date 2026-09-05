@@ -16,26 +16,7 @@ const allowedOrigins = JSON.parse(process.env.BROWSER_ALLOWED_ORIGINS || '[]')
 const candidate = '夜雨压着城门。主角递上路引，守门老卒核对暗记后放他入城。'.repeat(4)
 
 function assertHealthy(evidence) {
-  const missingReview = evidence.responses.filter(response => {
-    if (response.method !== 'GET' || response.status !== 404) return false
-    try {
-      return new URL(response.url).pathname.endsWith('/finalization')
-    } catch {
-      return false
-    }
-  })
-  assert.equal(missingReview.length, 1)
-  const missingReviewPath = new URL(missingReview[0].url).pathname
-  assertRuntimeEvidenceHealthy(evidence, {
-    responseFailureAllowlist: [{
-      status: 404, method: 'GET', pathname: missingReviewPath, count: 1,
-    }],
-    consoleErrorAllowlist: [{
-      message: 'error: Failed to load resource: the server responded with a status of 404 (Not Found)',
-      count: 1,
-      linkedResponseFailure: { status: 404, method: 'GET', pathname: missingReviewPath },
-    }],
-  })
+  assertRuntimeEvidenceHealthy(evidence)
   assertExactWrites(evidence, [
     { method: 'PUT', path: /\/working-draft$/u, count: 1, statuses: [200] },
     { method: 'POST', path: /\/candidates$/u, count: 1, statuses: [201] },
@@ -53,7 +34,14 @@ function assertHealthy(evidence) {
 
 test('@atomic-finalization reviews, corrects, confirms, and atomically finalizes one Candidate', async ({ page }) => {
   const runtime = observeRuntime(page, { allowedOrigins })
+  const emptyReviewResponse = page.waitForResponse(response => (
+    response.request().method() === 'GET'
+    && new URL(response.url()).pathname.endsWith('/finalization')
+  ))
   await page.goto(writerPath)
+  const emptyReview = await emptyReviewResponse
+  assert.equal(emptyReview.status(), 200)
+  assert.deepEqual(await emptyReview.json(), { state: 'empty' })
   await expect(page.getByRole('heading', { name: '章节工作台' })).toBeVisible()
   const editor = page.getByRole('textbox', { name: '章节正文工作稿' })
   await editor.fill(candidate)
@@ -68,7 +56,6 @@ test('@atomic-finalization reviews, corrects, confirms, and atomically finalizes
   const reviewResponse = page.waitForResponse(response => (
     response.request().method() === 'GET'
     && new URL(response.url()).pathname.endsWith('/finalization')
-    && response.status() !== 404
   ))
   await page.getByRole('button', { name: '审查并定稿' }).click()
   assert.equal((await prepareResponse).status(), 201)
@@ -82,10 +69,36 @@ test('@atomic-finalization reviews, corrects, confirms, and atomically finalizes
   }
   assert.equal(currentReview.changeSet?.revision, 1)
   assert.equal(currentReview.qualityReport?.findings?.length, 1)
+  assert.deepEqual(currentReview.changeSet.payload.planningPatches.map(item => item.id), [
+    '30000000-0000-4000-8000-000000000005',
+    '30000000-0000-4000-8000-000000000006',
+  ])
+  assert.deepEqual(currentReview.changeSet.payload.planningSuggestions.map(item => item.id), [
+    '30000000-0000-4000-8000-000000000007',
+  ])
   await expect(page.locator('section[aria-label="质量建议"]')).toContainText('开场节奏可更紧凑。')
   await expect(page.getByText('Canon 事实', { exact: true })).toBeVisible()
   await expect(page.getByText('故事进度', { exact: true })).toBeVisible()
   await expect(page.getByText('未来规划调整', { exact: true })).toBeVisible()
+
+  const futureAdjustments = page.locator('.change-group').filter({
+    has: page.getByRole('heading', { name: '未来规划调整', exact: true }),
+  })
+  const suggestions = page.locator('.change-group').filter({
+    has: page.getByRole('heading', { name: '非权威建议', exact: true }),
+  })
+  await expect(suggestions).toContainText('入城后转向追查暗记。')
+  await expect(suggestions).toContainText('不会写入规划')
+  await expect(suggestions).toContainText('不会修改当前章或历史规划')
+  await expect(futureAdjustments.locator('article')).toHaveCount(2)
+  await expect(futureAdjustments).not.toContainText('expectedChange')
+  const removablePatch = futureAdjustments.locator('article').nth(1)
+  await expect(removablePatch.getByRole('textbox')).toHaveValue('保留入城后的悬念。')
+  await removablePatch.getByRole('button', { name: '移除此项调整' }).click()
+  await expect(futureAdjustments.locator('article')).toHaveCount(1)
+  await expect(futureAdjustments.getByRole('textbox')).toHaveValue('追查城内接头人。')
+  await expect(page.getByRole('button', { name: '确认以上变更' })).toBeDisabled()
+  await expect(page.getByText('修订 1', { exact: true })).toBeVisible()
 
   const summary = page.getByRole('textbox', { name: '章节摘要' })
   await summary.fill('作者确认：主角成功入城。')
@@ -99,8 +112,15 @@ test('@atomic-finalization reviews, corrects, confirms, and atomically finalizes
   ))
   await page.getByRole('button', { name: '保存修正' }).click()
   assert.equal((await correctionResponse).status(), 201)
-  assert.equal((await correctedReviewResponse).status(), 200)
+  const savedReviewResponse = await correctedReviewResponse
+  assert.equal(savedReviewResponse.status(), 200)
+  const savedReview = await savedReviewResponse.json()
+  assert.deepEqual(savedReview.changeSet.payload.planningPatches.map(item => item.id), [
+    '30000000-0000-4000-8000-000000000005',
+  ])
+  assert.deepEqual(savedReview.changeSet.payload.planningSuggestions, currentReview.changeSet.payload.planningSuggestions)
   await expect(page.getByText('修订 2', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '确认以上变更' })).toBeEnabled()
   await page.getByRole('button', { name: '确认以上变更' }).click()
   await page.getByRole('button', { name: '定稿本章' }).click()
   await expect(page.getByRole('alert')).toContainText('本章已定稿')

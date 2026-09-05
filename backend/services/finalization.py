@@ -24,9 +24,12 @@ from backend.prompts.finalization import (
 )
 from backend.repositories.finalization import FinalizationRepository
 from backend.services.finalization_checks import (
+    demote_protected_planning_patches,
+    validate_planning_patch_application,
     run_finalization_prechecks,
     validate_change_set_context,
 )
+from backend.domain.finalization_planning import frozen_protected_node_ids
 
 
 _HASH_LENGTH = 64
@@ -35,6 +38,10 @@ _POLICY_VERSION_MAX_LENGTH = 32
 
 class FinalizationConflict(RuntimeError):
     """Stable public preparation conflict without persisted content."""
+
+
+class FinalizationPreflightConflict(FinalizationConflict):
+    """The review cannot safely apply its planning patches."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,6 +238,10 @@ class FinalizationService:
             or len(policy_version) > _POLICY_VERSION_MAX_LENGTH
         ):
             raise FinalizationConflict("FINALIZATION_CONTEXT_INVALID")
+        try:
+            frozen_protected_node_ids(snapshot.get("planning_context"))
+        except ValueError:
+            raise FinalizationPreflightConflict("FINALIZATION_STATE_CONFLICT") from None
         contexts = {}
         for name in ("canon", "planning", "outline", "contract", "bible"):
             value = snapshot.get(f"{name}_context")
@@ -506,10 +517,12 @@ class FinalizationService:
             current_manifest_hash = canonical_hash(self._context_manifest(
                 frozen_command, chapter_number, snapshot,
             ))
+        except FinalizationPreflightConflict:
+            raise
         except (TypeError, ValueError, FinalizationConflict):
             raise FinalizationConflict("FINALIZATION_STATE_CONFLICT") from None
         if current_manifest_hash != attempt.get("context_manifest_hash"):
-            raise FinalizationConflict("FINALIZATION_STATE_CONFLICT")
+            raise FinalizationPreflightConflict("FINALIZATION_STATE_CONFLICT")
         authority = FinalizationAuthority.model_validate({
             "projectId": command.project_id,
             "chapterSessionId": command.chapter_session_id,
@@ -566,6 +579,10 @@ class FinalizationService:
                 canon_context=snapshot["canon_context"],
                 planning_context=snapshot["planning_context"],
             )
+            try:
+                validate_planning_patch_application(command.change_set, snapshot["planning_context"])
+            except ValueError:
+                raise FinalizationPreflightConflict("FINALIZATION_STATE_CONFLICT") from None
             next_revision = command.expected_revision + 1
             next_hash = change_set_hash(command.change_set)
             await self.repository.insert_change_set_revision(session, {
@@ -602,7 +619,7 @@ class FinalizationService:
         if type(command) is not ConfirmFinalization:
             raise TypeError("command must be ConfirmFinalization")
         async with self.transaction_factory() as session:
-            attempt, _, _ = await self._lock_review_inputs(session, command)
+            attempt, candidate, snapshot = await self._lock_review_inputs(session, command)
             revision = await self.repository.lock_change_set_revision(
                 session,
                 command.project_id,
@@ -612,6 +629,19 @@ class FinalizationService:
             )
             if revision is None:
                 raise FinalizationConflict("FINALIZATION_STATE_CONFLICT")
+            try:
+                change_set = revision.get("change_set")
+                validate_change_set_context(
+                    change_set,
+                    candidate_content=candidate["content"],
+                    canon_context=snapshot["canon_context"],
+                    planning_context=snapshot["planning_context"],
+                )
+                if change_set_hash(change_set) != command.expected_revision_hash:
+                    raise ValueError("change set hash mismatch")
+                validate_planning_patch_application(change_set, snapshot["planning_context"])
+            except (TypeError, ValueError):
+                raise FinalizationPreflightConflict("FINALIZATION_STATE_CONFLICT") from None
             confirmed = await self.repository.confirm_current_revision(
                 session,
                 project_id=command.project_id,
@@ -808,6 +838,15 @@ class FinalizationService:
                 canon_context=snapshot["canon_context"],
                 planning_context=snapshot["planning_context"],
             )
+            validate_planning_patch_application(change_set, snapshot["planning_context"], allow_protected=True)
+            change_set = demote_protected_planning_patches(change_set, snapshot["planning_context"])
+            validate_change_set_context(
+                change_set,
+                candidate_content=candidate["content"],
+                canon_context=snapshot["canon_context"],
+                planning_context=snapshot["planning_context"],
+            )
+            validate_planning_patch_application(change_set, snapshot["planning_context"])
         except asyncio.CancelledError:
             await self._terminalize(
                 command=command,

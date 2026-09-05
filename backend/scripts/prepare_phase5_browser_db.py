@@ -7,6 +7,9 @@ import asyncio
 import json
 import os
 
+from backend.config import (
+    clear_runtime_configuration, install_runtime_configuration, load_runtime_configuration,
+)
 from backend.database import close_pool, connection
 from backend.scripts.prepare_phase4b2_browser_db import PROJECT, assert_database_name
 from backend.scripts.prepare_phase4c_browser_db import prepare_canonical_workspace
@@ -182,13 +185,19 @@ async def main() -> None:
     parser.add_argument("--database", required=True)
     parser.add_argument("--verify-postconditions", action="store_true")
     args = parser.parse_args()
+    _assert_authority(args.database, "CLI")
+    snapshot = load_runtime_configuration()
+    install_runtime_configuration(snapshot)
     try:
         if args.verify_postconditions:
             await verify_postconditions(args.database)
         else:
             await prepare(args.database)
     finally:
-        await close_pool()
+        try:
+            await close_pool()
+        finally:
+            clear_runtime_configuration(snapshot)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,10 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import { renderToString } from '@vue/server-renderer'
 import vuePlugin from '@vitejs/plugin-vue'
 import { createServer } from 'vite'
+import { compile } from '@vue/compiler-dom'
+import { compileScript, parse } from '@vue/compiler-sfc'
+import * as VueRuntime from 'vue'
+import { createFinalizationController } from '../../src/application/writer/finalizationController.js'
 
 
 const source = path => readFile(new URL(`../../src/${path}`, import.meta.url), 'utf8')
@@ -31,6 +35,7 @@ const naiveStub = {
 
 let vite
 let FinalizationPanel
+let InteractivePanel
 test.before(async () => {
   vite = await createServer({
     configFile: false,
@@ -45,8 +50,171 @@ test.before(async () => {
   FinalizationPanel = (await vite.ssrLoadModule(
     '/src/components/writer/FinalizationPanel.vue',
   )).default
+  const { descriptor } = parse(await source('components/writer/FinalizationPanel.vue'))
+  InteractivePanel = { ...FinalizationPanel, render: new Function('Vue', compile(
+    descriptor.template.content,
+    {
+      mode: 'function', prefixIdentifiers: true,
+      bindingMetadata: compileScript(descriptor, { id: 'finalization-panel' }).bindings,
+    },
+  ).code)(VueRuntime) }
 })
 test.after(async () => { await vite?.close() })
+
+const makeNode = type => ({ type, text: '', props: {}, children: [], parent: null })
+const detach = child => {
+  if (child?.parent) child.parent.children.splice(child.parent.children.indexOf(child), 1)
+}
+const renderer = VueRuntime.createRenderer({
+  patchProp(node, key, _old, value) {
+    if (value == null) delete node.props[key]
+    else node.props[key] = value
+  },
+  insert(child, parent, anchor = null) {
+    detach(child)
+    child.parent = parent
+    const index = anchor ? parent.children.indexOf(anchor) : -1
+    if (index < 0) parent.children.push(child)
+    else parent.children.splice(index, 0, child)
+  },
+  remove: detach,
+  createElement: makeNode,
+  createText: value => ({ ...makeNode('#text'), text: String(value) }),
+  createComment: () => makeNode('#comment'),
+  setText: (node, value) => { node.text = String(value) },
+  setElementText: (node, value) => { node.text = String(value); node.children = [] },
+  parentNode: node => node?.parent || null,
+  nextSibling: node => node?.parent?.children[node.parent.children.indexOf(node) + 1] || null,
+  setScopeId: (node, id) => { node.props[id] = '' },
+})
+const nodeText = node => [node?.text, ...(node?.children || []).map(nodeText)].filter(Boolean).join(' ')
+const walk = node => [node, ...(node.children || []).flatMap(walk)]
+const buttons = (root, label) => walk(root).filter(node => node.type === 'button' && nodeText(node) === label)
+
+async function mountReview({ correctFailure = false } = {}) {
+  const hashA = 'a'.repeat(64)
+  const hashB = 'b'.repeat(64)
+  const payload = {
+    schemaVersion: 'finalization-changeset-v1', title: '第一章', summary: '摘要',
+    existingEntityIds: [], entities: [], aliases: [], canonEvents: [], storyProgressEvents: [],
+    planningPatches: ['patch-1', 'patch-2'].map(id => ({
+      id, targetType: 'stage', targetId: id, fieldPath: 'title', replacement: id,
+      evidence: { startScalar: 0, endScalar: 2 },
+    })),
+    planningSuggestions: [{ id: 'suggestion-1', message: '调整后续节奏' }],
+  }
+  let current = {
+    status: 'awaiting_author', qualityReport: { status: 'completed', findings: [], deterministicBlocks: [] },
+    changeSet: { revision: 1, contentHash: hashA, payload },
+    confirmation: null,
+  }
+  const calls = []
+  let pendingRead = null
+  const controller = createFinalizationController({
+    getReview: async () => {
+      if (pendingRead) await pendingRead
+      return structuredClone(current)
+    },
+    correct: async command => {
+      calls.push(['correct', command])
+      if (correctFailure) throw new Error('save failed')
+      current = { ...current, changeSet: { revision: 2, contentHash: hashB, payload: command.changeSet } }
+    },
+    confirm: async command => {
+      calls.push(['confirm', command])
+      current = { ...current, confirmation: { revision: 2, contentHash: hashB } }
+    },
+  })
+  await controller.load()
+  const app = renderer.createApp(InteractivePanel, { controller })
+  app.provide(VueRuntime.ssrContextKey, {})
+  app.component('router-link', { render: () => h('a') })
+  const root = makeNode('root')
+  app.mount(root)
+  const pauseLoad = () => {
+    let release
+    pendingRead = new Promise(resolve => { release = resolve })
+    const request = controller.load()
+    return async () => { release(); await request }
+  }
+  return { app, root, controller, calls, payload, pauseLoad }
+}
+
+test('removing one future planning patch stays local until a new revision is saved and confirmed', async () => {
+  const { app, root, controller, calls, payload } = await mountReview()
+  try {
+    assert.equal(buttons(root, '移除此项调整').length, 2)
+    await buttons(root, '移除此项调整')[0].props.onClick()
+    await VueRuntime.nextTick()
+    assert.deepEqual(controller.review.value.changeSet.payload, payload)
+    assert.equal(buttons(root, '移除此项调整').length, 1)
+    assert.deepEqual(calls, [])
+    const confirm = buttons(root, '确认以上变更')[0]
+    assert.equal(confirm.props.disabled, true)
+    await confirm.props.onClick()
+    assert.deepEqual(calls, [])
+    await buttons(root, '保存修正')[0].props.onClick()
+    await VueRuntime.nextTick()
+    assert.deepEqual(calls[0][1].changeSet.planningPatches.map(item => item.id), ['patch-2'])
+    assert.equal(controller.review.value.changeSet.revision, 2)
+    assert.equal(buttons(root, '保存修正').length, 0)
+    assert.equal(buttons(root, '确认以上变更')[0].props.disabled, false)
+    await buttons(root, '确认以上变更')[0].props.onClick()
+    await VueRuntime.nextTick()
+    assert.deepEqual(calls[1], ['confirm', { expectedRevision: 2, expectedRevisionHash: 'b'.repeat(64) }])
+    assert.equal(buttons(root, '放弃审查并返回修改').length, 0)
+    assert.equal(buttons(root, '移除此项调整')[0].props.disabled, true)
+  } finally { app.unmount() }
+})
+
+test('failed correction preserves the patch deletion draft and keeps confirmation disabled', async () => {
+  const { app, root, controller, calls } = await mountReview({ correctFailure: true })
+  try {
+    assert.equal(buttons(root, '移除此项调整').length, 2)
+    await buttons(root, '移除此项调整')[0].props.onClick()
+    await VueRuntime.nextTick()
+    await buttons(root, '保存修正')[0].props.onClick()
+    await VueRuntime.nextTick()
+    assert.equal(controller.review.value.changeSet.revision, 1)
+    assert.equal(controller.review.value.changeSet.payload.planningPatches.length, 2)
+    assert.equal(buttons(root, '移除此项调整').length, 1)
+    assert.equal(buttons(root, '确认以上变更')[0].props.disabled, true)
+    await buttons(root, '确认以上变更')[0].props.onClick()
+    assert.equal(calls.length, 1)
+  } finally { app.unmount() }
+})
+
+test('patch removal cannot change confirmed, busy or finalized review drafts', async () => {
+  for (const state of ['confirmed', 'busy', 'finalized']) {
+    const { app, root, controller, payload, calls, pauseLoad } = await mountReview()
+    let releaseLoad
+    try {
+      const remove = buttons(root, '移除此项调整')[0]
+      assert.ok(remove, state)
+      if (state === 'busy') releaseLoad = pauseLoad()
+      else if (state === 'confirmed') controller.review.value = {
+        ...controller.review.value, confirmation: { revision: 1, contentHash: 'a'.repeat(64) },
+      }
+      else controller.review.value = { ...controller.review.value, status: 'committed' }
+      await VueRuntime.nextTick()
+      if (state !== 'finalized') assert.equal(buttons(root, '移除此项调整')[0].props.disabled, true, state)
+      else assert.equal(buttons(root, '移除此项调整').length, 0)
+      await remove.props.onClick()
+      await VueRuntime.nextTick()
+      assert.deepEqual(controller.review.value.changeSet.payload, payload, state)
+      assert.deepEqual(calls, [], state)
+      if (state !== 'finalized') assert.equal(buttons(root, '移除此项调整').length, 2, state)
+    } finally { await releaseLoad?.(); app.unmount() }
+  }
+})
+
+test('non-authoritative suggestions visibly explain that they do not update planning', async () => {
+  const { app, root } = await mountReview()
+  try {
+    assert.match(nodeText(root), /非权威建议/)
+    assert.match(nodeText(root), /不会写入规划/)
+  } finally { app.unmount() }
+})
 
 
 test('Writer embeds one compact author-controlled finalization panel', async () => {

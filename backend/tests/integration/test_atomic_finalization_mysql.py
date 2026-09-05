@@ -172,7 +172,7 @@ def _change_set(planning, content):
     })
 
 
-async def _seed(session, transaction_factory):
+async def _seed(session, transaction_factory, *, with_review=True):
     creation_id, style_id = await _insert_revision_one_contracts(
         session, project_id=PROJECT_ID, binding_id=BINDING_ID,
         seed_id=SEED_ID, seed_revision_id=SEED_REVISION_ID,
@@ -283,6 +283,8 @@ async def _seed(session, transaction_factory):
         (CANDIDATE_ID, PROJECT_ID, SESSION_ID, content, content_hash,
          canonical_hash(basis), canonical_json(basis), NOW),
     )
+    if not with_review:
+        return planning, _change_set(planning, content)
     repository = FinalizationRepository()
     snapshot = await repository.load_preparation_context(session, PROJECT_ID, 1)
     prepare = PrepareFinalization(

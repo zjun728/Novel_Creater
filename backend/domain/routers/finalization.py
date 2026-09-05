@@ -24,6 +24,7 @@ from backend.services.finalization import (
     ConfirmFinalization,
     CorrectFinalization,
     FinalizationConflict,
+    FinalizationPreflightConflict,
     FinalizationService,
     PrepareFinalization,
 )
@@ -80,6 +81,12 @@ class FinalizationStateConflict(PublicDomainError):
     message = "Finalization state changed; refresh and retry"
 
 
+class FinalizationPlanningConflict(PublicDomainError):
+    status_code = 409
+    code = "FinalizationPreflightConflict"
+    message = "Planning review is no longer applicable; cancel an unconfirmed review and prepare again"
+
+
 class _StrictBody(BaseModel):
     model_config = ConfigDict(
         strict=True,
@@ -113,6 +120,8 @@ class CommitFinalizationBody(ConfirmFinalizationBody):
 
 
 def _raise_public(error: Exception) -> None:
+    if isinstance(error, FinalizationPreflightConflict):
+        raise FinalizationPlanningConflict() from None
     if isinstance(error, FinalizationConflict) and str(error).startswith(
         "FINALIZATION_NOT_FOUND"
     ):

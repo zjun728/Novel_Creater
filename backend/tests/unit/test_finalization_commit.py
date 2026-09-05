@@ -246,6 +246,7 @@ class _FinalizationRepository:
             },
             "planning_context": {
                 "id": "planning-revision-1", "revision": 1,
+                "protectedNodeIds": ["block-1", "stage-1", "task-1", "volume-1"],
                 "contentHash": planning.content_hash,
                 "content": planning.model_dump(by_alias=True, mode="json"),
             },

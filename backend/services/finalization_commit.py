@@ -16,19 +16,17 @@ from backend.domain.canon import (
     ValueCardinality,
     thaw_json,
 )
-from backend.domain.chapter_outlines import ChapterOutline
+from backend.domain.finalization_planning import (
+    protected_outline_node_ids,
+    apply_planning_patches as apply_planning_patch_values,
+)
 from backend.domain.finalization import (
     FinalizationAuthority,
     FinalizationChangeSet,
-    PlanningPatch,
-    PlanningTargetType,
 )
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.planning import (
-    DraftPlanningAggregate,
     PlanningAggregate,
-    PlanningDomainError,
-    normalize_planning_aggregate,
 )
 from backend.services.canon import (
     AliasCreate,
@@ -196,78 +194,11 @@ def build_canon_commit(
     )
 
 
-def _editable_payload(value: PlanningAggregate) -> dict[str, object]:
-    payload = value.model_dump(mode="json", by_alias=True)
-    payload["activeStoryBlockRef"] = payload.pop("activeStoryBlockId")
-    payload.pop("schemaVersion")
-    payload.pop("contentHash")
-    for block in payload["storyBlocks"]:
-        block["volumeRef"] = block.pop("volumeId")
-        block["plotRefs"] = block.pop("plotIds")
-        for stage in block["stages"]:
-            stage.pop("storyBlockId")
-            for task in stage["sceneTasks"]:
-                task.pop("stageId")
-    return payload
-
-
-def _nodes_by_type(payload: dict[str, object]):
-    nodes: dict[tuple[PlanningTargetType, str], dict[str, object]] = {}
-    for item in payload["volumes"]:
-        nodes[(PlanningTargetType.VOLUME, item["id"])] = item
-    for item in payload["plots"]:
-        nodes[(PlanningTargetType.PLOT, item["id"])] = item
-    for block in payload["storyBlocks"]:
-        nodes[(PlanningTargetType.STORY_BLOCK, block["id"])] = block
-        for stage in block["stages"]:
-            nodes[(PlanningTargetType.STAGE, stage["id"])] = stage
-            for task in stage["sceneTasks"]:
-                nodes[(PlanningTargetType.SCENE_TASK, task["id"])] = task
-    return nodes
-
-
-def apply_planning_patches(
-    planning: PlanningAggregate,
-    patches: Iterable[PlanningPatch],
-    *,
-    implemented_ids: frozenset[str],
-) -> PlanningAggregate:
-    """Apply confirmed, whitelisted patches only to unimplemented nodes."""
-
-    patches = tuple(patches)
-    if not patches:
-        return planning
-    payload = _editable_payload(planning)
-    nodes = _nodes_by_type(payload)
-    for patch in patches:
-        if patch.target_id in implemented_ids:
-            raise FinalizationCommitInvalid(
-                "planning patch targets an implemented node"
-            )
-        node = nodes.get((patch.target_type, patch.target_id))
-        if node is None:
-            raise FinalizationCommitInvalid("planning patch target is missing")
-        if (
-            node["revision"] != patch.expected_revision
-            or node["contentHash"] != patch.expected_hash
-        ):
-            raise FinalizationCommitInvalid("planning patch target is stale")
-        node[patch.field_path] = thaw_json(patch.replacement)
-
+def apply_planning_patches(planning, patches, *, implemented_ids):
     try:
-        draft = DraftPlanningAggregate.model_validate(payload, strict=True)
-        return normalize_planning_aggregate(
-            draft,
-            previous_confirmed=planning,
-            previous_draft=None,
-            id_factory=lambda: _unexpected_id_allocation(),
-        )
-    except PlanningDomainError as exc:
-        raise FinalizationCommitInvalid("planning patch is invalid") from exc
-
-
-def _unexpected_id_allocation() -> str:
-    raise FinalizationCommitInvalid("planning patch cannot create nodes")
+        return apply_planning_patch_values(planning, patches, implemented_ids=implemented_ids)
+    except (TypeError, ValueError):
+        raise FinalizationCommitInvalid("planning patch is invalid") from None
 
 
 def _json_object(value: object, label: str) -> dict[str, object]:
@@ -281,19 +212,10 @@ def _json_object(value: object, label: str) -> dict[str, object]:
 
 
 def _implemented_ids(outline_values: Iterable[object]) -> frozenset[str]:
-    result: set[str] = set()
-    for value in outline_values:
-        try:
-            outline = ChapterOutline.model_validate(
-                _json_object(value, "chapter outline"), strict=True,
-            )
-        except (TypeError, ValueError):
-            raise FinalizationCommitInvalid("chapter outline is invalid") from None
-        result.add(outline.volume_ref.id)
-        result.add(outline.story_block_ref.id)
-        result.update(item.id for item in outline.stage_refs)
-        result.update(item.id for item in outline.scene_task_refs)
-    return frozenset(result)
+    try:
+        return protected_outline_node_ids(outline_values)
+    except (TypeError, ValueError):
+        raise FinalizationCommitInvalid("chapter outline is invalid") from None
 
 
 class AtomicFinalizationService:

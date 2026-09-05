@@ -263,6 +263,10 @@ async def test_publish_awaiting_author_is_preparing_state_cas_and_checks_row_cou
 
 @pytest.mark.asyncio
 async def test_load_preparation_context_decodes_closed_heads_canon_references_and_bindings():
+    from backend.tests.unit.test_finalization_commit import _FinalizationRepository, _planning
+    outline = _FinalizationRepository(_planning(), _change_set()).outline
+    historical = json.loads(json.dumps(outline))
+    historical["sceneTaskRefs"][0]["id"] = "historical-task"
     head = {
         "canon_revision": 2,
         "projection_hash": HASH_A,
@@ -273,7 +277,7 @@ async def test_load_preparation_context_decodes_closed_heads_canon_references_an
         "outline_revision_id": "outline-1",
         "outline_revision": 1,
         "outline_hash": HASH_A,
-        "outline_json": '{"chapterGoal":"进入城中"}',
+        "outline_json": json.dumps(outline),
         "contract_revision": 1,
         "contract_hash": HASH_A,
         "contract_json": '{"genre":"悬疑"}',
@@ -305,7 +309,8 @@ async def test_load_preparation_context_decodes_closed_heads_canon_references_an
         "enabled": 1, "lifecycle_status": "active", "revision": 4,
     } for key in ("audit", "extraction")]
     session = CapturingSession(
-        rows=[head], all_rows=[entities, states, references, bindings],
+        rows=[head], all_rows=[entities, states, references, bindings,
+                              [{"content_json": json.dumps(historical)}]],
     )
 
     result = await FinalizationRepository().load_preparation_context(
@@ -319,7 +324,10 @@ async def test_load_preparation_context_decodes_closed_heads_canon_references_an
     }
     assert result["canon_context"]["currentState"][1]["payload"] == "守城"
     assert result["planning_context"]["content"] == {"volumes": []}
-    assert result["outline_context"]["content"]["chapterGoal"] == "进入城中"
+    assert result["outline_context"]["content"]["chapterGoal"] == "进入城中。"
+    assert result["planning_context"]["protectedNodeIds"] == [
+        "block-1", "historical-task", "stage-1", "task-1", "volume-1",
+    ]
     assert result["contract_context"]["style"] == {"tone": "克制"}
     assert result["reference_sources"] == references
     assert result["audit_binding"]["id"] == "provider-audit"
@@ -327,6 +335,14 @@ async def test_load_preparation_context_decodes_closed_heads_canon_references_an
     compact_calls = [_compact(sql) for sql, _ in session.calls]
     assert "FOR UPDATE" in compact_calls[0]
     assert "task_key IN ('audit','extraction')" in compact_calls[4]
+
+
+@pytest.mark.asyncio
+async def test_missing_pinned_historical_outline_fails_closed():
+    session = CapturingSession(all_rows=[[{"content_json": None}]])
+    with pytest.raises(FinalizationDataCorruption):
+        await FinalizationRepository().list_finalized_outline_contents(session, "project-1")
+    assert "LEFT JOIN chapter_outline_revisions" in _compact(session.calls[0][0])
 
 
 @pytest.mark.asyncio

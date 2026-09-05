@@ -13,7 +13,9 @@ from backend.domain.finalization import (
     FinalizationChangeSet,
     HardBlockCode,
 )
-from backend.domain.json_contracts import canonical_hash
+from backend.domain.json_contracts import canonical_hash, canonical_json
+from backend.domain.finalization_planning import apply_planning_patches, frozen_protected_node_ids
+from backend.domain.planning import PlanningAggregate
 
 
 _BASIS_KEYS = (
@@ -391,4 +393,41 @@ def validate_change_set_context(
             raise ValueError("Finalization ChangeSet context invalid")
 
 
-__all__ = ["run_finalization_prechecks", "validate_change_set_context"]
+def validate_planning_patch_application(change_set, planning_context, *, allow_protected=False) -> None:
+    """Dry-run the same pure Planning transformation used by atomic commit."""
+    protected = frozen_protected_node_ids(planning_context)
+    if not change_set.planning_patches:
+        return
+    planning = PlanningAggregate.model_validate(planning_context["content"], strict=True)
+    apply_planning_patches(
+        planning, change_set.planning_patches,
+        implemented_ids=frozenset() if allow_protected else protected,
+    )
+
+
+def demote_protected_planning_patches(change_set, planning_context):
+    """Call only after validating the complete, original provider ChangeSet."""
+    protected = frozen_protected_node_ids(planning_context)
+    payload = change_set.model_dump(by_alias=True, mode="json")
+    executable = []
+    for patch in payload["planningPatches"]:
+        if patch["targetId"] not in protected:
+            executable.append(patch)
+            continue
+        payload["planningSuggestions"].append({
+            "id": patch["id"],
+            "targetId": patch["targetId"],
+            "evidence": patch["evidence"],
+            "message": (
+                f"规划节点 {patch['targetId']} 的 {patch['fieldPath']} 调整建议："
+                f"{canonical_json(patch['replacement'])}。"
+                "此项仅供参考，不会修改当前章或历史规划。"
+            ),
+        })
+    payload["planningPatches"] = executable
+    # Revalidate all IDs and collection/message bounds; never truncate suggestions.
+    return FinalizationChangeSet.model_validate(payload)
+
+
+__all__ = ["run_finalization_prechecks", "validate_change_set_context",
+           "validate_planning_patch_application", "demote_protected_planning_patches"]

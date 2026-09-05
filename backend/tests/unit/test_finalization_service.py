@@ -94,6 +94,7 @@ def _snapshot():
         "canon_context": {"revision": 0, "entities": []},
         "planning_context": {
             "revision": 1, "contentHash": HASH_A,
+            "protectedNodeIds": [],
             "content": {"volumes": [], "plots": [], "storyBlocks": []},
         },
         "outline_context": {"revision": 1, "contentHash": HASH_B},
@@ -626,7 +627,7 @@ async def test_correction_rejects_context_manifest_drift_without_provider():
 async def test_confirmation_pins_exact_current_revision_without_provider_or_commit():
     repository = FakeRepository()
     repository.current_attempt = _awaiting_attempt()
-    repository.current_revision = {"revision": 1}
+    repository.current_revision = {"revision": 1, "change_set": _change_set()}
     service, transactions, quality, extraction = _review_service(repository)
 
     result = await service.confirm(ConfirmFinalization(

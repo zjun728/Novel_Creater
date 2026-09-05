@@ -126,6 +126,7 @@ async function prepareSelected() {
 }
 
 async function saveCorrection() {
+  if (!editable.value || !changed.value) return
   try {
     await props.controller.correctChangeSet(changeSetDraft.value)
   } catch {
@@ -134,11 +135,19 @@ async function saveCorrection() {
 }
 
 async function confirmChangeSet() {
+  if (!editable.value || changed.value) return
   try {
     await props.controller.confirmChangeSet()
   } catch {
     // The controller owns the fixed public error.
   }
+}
+
+function removePlanningPatch(id) {
+  if (!editable.value) return
+  const patches = changeSetDraft.value.planningPatches
+  const index = patches.findIndex(item => item.id === id)
+  if (index !== -1) patches.splice(index, 1)
 }
 
 async function commitChapter() {
@@ -321,11 +330,17 @@ async function refreshPostFinalization() {
             />
             <pre v-else>{{ displayValue(item.replacement) }}</pre>
             <small>{{ evidenceText(item.evidence) }}</small>
+            <n-button
+              size="small"
+              :disabled="!editable"
+              @click="removePlanningPatch(item.id)"
+            >移除此项调整</n-button>
           </article>
         </div>
 
         <div v-if="changeSetDraft.planningSuggestions.length" class="change-group">
           <h4>非权威建议</h4>
+          <p class="muted">以下建议仅供作者参考，不会写入规划。</p>
           <p v-for="item in changeSetDraft.planningSuggestions" :key="item.id">{{ item.message }}</p>
         </div>
       </section>
@@ -335,7 +350,7 @@ async function refreshPostFinalization() {
         type="primary"
         block
         :loading="controller.busy.value"
-        :disabled="busy"
+        :disabled="!editable"
         @click="saveCorrection"
       >保存修正</n-button>
       <n-button
@@ -350,7 +365,7 @@ async function refreshPostFinalization() {
         type="primary"
         block
         :loading="controller.busy.value"
-        :disabled="busy"
+        :disabled="!editable || changed"
         @click="confirmChangeSet"
       >确认以上变更</n-button>
       <n-button

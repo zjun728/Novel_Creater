@@ -12,6 +12,7 @@ from backend.domain.finalization import (
     change_set_payload,
 )
 from backend.domain.json_contracts import canonical_hash, canonical_json
+from backend.domain.finalization_planning import protected_outline_node_ids
 from backend.domain.provider_policy import provider_is_generation_ready
 from backend.repositories.project_lifecycle import lock_active_project
 
@@ -273,6 +274,12 @@ class FinalizationRepository:
             ):
                 bindings[task_key] = binding
 
+        previous_outlines = await self.list_finalized_outline_contents(session, project_id)
+        try:
+            protected_ids = protected_outline_node_ids((*previous_outlines, outline))
+        except (TypeError, ValueError):
+            raise FinalizationDataCorruption("persisted chapter outline is invalid") from None
+
         return {
             "canon_context": {
                 "revision": value.get("canon_revision"),
@@ -285,6 +292,7 @@ class FinalizationRepository:
                 "revision": value.get("planning_revision"),
                 "contentHash": value.get("planning_hash"),
                 "content": planning,
+                "protectedNodeIds": sorted(protected_ids),
             },
             "outline_context": {
                 "id": value.get("outline_revision_id"),
@@ -396,7 +404,7 @@ class FinalizationRepository:
         rows = await session.fetchall(
             """SELECT outline.content_json
                  FROM final_chapters chapter
-                 JOIN chapter_outline_revisions outline
+                 LEFT JOIN chapter_outline_revisions outline
                    ON outline.project_id=chapter.project_id
                   AND outline.chapter_num=chapter.chapter_num
                   AND outline.id=chapter.chapter_outline_revision_id
