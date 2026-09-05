@@ -25,10 +25,22 @@ class CreateProject(BaseModel):
 
     id: str = Field(min_length=1)
     title: str = Field(min_length=1, max_length=200)
-    genre: str = ""
-    description: str = ""
-    target_words: int = 2_400_000
-    target_chapters: int = 720
+    genre: str = Field(default="", max_length=120)
+    description: str = Field(default="", max_length=5000)
+    target_words: int = Field(default=2_400_000, gt=0)
+    target_chapters: int = Field(default=720, gt=0)
+
+
+class UpdateProjectMetadata(BaseModel):
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
+    project_id: str = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=200)
+    genre: str = Field(max_length=120)
+    description: str = Field(max_length=5000)
+    target_words: int = Field(gt=0)
+    target_chapters: int = Field(gt=0)
+    expected_lifecycle_revision: int = Field(ge=0)
 
 
 class ProjectResult(BaseModel):
@@ -742,6 +754,39 @@ class ProjectLifecycleService:
             if not await self.repository.rename(session, project_id, title):
                 raise ProjectLifecycleConflict()
             updated = await self.repository.get_any(session, project_id)
+            if updated is None:
+                raise ProjectLifecycleConflict()
+            return ProjectResult.from_row(updated)
+
+    async def update_metadata(
+        self,
+        command: UpdateProjectMetadata,
+    ) -> ProjectResult:
+        async with self.transaction_factory() as session:
+            row = await self.repository.lock_active_project(
+                session,
+                command.project_id,
+            )
+            if row is None:
+                row = await self.repository.lock_any(session, command.project_id)
+                if row is None:
+                    raise ProjectNotFound()
+                raise ProjectArchived()
+            self._require_revision(row, command.expected_lifecycle_revision)
+            if all(
+                row[field] == getattr(command, field)
+                for field in (
+                    "title",
+                    "genre",
+                    "description",
+                    "target_words",
+                    "target_chapters",
+                )
+            ):
+                return ProjectResult.from_row(row)
+            if not await self.repository.update_metadata(session, command):
+                raise ProjectLifecycleConflict()
+            updated = await self.repository.get_any(session, command.project_id)
             if updated is None:
                 raise ProjectLifecycleConflict()
             return ProjectResult.from_row(updated)

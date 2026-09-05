@@ -373,3 +373,39 @@ async def test_rename_changes_only_title_on_an_active_project(affected, expected
             ("Changed", 789, "p1"),
         )
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("affected, expected", [(1, True), (0, False), (2, False)])
+async def test_metadata_update_is_revision_guarded_and_increments_revision(
+    affected, expected
+):
+    session = RecordingSession(execute_result=affected)
+    command = type("Command", (), {
+        "project_id": "p1",
+        "title": "典镇山河",
+        "genre": "东方奇幻",
+        "description": "长篇简介",
+        "target_words": 3_000_000,
+        "target_chapters": 900,
+        "expected_lifecycle_revision": 4,
+    })()
+
+    changed = await projects.ProjectRepository(clock=lambda: 999).update_metadata(
+        session, command
+    )
+
+    assert changed is expected
+    assert session.calls == [
+        (
+            "execute",
+            "UPDATE projects SET title=%s, genre=%s, description=%s, "
+            "target_words=%s, target_chapters=%s, "
+            "lifecycle_revision=lifecycle_revision+1, updated_at=%s "
+            "WHERE id=%s AND archived_at IS NULL AND lifecycle_revision=%s",
+            (
+                "典镇山河", "东方奇幻", "长篇简介", 3_000_000, 900,
+                999, "p1", 4,
+            ),
+        )
+    ]

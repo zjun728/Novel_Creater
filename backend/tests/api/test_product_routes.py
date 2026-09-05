@@ -285,16 +285,20 @@ def project_result(
     *,
     project_id="p1",
     title="Project",
+    genre="",
+    description="",
+    target_words=100_000,
+    target_chapters=100,
     archived_at=None,
     lifecycle_revision=0,
 ):
     return ProjectResult(
         id=project_id,
         title=title,
-        genre="",
-        description="",
-        target_words=100_000,
-        target_chapters=100,
+        genre=genre,
+        description=description,
+        target_words=target_words,
+        target_chapters=target_chapters,
         current_chapter=0,
         status="drafting",
         archived_at=archived_at,
@@ -374,6 +378,18 @@ def test_project_routes_delegate_explicit_lifecycle_contract(monkeypatch):
             self.calls.append(("rename", project_id, title))
             return project_result(project_id=project_id, title=title)
 
+        async def update_metadata(self, command):
+            self.calls.append(("update_metadata", command))
+            return project_result(
+                project_id=command.project_id,
+                title=command.title,
+                genre=command.genre,
+                description=command.description,
+                target_words=command.target_words,
+                target_chapters=command.target_chapters,
+                lifecycle_revision=command.expected_lifecycle_revision + 1,
+            )
+
         async def archive(self, project_id, expected_lifecycle_revision):
             self.calls.append(
                 ("archive", project_id, expected_lifecycle_revision)
@@ -408,10 +424,24 @@ def test_project_routes_delegate_explicit_lifecycle_contract(monkeypatch):
 
     active = client.get("/api/projects")
     archived = client.get("/api/projects/archived")
-    created = client.post("/api/projects", json={"title": "New"})
+    created = client.post("/api/projects", json={
+        "title": "New",
+        "genre": "东方奇幻",
+        "description": "一部长期成长小说",
+        "targetWords": 3_000_000,
+        "targetChapters": 900,
+    })
     direct_archived = client.get("/api/projects/archived-id")
     preparation = client.get("/api/projects/p1/preparation")
     renamed = client.put("/api/projects/p1", json={"title": "Changed"})
+    updated = client.put("/api/projects/p1/settings", json={
+        "title": "典镇山河",
+        "genre": "东方奇幻",
+        "description": "凡人守护山河的长篇故事",
+        "targetWords": 3_000_000,
+        "targetChapters": 900,
+        "expectedLifecycleRevision": 7,
+    })
     archived_command = client.post(
         "/api/projects/p1/archive",
         json={"expectedLifecycleRevision": 4},
@@ -432,8 +462,10 @@ def test_project_routes_delegate_explicit_lifecycle_contract(monkeypatch):
     assert archived.json()[0]["archivedAt"] == 123
     assert created.status_code == 200
     assert created.json()["title"] == "New"
-    assert created.json()["targetWords"] == 2_400_000
-    assert created.json()["targetChapters"] == 720
+    assert created.json()["genre"] == "东方奇幻"
+    assert created.json()["description"] == "一部长期成长小说"
+    assert created.json()["targetWords"] == 3_000_000
+    assert created.json()["targetChapters"] == 900
     assert direct_archived.status_code == 200
     assert preparation.status_code == 200
     assert preparation.json() == {
@@ -473,6 +505,8 @@ def test_project_routes_delegate_explicit_lifecycle_contract(monkeypatch):
     ):
         assert forbidden not in serialized
     assert renamed.json()["title"] == "Changed"
+    assert updated.json()["title"] == "典镇山河"
+    assert updated.json()["lifecycleRevision"] == 8
     assert archived_command.json()["lifecycleRevision"] == 5
     assert restored_command.json()["lifecycleRevision"] == 6
     assert deleted.status_code == 204
@@ -484,6 +518,7 @@ def test_project_routes_delegate_explicit_lifecycle_contract(monkeypatch):
         ("get", "archived-id", True),
         ("preparation", "p1"),
         ("rename", "p1", "Changed"),
+        ("update_metadata", service.calls[6][1]),
         ("archive", "p1", 4),
         ("restore", "p1", 5),
         ("permanently_delete", "p1", 6),
@@ -491,10 +526,19 @@ def test_project_routes_delegate_explicit_lifecycle_contract(monkeypatch):
     assert service.calls[2][1].model_dump() == {
         "id": service.calls[2][1].id,
         "title": "New",
-        "genre": "",
-        "description": "",
-        "target_words": 2_400_000,
-        "target_chapters": 720,
+        "genre": "东方奇幻",
+        "description": "一部长期成长小说",
+        "target_words": 3_000_000,
+        "target_chapters": 900,
+    }
+    assert service.calls[6][1].model_dump() == {
+        "project_id": "p1",
+        "title": "典镇山河",
+        "genre": "东方奇幻",
+        "description": "凡人守护山河的长篇故事",
+        "target_words": 3_000_000,
+        "target_chapters": 900,
+        "expected_lifecycle_revision": 7,
     }
 
 
@@ -520,16 +564,13 @@ def test_archived_project_get_has_exact_safe_domain_error(monkeypatch):
     assert response.json()["correlationId"]
 
 
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"title": "Project", "genre": "历史"},
-        {"title": "Project", "description": "Description"},
-        {"title": "Project", "targetWords": 1000},
-        {"title": "Project", "targetChapters": 10},
-    ],
-)
-def test_project_create_rejects_old_public_fields(monkeypatch, payload):
+@pytest.mark.parametrize("payload", [
+    {"title": "Project", "unknown": True},
+    {"title": "Project", "targetWords": "2400000"},
+    {"title": "Project", "targetChapters": 0},
+    {"title": "Project", "genre": "x" * 121},
+])
+def test_project_create_rejects_unknown_or_invalid_public_fields(monkeypatch, payload):
     class FakeService:
         async def create(self, command):
             raise AssertionError("extra payload must be rejected before service")
@@ -543,7 +584,41 @@ def test_project_create_rejects_old_public_fields(monkeypatch, payload):
 
     assert response.status_code == 422
     detail = response.json()["detail"]
-    assert any(item["loc"][-1] != "title" for item in detail)
+    assert detail
+
+
+def test_project_settings_requires_complete_strict_metadata(monkeypatch):
+    class FakeService:
+        async def update_metadata(self, command):
+            raise AssertionError("invalid settings must not reach service")
+
+    monkeypatch.setattr(projects, "_service", FakeService())
+    app = FastAPI()
+    app.include_router(projects.router, prefix="/api")
+    client = TestClient(app, raise_server_exceptions=False)
+
+    incomplete = client.put("/api/projects/p1/settings", json={"title": "Only"})
+    coerced = client.put("/api/projects/p1/settings", json={
+        "title": "Project",
+        "genre": "",
+        "description": "",
+        "targetWords": "2400000",
+        "targetChapters": 720,
+        "expectedLifecycleRevision": 0,
+    })
+    extra = client.put("/api/projects/p1/settings", json={
+        "title": "Project",
+        "genre": "",
+        "description": "",
+        "targetWords": 2_400_000,
+        "targetChapters": 720,
+        "expectedLifecycleRevision": 0,
+        "force": True,
+    })
+
+    assert [response.status_code for response in (incomplete, coerced, extra)] == [
+        422, 422, 422,
+    ]
 
 
 def test_project_rename_and_lifecycle_commands_forbid_extra_or_missing_fields(

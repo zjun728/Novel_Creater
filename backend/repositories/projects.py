@@ -448,6 +448,26 @@ class ProjectRepository:
         )
         return changed == 1
 
+    async def update_metadata(self, session, command) -> bool:
+        changed = await session.execute(
+            """UPDATE projects
+               SET title=%s, genre=%s, description=%s, target_words=%s,
+                   target_chapters=%s, lifecycle_revision=lifecycle_revision+1,
+                   updated_at=%s
+               WHERE id=%s AND archived_at IS NULL AND lifecycle_revision=%s""",
+            (
+                command.title,
+                command.genre,
+                command.description,
+                command.target_words,
+                command.target_chapters,
+                self._clock(),
+                command.project_id,
+                command.expected_lifecycle_revision,
+            ),
+        )
+        return changed == 1
+
     async def insert_bootstrap_revision(
         self, session, project_id: str, *, content_hash: str, idempotency_key: str
     ) -> None:

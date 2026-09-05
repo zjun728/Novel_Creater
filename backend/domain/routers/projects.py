@@ -17,6 +17,7 @@ from backend.services.model_bindings import ModelBindingService
 from backend.services.project_lifecycle import (
     CreateProject,
     ProjectLifecycleService,
+    UpdateProjectMetadata,
 )
 from .helpers import convert_row, convert_rows
 
@@ -40,9 +41,13 @@ _service = ProjectLifecycleService(
 
 
 class ProjectCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(strict=True, extra="forbid")
 
     title: str = Field(min_length=1, max_length=200)
+    genre: str = Field(default="", max_length=120)
+    description: str = Field(default="", max_length=5000)
+    targetWords: int = Field(default=2_400_000, gt=0)
+    targetChapters: int = Field(default=720, gt=0)
 
 
 class ProjectRename(BaseModel):
@@ -54,6 +59,17 @@ class ProjectRename(BaseModel):
 class ProjectLifecycleCommand(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
+    expectedLifecycleRevision: int = Field(ge=0)
+
+
+class ProjectMetadataUpdate(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    title: str = Field(min_length=1, max_length=200)
+    genre: str = Field(max_length=120)
+    description: str = Field(max_length=5000)
+    targetWords: int = Field(gt=0)
+    targetChapters: int = Field(gt=0)
     expectedLifecycleRevision: int = Field(ge=0)
 
 
@@ -81,6 +97,10 @@ async def create_project(data: ProjectCreate):
         CreateProject(
             id=str(uuid4()),
             title=data.title,
+            genre=data.genre,
+            description=data.description,
+            target_words=data.targetWords,
+            target_chapters=data.targetChapters,
         )
     )
     return _convert_result(result)
@@ -103,6 +123,23 @@ async def get_project_preparation(project_id: str):
 @router.put("/projects/{project_id}")
 async def rename_project(project_id: str, data: ProjectRename):
     return _convert_result(await _service.rename(project_id, data.title))
+
+
+@router.put("/projects/{project_id}/settings")
+async def update_project_metadata(project_id: str, data: ProjectMetadataUpdate):
+    return _convert_result(
+        await _service.update_metadata(
+            UpdateProjectMetadata(
+                project_id=project_id,
+                title=data.title,
+                genre=data.genre,
+                description=data.description,
+                target_words=data.targetWords,
+                target_chapters=data.targetChapters,
+                expected_lifecycle_revision=data.expectedLifecycleRevision,
+            )
+        )
+    )
 
 
 @router.post("/projects/{project_id}/archive")

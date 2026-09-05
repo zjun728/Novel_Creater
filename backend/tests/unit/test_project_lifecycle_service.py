@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from backend import http_errors
+from backend.services import project_lifecycle
 from backend.services.project_lifecycle import (
     ProjectLifecycleService,
     ProjectPreparationResult,
@@ -116,6 +117,26 @@ class MemoryLifecycleRepository:
         if self.force_cas_failure or row is None or row["archived_at"] is not None:
             return False
         row["title"] = title
+        return True
+
+    async def update_metadata(self, session, command):
+        self._record("update_metadata", session, command)
+        row = self.rows.get(command.project_id)
+        if (
+            self.force_cas_failure
+            or row is None
+            or row["archived_at"] is not None
+            or row["lifecycle_revision"] != command.expected_lifecycle_revision
+        ):
+            return False
+        row.update(
+            title=command.title,
+            genre=command.genre,
+            description=command.description,
+            target_words=command.target_words,
+            target_chapters=command.target_chapters,
+        )
+        row["lifecycle_revision"] += 1
         return True
 
     async def archive(self, session, project_id, expected_revision):
@@ -308,6 +329,100 @@ async def test_same_title_rename_succeeds_without_depending_on_affected_row_coun
     assert [call[0] for call in repository.calls] == ["lock_active_project"]
     assert transactions.commit_count == 1
     assert transactions.rollback_count == 0
+
+
+@pytest.mark.asyncio
+async def test_metadata_update_replaces_all_public_fields_with_revision_cas():
+    command_type = getattr(project_lifecycle, "UpdateProjectMetadata", None)
+    assert command_type is not None, "project metadata update command is missing"
+    repository = MemoryLifecycleRepository(project_row(lifecycle_revision=4))
+    service, transactions, _ = make_service(repository)
+    command = command_type(
+        project_id="p1",
+        title="典镇山河",
+        genre="东方奇幻",
+        description="凡人守护山河的长篇故事",
+        target_words=3_000_000,
+        target_chapters=900,
+        expected_lifecycle_revision=4,
+    )
+
+    result = await service.update_metadata(command)
+
+    assert result.model_dump() | {"updated": True} == {
+        "id": "p1",
+        "title": "典镇山河",
+        "genre": "东方奇幻",
+        "description": "凡人守护山河的长篇故事",
+        "target_words": 3_000_000,
+        "target_chapters": 900,
+        "current_chapter": 3,
+        "status": "drafting",
+        "archived_at": None,
+        "lifecycle_revision": 5,
+        "updated": True,
+    }
+    assert [call[0] for call in repository.calls] == [
+        "lock_active_project",
+        "update_metadata",
+        "get_any",
+    ]
+    assert transactions.commit_count == 1
+
+
+@pytest.mark.asyncio
+async def test_identical_metadata_update_is_a_revision_preserving_noop():
+    command_type = getattr(project_lifecycle, "UpdateProjectMetadata", None)
+    assert command_type is not None, "project metadata update command is missing"
+    row = project_row(title="Unchanged", lifecycle_revision=2)
+    repository = MemoryLifecycleRepository(row)
+    repository.force_cas_failure = True
+    service, transactions, _ = make_service(repository)
+
+    result = await service.update_metadata(command_type(
+        project_id="p1",
+        title=row["title"],
+        genre=row["genre"],
+        description=row["description"],
+        target_words=row["target_words"],
+        target_chapters=row["target_chapters"],
+        expected_lifecycle_revision=2,
+    ))
+
+    assert result.lifecycle_revision == 2
+    assert [call[0] for call in repository.calls] == ["lock_active_project"]
+    assert transactions.commit_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("row", "expected_revision", "error_type"),
+    [
+        (None, 0, http_errors.ProjectNotFound),
+        (project_row(archived_at=123), 0, http_errors.ProjectArchived),
+        (project_row(lifecycle_revision=3), 2, http_errors.ProjectLifecycleConflict),
+    ],
+)
+async def test_metadata_update_rejects_missing_archived_and_stale_projects(
+    row, expected_revision, error_type
+):
+    command_type = getattr(project_lifecycle, "UpdateProjectMetadata", None)
+    assert command_type is not None, "project metadata update command is missing"
+    repository = MemoryLifecycleRepository(*(() if row is None else (row,)))
+    service, transactions, _ = make_service(repository)
+
+    with pytest.raises(error_type):
+        await service.update_metadata(command_type(
+            project_id="p1",
+            title="Changed",
+            genre="历史",
+            description="简介",
+            target_words=2_400_000,
+            target_chapters=720,
+            expected_lifecycle_revision=expected_revision,
+        ))
+
+    assert transactions.rollback_count == 1
 
 
 @pytest.mark.asyncio
