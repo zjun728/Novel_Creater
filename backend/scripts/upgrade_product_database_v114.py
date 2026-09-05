@@ -206,7 +206,9 @@ def _validate_v113_market_source_inventory(value: object) -> None:
         if (
             any(type(key) is not str for key in stable_keys)
             or len(stable_keys) != len(set(stable_keys))
-            or frozenset(stable_keys) != _v113_market_source_stable_keys()
+            or not frozenset(stable_keys).issubset(
+                _v113_market_source_stable_keys()
+            )
         ):
             raise ValueError
     except Exception:

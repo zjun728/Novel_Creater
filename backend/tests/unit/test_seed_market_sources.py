@@ -187,6 +187,51 @@ async def test_seed_synchronizes_v1_to_v1_1_without_touching_snapshots():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("legacy_keys", "expected_counts"),
+    (
+        ((), (10, 0, 0)),
+        (
+            ("qidian.newsign", "qq-reading.male-popular"),
+            (8, 1, 1),
+        ),
+    ),
+)
+async def test_v1_1_seed_completes_compatible_partial_legacy_inventory(
+    legacy_keys, expected_counts
+):
+    from backend.domain.market_sources import load_market_source_package
+    from backend.services.market_sources import MarketSourceSeedService
+
+    legacy = load_market_source_package(V1_MANIFEST)
+    partial = legacy.model_copy(
+        update={
+            "sources": tuple(
+                source for source in legacy.sources if source.stable_key in legacy_keys
+            )
+        }
+    )
+    package = load_market_source_package(MANIFEST)
+    repository = FakeMarketSeedRepository()
+    ids = iter(f"50000000-0000-0000-0000-{index:012d}" for index in range(1, 50))
+    service = MarketSourceSeedService(
+        repository,
+        transaction_factory=_transaction(repository),
+        id_factory=lambda: next(ids),
+        clock=lambda: 1_721_000_000_000,
+    )
+
+    await service.seed(partial)
+    report = await service.seed(package)
+
+    assert (report.inserted, report.updated, report.replayed) == expected_counts
+    assert {source["stable_key"] for source in repository.sources.values()} == {
+        source.stable_key for source in package.sources
+    }
+    assert len(repository.sources) == len(repository.states) == 10
+
+
+@pytest.mark.asyncio
 async def test_seed_rolls_back_all_changes_on_compare_and_swap_conflict():
     from backend.domain.market_sources import load_market_source_package
     from backend.services.market_sources import (

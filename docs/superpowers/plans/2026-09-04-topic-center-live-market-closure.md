@@ -961,14 +961,14 @@ async def test_product_upgrade_creates_backup_before_ddl_and_syncs_sources_after
 
 @pytest.mark.asyncio
 async def test_incompatible_market_source_inventory_refuses_before_backup_or_ddl():
-    dependencies = fake_dependencies(market_source_keys=("qq-reading.male-popular",))
+    dependencies = fake_dependencies(market_source_keys=("unexpected.source",))
     with pytest.raises(SchemaUpgradeError) as raised:
         await run_product_upgrade(dependencies=dependencies, **UPGRADE_ARGUMENTS)
     assert str(raised.value) == "PRODUCT_DATABASE_MARKET_SOURCE_INVENTORY_INCOMPATIBLE"
     assert dependencies.events == ["inventory", "market-source-inventory"]
 ```
 
-Also assert: mismatched database confirmation, non-v1.13 metadata, wrong old hash, wrong old table inventory, an empty/missing/extra source inventory, the original pre-correction v1.1 ten-source inventory, and already-v1.14 replay all refuse before backup and DDL; CLI output contains no host/user/password.
+Also assert: mismatched database confirmation, non-v1.13 metadata, wrong old hash, wrong old table inventory, duplicate or non-v1.0 source keys, the original pre-correction v1.1 ten-source inventory, and already-v1.14 replay all refuse before backup and DDL. Any unique subset of the exact hash-bound v1.0 stable keys is compatible, including an empty inventory: the authoritative v1.1 synchronizer inserts every missing definition before the exact ten-source post-verification. CLI output contains no host/user/password.
 
 - [ ] **Step 2: Run tests and verify missing module failure**
 
@@ -1027,7 +1027,7 @@ python -m backend.scripts.upgrade_product_database_v114 \
   --mysql "D:\Software\MySQL Server 8.4\bin\mysql.exe"
 ```
 
-While the advisory lock is held and before backup or DDL, the command loads the hash-bound `market-sources-v1.0.0` package and requires the database to contain exactly its five stable keys: `qidian.newsign`, `qq-reading.male-popular`, `fanqie.reading`, `qimao.public-catalog`, and `shuqi.public-catalog`. Empty, missing, extra, duplicate, or any prior v1.1 inventory fails with `PRODUCT_DATABASE_MARKET_SOURCE_INVENTORY_INCOMPATIBLE` and performs no write. The command also validates the exact database name, current metadata/hash/table inventory, absence of all eight topic tables, MySQL 8.4 client pair, private backup directory, and live connection before creating one unique backup. Only after a nonempty backup has been hashed does it execute `19_topics.sql`, re-read all 99 tables, and update singleton metadata with a guarded predicate on the old version/hash:
+While the advisory lock is held and before backup or DDL, the command loads the hash-bound `market-sources-v1.0.0` package and accepts any unique subset of its five stable keys: `qidian.newsign`, `qq-reading.male-popular`, `fanqie.reading`, `qimao.public-catalog`, and `shuqi.public-catalog`. This includes an empty inventory because it contains no incompatible definition and the authoritative v1.1 synchronizer later inserts all missing sources. Any extra or duplicate key, including keys from a prior v1.1 inventory, fails with `PRODUCT_DATABASE_MARKET_SOURCE_INVENTORY_INCOMPATIBLE` and performs no write. The command also validates the exact database name, current metadata/hash/table inventory, absence of all eight topic tables, MySQL 8.4 client pair, private backup directory, and live connection before creating one unique backup. Only after a nonempty backup has been hashed does it execute `19_topics.sql`, re-read all 99 tables, and update singleton metadata with a guarded predicate on the old version/hash:
 
 ```python
 changed = await session.execute(

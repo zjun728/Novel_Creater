@@ -366,7 +366,45 @@ async def test_product_upgrade_orders_backup_before_ddl_and_sources_after_metada
     "market_source_keys",
     (
         (),
+        ("qidian.newsign",),
+        ("qidian.newsign", "qq-reading.male-popular"),
         V113_MARKET_SOURCE_KEYS[:-1],
+    ),
+)
+async def test_compatible_v1_market_source_subset_is_completed_by_authoritative_sync(
+    tmp_path, market_source_keys
+):
+    world = FakeProductWorld(market_source_keys)
+
+    result = await run_product_upgrade(
+        dependencies=world.dependencies(),
+        database=DATABASE,
+        confirm_database=DATABASE,
+        backup_directory=tmp_path,
+        mysqldump=tmp_path / "mysqldump.exe",
+        mysql=tmp_path / "mysql.exe",
+        now_ms=1_800_000_000_000,
+    )
+
+    assert result.source_count == 10
+    assert world.events == [
+        "lock-acquire",
+        "inventory",
+        "market-source-inventory",
+        "backup",
+        "backup-verify",
+        "ddl",
+        "metadata",
+        "seed-market",
+        "verify",
+        "lock-release",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "market_source_keys",
+    (
         (*V113_MARKET_SOURCE_KEYS, "unexpected.source"),
         (*V113_MARKET_SOURCE_KEYS, V113_MARKET_SOURCE_KEYS[0]),
         PRE_CORRECTION_V11_MARKET_SOURCE_KEYS,
