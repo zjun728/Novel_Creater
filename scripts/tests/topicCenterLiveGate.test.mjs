@@ -96,7 +96,9 @@ test('live runner uses truthful verified source identities and only browser UI a
     "name: '保存为方向'",
     "name: '保存为候选种子'",
     "name: '创建项目并检查种子'",
-    "getByText('待确认'",
+    "name: '查看完整内容 →'",
+    "getByText('候选校订中'",
+    "name: '确认项目种子'",
   ]) assert.equal(body.includes(marker), true, marker)
   assert.doesNotMatch(
     body,

@@ -186,7 +186,9 @@ export async function runTopicCenterLive({ baseURL, launch = options => chromium
     await dialog.getByLabel('项目名称').fill(`真实选题项目-${runId}`)
     await dialog.getByRole('button', { name: '创建项目并检查种子', exact: true }).click()
     await expect(page).toHaveURL(/\/projects\/[^/]+\/seeds$/u)
-    await expect(page.getByText('待确认', { exact: true }).first()).toBeVisible()
+    await page.getByRole('button', { name: '查看完整内容 →', exact: true }).click()
+    await expect(page.getByText('候选校订中', { exact: true }).first()).toBeVisible()
+    await expect(page.getByRole('button', { name: '确认项目种子', exact: true })).toBeEnabled()
     return 0
   } finally {
     await browser.close()
