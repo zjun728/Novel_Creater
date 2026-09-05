@@ -4,6 +4,12 @@ import json
 
 import pytest
 
+from backend.domain.topics import (
+    TopicAssistantResult,
+    TopicCandidatePayload,
+    TopicDirectionPayload,
+)
+
 
 def _snapshot(index: int = 1) -> dict:
     return {
@@ -45,6 +51,100 @@ def test_prompt_accepts_blank_idea_without_market_evidence():
     assert '"directionSuggestions"' in messages[0]["content"]
     assert '"candidateSuggestions"' in messages[0]["content"]
     assert "市场证据不是必填项" in rendered
+
+
+def test_prompt_defines_the_exact_parseable_assistant_result_contract():
+    from backend.prompts.topic_discussion import build_topic_discussion_messages
+
+    messages = build_topic_discussion_messages(
+        transcript=({"role": "user", "content": "给我一个选题建议。"},),
+        evidence=(),
+        subject=None,
+    )
+    instruction = json.loads(messages[0]["content"])
+    output_schema = instruction["outputSchema"]
+
+    assert set(output_schema) == {
+        "reply",
+        "directionSuggestions",
+        "candidateSuggestions",
+    }
+    assert output_schema["reply"] == {
+        "type": "string",
+        "required": True,
+        "minLength": 1,
+        "maxLength": 20_000,
+        "nonBlank": True,
+    }
+    assert output_schema["directionSuggestions"] == {
+        "type": "array",
+        "length": "0-4",
+        "noSuggestions": [],
+        "itemFields": [
+            "title",
+            "genreOpportunity",
+            "targetAudience",
+            "readerPromise",
+            "differentiation",
+            "longFormPotential",
+            "risks",
+            "evidenceSummary",
+        ],
+    }
+    assert output_schema["candidateSuggestions"] == {
+        "type": "array",
+        "length": "0-4",
+        "noSuggestions": [],
+        "itemFields": [
+            "title",
+            "genre",
+            "logline",
+            "targetAudience",
+            "protagonist",
+            "desire",
+            "coreConflict",
+            "worldPressure",
+            "openingHook",
+            "differentiation",
+            "storyPromise",
+            "longFormPotential",
+            "marketBasis",
+        ],
+    }
+    assert output_schema["directionSuggestions"]["itemFields"] == [
+        field.alias or name
+        for name, field in TopicDirectionPayload.model_fields.items()
+    ]
+    assert output_schema["candidateSuggestions"]["itemFields"] == [
+        field.alias or name
+        for name, field in TopicCandidatePayload.model_fields.items()
+    ]
+    assert instruction["suggestionItemConstraints"] == {
+        "appliesTo": ["directionSuggestions", "candidateSuggestions"],
+        "allItemFieldsRequired": True,
+        "additionalFields": False,
+        "eachFieldValue": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2_000,
+            "nonBlank": True,
+        },
+        "risks": {
+            "type": "string",
+            "not": ["array", "null"],
+        },
+    }
+
+    example = instruction["jsonExample"]
+    assert set(example) == set(output_schema)
+    assert set(example["directionSuggestions"][0]) == set(
+        output_schema["directionSuggestions"]["itemFields"]
+    )
+    assert set(example["candidateSuggestions"][0]) == set(
+        output_schema["candidateSuggestions"]["itemFields"]
+    )
+    TopicAssistantResult.model_validate(example, strict=True)
+    assert "无建议时使用空数组 []" in instruction["rules"]
 
 
 def test_prompt_projects_only_bounded_public_snapshot_facts_and_exact_subject():
