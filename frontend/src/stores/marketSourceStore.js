@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
 import { api } from '../api/db/client.js'
+import { marketSnapshotMatchesSource } from '../application/market/marketContracts.js'
 import { createLatestRequestGuard } from '../utils/latestRequest.js'
 
 export const useMarketSourceStore = defineStore('market-sources', () => {
@@ -260,10 +261,12 @@ export const useMarketSourceStore = defineStore('market-sources', () => {
   function sourceState(sourceId) {
     const source = sources.value.find(item => item.id === sourceId)
     if (!source) return { freshness: 'unavailable', source: null, snapshots: [] }
+    const snapshots = (snapshotHistory.value[sourceId] || [])
+      .filter(snapshot => marketSnapshotMatchesSource(snapshot, source))
     let freshness = 'not-captured'
-    if (source.lastSucceededAt && source.publicErrorCode) {
+    if (snapshots.length && source.publicErrorCode) {
       freshness = 'available-with-later-failure'
-    } else if (source.lastSucceededAt) {
+    } else if (snapshots.length) {
       freshness = 'available'
     } else if (source.publicErrorCode) {
       freshness = 'failed'
@@ -271,7 +274,7 @@ export const useMarketSourceStore = defineStore('market-sources', () => {
     return {
       freshness,
       source,
-      snapshots: snapshotHistory.value[sourceId] || [],
+      snapshots,
     }
   }
 

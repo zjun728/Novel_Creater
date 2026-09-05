@@ -84,6 +84,15 @@ test('live runner uses truthful verified source identities and only browser UI a
   ])
   assert.equal(Object.isFrozen(runner.VERIFIED_SOURCES), true)
   assert.equal(runner.VERIFIED_SOURCES.every(Object.isFrozen), true)
+  assert.deepEqual(runner.MANUAL_ONLY_SOURCES, [
+    ['qidian.newsign', '起点新签榜'],
+    ['fanqie.reading', '番茄小说阅读榜'],
+    ['shuqi.public-catalog', '书旗公开书库'],
+    ['zongheng.monthly', '纵横月票榜'],
+    ['jjwxc.quarterly-score', '晋江季度作品积分榜'],
+  ])
+  assert.equal(Object.isFrozen(runner.MANUAL_ONLY_SOURCES), true)
+  assert.equal(runner.MANUAL_ONLY_SOURCES.every(Object.isFrozen), true)
 
   const body = source('frontend/e2e/run-topic-center-live.mjs')
   for (const marker of [
@@ -99,6 +108,8 @@ test('live runner uses truthful verified source identities and only browser UI a
     "name: '查看完整内容 →'",
     "getByText('候选校订中'",
     "name: '确认项目种子'",
+    "getByText('仅支持导入'",
+    "toBeDisabled()",
   ]) assert.equal(body.includes(marker), true, marker)
   assert.doesNotMatch(
     body,

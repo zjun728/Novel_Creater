@@ -1,6 +1,8 @@
 <script setup>
 import { computed } from 'vue'
-import { NButton, NEmpty, NSpin, NTag } from 'naive-ui'
+import { NButton, NEmpty, NSpin } from 'naive-ui'
+
+import { marketSnapshotDisplayName } from '@/application/market/marketSourcePresentation'
 
 const props = defineProps({
   snapshot: { type: Object, default: null },
@@ -10,6 +12,7 @@ const props = defineProps({
   attached: { type: Boolean, default: false },
 })
 const emit = defineEmits(['toggle-attachment'])
+const snapshotDisplayName = computed(() => marketSnapshotDisplayName(props.snapshot, props.source))
 
 const metricLabels = Object.freeze({
   status: '连载状态',
@@ -34,9 +37,9 @@ const failureMessage = computed(() => {
   return props.error.message || '榜单作品暂时无法读取，请稍后手动重试。'
 })
 const loadAnnouncement = computed(() => {
-  if (props.loading) return `正在读取${props.source?.displayName || ''}榜单作品`
-  if (props.error) return `${props.source?.displayName || ''}榜单作品读取失败`
-  if (props.snapshot) return `已读取${props.source?.displayName || ''}，共${props.snapshot.entryCount}部作品`
+  if (props.loading) return `正在读取${snapshotDisplayName.value}榜单作品`
+  if (props.error) return `${snapshotDisplayName.value}榜单作品读取失败`
+  if (props.snapshot) return `已读取${snapshotDisplayName.value}，共${props.snapshot.entryCount}部作品`
   return ''
 })
 
@@ -70,7 +73,7 @@ function visibleMetrics(metrics) {
         <header class="reader-heading">
           <div>
             <p class="eyebrow">RANKED PUBLIC EVIDENCE</p>
-            <h2 id="snapshot-reader-title">{{ source.displayName }}</h2>
+            <h2 id="snapshot-reader-title">{{ snapshotDisplayName }}</h2>
             <p class="snapshot-meta">
               <span>{{ snapshot.captureMode === 'network' ? '网络刷新' : '人工导入' }}</span>
               <span>{{ timeLabel(snapshot.capturedAt) }}</span>
@@ -78,7 +81,6 @@ function visibleMetrics(metrics) {
             </p>
           </div>
           <div class="reader-actions">
-            <n-tag size="small" :bordered="false">{{ snapshot.adapterVersion }}</n-tag>
             <n-button
               size="small"
               :type="attached ? 'success' : 'default'"

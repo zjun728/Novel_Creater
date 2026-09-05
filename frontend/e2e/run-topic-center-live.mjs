@@ -12,6 +12,14 @@ export const VERIFIED_SOURCES = Object.freeze([
   Object.freeze(['xxsy.xiaoxiang-ticket', '潇湘票榜']),
 ])
 
+export const MANUAL_ONLY_SOURCES = Object.freeze([
+  Object.freeze(['qidian.newsign', '起点新签榜']),
+  Object.freeze(['fanqie.reading', '番茄小说阅读榜']),
+  Object.freeze(['shuqi.public-catalog', '书旗公开书库']),
+  Object.freeze(['zongheng.monthly', '纵横月票榜']),
+  Object.freeze(['jjwxc.quarterly-score', '晋江季度作品积分榜']),
+])
+
 
 export function parseBaseURL(argv) {
   if (argv.length !== 2 || argv[0] !== '--base-url') {
@@ -132,6 +140,12 @@ export async function runTopicCenterLive({ baseURL, launch = options => chromium
     const page = await browser.newPage()
     await page.goto(`${baseURL}/topics/market`)
     await expect(page.getByText('市场热门与公开证据', { exact: true })).toBeVisible()
+    for (const [key, name] of MANUAL_ONLY_SOURCES) {
+      const card = page.locator(`[data-market-source-key="${key}"]`)
+      await expect(card.getByText('仅支持导入', { exact: true })).toBeVisible()
+      await expect(card.getByRole('button', { name: `刷新${name}`, exact: true })).toBeDisabled()
+      await expect(card.getByRole('button', { name: `导入${name}`, exact: true })).toBeEnabled()
+    }
 
     const blankPanel = await startDiscussion(page, {
       title: `无证据长篇方向-${runId}`,

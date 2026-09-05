@@ -90,6 +90,35 @@ test('source inventory retains last success and visible failure beside immutable
   assert.equal(store.sourceState('qidian').freshness, 'available-with-later-failure')
 })
 
+test('a historical snapshot from an earlier source definition cannot satisfy current freshness', () => {
+  setActivePinia(createPinia())
+  const store = useMarketSourceStore()
+  store.$patch({
+    sources: [{
+      ...source,
+      id: 'qimao',
+      stableKey: 'qimao.public-catalog',
+      displayName: '七猫男生更新榜',
+      platform: 'qimao',
+      rankingName: 'boy_update',
+      category: 'male',
+      lastSnapshotId: 'qimao-old',
+      publicErrorCode: null,
+    }],
+    snapshotHistory: {
+      qimao: [{
+        ...snapshotSummary('qimao-old', 20, 'qimao'),
+        rankingName: 'public_catalog',
+        category: 'all',
+      }],
+    },
+  })
+
+  assert.equal(store.snapshotHistory.qimao.length, 1)
+  assert.equal(store.sourceState('qimao').freshness, 'not-captured')
+  assert.deepEqual(store.sourceState('qimao').snapshots, [])
+})
+
 test('manual import and per-source refresh publish only returned snapshot facts', async () => {
   setActivePinia(createPinia())
   const store = useMarketSourceStore()

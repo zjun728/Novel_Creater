@@ -7,6 +7,14 @@ const HASH = /^[a-f0-9]{64}$/
 const STRUCTURAL_ESCAPE = /%(?:2e|2f|5c|25|[01][0-9a-f]|7f)/i
 const MARKET_ORIGINS = new Set(['https://www.qidian.com', 'https://book.qq.com', 'https://fanqienovel.com', 'https://www.qimao.com', 'https://www.shuqi.com', 'https://www.zongheng.com', 'https://www.jjwxc.net', 'https://www.heiyan.com', 'https://www.readnovel.com', 'https://www.xxsy.net'])
 
+export function marketSnapshotMatchesSource(snapshot, source) {
+  return Boolean(snapshot && source)
+    && snapshot.sourceId === source.id
+    && snapshot.platform === source.platform
+    && snapshot.rankingName === source.rankingName
+    && snapshot.category === source.category
+}
+
 function invalid() { throw new TypeError('Invalid market source response') }
 function exact(value, keys) { if (!value || typeof value !== 'object' || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Reflect.ownKeys(value).length !== keys.length || keys.some(key => !Object.hasOwn(value, key))) invalid(); for (const key of keys) { const descriptor = Object.getOwnPropertyDescriptor(value, key); if (!descriptor || !Object.hasOwn(descriptor, 'value') || descriptor.get || descriptor.set) invalid() } }
 function text(value, max = 256) { try { if (typeof value !== 'string' || !value || unicodeScalarLength(value) > max || value !== value.trim() || /[\u0000-\u001f\u007f]/u.test(value)) invalid() } catch { invalid() }; return value }

@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   marketCapabilityPresentation,
   marketFailureCopy,
+  marketSnapshotDisplayName,
 } from '../../src/application/market/marketSourcePresentation.js'
 
 test('first source failure never claims that a historical snapshot was retained', () => {
@@ -31,10 +32,24 @@ test('source capability labels come from effective actions including no capabili
   )
   assert.deepEqual(
     marketCapabilityPresentation({ canRefresh: false, canManualImport: true }),
-    { label: '人工导入', tagType: 'warning' },
+    { label: '仅支持导入', tagType: 'warning' },
   )
   assert.deepEqual(
     marketCapabilityPresentation({ canRefresh: false, canManualImport: false }),
     { label: '已停用', tagType: 'default' },
+  )
+})
+
+test('snapshot identity, not a rewritten source record, owns historical evidence naming', () => {
+  const source = {
+    displayName: '七猫男生更新榜', platform: 'qimao', rankingName: 'boy_update', category: 'male',
+  }
+  assert.equal(
+    marketSnapshotDisplayName({ platform: 'qimao', rankingName: 'boy_update', category: 'male' }, source),
+    '七猫男生更新榜',
+  )
+  assert.equal(
+    marketSnapshotDisplayName({ platform: 'qimao', rankingName: 'public_catalog', category: 'all' }, source),
+    '七猫公开书库',
   )
 })

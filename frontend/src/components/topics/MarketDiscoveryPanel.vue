@@ -5,6 +5,7 @@ import { NAlert, NButton, NEmpty, NSpin, NTag } from 'naive-ui'
 import {
   marketCapabilityPresentation,
   marketFailureCopy,
+  marketSnapshotDisplayName,
 } from '@/application/market/marketSourcePresentation'
 import { useMarketSourceStore } from '@/stores/marketSourceStore'
 import MarketSnapshotWorks from './MarketSnapshotWorks.vue'
@@ -35,9 +36,13 @@ const selectedDetailFailure = computed(() => market.snapshotDetailFailures[selec
 const detailLoading = computed(() => detailLoadingRequest.value?.key === selectedDetailKey.value)
 
 const latestSnapshots = computed(() => market.sources.map(source => {
-  const snapshot = market.snapshotHistory[source.id]?.[0]
+  const snapshot = latestSnapshot(source)
   return snapshot ? { ...snapshot, source } : null
 }).filter(Boolean))
+
+function latestSnapshot(source) {
+  return market.sourceState(source.id).snapshots[0] || null
+}
 
 function commandKey() {
   const bytes = new Uint8Array(32)
@@ -68,13 +73,13 @@ function toggleEvidence(snapshot) {
   const remaining = props.selectedEvidence.filter(item => item.snapshotId !== snapshot.id)
   emit('update:selectedEvidence', isSelected(snapshot) ? remaining : [
     ...remaining,
-    { snapshotId: snapshot.id, contentHash: snapshot.contentHash, label: snapshot.source.displayName },
+    { snapshotId: snapshot.id, contentHash: snapshot.contentHash, label: marketSnapshotDisplayName(snapshot, snapshot.source) },
   ].slice(-4))
 }
 
 async function viewLatestSnapshot(source) {
   const sourceId = source.id
-  const latest = market.snapshotHistory[sourceId]?.[0]
+  const latest = latestSnapshot(source)
   if (!latest) return
   selectionIntentGeneration += 1
   const requestGeneration = ++detailRequestGeneration
@@ -161,10 +166,10 @@ async function importSnapshot(event) {
           :data-market-source-key="source.stableKey"
           :data-market-source-status="market.sourceState(source.id).freshness"
           :data-market-source-busy="String(market.isSourceBusy(source.id))"
-          :data-market-latest-snapshot-id="market.snapshotHistory[source.id]?.[0]?.id || ''"
-          :data-market-latest-captured-at="market.snapshotHistory[source.id]?.[0]?.capturedAt || ''"
-          :data-market-latest-entry-count="market.snapshotHistory[source.id]?.[0]?.entryCount || ''"
-          :data-market-last-succeeded-at="source.lastSucceededAt || ''"
+          :data-market-latest-snapshot-id="latestSnapshot(source)?.id || ''"
+          :data-market-latest-captured-at="latestSnapshot(source)?.capturedAt || ''"
+          :data-market-latest-entry-count="latestSnapshot(source)?.entryCount || ''"
+          :data-market-last-succeeded-at="latestSnapshot(source)?.capturedAt || ''"
         >
           <header>
             <div><span>{{ source.platform }} · {{ source.rankingName }}</span><h3>{{ source.displayName }}</h3></div>
@@ -174,13 +179,13 @@ async function importSnapshot(event) {
           </header>
           <dl>
             <div><dt>数据状态</dt><dd>{{ freshness(source) }}</dd></div>
-            <div><dt>上次成功</dt><dd>{{ timeLabel(source.lastSucceededAt) }}</dd></div>
-            <div v-if="source.publicErrorCode"><dt>本次失败</dt><dd>{{ marketFailureCopy(source, market.snapshotHistory[source.id] || []) }}</dd></div>
+            <div><dt>上次成功</dt><dd>{{ timeLabel(latestSnapshot(source)?.capturedAt) }}</dd></div>
+            <div v-if="source.publicErrorCode"><dt>本次失败</dt><dd>{{ marketFailureCopy(source, market.sourceState(source.id).snapshots) }}</dd></div>
           </dl>
           <div class="card-actions">
             <n-button size="small" :aria-label="`刷新${source.displayName}`" :disabled="!source.canRefresh" :loading="market.isSourceBusy(source.id)" @click="refresh(source)">刷新{{ source.displayName }}</n-button>
             <n-button size="small" :aria-label="`导入${source.displayName}`" :disabled="!source.canManualImport || market.isSourceBusy(source.id)" @click="chooseImport(source)">导入{{ source.displayName }}</n-button>
-            <n-button size="small" :aria-label="`查看榜单作品：${source.displayName}`" :disabled="!market.snapshotHistory[source.id]?.[0]" @click="viewLatestSnapshot(source)">查看榜单作品</n-button>
+            <n-button size="small" :aria-label="`查看榜单作品：${source.displayName}`" :disabled="!latestSnapshot(source)" @click="viewLatestSnapshot(source)">查看榜单作品</n-button>
           </div>
         </article>
        </div>
