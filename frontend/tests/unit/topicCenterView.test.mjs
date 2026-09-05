@@ -71,7 +71,7 @@ test('market and discussion surfaces preserve explicit evidence and explicit sav
   assert.match(discussion, /消息已经发送成功，但讨论记录刷新失败/)
   assert.match(discussion, /v-if="localError"[\s\S]*v-if="sendFailure"/)
   assert.doesNotMatch(discussion, /自动重试|自动保存|自动创建项目|选择模型/)
-  const sendFlow = discussion.match(/async function send\(\)[\s\S]*?\n}\n\nfunction clearSendFailure/)?.[0] || ''
+  const sendFlow = discussion.match(/async function send\(\)[\s\S]*?\r?\n}\r?\n\r?\nfunction clearSendFailure/)?.[0] || ''
   assert.match(sendFlow, /const draftSnapshot = draft\.value[\s\S]*content = draftSnapshot\.trim\(\)/)
   assert.match(sendFlow, /await topics\.sendMessage\([\s\S]*clearTopicDraft\(targetDiscussionId, draftSnapshot\)[\s\S]*await topics\.openDiscussion\(targetDiscussionId\)/)
   assert.doesNotMatch(sendFlow, /draft\.value\s*=/)
