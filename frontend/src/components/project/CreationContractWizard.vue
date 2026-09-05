@@ -11,6 +11,7 @@ import FoundationWorkspace from '@/components/foundation/FoundationWorkspace.vue
 import { contractDocumentSections } from '@/application/contracts/contractDocumentSections.js'
 import { projectSeedsPath } from '@/router/projectRoutes.js'
 import { useCreationContractStore } from '@/stores/creationContractStore.js'
+import { useProjectStore } from '@/stores/projectStore.js'
 import { useSeedStore } from '@/stores/seedStore.js'
 import { createLatestRequestGuard } from '@/utils/latestRequest.js'
 import AssetScopeStep from './contract/AssetScopeStep.vue'
@@ -29,6 +30,7 @@ const props = defineProps({
 
 const seedStore = useSeedStore()
 const contractStore = useCreationContractStore()
+const projectStore = useProjectStore()
 const loadGuard = createLatestRequestGuard()
 const loading = ref(true)
 const loadError = ref('')
@@ -349,6 +351,7 @@ function handleConfirmed() {
   activeSectionKey.value = ''
   liveStatus.value = '创作契约已签印，全文现在只读。'
   contractStore.discardUnsavedChanges()
+  void projectStore.loadProject(props.projectId).catch(() => {})
 }
 async function loadWizard(projectId) {
   if (writeBusy.value) {

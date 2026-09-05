@@ -28,4 +28,15 @@ test('project settings exposes the five fields, CAS save, and archived read-only
   assert.match(source, /已归档项目资料只能查看/)
   assert.match(source, /onBeforeRouteUpdate/)
   assert.match(source, /beforeunload/)
+  assert.match(source, /reload\(\{ force: true \}\)/)
+})
+
+test('revision-sensitive views refresh project authority after contract confirmation', async () => {
+  const [wizard, exportView] = await Promise.all([
+    read('src/components/project/CreationContractWizard.vue'),
+    read('src/views/ProjectExportView.vue'),
+  ])
+  assert.match(wizard, /projectStore\.loadProject\(props\.projectId\)/)
+  assert.match(exportView, /onMounted/)
+  assert.match(exportView, /reload\(\{ force: true \}\)/)
 })

@@ -1,4 +1,5 @@
 <script setup>
+import { onMounted } from 'vue'
 import { NButton, NResult, NSkeleton } from 'naive-ui'
 
 import NotFoundView from './NotFoundView.vue'
@@ -8,6 +9,10 @@ import ProjectPageHeader from '../components/projects/ProjectPageHeader.vue'
 import { useRouteProject } from '../composables/useRouteProject.js'
 
 const routeProject = useRouteProject()
+
+onMounted(() => {
+  void routeProject.reload({ force: true })
+})
 
 async function flushCurrentDraft() {
   return true
@@ -36,7 +41,7 @@ async function flushCurrentDraft() {
       description="项目身份读取失败，请稍后重试。"
     >
       <template #footer>
-        <n-button type="primary" @click="routeProject.reload">重试</n-button>
+        <n-button type="primary" @click="routeProject.reload({ force: true })">重试</n-button>
       </template>
     </n-result>
   </section>

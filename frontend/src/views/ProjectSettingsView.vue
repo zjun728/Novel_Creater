@@ -80,7 +80,7 @@ onBeforeRouteLeave(leaveGuard.confirmLeave)
 onBeforeRouteUpdate(leaveGuard.confirmLeave)
 onMounted(() => {
   globalThis.window?.addEventListener?.('beforeunload', leaveGuard.beforeUnload)
-  void routeProject.reload()
+  void routeProject.reload({ force: true })
 })
 onBeforeUnmount(() => {
   globalThis.window?.removeEventListener?.('beforeunload', leaveGuard.beforeUnload)
@@ -94,7 +94,7 @@ onBeforeUnmount(() => {
   <not-found-view v-else-if="routeProject.state.value === 'missing'" title="项目不存在或已被删除" description="请返回项目库确认项目状态。" />
   <section v-else-if="routeProject.state.value === 'error'" class="settings-page">
     <n-result status="error" title="项目资料暂时无法加载" :description="routeProject.error.value?.message || '请稍后重试'">
-      <template #footer><n-button type="primary" @click="routeProject.reload">重试</n-button></template>
+      <template #footer><n-button type="primary" @click="routeProject.reload({ force: true })">重试</n-button></template>
     </n-result>
   </section>
   <section v-else class="settings-page">
