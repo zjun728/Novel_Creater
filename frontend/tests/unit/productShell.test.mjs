@@ -140,6 +140,7 @@ test('active and archived project contexts have different module surfaces', asyn
       ['情节线', '/projects/project%201/planning/plots', false],
       ['故事块', '/projects/project%201/planning/story-blocks', false],
       ['作品稿件', '/projects/project%201/manuscript', false],
+      ['项目资料', '/projects/project%201/settings/project', false],
       ['模型绑定', '/projects/project%201/settings/models', false],
       ['导出与备份', '/projects/project%201/settings/export', false],
     ],
@@ -154,7 +155,7 @@ test('active and archived project contexts have different module surfaces', asyn
       ['创作基础', ['创作种子', '创作契约', '创作圣经']],
       ['故事规划', ['分卷规划', '情节线', '故事块']],
       ['写作与稿件', ['作品稿件']],
-      ['项目配置', ['模型绑定', '导出与备份']],
+      ['项目配置', ['项目资料', '模型绑定', '导出与备份']],
     ],
   )
   const seeds = createProductShellModel({
@@ -209,6 +210,7 @@ test('active and archived project contexts have different module surfaces', asyn
       ['情节线', '/projects/archived-1/planning/plots', false],
       ['故事块', '/projects/archived-1/planning/story-blocks', false],
       ['作品稿件', '/projects/archived-1/manuscript', false],
+      ['项目资料', '/projects/archived-1/settings/project', false],
       ['导出与备份', '/projects/archived-1/settings/export', false],
     ],
   )

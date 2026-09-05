@@ -45,13 +45,13 @@ export function createProjectLibraryController({ store, router, message }) {
     createError.value = ''
   }
 
-  async function create({ title }) {
+  async function create(metadata) {
     if (createPending.value) return
     createPending.value = true
     createError.value = ''
     let created
     try {
-      created = await store.createProject(title)
+      created = await store.createProject(metadata)
     } catch (error) {
       createError.value = publicError(error, '项目创建失败，请重试')
       return

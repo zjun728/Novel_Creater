@@ -47,6 +47,7 @@ test('canonical path builders encode project IDs and require positive chapter nu
     projectContractPath,
     projectBiblePath,
     projectModelSettingsPath,
+    projectSettingsPath,
     projectOverviewPath,
     planningPlotsPath,
     planningStoryBlocksPath,
@@ -80,6 +81,7 @@ test('canonical path builders encode project IDs and require positive chapter nu
     projectModelSettingsPath('a/b'),
     '/projects/a%2Fb/settings/models',
   )
+  assert.equal(projectSettingsPath('a/b'), '/projects/a%2Fb/settings/project')
   assert.equal(applicationSettingsPath(), '/settings/application')
   assert.equal(providerSettingsPath(), '/settings/providers')
   assert.equal(chapterWriterPath('p 1', 3), '/projects/p%201/write/chapters/3')
@@ -139,6 +141,10 @@ test('formal route registry names only canonical destinations and catches retire
   assert.equal(
     router.resolve('/projects/project-1/settings/models').name,
     'ProjectModelSettings',
+  )
+  assert.equal(
+    router.resolve('/projects/project-1/settings/project').name,
+    'ProjectSettings',
   )
   assert.equal(
     router.resolve('/projects/project-1/write/chapters/9').name,

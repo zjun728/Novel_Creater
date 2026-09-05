@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router'
 import ProjectCard from '../components/projects/ProjectCard.vue'
 import ProjectEmptyState from '../components/projects/ProjectEmptyState.vue'
 import ProjectImportPanel from '../components/projects/ProjectImportPanel.vue'
+import ProjectCreateDialog from '../components/projects/ProjectCreateDialog.vue'
 import ProjectNameDialog from '../components/projects/ProjectNameDialog.vue'
 import { useAppMessage } from '../composables/useAppMessage.js'
 import { createProjectLibraryController } from '../composables/projectLibraryControllers.js'
@@ -14,7 +15,13 @@ export { createProjectLibraryController }
 
 export default defineComponent({
   name: 'ProjectLibraryView',
-  components: { ProjectCard, ProjectEmptyState, ProjectImportPanel, ProjectNameDialog },
+  components: {
+    ProjectCard,
+    ProjectCreateDialog,
+    ProjectEmptyState,
+    ProjectImportPanel,
+    ProjectNameDialog,
+  },
   setup() {
     const store = useProjectStore()
     const controller = createProjectLibraryController({
@@ -92,11 +99,8 @@ export default defineComponent({
       </template>
     </section>
 
-    <ProjectNameDialog
+    <ProjectCreateDialog
       v-if="createDialogOpen"
-      id="create-project"
-      title="新建项目"
-      submit-label="创建并打开"
       :pending="createPending"
       :server-error="createError"
       :on-cancel="closeCreate"

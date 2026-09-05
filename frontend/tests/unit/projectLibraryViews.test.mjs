@@ -95,8 +95,8 @@ test('active page creates and routes only after the server returns the new proje
   const controller = libraryModule.createProjectLibraryController({
     store: {
       activeProjects: [],
-      createProject: async title => {
-        calls.push(['create', title])
+      createProject: async metadata => {
+        calls.push(['create', metadata])
         return created
       },
     },
@@ -104,11 +104,15 @@ test('active page creates and routes only after the server returns the new proje
     message,
   })
 
-  const request = controller.create({ title: '新项目' })
+  const metadata = {
+    title: '新项目', genre: '东方奇幻', description: '简介',
+    targetWords: 2_400_000, targetChapters: 720,
+  }
+  const request = controller.create(metadata)
   assert.deepEqual(routes, [])
   await request
 
-  assert.deepEqual(calls, [['create', '新项目']])
+  assert.deepEqual(calls, [['create', metadata]])
   assert.deepEqual(routes, ['/projects/created-1/overview'])
   assert.equal(controller.createDialogOpen.value, false)
 })

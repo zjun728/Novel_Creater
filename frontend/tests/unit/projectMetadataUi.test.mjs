@@ -1,0 +1,29 @@
+import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+import test from 'node:test'
+import { fileURLToPath } from 'node:url'
+
+const root = fileURLToPath(new URL('../..', import.meta.url))
+const read = path => readFile(`${root}/${path}`, 'utf8')
+
+test('blank project creation exposes complete long-form metadata', async () => {
+  const source = await read('src/components/projects/ProjectCreateDialog.vue')
+  for (const field of ['title', 'genre', 'description', 'targetWords', 'targetChapters']) {
+    assert.match(source, new RegExp(`v-model(?:\\.number)?="form\\.${field}"`))
+  }
+  assert.match(source, /PROJECT_METADATA_DEFAULTS\.targetWords/)
+  assert.match(source, /PROJECT_METADATA_DEFAULTS\.targetChapters/)
+  assert.match(source, /默认 240 万字/)
+  assert.match(source, /创建并打开/)
+})
+
+test('project settings exposes the five fields, CAS save, and archived read-only mode', async () => {
+  const source = await read('src/views/ProjectSettingsView.vue')
+  for (const field of ['title', 'genre', 'description', 'targetWords', 'targetChapters']) {
+    assert.match(source, new RegExp(`form\\.${field}`))
+  }
+  assert.match(source, /expectedLifecycleRevision/)
+  assert.match(source, /updateProjectSettings/)
+  assert.match(source, /routeProject\.state\.value === 'archived'/)
+  assert.match(source, /已归档项目资料只能查看/)
+})

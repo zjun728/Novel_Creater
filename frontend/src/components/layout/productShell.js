@@ -19,6 +19,7 @@ import {
   parsePositiveChapterNumber,
   manuscriptPath,
   projectModelSettingsPath,
+  projectSettingsPath,
   projectExportPath,
   projectOverviewPath,
   projectSeedsPath,
@@ -111,6 +112,9 @@ function routeTitle(route, project) {
   if (name === 'ProjectModelSettings') {
     return isArchived(project) ? '已归档模型绑定' : '模型绑定'
   }
+  if (name === 'ProjectSettings') {
+    return isArchived(project) ? '已归档项目资料' : '项目资料'
+  }
   if (name === 'ProjectExport') {
     return isArchived(project) ? '已归档项目导出与备份' : '导出与备份'
   }
@@ -188,6 +192,7 @@ export function createProductShellModel({
         ),
       ]),
       section('项目配置', [
+        item('project-settings', '项目资料', projectSettingsPath(project.id), '资', ['ProjectSettings']),
         ...(!archived ? [
           item('models', '模型绑定', projectModelSettingsPath(project.id), '模', ['ProjectModelSettings']),
         ] : []),
