@@ -7,7 +7,11 @@ import json
 from collections.abc import Iterable, Mapping
 
 from backend.domain.json_contracts import canonical_hash
+from backend.domain.market import MAX_MARKET_ENTRIES
 from backend.domain.topics import TopicEvidenceRef, TopicFailure
+
+
+_MAX_TOPIC_EVIDENCE_REFS = 4
 
 
 def _page(offset: int, limit: int) -> tuple[int, int]:
@@ -314,7 +318,11 @@ class TopicRepository:
         refs = tuple(refs)
         if not refs:
             return ()
+        if len(refs) > _MAX_TOPIC_EVIDENCE_REFS:
+            raise TopicFailure("TOPIC_NOT_FOUND")
         ordered_ids = tuple(sorted({ref.snapshot_id for ref in refs}))
+        if len(ordered_ids) != len(refs):
+            raise TopicFailure("TOPIC_NOT_FOUND")
         placeholders = ",".join("%s" for _ in ordered_ids)
         rows = await session.fetchall(
             f"""SELECT id,source_id,captured_at,platform,ranking_name,
@@ -325,13 +333,57 @@ class TopicRepository:
             ordered_ids,
         )
         by_id = {row["id"]: dict(row) for row in rows}
-        resolved = []
         for ref in refs:
             row = by_id.get(ref.snapshot_id)
             if row is None or row.get("content_hash") != ref.content_hash:
                 raise TopicFailure("TOPIC_NOT_FOUND")
-            resolved.append(row)
-        return tuple(resolved)
+
+        entry_limit = len(ordered_ids) * MAX_MARKET_ENTRIES + 1
+        entry_rows = await session.fetchall(
+            f"""SELECT source_id,snapshot_id,rank_number,title,author,
+                       category,public_metrics_json
+                FROM market_snapshot_entries
+                WHERE snapshot_id IN ({placeholders})
+                ORDER BY snapshot_id ASC,rank_number ASC
+                LIMIT %s FOR UPDATE""",
+            (*ordered_ids, entry_limit),
+        )
+        entries_by_id: dict[str, list[dict]] = {
+            snapshot_id: [] for snapshot_id in ordered_ids
+        }
+        for entry_row in entry_rows:
+            snapshot = by_id.get(entry_row["snapshot_id"])
+            if (
+                snapshot is None
+                or entry_row.get("source_id") != snapshot.get("source_id")
+            ):
+                raise TopicFailure("TOPIC_NOT_FOUND")
+            entries_by_id[entry_row["snapshot_id"]].append(
+                {
+                    "rank": int(entry_row["rank_number"]),
+                    "title": entry_row["title"],
+                    "author": entry_row["author"],
+                    "category": entry_row["category"],
+                    "public_metrics": _json_object(
+                        entry_row["public_metrics_json"],
+                        "public_metrics_json",
+                    ),
+                }
+            )
+
+        for snapshot_id, snapshot in by_id.items():
+            entries = tuple(entries_by_id[snapshot_id])
+            expected_count = int(snapshot["entry_count"])
+            if (
+                expected_count > MAX_MARKET_ENTRIES
+                or len(entries) != expected_count
+                or tuple(entry["rank"] for entry in entries)
+                != tuple(range(1, expected_count + 1))
+            ):
+                raise TopicFailure("TOPIC_NOT_FOUND")
+            snapshot["entries"] = entries
+
+        return tuple(by_id[ref.snapshot_id] for ref in refs)
 
     async def lock_generation_inputs(self, session):
         row = await session.fetchone(

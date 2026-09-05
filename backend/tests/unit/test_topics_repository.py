@@ -258,12 +258,43 @@ async def test_snapshot_locks_preserve_caller_order_and_require_exact_hashes():
                     "source_id": "source-a",
                     "content_hash": "a" * 64,
                     "platform": "qidian",
+                    "entry_count": 1,
                 },
                 {
                     "id": "snapshot-b",
                     "source_id": "source-b",
                     "content_hash": "b" * 64,
                     "platform": "fanqie",
+                    "entry_count": 2,
+                },
+            ],
+            [
+                {
+                    "source_id": "source-a",
+                    "snapshot_id": "snapshot-a",
+                    "rank_number": 1,
+                    "title": "甲榜作品",
+                    "author": "甲作者",
+                    "category": "玄幻",
+                    "public_metrics_json": '{"readers":123}',
+                },
+                {
+                    "source_id": "source-b",
+                    "snapshot_id": "snapshot-b",
+                    "rank_number": 1,
+                    "title": "乙榜作品一",
+                    "author": "乙作者一",
+                    "category": "都市",
+                    "public_metrics_json": {"heat": 456},
+                },
+                {
+                    "source_id": "source-b",
+                    "snapshot_id": "snapshot-b",
+                    "rank_number": 2,
+                    "title": "乙榜作品二",
+                    "author": "乙作者二",
+                    "category": "悬疑",
+                    "public_metrics_json": "{}",
                 },
             ],
         )
@@ -272,9 +303,34 @@ async def test_snapshot_locks_preserve_caller_order_and_require_exact_hashes():
     result = await TopicRepository().lock_snapshot_evidence(session, refs)
 
     assert [item["id"] for item in result] == ["snapshot-b", "snapshot-a"]
-    _, sql, args = session.calls[0]
-    assert "for update" in _compact(sql)
-    assert args == ("snapshot-a", "snapshot-b")
+    assert result[0]["entries"] == (
+        {
+            "rank": 1,
+            "title": "乙榜作品一",
+            "author": "乙作者一",
+            "category": "都市",
+            "public_metrics": {"heat": 456},
+        },
+        {
+            "rank": 2,
+            "title": "乙榜作品二",
+            "author": "乙作者二",
+            "category": "悬疑",
+            "public_metrics": {},
+        },
+    )
+    assert result[1]["entries"][0]["public_metrics"] == {"readers": 123}
+    assert all("work_url" not in entry for item in result for entry in item["entries"])
+
+    _, snapshots_sql, snapshots_args = session.calls[0]
+    _, entries_sql, entries_args = session.calls[1]
+    assert "for update" in _compact(snapshots_sql)
+    assert snapshots_args == ("snapshot-a", "snapshot-b")
+    assert "from market_snapshot_entries" in _compact(entries_sql)
+    assert "order by snapshot_id asc,rank_number asc" in _compact(entries_sql)
+    assert "limit %s for update" in _compact(entries_sql)
+    assert "work_url" not in _compact(entries_sql)
+    assert entries_args == ("snapshot-a", "snapshot-b", 201)
 
     mismatch = ScriptedSession(
         batches=([{"id": "snapshot-a", "content_hash": "f" * 64}],)
@@ -282,6 +338,166 @@ async def test_snapshot_locks_preserve_caller_order_and_require_exact_hashes():
     with pytest.raises(TopicFailure) as raised:
         await TopicRepository().lock_snapshot_evidence(mismatch, refs[1:])
     assert raised.value.code == "TOPIC_NOT_FOUND"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "entries",
+    (
+        (),
+        (
+            {
+                "source_id": "wrong-source",
+                "snapshot_id": "snapshot-a",
+                "rank_number": 1,
+                "title": "作品",
+                "author": "作者",
+                "category": "玄幻",
+                "public_metrics_json": "{}",
+            },
+        ),
+    ),
+)
+async def test_snapshot_locks_fail_closed_on_incomplete_or_cross_source_entries(
+    entries,
+):
+    from backend.repositories.topics import TopicRepository
+
+    ref = TopicEvidenceRef(snapshotId="snapshot-a", contentHash="a" * 64)
+    session = ScriptedSession(
+        batches=(
+            [
+                {
+                    "id": "snapshot-a",
+                    "source_id": "source-a",
+                    "content_hash": "a" * 64,
+                    "entry_count": 1,
+                }
+            ],
+            list(entries),
+        )
+    )
+
+    with pytest.raises(TopicFailure) as raised:
+        await TopicRepository().lock_snapshot_evidence(session, (ref,))
+
+    assert raised.value.code == "TOPIC_NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_snapshot_locks_require_public_metrics_to_decode_as_an_object():
+    from backend.repositories.topics import TopicRepository
+
+    ref = TopicEvidenceRef(snapshotId="snapshot-a", contentHash="a" * 64)
+    session = ScriptedSession(
+        batches=(
+            [
+                {
+                    "id": "snapshot-a",
+                    "source_id": "source-a",
+                    "content_hash": "a" * 64,
+                    "entry_count": 1,
+                }
+            ],
+            [
+                {
+                    "source_id": "source-a",
+                    "snapshot_id": "snapshot-a",
+                    "rank_number": 1,
+                    "title": "作品",
+                    "author": "作者",
+                    "category": "玄幻",
+                    "public_metrics_json": "[]",
+                }
+            ],
+        )
+    )
+
+    with pytest.raises(ValueError, match="public_metrics_json"):
+        await TopicRepository().lock_snapshot_evidence(session, (ref,))
+
+
+@pytest.mark.asyncio
+async def test_snapshot_locks_reject_unbounded_evidence_before_querying():
+    from backend.repositories.topics import TopicRepository
+
+    refs = tuple(
+        TopicEvidenceRef(
+            snapshotId=f"snapshot-{index}",
+            contentHash=f"{index}" * 64,
+        )
+        for index in range(5)
+    )
+    session = ScriptedSession()
+
+    with pytest.raises(TopicFailure) as raised:
+        await TopicRepository().lock_snapshot_evidence(session, refs)
+
+    assert raised.value.code == "TOPIC_NOT_FOUND"
+    assert session.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("second_hash", ("a" * 64, "b" * 64))
+async def test_snapshot_locks_reject_duplicate_ids_before_querying(second_hash):
+    from backend.repositories.topics import TopicRepository
+
+    refs = (
+        TopicEvidenceRef(snapshotId="snapshot-a", contentHash="a" * 64),
+        TopicEvidenceRef(snapshotId="snapshot-a", contentHash=second_hash),
+    )
+    session = ScriptedSession()
+
+    with pytest.raises(TopicFailure) as raised:
+        await TopicRepository().lock_snapshot_evidence(session, refs)
+
+    assert raised.value.code == "TOPIC_NOT_FOUND"
+    assert session.calls == []
+
+
+@pytest.mark.asyncio
+async def test_snapshot_locks_probe_one_bounded_overflow_entry():
+    from backend.repositories.topics import TopicRepository
+
+    class LimitAwareSession(ScriptedSession):
+        async def fetchall(self, sql, args=None):
+            rows = await super().fetchall(sql, args)
+            if "market_snapshot_entries" in sql:
+                return rows[: args[-1]]
+            return rows
+
+    ref = TopicEvidenceRef(snapshotId="snapshot-a", contentHash="a" * 64)
+    entries = [
+        {
+            "source_id": "source-a",
+            "snapshot_id": "snapshot-a",
+            "rank_number": rank,
+            "title": f"作品{rank}",
+            "author": f"作者{rank}",
+            "category": "玄幻",
+            "public_metrics_json": "{}",
+        }
+        for rank in range(1, 102)
+    ]
+    session = LimitAwareSession(
+        batches=(
+            [
+                {
+                    "id": "snapshot-a",
+                    "source_id": "source-a",
+                    "content_hash": "a" * 64,
+                    "entry_count": 100,
+                }
+            ],
+            entries,
+        )
+    )
+
+    with pytest.raises(TopicFailure) as raised:
+        await TopicRepository().lock_snapshot_evidence(session, (ref,))
+
+    assert raised.value.code == "TOPIC_NOT_FOUND"
+    assert session.calls[1][2] == ("snapshot-a", 101)
 
 
 @pytest.mark.asyncio
