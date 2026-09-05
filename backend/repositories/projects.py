@@ -439,12 +439,19 @@ class ProjectRepository:
             (project_id,),
         )
 
-    async def rename(self, session, project_id: str, title: str) -> bool:
+    async def rename(
+        self,
+        session,
+        project_id: str,
+        title: str,
+        expected_lifecycle_revision: int,
+    ) -> bool:
         changed = await session.execute(
             """UPDATE projects
-               SET title=%s, updated_at=%s
-               WHERE id=%s AND archived_at IS NULL""",
-            (title, self._clock(), project_id),
+               SET title=%s, lifecycle_revision=lifecycle_revision+1,
+                   updated_at=%s
+               WHERE id=%s AND archived_at IS NULL AND lifecycle_revision=%s""",
+            (title, self._clock(), project_id, expected_lifecycle_revision),
         )
         return changed == 1
 

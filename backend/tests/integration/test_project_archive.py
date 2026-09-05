@@ -684,7 +684,7 @@ async def test_same_title_rename_is_a_successful_mysql_no_op(disposable_mysql):
 
 
 @pytest.mark.asyncio
-async def test_real_rename_lock_then_archive_keeps_new_title_and_archives(
+async def test_real_rename_lock_then_stale_archive_keeps_new_title_active(
     disposable_mysql,
 ):
     projects, _, transaction, _ = _services(disposable_mysql)
@@ -727,7 +727,7 @@ async def test_real_rename_lock_then_archive_keeps_new_title_and_archives(
         assert len(connection_ids) == 2
         release_rename.set()
         rename_result, archive_result = await asyncio.wait_for(
-            asyncio.gather(rename_task, archive_task),
+            asyncio.gather(rename_task, archive_task, return_exceptions=True),
             timeout=10,
         )
     finally:
@@ -737,14 +737,15 @@ async def test_real_rename_lock_then_archive_keeps_new_title_and_archives(
                 task.cancel()
 
     assert rename_result.title == "Renamed"
-    assert archive_result.lifecycle_revision == 1
+    assert rename_result.lifecycle_revision == 1
+    assert isinstance(archive_result, http_errors.ProjectLifecycleConflict)
     row = await disposable_mysql.session.fetchone(
         """SELECT title,archived_at,lifecycle_revision
              FROM projects WHERE id=%s""",
         (PROJECT_ID,),
     )
     assert row["title"] == "Renamed"
-    assert row["archived_at"] is not None
+    assert row["archived_at"] is None
     assert row["lifecycle_revision"] == 1
 
 

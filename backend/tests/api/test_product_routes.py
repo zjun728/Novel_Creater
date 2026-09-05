@@ -568,6 +568,7 @@ def test_archived_project_get_has_exact_safe_domain_error(monkeypatch):
     {"title": "Project", "unknown": True},
     {"title": "Project", "targetWords": "2400000"},
     {"title": "Project", "targetChapters": 0},
+    {"title": "Project", "targetWords": 2_147_483_648},
     {"title": "Project", "genre": "x" * 121},
 ])
 def test_project_create_rejects_unknown_or_invalid_public_fields(monkeypatch, payload):

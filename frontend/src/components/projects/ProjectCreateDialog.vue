@@ -1,7 +1,8 @@
 <script setup>
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 
 import { PROJECT_METADATA_DEFAULTS } from '../../application/projects/projectMetadata.js'
+import { createModalFocusManager } from '../common/modalFocusManager.js'
 
 const props = defineProps({
   pending: { type: Boolean, default: false },
@@ -10,6 +11,7 @@ const props = defineProps({
 })
 const emit = defineEmits(['submit'])
 const titleInput = ref(null)
+const dialog = ref(null)
 const localError = ref('')
 const form = reactive({
   title: '',
@@ -19,6 +21,10 @@ const form = reactive({
   targetChapters: PROJECT_METADATA_DEFAULTS.targetChapters,
 })
 const visibleError = computed(() => localError.value || props.serverError)
+const focusManager = createModalFocusManager({
+  getDialog: () => dialog.value,
+  getInitialFocus: () => titleInput.value,
+})
 
 function submit() {
   if (props.pending) return
@@ -40,13 +46,23 @@ function cancel() {
   if (!props.pending) props.onCancel()
 }
 
-onMounted(() => titleInput.value?.focus())
+function handleKeydown(event) {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    cancel()
+    return
+  }
+  focusManager.trapTab(event)
+}
+
+onMounted(focusManager.mount)
+onUnmounted(focusManager.unmount)
 </script>
 
 <template>
   <Teleport to="body">
-    <div class="project-create-backdrop" @keydown.esc.prevent="cancel">
-      <section class="project-create-dialog" role="dialog" aria-modal="true" aria-labelledby="create-project-title">
+    <div class="project-create-backdrop" @keydown="handleKeydown">
+      <section ref="dialog" class="project-create-dialog" role="dialog" aria-modal="true" aria-labelledby="create-project-title">
         <header>
           <p>PROJECT FOUNDATION</p>
           <h2 id="create-project-title">新建项目</h2>
@@ -63,12 +79,12 @@ onMounted(() => titleInput.value?.focus())
           </label>
           <label class="field">
             <span>目标字数</span>
-            <input v-model.number="form.targetWords" type="number" min="1" step="1" :disabled="pending">
+            <input v-model.number="form.targetWords" type="number" min="1" max="2147483647" step="1" :disabled="pending">
             <small>默认 240 万字，适合长篇连载</small>
           </label>
           <label class="field">
             <span>预计章节数</span>
-            <input v-model.number="form.targetChapters" type="number" min="1" step="1" :disabled="pending">
+            <input v-model.number="form.targetChapters" type="number" min="1" max="2147483647" step="1" :disabled="pending">
           </label>
           <label class="field field--wide">
             <span>项目简介</span>

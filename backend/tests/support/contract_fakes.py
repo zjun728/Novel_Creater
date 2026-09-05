@@ -54,8 +54,8 @@ class MemoryContractRepository:
         secondary = style_asset(flavor="章回体悬念", distance="全知视角")
         card_payload = {"schemaVersion": "experience-card-v1", "rule": "让选择不可逆"}
         self.projects = {
-            "p1": {"id": "p1", "status": "drafting"},
-            "archived": {"id": "archived", "status": "archived"},
+            "p1": {"id": "p1", "status": "drafting", "lifecycle_revision": 0},
+            "archived": {"id": "archived", "status": "archived", "lifecycle_revision": 0},
         }
         self.selected_seeds = {
             "p1": {
@@ -288,14 +288,19 @@ class MemoryContractRepository:
 
     async def sync_project_contract_targets(
         self, session, *, project_id, target_words, target_chapters, updated_at,
+        expected_lifecycle_revision,
     ):
         project = self.projects.get(project_id)
-        if project is None:
+        if (
+            project is None
+            or project["lifecycle_revision"] != expected_lifecycle_revision
+        ):
             return False
         project.update({
             "target_words": target_words,
             "target_chapters": target_chapters,
             "updated_at": updated_at,
+            "lifecycle_revision": expected_lifecycle_revision + 1,
         })
         return True
 

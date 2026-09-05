@@ -111,12 +111,18 @@ class MemoryLifecycleRepository:
         self._record("has_unfinished_operation", session, project_id)
         return self.unfinished
 
-    async def rename(self, session, project_id, title):
-        self._record("rename", session, project_id, title)
+    async def rename(self, session, project_id, title, expected_revision):
+        self._record("rename", session, project_id, title, expected_revision)
         row = self.rows.get(project_id)
-        if self.force_cas_failure or row is None or row["archived_at"] is not None:
+        if (
+            self.force_cas_failure
+            or row is None
+            or row["archived_at"] is not None
+            or row["lifecycle_revision"] != expected_revision
+        ):
             return False
         row["title"] = title
+        row["lifecycle_revision"] += 1
         return True
 
     async def update_metadata(self, session, command):
@@ -307,7 +313,7 @@ async def test_rename_locks_active_project_and_changes_only_title():
     assert result.title == "Changed"
     assert result.status == "planning"
     assert result.current_chapter == original["current_chapter"]
-    assert result.lifecycle_revision == 4
+    assert result.lifecycle_revision == 5
     assert [call[0] for call in repository.calls] == [
         "lock_active_project",
         "rename",
@@ -392,6 +398,31 @@ async def test_identical_metadata_update_is_a_revision_preserving_noop():
     assert result.lifecycle_revision == 2
     assert [call[0] for call in repository.calls] == ["lock_active_project"]
     assert transactions.commit_count == 1
+
+
+@pytest.mark.asyncio
+async def test_stale_metadata_cannot_overwrite_a_completed_rename():
+    command_type = project_lifecycle.UpdateProjectMetadata
+    repository = MemoryLifecycleRepository(
+        project_row(title="Original", lifecycle_revision=4)
+    )
+    service, _, _ = make_service(repository)
+
+    renamed = await service.rename("p1", "Renamed")
+    assert renamed.lifecycle_revision == 5
+    with pytest.raises(http_errors.ProjectLifecycleConflict):
+        await service.update_metadata(command_type(
+            project_id="p1",
+            title="Original",
+            genre="historical",
+            description="Description",
+            target_words=2_400_000,
+            target_chapters=720,
+            expected_lifecycle_revision=4,
+        ))
+
+    assert repository.rows["p1"]["title"] == "Renamed"
+    assert repository.rows["p1"]["lifecycle_revision"] == 5
 
 
 @pytest.mark.asyncio

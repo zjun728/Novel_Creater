@@ -357,20 +357,21 @@ async def test_permanent_delete_guard_failure_does_not_touch_owned_rows():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("affected, expected", [(1, True), (0, False), (2, False)])
-async def test_rename_changes_only_title_on_an_active_project(affected, expected):
+async def test_rename_is_revision_guarded_and_increments_revision(affected, expected):
     session = RecordingSession(execute_result=affected)
 
     changed = await projects.ProjectRepository(clock=lambda: 789).rename(
-        session, "p1", "Changed"
+        session, "p1", "Changed", 4
     )
 
     assert changed is expected
     assert session.calls == [
         (
             "execute",
-            "UPDATE projects SET title=%s, updated_at=%s "
-            "WHERE id=%s AND archived_at IS NULL",
-            ("Changed", 789, "p1"),
+            "UPDATE projects SET title=%s, lifecycle_revision=lifecycle_revision+1, "
+            "updated_at=%s WHERE id=%s AND archived_at IS NULL "
+            "AND lifecycle_revision=%s",
+            ("Changed", 789, "p1", 4),
         )
     ]
 

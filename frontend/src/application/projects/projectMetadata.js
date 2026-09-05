@@ -19,7 +19,7 @@ function text(value, { required = false, max }) {
 }
 
 function positiveInteger(value) {
-  if (!Number.isSafeInteger(value) || value < 1) invalid()
+  if (!Number.isSafeInteger(value) || value < 1 || value > 2_147_483_647) invalid()
   return value
 }
 
@@ -46,4 +46,28 @@ export function projectMetadataUpdatePayload(value = {}) {
   const revision = value.expectedLifecycleRevision
   if (!Number.isSafeInteger(revision) || revision < 0) invalid()
   return { ...payload, expectedLifecycleRevision: revision }
+}
+
+export function createProjectMetadataLeaveGuard({
+  isSaving,
+  isDirty,
+  confirmDiscard,
+  warnSaving,
+}) {
+  function confirmLeave() {
+    if (isSaving()) {
+      warnSaving()
+      return false
+    }
+    return !isDirty() || confirmDiscard()
+  }
+
+  function beforeUnload(event) {
+    if (!isSaving() && !isDirty()) return false
+    event.preventDefault()
+    event.returnValue = ''
+    return true
+  }
+
+  return { confirmLeave, beforeUnload }
 }

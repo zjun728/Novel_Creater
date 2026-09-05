@@ -27,8 +27,8 @@ class CreateProject(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     genre: str = Field(default="", max_length=120)
     description: str = Field(default="", max_length=5000)
-    target_words: int = Field(default=2_400_000, gt=0)
-    target_chapters: int = Field(default=720, gt=0)
+    target_words: int = Field(default=2_400_000, gt=0, le=2_147_483_647)
+    target_chapters: int = Field(default=720, gt=0, le=2_147_483_647)
 
 
 class UpdateProjectMetadata(BaseModel):
@@ -38,8 +38,8 @@ class UpdateProjectMetadata(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     genre: str = Field(max_length=120)
     description: str = Field(max_length=5000)
-    target_words: int = Field(gt=0)
-    target_chapters: int = Field(gt=0)
+    target_words: int = Field(gt=0, le=2_147_483_647)
+    target_chapters: int = Field(gt=0, le=2_147_483_647)
     expected_lifecycle_revision: int = Field(ge=0)
 
 
@@ -751,7 +751,12 @@ class ProjectLifecycleService:
                 raise ProjectArchived()
             if row["title"] == title:
                 return ProjectResult.from_row(row)
-            if not await self.repository.rename(session, project_id, title):
+            if not await self.repository.rename(
+                session,
+                project_id,
+                title,
+                int(row["lifecycle_revision"]),
+            ):
                 raise ProjectLifecycleConflict()
             updated = await self.repository.get_any(session, project_id)
             if updated is None:

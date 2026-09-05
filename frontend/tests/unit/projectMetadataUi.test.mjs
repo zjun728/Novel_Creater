@@ -26,4 +26,6 @@ test('project settings exposes the five fields, CAS save, and archived read-only
   assert.match(source, /updateProjectSettings/)
   assert.match(source, /routeProject\.state\.value === 'archived'/)
   assert.match(source, /已归档项目资料只能查看/)
+  assert.match(source, /onBeforeRouteUpdate/)
+  assert.match(source, /beforeunload/)
 })

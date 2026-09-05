@@ -205,12 +205,20 @@ class ContractRepository:
         target_words: int,
         target_chapters: int,
         updated_at: int,
+        expected_lifecycle_revision: int,
     ) -> bool:
         return await session.execute(
             """UPDATE projects
-                  SET target_words=%s,target_chapters=%s,updated_at=%s
-                WHERE id=%s AND archived_at IS NULL""",
-            (target_words, target_chapters, updated_at, project_id),
+                  SET target_words=%s,target_chapters=%s,
+                      lifecycle_revision=lifecycle_revision+1,updated_at=%s
+                WHERE id=%s AND archived_at IS NULL AND lifecycle_revision=%s""",
+            (
+                target_words,
+                target_chapters,
+                updated_at,
+                project_id,
+                expected_lifecycle_revision,
+            ),
         ) == 1
 
     async def delete_draft_cas(

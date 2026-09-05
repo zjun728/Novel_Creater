@@ -29,7 +29,8 @@ class ContractService(ContractHistoryService):
         ):
             raise ContractPreconditionFailed()
         async with self.transaction_factory() as session:
-            if await self.repository.lock_project(session, command.project_id) is None:
+            project = await self.repository.lock_project(session, command.project_id)
+            if project is None:
                 raise ContractNotFound()
             draft_row = await self.repository.lock_draft(session, command.project_id)
             draft_matches = draft_row is not None and (
@@ -250,6 +251,7 @@ class ContractService(ContractHistoryService):
                 target_words=saved.draft.targetTotalWords,
                 target_chapters=saved.draft.expectedChapterCount,
                 updated_at=now,
+                expected_lifecycle_revision=int(project["lifecycle_revision"]),
             ):
                 raise ContractConflict()
             if not await self.repository.delete_draft_cas(

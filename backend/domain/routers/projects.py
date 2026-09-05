@@ -46,8 +46,8 @@ class ProjectCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     genre: str = Field(default="", max_length=120)
     description: str = Field(default="", max_length=5000)
-    targetWords: int = Field(default=2_400_000, gt=0)
-    targetChapters: int = Field(default=720, gt=0)
+    targetWords: int = Field(default=2_400_000, gt=0, le=2_147_483_647)
+    targetChapters: int = Field(default=720, gt=0, le=2_147_483_647)
 
 
 class ProjectRename(BaseModel):
@@ -68,8 +68,8 @@ class ProjectMetadataUpdate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     genre: str = Field(max_length=120)
     description: str = Field(max_length=5000)
-    targetWords: int = Field(gt=0)
-    targetChapters: int = Field(gt=0)
+    targetWords: int = Field(gt=0, le=2_147_483_647)
+    targetChapters: int = Field(gt=0, le=2_147_483_647)
     expectedLifecycleRevision: int = Field(ge=0)
 
 

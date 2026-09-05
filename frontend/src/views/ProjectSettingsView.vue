@@ -1,10 +1,13 @@
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
-import { onBeforeRouteLeave } from 'vue-router'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import { NButton, NResult, NSkeleton } from 'naive-ui'
 
 import ProjectPageHeader from '../components/projects/ProjectPageHeader.vue'
-import { projectMetadataPayload } from '../application/projects/projectMetadata.js'
+import {
+  createProjectMetadataLeaveGuard,
+  projectMetadataPayload,
+} from '../application/projects/projectMetadata.js'
 import { useAppMessage } from '../composables/useAppMessage.js'
 import { useRouteProject } from '../composables/useRouteProject.js'
 import { useProjectStore } from '../stores/projectStore.js'
@@ -63,13 +66,24 @@ async function save() {
   }
 }
 
-onBeforeRouteLeave(() => {
-  if (saving.value) {
-    message.warning('项目资料正在保存，请等待结果明确后再离开。')
-    return false
-  }
-  if (!dirty.value) return true
-  return typeof window !== 'undefined' && window.confirm('项目资料尚未保存。放弃修改并离开吗？')
+const leaveGuard = createProjectMetadataLeaveGuard({
+  isSaving: () => saving.value,
+  isDirty: () => Boolean(dirty.value),
+  confirmDiscard: () => (
+    typeof window !== 'undefined'
+    && window.confirm('项目资料尚未保存。放弃修改并离开吗？')
+  ),
+  warnSaving: () => message.warning('项目资料正在保存，请等待结果明确后再离开。'),
+})
+
+onBeforeRouteLeave(leaveGuard.confirmLeave)
+onBeforeRouteUpdate(leaveGuard.confirmLeave)
+onMounted(() => {
+  globalThis.window?.addEventListener?.('beforeunload', leaveGuard.beforeUnload)
+  void routeProject.reload()
+})
+onBeforeUnmount(() => {
+  globalThis.window?.removeEventListener?.('beforeunload', leaveGuard.beforeUnload)
 })
 </script>
 
@@ -90,8 +104,8 @@ onBeforeRouteLeave(() => {
       <form class="settings-form" @submit.prevent="save">
         <label class="field field--wide"><span>项目名称</span><input v-model="form.title" maxlength="200" :disabled="archived || saving"></label>
         <label class="field"><span>题材</span><input v-model="form.genre" maxlength="120" placeholder="如：东方奇幻" :disabled="archived || saving"></label>
-        <label class="field"><span>目标字数</span><input v-model.number="form.targetWords" type="number" min="1" step="1" :disabled="archived || saving"><small>平台面向 200 万字以上长篇，默认 240 万字</small></label>
-        <label class="field"><span>预计章节数</span><input v-model.number="form.targetChapters" type="number" min="1" step="1" :disabled="archived || saving"></label>
+        <label class="field"><span>目标字数</span><input v-model.number="form.targetWords" type="number" min="1" max="2147483647" step="1" :disabled="archived || saving"><small>平台面向 200 万字以上长篇，默认 240 万字</small></label>
+        <label class="field"><span>预计章节数</span><input v-model.number="form.targetChapters" type="number" min="1" max="2147483647" step="1" :disabled="archived || saving"></label>
         <label class="field field--wide"><span>项目简介</span><textarea v-model="form.description" maxlength="5000" rows="7" :disabled="archived || saving" placeholder="概括故事方向、主角目标和核心冲突"></textarea><small>{{ form.description.length }} / 5000</small></label>
         <p v-if="error" class="form-error" role="alert">{{ error }}</p>
         <footer v-if="!archived"><span>{{ dirty ? '有尚未保存的修改' : '所有修改已保存' }}</span><button type="submit" :disabled="saving || !dirty">{{ saving ? '正在保存…' : '保存项目资料' }}</button></footer>
