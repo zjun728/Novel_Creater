@@ -1211,7 +1211,7 @@ Identify only processes whose command line and working directory belong to `D:\P
 Use `D:\Projects\Novel_Creater\.env.local.json`. Require SHA-256:
 
 ```text
-0e3ddb3683e9c878bc1b2d7244c643dc013716a194df9555e837b8000a35f032
+1f05d8703b9ca447955a7c46eb91a111db468606688849c24b0c1b9d7e197324
 ```
 
 Bridge only `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, and `MYSQL_DB` to the backup/upgrade child processes and clear them in `finally`. Never print their values.
