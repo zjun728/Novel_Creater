@@ -27,6 +27,7 @@ from backend.services.finalization import (
     FinalizationPreflightConflict,
     FinalizationService,
     PrepareFinalization,
+    RevokeFinalization,
 )
 from backend.services.finalization_commit import (
     AtomicFinalizationService,
@@ -297,6 +298,33 @@ async def commit_finalization(
         "planningHash": value.planning_hash,
         "replayed": value.replayed,
     }
+
+
+@router.post("/projects/{project_id}/chapter-sessions/{session_id}/finalization/attempts/{attempt_id}/revoke")
+async def revoke_finalization(
+    project_id: str, session_id: str, attempt_id: str, body: ConfirmFinalizationBody,
+    service: FinalizationService = Depends(get_finalization_service),
+):
+    try:
+        value = await service.revoke(RevokeFinalization(
+            project_id=project_id, chapter_session_id=session_id, attempt_id=attempt_id,
+            expected_revision=body.expectedRevision, expected_revision_hash=body.expectedRevisionHash,
+        ))
+    except (FinalizationConflict, FinalizationDataCorruption, TypeError, ValueError) as error:
+        _raise_public(error)
+    return _reviewed(value)
+
+
+@router.get("/projects/{project_id}/chapter-sessions/{session_id}/finalization/attempts/{attempt_id}")
+async def get_finalization_attempt_state(
+    project_id: str, session_id: str, attempt_id: str,
+    service: FinalizationService = Depends(get_finalization_service),
+):
+    try:
+        value = await service.get_attempt_state(project_id, session_id, attempt_id)
+    except (FinalizationConflict, FinalizationDataCorruption, TypeError, ValueError) as error:
+        _raise_public(error)
+    return _reviewed(value)
 
 
 __all__ = [

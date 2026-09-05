@@ -18,7 +18,7 @@ const jsonResponse = body => ({
 const bodyOf = call => JSON.parse(call.options.body)
 
 
-test('finalization client uses only the six closed session endpoints', async () => {
+test('finalization client preserves the six original closed session endpoints', async () => {
   const originalFetch = global.fetch
   const calls = []
   const review = {
@@ -102,6 +102,30 @@ test('finalization client uses only the six closed session endpoints', async () 
   } finally {
     global.fetch = originalFetch
   }
+})
+
+test('confirmed revocation and status reads encode the exact attempt and strip extra data', async () => {
+  const originalFetch = global.fetch
+  const calls = []
+  global.fetch = async (url, options) => {
+    calls.push({ url: String(url), options })
+    return jsonResponse({ attemptId: 'a/1', status: 'cancelled', currentRevision: 2,
+      currentRevisionHash: HASH, confirmedRevision: 2, confirmedRevisionHash: HASH,
+      secret: 'must-not-cross' })
+  }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    const result = await api.chapterSessions.revokeFinalization('p/1', 's/1', 'a/1', {
+      expectedRevision: 2, expectedRevisionHash: HASH, force: true,
+    })
+    await api.chapterSessions.getFinalizationAttemptState('p/1', 's/1', 'a/1')
+    assert.deepEqual(bodyOf(calls[0]), { expectedRevision: 2, expectedRevisionHash: HASH })
+    assert.deepEqual(calls.map(call => [call.options.method, new URL(call.url).pathname]), [
+      ['POST', '/api/projects/p%2F1/chapter-sessions/s%2F1/finalization/attempts/a%2F1/revoke'],
+      ['GET', '/api/projects/p%2F1/chapter-sessions/s%2F1/finalization/attempts/a%2F1'],
+    ])
+    assert.equal(result.secret, undefined)
+  } finally { global.fetch = originalFetch }
 })
 
 

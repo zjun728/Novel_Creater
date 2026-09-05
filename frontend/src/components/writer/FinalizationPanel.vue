@@ -12,9 +12,10 @@ const props = defineProps({
 
 const selectedCandidateId = ref('')
 const changeSetDraft = ref(null)
+const revokeConfirmation = ref(false)
 const review = computed(() => props.controller.review.value)
 const postFinalization = computed(() => props.controller.postFinalization.value)
-const busy = computed(() => props.disabled || props.controller.busy.value)
+const busy = computed(() => props.disabled || props.controller.busy.value || props.controller.recoveryPending?.value)
 const currentCandidates = computed(() => props.candidates.filter(
   item => item.basisStatus === 'current',
 ))
@@ -53,6 +54,7 @@ watch(currentCandidates, values => {
 }, { immediate: true, flush: 'sync' })
 
 watch(() => review.value?.changeSet, value => {
+  revokeConfirmation.value = false
   changeSetDraft.value = value?.payload ? structuredClone(value.payload) : null
 }, { immediate: true, deep: false, flush: 'sync' })
 
@@ -166,6 +168,16 @@ async function cancelReview() {
   }
 }
 
+async function revokeReview() {
+  if (!revokeConfirmation.value || busy.value || !props.controller.canRevoke?.value) return
+  try {
+    await props.controller.revokeReview()
+    revokeConfirmation.value = false
+  } catch {
+    // Keep the review visible; the controller owns outcome reconciliation.
+  }
+}
+
 async function refreshPostFinalization() {
   await props.controller.refreshPostFinalization()
 }
@@ -181,6 +193,11 @@ async function refreshPostFinalization() {
       title="定稿操作未完成"
       class="panel-alert"
     >{{ controller.error.value }}</n-alert>
+    <n-button
+      v-if="controller.recoveryPending?.value"
+      :disabled="controller.busy.value"
+      @click="controller.load().catch(() => {})"
+    >核对撤销结果</n-button>
 
     <n-alert
       v-if="review?.status === 'failed' && !hardBlocks.length"
@@ -376,6 +393,13 @@ async function refreshPostFinalization() {
         :disabled="busy"
         @click="commitChapter"
       >定稿本章</n-button>
+      <section v-if="controller.canRevoke?.value" class="review-section" aria-label="撤销已确认审查">
+        <n-button :disabled="busy" @click="revokeConfirmation = !revokeConfirmation">撤销已确认审查</n-button>
+        <template v-if="revokeConfirmation">
+          <p>本章尚未定稿。撤销本次审查会保留正文、候选和已有审查记录；重新审查将再次调用模型。</p>
+          <n-button :disabled="busy" @click="revokeReview">确认撤销本次审查</n-button>
+        </template>
+      </section>
     </template>
   </n-card>
 </template>

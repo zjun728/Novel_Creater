@@ -20,9 +20,10 @@ function assertHealthy(evidence) {
   assertExactWrites(evidence, [
     { method: 'PUT', path: /\/working-draft$/u, count: 1, statuses: [200] },
     { method: 'POST', path: /\/candidates$/u, count: 1, statuses: [201] },
-    { method: 'POST', path: /\/finalization\/prepare$/u, count: 1, statuses: [201] },
-    { method: 'POST', path: /\/finalization\/revisions$/u, count: 1, statuses: [201] },
-    { method: 'POST', path: /\/finalization\/confirm$/u, count: 1, statuses: [200] },
+    { method: 'POST', path: /\/finalization\/prepare$/u, count: 2, statuses: [201] },
+    { method: 'POST', path: /\/finalization\/revisions$/u, count: 2, statuses: [201] },
+    { method: 'POST', path: /\/finalization\/confirm$/u, count: 2, statuses: [200] },
+    { method: 'POST', path: /\/finalization\/attempts\/[^/]+\/revoke$/u, count: 1, statuses: [200] },
     { method: 'POST', path: /\/finalization\/commit$/u, count: 1, statuses: [200] },
   ])
   assert.equal(scanRuntimeEvidence(evidence, runtimeSensitiveValues()).matchCount, 0)
@@ -49,6 +50,7 @@ test('@atomic-finalization reviews, corrects, confirms, and atomically finalizes
   await page.getByRole('button', { name: '保存为候选' }).click()
   await expect(page.getByText('候选 1', { exact: true })).toBeVisible()
 
+  for (let reviewPass = 0; reviewPass < 2; reviewPass += 1) {
   const prepareResponse = page.waitForResponse(response => (
     response.request().method() === 'POST'
     && new URL(response.url()).pathname.endsWith('/finalization/prepare')
@@ -122,6 +124,24 @@ test('@atomic-finalization reviews, corrects, confirms, and atomically finalizes
   await expect(page.getByText('修订 2', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '确认以上变更' })).toBeEnabled()
   await page.getByRole('button', { name: '确认以上变更' }).click()
+  if (reviewPass === 0) {
+    await page.getByRole('button', { name: '撤销已确认审查', exact: true }).click()
+    await expect(page.getByText('本章尚未定稿。撤销本次审查会保留正文、候选和已有审查记录；重新审查将再次调用模型。')).toBeVisible()
+    const revokedResponse = page.waitForResponse(response => response.request().method() === 'POST'
+      && new URL(response.url()).pathname.endsWith(`/attempts/${currentReview.attemptId}/revoke`))
+    await page.getByRole('button', { name: '确认撤销本次审查' }).click()
+    const revoked = await revokedResponse
+    assert.equal(revoked.status(), 200)
+    const receipt = await revoked.json()
+    assert.equal(receipt.attemptId, currentReview.attemptId)
+    assert.equal(receipt.status, 'cancelled')
+    assert.equal(receipt.confirmedRevision, 2)
+    assert.equal(receipt.confirmedRevisionHash, savedReview.changeSet.contentHash)
+    await expect(page.getByRole('button', { name: '审查并定稿' })).toBeEnabled()
+    await expect(editor).toHaveValue(candidate)
+    await expect(page.getByText('候选 1', { exact: true })).toBeVisible()
+  }
+  }
   await page.getByRole('button', { name: '定稿本章' }).click()
   await expect(page.getByRole('alert')).toContainText('本章已定稿')
   await expect(editor).toHaveAttribute('readonly', '')

@@ -157,6 +157,16 @@ class CancelFinalization:
 
 
 @dataclass(frozen=True, slots=True)
+class RevokeFinalization(ConfirmFinalization):
+    attempt_id: str
+
+    def __post_init__(self) -> None:
+        ConfirmFinalization.__post_init__(self)
+        if not isinstance(self.attempt_id, str) or not self.attempt_id.strip():
+            raise ValueError("finalization attempt identity is invalid")
+
+
+@dataclass(frozen=True, slots=True)
 class PreparedFinalization:
     attempt_id: str
     status: str
@@ -661,6 +671,72 @@ class FinalizationService:
             confirmed_revision=command.expected_revision,
             confirmed_revision_hash=command.expected_revision_hash,
         )
+
+    @staticmethod
+    def _reviewed_attempt(attempt) -> ReviewedFinalization:
+        return ReviewedFinalization(
+            attempt_id=attempt["id"], status=attempt["status"],
+            current_revision=attempt["current_revision"],
+            current_revision_hash=attempt["current_revision_hash"],
+            confirmed_revision=attempt["confirmed_revision"],
+            confirmed_revision_hash=attempt["confirmed_revision_hash"],
+        )
+
+    async def get_attempt_state(self, project_id, session_id, attempt_id):
+        async with self.transaction_factory() as session:
+            attempt = await self.repository.read_attempt_state(session, project_id, session_id, attempt_id)
+            if attempt is None:
+                raise FinalizationConflict("FINALIZATION_NOT_FOUND")
+            return self._reviewed_attempt(attempt)
+
+    async def revoke(self, command: RevokeFinalization) -> ReviewedFinalization:
+        """Terminate one exact confirmed review without changing its evidence."""
+        if type(command) is not RevokeFinalization:
+            raise TypeError("command must be RevokeFinalization")
+        async with self.transaction_factory() as session:
+            # All finalization writers take the project lock first, including commit.
+            if await self.repository.lock_project(session, command.project_id) is None:
+                raise FinalizationConflict("FINALIZATION_NOT_FOUND")
+            chapter = await self.repository.lock_session(
+                session, command.project_id, command.chapter_session_id,
+            )
+            attempt = await self.repository.lock_attempt(
+                session, command.project_id, command.chapter_session_id, command.attempt_id,
+            )
+            if chapter is None or attempt is None:
+                raise FinalizationConflict("FINALIZATION_NOT_FOUND")
+            if (
+                attempt.get("current_revision") != command.expected_revision
+                or attempt.get("current_revision_hash") != command.expected_revision_hash
+                or attempt.get("confirmed_revision") != command.expected_revision
+                or attempt.get("confirmed_revision_hash") != command.expected_revision_hash
+            ):
+                raise FinalizationConflict("FINALIZATION_STATE_CONFLICT")
+            # Exact historical replay cannot terminate any newer active attempt.
+            if attempt.get("status") == "cancelled" and attempt.get("active_slot") is None:
+                return self._reviewed_attempt(attempt)
+            if (
+                chapter.get("status") != "drafting"
+                or chapter.get("finalized_at") is not None
+                or chapter.get("active_draft_operation_id") is not None
+                or attempt.get("status") != "awaiting_author"
+                or attempt.get("active_slot") != 1
+            ):
+                raise FinalizationConflict("FINALIZATION_STATE_CONFLICT")
+            if await self.repository.lock_commit_by_session(
+                session, command.project_id, command.chapter_session_id,
+            ) is not None or await self.repository.lock_final_chapter(
+                session, command.project_id, command.chapter_session_id,
+            ) is not None:
+                raise FinalizationConflict("FINALIZATION_STATE_CONFLICT")
+            if not await self.repository.revoke_confirmed_review(
+                session, project_id=command.project_id,
+                session_id=command.chapter_session_id, attempt_id=command.attempt_id,
+                revision=command.expected_revision, revision_hash=command.expected_revision_hash,
+                updated_at=self._clock(),
+            ):
+                raise FinalizationConflict("FINALIZATION_STATE_CONFLICT")
+            return self._reviewed_attempt({**attempt, "status": "cancelled"})
 
     async def cancel(self, command: CancelFinalization) -> ReviewedFinalization:
         if type(command) is not CancelFinalization:

@@ -168,6 +168,8 @@ APPROVED_FORMAL_ROUTES = {
         "commit",
     ),
     ("POST", "/api/projects/{pid}/chapter-sessions/{session_id}/draft-operations"),
+    ("GET", "/api/projects/{project_id}/chapter-sessions/{session_id}/finalization/attempts/{attempt_id}"),
+    ("POST", "/api/projects/{project_id}/chapter-sessions/{session_id}/finalization/attempts/{attempt_id}/revoke"),
     ("GET", "/api/projects/{pid}/chapter-sessions/{session_id}/draft-operations/{operation_id}"),
     ("GET", "/api/projects/{pid}/chapter-sessions/{session_id}/draft-operations/{operation_id}/events"),
     ("POST", "/api/projects/{pid}/chapter-sessions/{session_id}/draft-operations/{operation_id}/cancel"),

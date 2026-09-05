@@ -88,6 +88,99 @@ test('a confirmed review still cannot be cancelled', async () => {
   assert.deepEqual(controller.review.value, confirmed)
 })
 
+test('revoking a confirmed review pins the exact attempt and never prepares automatically', async () => {
+  let current = { ...review, confirmation: { revision: 1, contentHash: HASH_A } }
+  const calls = []
+  const controller = createFinalizationController({
+    getReview: async () => structuredClone(current),
+    revoke: async (attemptId, body) => {
+      calls.push({ attemptId, ...body })
+      current = { ...current, status: 'cancelled' }
+    },
+    prepare: async () => { throw new Error('must not prepare') },
+  })
+  await controller.load()
+  await controller.revokeReview()
+  assert.deepEqual(calls, [{ attemptId: 'attempt-1', expectedRevision: 1, expectedRevisionHash: HASH_A }])
+  assert.equal(controller.review.value.status, 'cancelled')
+  assert.equal(controller.primaryAction.value, 'blocked')
+})
+
+test('a lost revocation response is reconciled by exact read without repeating writes', async () => {
+  let current = { ...review, confirmation: { revision: 1, contentHash: HASH_A } }
+  let writes = 0
+  const reads = []
+  const controller = createFinalizationController({
+    getReview: async () => structuredClone(current),
+    revoke: async () => { writes += 1; current = { ...current, status: 'cancelled' }; throw Object.assign(new Error('lost'), { status: 0 }) },
+    getAttemptState: async id => {
+      reads.push(id)
+      return { attemptId: id, status: 'cancelled', currentRevision: 1, currentRevisionHash: HASH_A,
+        confirmedRevision: 1, confirmedRevisionHash: HASH_A }
+    },
+  })
+  await controller.load()
+  await controller.revokeReview()
+  assert.equal(writes, 1)
+  assert.deepEqual(reads, ['attempt-1'])
+  assert.equal(controller.review.value.status, 'cancelled')
+  assert.equal(controller.recoveryPending.value, false)
+})
+
+test('unresolved revocation blocks every write until a successful exact status read', async () => {
+  let available = false
+  let reviewUnavailable = false
+  let writes = 0
+  let current = { ...review, confirmation: { revision: 1, contentHash: HASH_A } }
+  const controller = createFinalizationController({
+    getReview: async () => {
+      if (reviewUnavailable) throw new Error('review unavailable')
+      return structuredClone(current)
+    },
+    revoke: async () => { writes += 1; throw Object.assign(new Error('lost'), { status: 504 }) },
+    getAttemptState: async id => {
+      if (!available) throw new Error('read unavailable')
+      return { attemptId: id, status: 'cancelled', currentRevision: 1, currentRevisionHash: HASH_A,
+        confirmedRevision: 1, confirmedRevisionHash: HASH_A }
+    },
+    prepare: async () => { writes += 1 }, commit: async () => { writes += 1 },
+  })
+  await controller.load()
+  await assert.rejects(controller.revokeReview())
+  assert.equal(controller.recoveryPending.value, true)
+  await controller.revokeReview()
+  await controller.commitChapter()
+  await controller.prepareCandidate(candidate)
+  assert.equal(writes, 1)
+  available = true
+  current = { ...current, status: 'cancelled' }
+  reviewUnavailable = true
+  await assert.rejects(controller.load())
+  assert.equal(controller.recoveryPending.value, true)
+  await controller.commitChapter()
+  assert.equal(writes, 1)
+  reviewUnavailable = false
+  await controller.load()
+  assert.equal(controller.recoveryPending.value, false)
+  assert.equal(controller.review.value.status, 'cancelled')
+})
+
+test('committing and unknown commit outcomes cannot be revoked', async () => {
+  for (const status of ['awaiting_author', 'committing']) {
+    let calls = 0
+    const controller = createFinalizationController({
+      getReview: async () => ({ ...review, status, confirmation: { revision: 1, contentHash: HASH_A } }),
+      commit: async () => { throw Object.assign(new Error('unknown'), { status: 504 }) },
+      revoke: async () => { calls += 1 },
+    })
+    await controller.load()
+    if (status === 'awaiting_author') await assert.rejects(controller.commitChapter())
+    assert.equal(controller.canRevoke.value, false)
+    await assert.rejects(controller.revokeReview())
+    assert.equal(calls, 0)
+  }
+})
+
 
 test('prepare, correct, confirm and commit expose one fenced primary action', async () => {
   const calls = []

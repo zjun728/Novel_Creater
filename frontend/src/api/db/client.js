@@ -3135,6 +3135,17 @@ export const api = {
         pickDefined(data, ['expectedRevision', 'expectedRevisionHash']),
       ))
     ),
+    revokeFinalization: async (projectId, sessionId, attemptId, data) => (
+      finalizationReviewed(await post(
+        `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/finalization/attempts/${segment(attemptId)}/revoke`,
+        pickDefined(data, ['expectedRevision', 'expectedRevisionHash']),
+      ))
+    ),
+    getFinalizationAttemptState: async (projectId, sessionId, attemptId) => (
+      finalizationReviewed(await get(
+        `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/finalization/attempts/${segment(attemptId)}`,
+      ))
+    ),
     commitFinalization: async (projectId, sessionId, data) => (
       finalizationCommitted(await post(
         `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/finalization/commit`,

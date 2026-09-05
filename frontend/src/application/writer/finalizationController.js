@@ -68,6 +68,8 @@ export function createFinalizationController({
   correct = unavailable('correct'),
   confirm = unavailable('confirm'),
   cancel = unavailable('cancel'),
+  revoke = unavailable('revoke'),
+  getAttemptState = unavailable('getAttemptState'),
   commit = unavailable('commit'),
   onCommitted = async () => {},
   getProjectId = () => '',
@@ -85,6 +87,9 @@ export function createFinalizationController({
   const postBusy = ref(false)
   const busy = ref(false)
   const error = ref('')
+  const recoveryPending = ref(false)
+  const commitUncertain = ref(false)
+  let recoveryTarget = null
   let generation = 0
   let postGeneration = 0
   let disposed = false
@@ -198,8 +203,8 @@ export function createFinalizationController({
     return postFinalization.value
   }
 
-  async function run(action, message) {
-    if (disposed || busy.value) return false
+  async function run(action, message, allowRecovery = false) {
+    if (disposed || busy.value || (recoveryPending.value && !allowRecovery)) return false
     const token = generation
     const active = () => !disposed && token === generation
     busy.value = true
@@ -221,12 +226,82 @@ export function createFinalizationController({
 
   async function load() {
     return run(async active => {
+      if (recoveryPending.value) {
+        await reconcileRevocation(active)
+        if (!active()) return null
+      }
       const value = await getReview()
       if (!active()) return null
       review.value = value
+      commitUncertain.value = false
+      recoveryPending.value = false
+      recoveryTarget = null
       if (value?.status !== 'committed') result.value = null
       return value
-    }, '定稿审查状态加载失败，请刷新后重试。')
+    }, '定稿审查状态加载失败，请刷新后重试。', true)
+  }
+
+  async function reconcileRevocation(active) {
+    const target = recoveryTarget
+    const state = await getAttemptState(target.attemptId)
+    if (!active()) return null
+    if (state?.attemptId !== target.attemptId
+      || state.currentRevision !== target.expectedRevision
+      || state.currentRevisionHash !== target.expectedRevisionHash
+      || state.confirmedRevision !== target.expectedRevision
+      || state.confirmedRevisionHash !== target.expectedRevisionHash
+      || !['cancelled', 'awaiting_author', 'committed'].includes(state.status)) {
+      throw new TypeError('revocation outcome is unresolved')
+    }
+    return state
+  }
+
+  async function revokeReview() {
+    return run(async active => {
+      if (primaryAction.value !== 'commit' || review.value?.status !== 'awaiting_author' || commitUncertain.value) {
+        throw new TypeError('confirmed review revocation is unavailable')
+      }
+      const attemptId = review.value?.attemptId
+      if (typeof attemptId !== 'string' || !attemptId) throw new TypeError('attempt is required')
+      const command = currentRevision(review.value)
+      recoveryTarget = { attemptId, ...command }
+      try {
+        await revoke(attemptId, command)
+      } catch (failure) {
+        if (!active()) return null
+        const unknown = [0, 408, 502, 503, 504].includes(Number(failure?.status || 0))
+        if (!unknown) {
+          recoveryTarget = null
+          // A concurrent commit may have won. Refresh its authoritative result.
+          const current = await getReview()
+          if (active()) review.value = current
+          throw failure
+        }
+        recoveryPending.value = true
+        const state = await reconcileRevocation(active)
+        if (!active()) return null
+        if (state.status !== 'cancelled') {
+          const current = await getReview()
+          if (active()) {
+            review.value = current
+            recoveryPending.value = false
+            recoveryTarget = null
+          }
+          throw failure
+        }
+      }
+      if (!active()) return null
+      // Keep writes fenced if the successful POST's follow-up read is lost.
+      recoveryTarget = { attemptId, ...command }
+      recoveryPending.value = true
+      const current = await getReview()
+      if (!active()) return null
+      review.value = current
+      result.value = null
+      recoveryPending.value = false
+      recoveryTarget = null
+      return current
+    }, '撤销结果尚未确认，请刷新审查状态；不会自动重新审查。')
   }
 
   async function prepareCandidate(candidateValue) {
@@ -321,12 +396,13 @@ export function createFinalizationController({
         return result.value
       } catch (failure) {
         if (!active()) return null
-        const unknown = Number(failure?.status || 0) === 0
-          || Number(failure?.status || 0) === 502
+        const unknown = [0, 408, 502, 503, 504].includes(Number(failure?.status || 0))
         if (!unknown) throw failure
+        commitUncertain.value = true
         const recovered = await getReview()
         if (!active()) return null
         if (recovered?.status !== 'committed') throw failure
+        commitUncertain.value = false
         review.value = recovered
         error.value = ''
         committedTarget = commitTarget
@@ -345,6 +421,9 @@ export function createFinalizationController({
     postFinalization.value = null
     postBusy.value = false
     committedTarget = null
+    recoveryTarget = null
+    recoveryPending.value = false
+    commitUncertain.value = false
     busy.value = false
     error.value = ''
   }
@@ -361,6 +440,9 @@ export function createFinalizationController({
     postBusy: computed(() => postBusy.value),
     busy: computed(() => busy.value),
     error,
+    recoveryPending: computed(() => recoveryPending.value),
+    canRevoke: computed(() => review.value?.status === 'awaiting_author'
+      && primaryAction.value === 'commit' && !commitUncertain.value && !recoveryPending.value),
     hardBlocks,
     finalized,
     primaryAction,
@@ -369,6 +451,7 @@ export function createFinalizationController({
     correctChangeSet,
     confirmChangeSet,
     cancelReview,
+    revokeReview,
     commitChapter,
     refreshPostFinalization,
     reset,

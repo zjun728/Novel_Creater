@@ -355,6 +355,46 @@ class FinalizationRepository:
         )
         return None if row is None else dict(row)
 
+    async def lock_attempt(self, session, project_id, session_id, attempt_id):
+        row = await session.fetchone(
+            """SELECT * FROM finalization_change_sets
+               WHERE project_id=%s AND chapter_session_id=%s AND id=%s FOR UPDATE""",
+            (project_id, session_id, attempt_id),
+        )
+        return None if row is None else dict(row)
+
+    async def read_attempt_state(self, session, project_id, session_id, attempt_id):
+        row = await session.fetchone(
+            """SELECT id,status,current_revision,current_revision_hash,
+                      confirmed_revision,confirmed_revision_hash
+               FROM finalization_change_sets
+               WHERE project_id=%s AND chapter_session_id=%s AND id=%s""",
+            (project_id, session_id, attempt_id),
+        )
+        return None if row is None else dict(row)
+
+    async def lock_final_chapter(self, session, project_id, session_id):
+        return await session.fetchone(
+            """SELECT id FROM final_chapters
+               WHERE project_id=%s AND chapter_session_id=%s FOR UPDATE""",
+            (project_id, session_id),
+        )
+
+    async def revoke_confirmed_review(
+        self, session, *, project_id, session_id, attempt_id, revision, revision_hash, updated_at,
+    ):
+        affected = await session.execute(
+            """UPDATE finalization_change_sets
+               SET status='cancelled',active_slot=NULL,updated_at=%s
+               WHERE project_id=%s AND chapter_session_id=%s AND id=%s
+                 AND status='awaiting_author' AND active_slot=1
+                 AND current_revision=%s AND current_revision_hash=%s
+                 AND confirmed_revision=%s AND confirmed_revision_hash=%s""",
+            (updated_at, project_id, session_id, attempt_id,
+             revision, revision_hash, revision, revision_hash),
+        )
+        return affected == 1
+
     async def lock_latest_attempt(
         self,
         session,

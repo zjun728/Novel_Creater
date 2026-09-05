@@ -101,6 +101,12 @@ const finalization = createFinalizationController({
     session.value.id,
     command,
   ),
+  revoke: (attemptId, command) => api.chapterSessions.revokeFinalization(
+    projectId.value, session.value.id, attemptId, command,
+  ),
+  getAttemptState: attemptId => api.chapterSessions.getFinalizationAttemptState(
+    projectId.value, session.value.id, attemptId,
+  ),
   commit: async (command, target) => {
     const committed = await api.chapterSessions.commitFinalization(
       target.projectId,

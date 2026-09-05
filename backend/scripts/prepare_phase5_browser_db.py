@@ -75,14 +75,23 @@ async def verify_postconditions(database_name: str) -> None:
                     (PROJECT,),
                 ))["total"]
             revisions = await session.fetchall(
-                """SELECT revision,source FROM finalization_change_set_revisions
-                    WHERE project_id=%s ORDER BY revision""",
+                """SELECT change_set_id,revision,source FROM finalization_change_set_revisions
+                    WHERE project_id=%s ORDER BY change_set_id,revision""",
                 (PROJECT,),
             )
-            quality = await session.fetchone(
+            quality = await session.fetchall(
                 """SELECT status,JSON_LENGTH(findings_json) AS finding_count
                      FROM candidate_quality_reports WHERE project_id=%s""",
                 (PROJECT,),
+            )
+            revoked = await session.fetchall(
+                """SELECT attempt.active_slot,attempt.current_revision,attempt.current_revision_hash,
+                          attempt.confirmed_revision,attempt.confirmed_revision_hash,attempt.confirmed_at,
+                          revision.content_hash
+                   FROM finalization_change_sets attempt
+                   JOIN finalization_change_set_revisions revision
+                     ON revision.change_set_id=attempt.id AND revision.revision=attempt.confirmed_revision
+                   WHERE attempt.project_id=%s AND attempt.status='cancelled'""", (PROJECT,),
             )
             canon_revision = await session.fetchone(
                 """SELECT revision_number,parent_revision_number,source_type
@@ -124,8 +133,8 @@ async def verify_postconditions(database_name: str) -> None:
             await session.raw.rollback()
 
     expected_counts = {
-        "draft_candidates": 1, "candidate_quality_reports": 1,
-        "finalization_change_sets": 1, "finalization_records": 1,
+        "draft_candidates": 1, "candidate_quality_reports": 2,
+        "finalization_change_sets": 2, "finalization_records": 1,
         "final_chapters": 1,
     }
     if selected != {"database_name": database_name} or counts != expected_counts:
@@ -146,13 +155,22 @@ async def verify_postconditions(database_name: str) -> None:
         and final["canon_revision_number"] == final["projection_revision_number"] == 1
     ):
         raise RuntimeError("Phase5 atomic finalization state is invalid")
-    if revisions != [
-        {"revision": 1, "source": "extraction"},
-        {"revision": 2, "source": "author_correction"},
-    ]:
+    revision_chains = {}
+    for row in revisions:
+        revision_chains.setdefault(row["change_set_id"], []).append((row["revision"], row["source"]))
+    if len(revision_chains) != 2 or any(
+        chain != [(1, "extraction"), (2, "author_correction")] for chain in revision_chains.values()
+    ):
         raise RuntimeError("Phase5 author correction evidence is invalid")
-    if quality != {"status": "completed", "finding_count": 1}:
+    if quality != [{"status": "completed", "finding_count": 1}] * 2:
         raise RuntimeError("Phase5 quality review evidence is invalid")
+    if len(revoked) != 1 or not (
+        revoked[0]["active_slot"] is None
+        and revoked[0]["current_revision"] == revoked[0]["confirmed_revision"] == 2
+        and revoked[0]["current_revision_hash"] == revoked[0]["confirmed_revision_hash"] == revoked[0]["content_hash"]
+        and revoked[0]["confirmed_at"] is not None
+    ):
+        raise RuntimeError("Phase5 revoked confirmation history is invalid")
     if canon_revision != {
         "revision_number": 1,
         "parent_revision_number": 0,
