@@ -116,8 +116,9 @@ def test_build_canon_commit_reuses_closed_events_and_projects_progress():
 
     assert request.project_id == "project-1"
     assert request.source_type == "finalization"
-    assert request.entities[0].id == "entity-new"
-    assert request.aliases[0].entity_id == "entity-new"
+    assert request.entities[0].id != "entity-new"
+    assert request.aliases[0].entity_id == request.entities[0].id
+    assert request.events[0].event.entity_id == request.entities[0].id
     assert request.events[0].event.field_path == "location"
     progress = request.events[1].event
     assert progress.field_path == "plot.progress.story_block.block-1"
@@ -181,6 +182,9 @@ class _Transactions:
 
 
 class _FinalizationRepository:
+    async def read_current_view(self, *args):
+        return getattr(self, 'review', None)
+
     def __init__(self, planning, change_set):
         self.planning = planning
         self.change_set = change_set
@@ -353,6 +357,23 @@ def _commit_command(change_set):
         idempotency_key=HASH_B, expected_revision=1,
         expected_revision_hash=change_set_hash(change_set),
     )
+
+
+@pytest.mark.asyncio
+async def test_required_quality_finding_rejects_commit_even_with_existing_confirmation():
+    planning = _planning()
+    changes = _change_set(planning)
+    repository = _FinalizationRepository(planning, changes)
+    repository.review = {'qualityReport': {'findings': [{'id': 'required', 'severity': 'required'}]}}
+    service = AtomicFinalizationService(
+        transaction_factory=_Transactions(), repository=repository,
+        planning_repository=_PlanningRepository(planning), canon_committer=_CanonCommitter(),
+        clock=lambda: 123,
+    )
+    with pytest.raises(FinalizationCommitInvalid, match='required findings'):
+        await service.commit(_commit_command(changes))
+    assert repository.chapters == []
+    assert repository.records == []
 
 
 @pytest.mark.asyncio

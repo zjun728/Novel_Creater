@@ -1,3 +1,5 @@
+import { chapterWorkbenchPath } from '../../router/projectRoutes.js'
+
 const COPY = Object.freeze({
   select_seed: ['CREATIVE SEED', '选择创作种子', '从候选种子中明确本项目唯一的当前创作方向。'],
   continue_contract: ['CREATION CONTRACT', '继续创作契约', '完成故事发动机、风格、经验与篇幅边界，并由作者确认。'],
@@ -25,9 +27,26 @@ function safeTargetPath(value) {
 export function mapProjectNextAction(preparation) {
   if (preparation?.lifecycle === 'archived') return Object.freeze({ state: 'archived' })
   const nextAction = preparation?.nextAction
-  const copy = COPY[nextAction]
+  let copy = COPY[nextAction]
   if (preparation?.lifecycle !== 'active' || !copy || !safeTargetPath(preparation?.targetPath)) {
     return Object.freeze({ state: 'unavailable', label: '重新读取创作状态' })
+  }
+  const reasons = new Set(preparation.reasons || [])
+  if (reasons.has('canon_projection_unsynchronized')) {
+    return Object.freeze({ state: 'unavailable', label: '查询进度同步',
+      description: '正文已定稿，进度同步尚未完成。正文保持只读，同步完成后才能进入下一章。' })
+  }
+  if (reasons.has('planningProgressUnavailable')) {
+    return Object.freeze({ state: 'unavailable', label: '重新读取创作状态',
+      description: '后续规划进度暂时无法核实，请重新读取后继续。' })
+  }
+  if (nextAction === 'continue_planning' && reasons.has('activeStoryBlockCompleted')) {
+    copy = ['STORY PLANNING', '调整后续故事规划',
+      '当前故事块已完成。请在故事规划中安排后续故事块并确认规划，再准备下一章小纲。']
+  }
+  if (nextAction === 'continue_planning' && reasons.has('activeStoryBlockTasksCompleted')) {
+    copy = ['STORY PLANNING', '调整后续故事规划',
+      '当前故事块没有剩余写作任务。请补充后续安排或切换故事块，并确认规划后继续。']
   }
   const chapterNumber = preparation.authoritativeChapterNumber
   if (CHAPTER_ACTIONS.has(nextAction) && (!Number.isSafeInteger(chapterNumber) || chapterNumber <= 0)) {
@@ -38,4 +57,14 @@ export function mapProjectNextAction(preparation) {
     state: 'available', eyebrow: copy[0], label: copy[1].replace('{n}', String(number ?? '')),
     description: copy[2], targetPath: preparation.targetPath, chapterNumber: number,
   })
+}
+
+// Workbench aliases preserve the authoritative chapter and avoid leaving the
+// chapter workspace for the older standalone outline/writer entry points.
+export function mapWorkbenchNextAction(preparation, projectId) {
+  const action = mapProjectNextAction(preparation)
+  const root = `/projects/${encodeURIComponent(projectId)}`
+  if (action.state !== 'available' || !action.chapterNumber
+    || ![`${root}/planning/outlines`, `${root}/write/chapters/${action.chapterNumber}`].includes(action.targetPath)) return action
+  return Object.freeze({ ...action, targetPath: chapterWorkbenchPath(projectId, action.chapterNumber) })
 }

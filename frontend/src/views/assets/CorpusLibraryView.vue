@@ -42,10 +42,7 @@ const stateOptions = [
   { label: '已归档', value: 'archived' },
   { label: '全部状态', value: 'all' },
 ]
-const activeCount = computed(() => store.sources.filter(item => item.state === 'active').length)
-const referencedCount = computed(() => store.sources.filter(item => (
-  Number(item.referenceCount || 0) + Number(item.historicalReferenceCount || 0) > 0
-)).length)
+
 
 function query() {
   return {
@@ -178,28 +175,17 @@ onBeforeUnmount(() => {
   <section class="corpus-library" aria-labelledby="corpus-library-title">
     <header class="library-hero">
       <div>
-        <p class="eyebrow">CREATIVE ASSETS · MANAGED CORPUS</p>
         <h1 id="corpus-library-title">语料档案室</h1>
         <span>将参考文本编目为不可变版本，查看受控节选，并清楚掌握每一次创作引用。</span>
       </div>
       <n-button type="primary" @click="importOpen = true">导入语料</n-button>
     </header>
+    <nav class="library-tabs" aria-label="创作资产分类">
+      <router-link to="/assets/styles">风格模板</router-link>
+      <router-link to="/assets/experience">经验卡</router-link>
+      <router-link to="/assets/corpus" aria-current="page">语料档案</router-link>
+    </nav>
 
-    <section class="ledger" aria-label="语料馆藏概览">
-      <div>
-        <span>VISIBLE RECORDS</span>
-        <strong>{{ store.sources.length }}</strong>
-      </div>
-      <div>
-        <span>ACTIVE</span>
-        <strong>{{ activeCount }}</strong>
-      </div>
-      <div>
-        <span>REFERENCED</span>
-        <strong>{{ referencedCount }}</strong>
-      </div>
-      <p>所有正文预览均限制在 {{ PREVIEW_CHARS }} 字符；原始字节与受管路径不进入界面。</p>
-    </section>
 
     <section class="filter-ribbon" aria-label="语料筛选">
       <n-input
@@ -213,7 +199,7 @@ onBeforeUnmount(() => {
 
     <n-alert v-if="listError" type="error" class="state-alert">
       {{ listError }}
-      <template #action><n-button size="small" @click="loadSources">重试</n-button></template>
+      <div class="alert-actions"><n-button size="small" @click="loadSources">重试</n-button></div>
     </n-alert>
 
     <div v-if="store.loadingSources" class="loading-grid" aria-busy="true">
@@ -263,9 +249,9 @@ onBeforeUnmount(() => {
         <n-spin :show="detailLoading">
           <n-alert v-if="detailError" type="error" class="drawer-alert">
             {{ detailError }}
-            <template #action>
+            <div class="alert-actions">
               <n-button v-if="selected" size="small" @click="openDetail(selected)">重试</n-button>
-            </template>
+            </div>
           </n-alert>
           <template v-if="detail">
             <div class="detail-stamp">
@@ -398,4 +384,13 @@ onBeforeUnmount(() => {
 @media (max-width: 880px) { .ledger { grid-template-columns: repeat(3, 1fr); } .ledger p { grid-column: 1 / -1; border-top: 1px solid #ddd1bf; } .source-grid { grid-template-columns: 1fr; } }
 @media (max-width: 600px) { .corpus-library { padding: 22px 16px; } .library-hero { align-items: flex-start; flex-direction: column; } .ledger { grid-template-columns: 1fr; } .ledger > div { border-right: 0; border-bottom: 1px solid #ddd1bf; } .ledger p { grid-column: auto; } .filter-ribbon { grid-template-columns: 1fr; } .chapter-list { grid-template-columns: 1fr; } }
 @media (prefers-reduced-motion: reduce) { .source-card { transition: none; } }
+
+.asset-library,.corpus-library{padding:24px 36px;background:var(--nc-canvas)}
+.library-hero h1{font-size:30px;letter-spacing:normal;margin:0}
+.library-tabs{display:flex;gap:12px;margin-top:24px;flex-wrap:wrap}
+.library-tabs a{min-width:130px;padding:10px 16px;border:1px solid var(--nc-border);border-radius:6px;background:var(--nc-paper);color:var(--nc-ink);text-decoration:none;font-size:13px}
+.library-tabs a[aria-current=page]{background:var(--nc-vermilion);color:white;border-color:var(--nc-vermilion)}
+.style-grid,.card-grid,.source-grid{grid-template-columns:minmax(0,1fr)}
+.style-card,.source-card{min-height:180px;border-radius:6px;grid-template-columns:44px minmax(0,1fr)}
+@media(max-width:680px){.asset-library,.corpus-library{padding:20px 16px}.library-tabs a{min-width:0}}
 </style>

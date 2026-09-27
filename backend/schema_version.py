@@ -5,7 +5,7 @@ from __future__ import annotations
 from backend.schema_manifest import manifest_hash
 
 
-EXPECTED_SCHEMA_VERSION = "writer-core-v1.14.0"
+EXPECTED_SCHEMA_VERSION = "writer-core-v1.16.0"
 _VERSION_QUERY = (
     "SELECT schema_version, manifest_hash FROM schema_metadata WHERE singleton_id=1"
 )
@@ -29,8 +29,11 @@ def _is_missing_table_error(exc: Exception) -> bool:
 
 def _guidance() -> str:
     return (
-        "Run python -m backend.scripts.initialize_database for a new empty database, "
-        "or explicitly reinitialize the development database."
+        "Run python -m backend.scripts.initialize_database only for a new empty database. "
+        "For an existing database use a backed-up incremental upgrade: "
+        "v1.15 to v1.16 uses python -m backend.scripts.upgrade_product_database_v116; "
+        "v1.14 to v1.15 uses python -m backend.scripts.upgrade_product_database_v115; "
+        "earlier versions must first complete their versioned upgrades."
     )
 
 

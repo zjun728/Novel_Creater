@@ -10,6 +10,7 @@ from pathlib import Path
 
 from starlette.datastructures import UploadFile
 
+from backend.config import clear_runtime_configuration, install_runtime_configuration, load_runtime_configuration
 from backend.database import close_pool, connection, get_pool
 from backend.domain.project_import_plans import (
     build_publication_plan,
@@ -108,7 +109,7 @@ async def _assert_service_preflight(corpus_root: Path) -> None:
         repository=ProjectPackageRepository(pool=await get_pool()),
         managed_corpus_root=corpus_root,
         temp_parent=package_temp,
-    ).create_backup(PROJECT, 0)
+    ).create_backup(PROJECT, 1)
     try:
         with package.path.open("rb") as source:
             try:
@@ -289,6 +290,8 @@ async def main() -> None:
     parser.add_argument("--database", required=True)
     parser.add_argument("--verify-postconditions", action="store_true")
     args = parser.parse_args()
+    snapshot = load_runtime_configuration()
+    install_runtime_configuration(snapshot)
     try:
         if args.verify_postconditions:
             await verify_postconditions(args.database)
@@ -305,7 +308,10 @@ async def main() -> None:
                     )
                 raise
     finally:
-        await close_pool()
+        try:
+            await close_pool()
+        finally:
+            clear_runtime_configuration(snapshot)
 
 
 if __name__ == "__main__":

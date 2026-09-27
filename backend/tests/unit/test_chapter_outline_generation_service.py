@@ -422,7 +422,7 @@ class FakeOutlineRepository:
         self.lock_order.append("outline-draft")
         if (
             project_id == "p1"
-            and chapter_number == 1
+            and chapter_number == self.draft["chapter_num"]
             and draft_id == self.draft["id"]
         ):
             return self.draft
@@ -706,6 +706,93 @@ async def test_generation_manifest_preserves_author_selected_stage_boundary():
         "outline-draft",
         "attempt",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("selected", (False, True))
+async def test_next_outline_uses_finalized_text_and_excludes_completed_tasks(selected):
+    from hashlib import sha256
+
+    planning = _planning(include_second_stage=True)
+    service, repository, chapter, _, gateway, _ = _service(planning=planning)
+    chapter.max_final = 1
+    repository.draft["chapter_num"] = 2
+    for row in (repository.authorities, repository.draft):
+        row["canon_revision"] = row["projection_revision"] = 1
+    body = "两人已经取得换岗间隔，现在站在缺口前。"
+    repository.authorities["previous_final_chapter"] = {
+        "id": "final-1", "chapter_num": 1, "canon_revision": 1,
+        "content": body, "content_hash": sha256(body.encode()).hexdigest(),
+    }
+    repository.authorities["actual_progress"] = [{
+        "revision_number": 1, "subject_key": "__global__", "entity_id": None,
+        "field_path": "plot.progress.scene_task.task-1",
+        "payload_json": '{"chapterNumber":1,"targetId":"task-1","targetType":"scene_task","status":"completed"}',
+        "content_hash": repository.authorities["projection_hash"],
+    }]
+    second = planning.story_blocks[0].stages[1]
+    result_content = _generated(planning).model_dump(mode="json", by_alias=True)
+    result_content["stageRefs"] = [_ref(second)]
+    result_content["sceneTaskRefs"] = [_ref(second.scene_tasks[0])]
+    gateway.output = EditableChapterOutlineContent.model_validate(result_content)
+    if selected:
+        repository.draft["content"]["stageRefs"] = [
+            _ref(stage) for stage in planning.story_blocks[0].stages
+        ]
+        repository.draft["content"]["sceneTaskRefs"] = [
+            _ref(task) for stage in planning.story_blocks[0].stages for task in stage.scene_tasks
+        ]
+        repository.draft["content_hash"] = canonical_hash(repository.draft["content"])
+    result = await service.generate(_command(
+        chapter_number=2, author_instructions="", draft_hash=repository.draft["content_hash"],
+    ))
+    assert result.status == "succeeded"
+    manifest = gateway.calls[0]["manifest"]
+    assert [item.id for item in manifest.allowed_scene_tasks] == ["task-2-id"]
+    assert [item.id for item in manifest.allowed_stages] == ["stage-2-id"]
+    assert manifest.continuity.previous_chapter.content == body
+    assert manifest.continuity.actual_progress[0].status == "completed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ("block_completed", "stage_completed", "all_tasks_completed", "missing_previous", "projection_hash", "field_path"))
+async def test_continuation_fails_before_provider_when_done_or_evidence_is_invalid(failure):
+    from hashlib import sha256
+    import json
+    from backend.services.chapter_outline_generation import ChapterOutlineGenerationNotReady
+
+    service, repository, chapter, _, gateway, _ = _service()
+    chapter.max_final = 1
+    repository.draft["chapter_num"] = 2
+    for row in (repository.authorities, repository.draft):
+        row["canon_revision"] = row["projection_revision"] = 1
+    repository.authorities["previous_final_chapter"] = {
+        "id": "final-1", "chapter_num": 1, "canon_revision": 1,
+        "content": "正文", "content_hash": sha256("正文".encode()).hexdigest(),
+    }
+    target_type, target_id = {
+        "block_completed": ("story_block", "block-1"),
+        "stage_completed": ("stage", "stage-1"),
+    }.get(failure, ("scene_task", "task-1"))
+    row = {
+        "revision_number": 1, "subject_key": "__global__", "entity_id": None,
+        "field_path": f"plot.progress.{target_type}.{target_id}",
+        "payload_json": json.dumps({"chapterNumber": 1, "targetId": target_id,
+                                    "targetType": target_type,
+                                    "status": "completed" if failure.endswith("completed") else "advanced"}),
+        "content_hash": repository.authorities["projection_hash"],
+    }
+    repository.authorities["actual_progress"] = [row]
+    if failure == "missing_previous":
+        repository.authorities["previous_final_chapter"] = None
+    elif failure == "projection_hash":
+        row["content_hash"] = "f" * 64
+    elif failure == "field_path":
+        row["field_path"] = "plot.progress.scene_task.other-id"
+    with pytest.raises(ChapterOutlineGenerationNotReady):
+        await service.generate(_command(chapter_number=2, author_instructions=""))
+    assert gateway.calls == []
+    assert repository.attempts == {}
 
 
 @pytest.mark.asyncio

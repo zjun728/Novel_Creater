@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 import json
 import re
+from hashlib import sha256
 from typing import Literal, Self
 
 from pydantic import (
@@ -13,6 +14,7 @@ from pydantic import (
     Field,
     field_validator,
     model_validator,
+    model_serializer,
 )
 
 from backend.domain.chapter_outlines import (
@@ -67,6 +69,45 @@ class PublicBindingAuthority(BaseModel):
     model_name: str = Field(min_length=1)
 
 
+class PreviousFinalChapter(BaseModel):
+    model_config = _STRICT_MANIFEST
+
+    id: str = Field(min_length=1)
+    chapter_number: int = Field(ge=1)
+    canon_revision: int = Field(ge=1)
+    content: str = Field(min_length=1)
+    content_hash: str = Field(pattern=_HASH_PATTERN)
+
+    @model_validator(mode="after")
+    def verify_text(self) -> Self:
+        # Preserve the whole chapter, including its ending. Oversize context is
+        # rejected by the manifest byte boundary, never silently truncated.
+        if sha256(self.content.encode("utf-8")).hexdigest() != self.content_hash:
+            raise ValueError(_SAFE_ERROR)
+        return self
+
+
+class ActualPlanningProgress(BaseModel):
+    model_config = _STRICT_MANIFEST
+
+    chapter_number: int = Field(alias="chapterNumber", ge=1)
+    target_id: str = Field(alias="targetId", min_length=1, max_length=100)
+    target_type: Literal["story_block", "stage", "scene_task"] = Field(alias="targetType")
+    status: Literal["started", "advanced", "completed"]
+
+
+class OutlineContinuity(BaseModel):
+    model_config = _STRICT_MANIFEST
+
+    previous_chapter: PreviousFinalChapter | None
+    actual_progress: tuple[ActualPlanningProgress, ...]
+
+    @field_validator("actual_progress", mode="before")
+    @classmethod
+    def accept_json_arrays(cls, value):
+        return tuple(value) if isinstance(value, list) else value
+
+
 class ChapterOutlineGenerationManifest(BaseModel):
     model_config = _STRICT_MANIFEST
 
@@ -87,6 +128,14 @@ class ChapterOutlineGenerationManifest(BaseModel):
     draft_hash: str = Field(pattern=_HASH_PATTERN)
     author_instructions: str = Field(max_length=4_000)
     binding: PublicBindingAuthority
+    continuity: OutlineContinuity | None = None
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_snapshot(self, handler):
+        payload = handler(self)
+        if self.continuity is None:
+            payload.pop("continuity", None)
+        return payload
 
     @field_validator(
         "allowed_stages",
@@ -102,6 +151,22 @@ class ChapterOutlineGenerationManifest(BaseModel):
     def validate_closed_public_manifest(self) -> Self:
         if self.canon_revision != self.projection.revision:
             raise ValueError(_SAFE_ERROR)
+        if self.continuity is not None:
+            previous = self.continuity.previous_chapter
+            if (
+                (self.chapter_number == 1 and previous is not None)
+                or (self.chapter_number > 1 and previous is None)
+                or previous is not None and (
+                    previous.chapter_number != self.chapter_number - 1
+                    or previous.canon_revision > self.canon_revision
+                )
+                or any(item.chapter_number >= self.chapter_number
+                       for item in self.continuity.actual_progress)
+                or len({(item.target_type, item.target_id)
+                        for item in self.continuity.actual_progress})
+                   != len(self.continuity.actual_progress)
+            ):
+                raise ValueError(_SAFE_ERROR)
         if (
             self.volume.lifecycle != "active"
             or self.story_block.lifecycle != "active"
@@ -151,6 +216,14 @@ class ChapterOutlineGenerationManifest(BaseModel):
             )
         ):
             raise ValueError(_SAFE_ERROR)
+        if self.continuity is not None:
+            completed = {(item.target_type, item.target_id)
+                         for item in self.continuity.actual_progress
+                         if item.status == "completed"}
+            if (("story_block", self.story_block.id) in completed
+                or any(("stage", stage.id) in completed for stage in self.allowed_stages)
+                or any(("scene_task", task.id) in completed for task in self.allowed_scene_tasks)):
+                raise ValueError(_SAFE_ERROR)
 
         snapshot = self.model_dump(mode="json", by_alias=True)
         try:
@@ -192,7 +265,18 @@ def build_chapter_outline_messages(
                 "in manifest order.",
                 "Do not invent IDs, revisions, hashes, nodes, or references.",
                 "Use only the supplied StoryBlock, Stage, SceneTask, Volume, "
-                "Plot, capacity, and author-instruction evidence.",
+                "Plot, capacity, continuity, and author-instruction evidence.",
+                "Continuity contains actual events: continue from the previous "
+                "finalized chapter's ending, preserving location, time, custody "
+                "of evidence, knowledge limits and unfinished actions. Planning "
+                "describes future intentions, not facts already established.",
+                "Completed stages and tasks are historical context, not scenes "
+                "to perform again. For started or advanced tasks, use the previous "
+                "chapter to distinguish work already done from the remaining "
+                "completion condition; advance only the unfinished part.",
+                "A StoryBlock's entrySituation may have already happened. Do not "
+                "restart it or repeat the previous chapter's discovery, meeting "
+                "or agreement. References authorize scope, not reenactment.",
                 "Do not return commentary, markdown, prompt text, or evidence.",
             ],
         }

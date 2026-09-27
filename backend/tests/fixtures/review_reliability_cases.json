@@ -1,0 +1,9 @@
+[
+  {"id":"valid_transition","task":"quality","chapter":2,"prose":"翌日清晨，刘四背着铺盖随运夫去了下游。沈砚目送他离开，回棚安排剩下的人打桩。","previousFact":"第1章夜里，刘四接到次日调往下游的通知，当夜尚未离开。","expectRequired":false,"expectEmpty":true},
+  {"id":"count_conflict","task":"quality","chapter":2,"prose":"沈砚拆开旧布，昨天封存的十一枚弯钉一枚不少。他另取二十枚新钉试验，十一枚弯折，九枚完好。他把新增的十一枚弯钉与原有十一枚全部合在一袋，不丢弃、不分出，数定共十八枚，交给监工。","previousFact":"第1章封存十一枚弯钉，沈砚保管。","expectRequired":true},
+  {"id":"document_conflict","task":"quality","chapter":3,"prose":"整天，唯一的原件都锁在陆秉的柜中，未被取出，也没有抄件或交接。与此同时，沈砚在远处值房展开这份原件，交给书办收走。","previousFact":"唯一原件锁在陆秉柜中，沈砚没有原件或抄件。","expectRequired":true},
+  {"id":"valid_document_transfer","task":"quality","chapter":3,"prose":"陆秉从柜中取出唯一原件，交给沈砚。沈砚当面抄出两份，原件归还陆秉入柜，一份抄件自存，一份送值房。书办只将抄件登号，主事尚未收到，也未作裁决。","previousFact":"第2章末，唯一原件锁在陆秉柜中，沈砚当时没有原件或抄件。","expectRequired":false,"expectEmpty":true},
+  {"id":"future_and_hearsay","task":"extraction","chapter":1,"prose":"沈砚说：“明天当众复验，再请监工签字。”他将旧样本包好。赵三说：“上头不发货。”沈砚没有查证这句话，监工今晚也未签字，复验尚未举行。","expectNoCompleted":true,"expectClaim":true},
+  {"id":"completed_action","task":"extraction","chapter":1,"prose":"沈砚当众复验二十枚新钉，记下十一枚弯折、九枚完好。监工逐项核对记录，在复验单上签名画押。复验和签字当场完成。","expectCompleted":["task-retest","task-sign"]},
+  {"id":"repeated_state","task":"extraction","chapter":1,"prose":"沈砚把封好的样本袋放在枕边，决定明天继续查账。他躺下，手仍按着袋口。风吹进棚，他又摸了摸封绳；封绳未动。他闭上眼，手没有离开皮袋。","maxCanonEvents":4}
+]

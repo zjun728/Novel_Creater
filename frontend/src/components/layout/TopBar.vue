@@ -8,8 +8,9 @@ defineProps({
 </script>
 
 <template>
-  <header class="product-topbar">
-    <div class="product-topbar__context">
+  <header class="product-topbar" :class="{ 'product-topbar--topics': shell.globalNavigation.find(item => item.key === 'topics')?.selected }">
+    <nav v-if="shell.globalNavigation.find(item => item.key === 'topics')?.selected" class="topic-breadcrumb" aria-label="面包屑"><router-link to="/projects">工作台</router-link><span>/</span><span>选题中心</span></nav>
+    <div v-else class="product-topbar__context">
       <nav
         v-if="shell.breadcrumbs.length"
         class="product-topbar__breadcrumbs"
@@ -26,11 +27,11 @@ defineProps({
       <strong class="product-topbar__title">{{ shell.routeTitle }}</strong>
     </div>
 
-    <div class="product-topbar__session" aria-label="当前运行模式">
+    <div v-if="!shell.globalNavigation.find(item => item.key === 'topics')?.selected" class="product-topbar__session" aria-label="当前运行模式">
       <strong
         v-if="shell.globalNavigation.find(item => item.key === 'assets')?.selected"
         class="product-topbar__asset-scope"
-      >CREATIVE ASSETS</strong>
+      >创作资产</strong>
       <span aria-hidden="true"></span>
       本机单用户
     </div>
@@ -38,6 +39,8 @@ defineProps({
 </template>
 
 <style scoped>
+.product-topbar.product-topbar--topics{min-height:64px;height:64px;background:#f5f2eb;border-color:#ddd5c8}.topic-breadcrumb{display:flex;gap:5px;font-size:12px;color:#6f685e}.topic-breadcrumb a{color:inherit;text-decoration:none}
+
 .product-topbar {
   display: flex;
   min-height: 78px;

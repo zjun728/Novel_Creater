@@ -356,13 +356,16 @@ onBeforeUnmount(() => {
       <section class="recommendation-section" aria-labelledby="style-recommendations-heading">
         <div class="section-title-row">
           <div>
-            <span>系统确定性推荐</span>
-            <h4 id="style-recommendations-heading">三个可比较的写作气质</h4>
+            <span>AI 推荐参考</span>
+            <h4 id="style-recommendations-heading">比较推荐的写作气质</h4>
           </div>
-          <n-tag :bordered="false" round>{{ recommendedStyles.length }} / 3</n-tag>
+          <n-tag :bordered="false" round>{{ recommendedStyles.length }} 个推荐</n-tag>
         </div>
 
-        <n-empty v-if="!recommendedStyles.length" description="当前故事发动机没有可用的风格推荐" class="empty-state" />
+        <n-alert v-if="assetStore.recommendations?.rankingUnavailable" type="warning" role="status">
+          AI 推荐暂时不可用，仍可从完整模板库手动选择主风格和次风格。
+        </n-alert>
+        <n-empty v-else-if="!recommendedStyles.length" description="当前故事发动机没有可用的风格推荐" class="empty-state" />
         <div v-else class="recommendation-grid">
           <article
             v-for="(style, index) in recommendedStyles"

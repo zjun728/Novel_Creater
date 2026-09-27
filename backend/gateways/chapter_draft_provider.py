@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
+from uuid import uuid4
 
 import httpx
 
@@ -10,6 +12,7 @@ import httpx
 MAX_CHAPTER_DRAFT_PROVIDER_RESPONSE_BYTES = 1024 * 1024
 _CHAPTER_DRAFT_STREAM_TIMEOUT_SECONDS = 1200
 _CHAPTER_DRAFT_STREAM_CLEANUP_TIMEOUT_SECONDS = 5.0
+_logger = logging.getLogger(__name__)
 
 
 class ChapterDraftProviderError(RuntimeError):
@@ -261,6 +264,9 @@ class ChapterDraftProviderGateway:
         from backend.gateways.openai_sse import OpenAITextSSEParser
 
         parser = OpenAITextSSEParser()
+        request_id = uuid4().hex
+        stage = "transport"
+        http_status = None
         raw_bytes = 0
         client = None
         response = None
@@ -280,13 +286,18 @@ class ChapterDraftProviderGateway:
             async with asyncio.timeout_at(deadline):
                 response = await client.send(request, stream=True)
             _raise_if_stream_deadline_elapsed(loop, deadline)
+            status = getattr(response, "status_code", None)
+            http_status = status if type(status) is int else None
+            stage = "http_status"
             if not response.is_success:
                 raise ChapterDraftProviderHTTPError("provider request failed")
+            stage = "response_headers"
             self._validate_stream_headers(response)
             _raise_if_stream_deadline_elapsed(loop, deadline)
             raw_iterator = response.aiter_raw().__aiter__()
             while True:
                 try:
+                    stage = "response_read"
                     _raise_if_stream_deadline_elapsed(loop, deadline)
                     async with asyncio.timeout_at(deadline):
                         chunk = await anext(raw_iterator)
@@ -294,16 +305,19 @@ class ChapterDraftProviderGateway:
                 except StopAsyncIteration:
                     break
                 raw_bytes += len(chunk)
+                stage = "response_size"
                 if raw_bytes > MAX_CHAPTER_DRAFT_PROVIDER_RESPONSE_BYTES:
                     raise ChapterDraftProviderResponseError(
                         "provider response was invalid"
                     )
+                stage = "sse_frame"
                 texts = parser.feed(chunk)
                 _raise_if_stream_deadline_elapsed(loop, deadline)
                 for text in texts:
                     _raise_if_stream_deadline_elapsed(loop, deadline)
                     yield text
             _raise_if_stream_deadline_elapsed(loop, deadline)
+            stage = "sse_termination"
             parser.finish()
             _raise_if_stream_deadline_elapsed(loop, deadline)
         except BaseException as caught:
@@ -331,6 +345,17 @@ class ChapterDraftProviderGateway:
             raise failure
         if cleanup_system_failure is not None:
             raise cleanup_system_failure
+        if failure is not None or cleanup_failed:
+            if isinstance(failure, (TimeoutError, httpx.TimeoutException)):
+                stage = "timeout"
+            elif isinstance(failure, (httpx.TransportError, httpx.InvalidURL)):
+                stage = "transport"
+            elif failure is None:
+                stage = "cleanup"
+            _logger.warning(
+                "provider_stream_failed request_id=%s stage=%s http_status=%s received_bytes=%s",
+                request_id, stage, http_status, raw_bytes,
+            )
         if isinstance(failure, ChapterDraftProviderError):
             raise failure from None
         if isinstance(failure, (httpx.TransportError, httpx.InvalidURL, TimeoutError)):

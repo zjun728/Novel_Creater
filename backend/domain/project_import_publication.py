@@ -348,10 +348,20 @@ def _style_contract(record: PackageRecord, data: Mapping[str, object], context: 
     return (EncodedBatch("style_contracts", columns, (row,)),)
 
 
+def _head_authority(data: Mapping[str, object], fields: tuple[str, ...]) -> tuple[JsonPrimitive, ...]:
+    revision = data.get("revision")
+    if type(revision) is not int or revision < 0:
+        raise _invalid()
+    if revision == 0:
+        if any(data.get(field) is not None for field in fields):
+            raise _invalid()
+        return (None,) * len(fields)
+    return tuple(_required(data, field) for field in fields)
+
+
 def _contract_head(record: PackageRecord, data: Mapping[str, object], context: PublicationEncodingContext) -> tuple[EncodedBatch, ...]:
     columns = ("project_id", "revision", "creation_contract_id", "style_contract_id", "creation_hash", "style_hash", "updated_at")
-    row = (context.target_project_id, _required(data, "revision"), _required(data, "creationContractLogicalId"),
-           _required(data, "styleContractLogicalId"), _required(data, "creationHash"), _required(data, "styleHash"), _required(data, "updatedAt"))
+    row = (context.target_project_id, _required(data, "revision"), *_head_authority(data, ("creationContractLogicalId", "styleContractLogicalId", "creationHash", "styleHash")), _required(data, "updatedAt"))
     return (EncodedBatch("project_contract_heads", columns, (row,)),)
 
 
@@ -368,7 +378,7 @@ def _bible_revision(record: PackageRecord, data: Mapping[str, object], context: 
 
 def _bible_head(record: PackageRecord, data: Mapping[str, object], context: PublicationEncodingContext) -> tuple[EncodedBatch, ...]:
     columns = ("project_id", "revision", "bible_revision_id", "content_hash", "updated_at")
-    return (EncodedBatch("project_bible_heads", columns, ((context.target_project_id, _required(data, "revision"), _required(data, "bibleRevisionLogicalId"), _required(data, "contentHash"), _required(data, "updatedAt")),)),)
+    return (EncodedBatch("project_bible_heads", columns, ((context.target_project_id, _required(data, "revision"), *_head_authority(data, ("bibleRevisionLogicalId", "contentHash")), _required(data, "updatedAt")),)),)
 
 
 def _planning_revision(record: PackageRecord, data: Mapping[str, object], context: PublicationEncodingContext) -> tuple[EncodedBatch, ...]:
@@ -383,7 +393,7 @@ def _planning_revision(record: PackageRecord, data: Mapping[str, object], contex
 
 def _planning_head(record: PackageRecord, data: Mapping[str, object], context: PublicationEncodingContext) -> tuple[EncodedBatch, ...]:
     columns = ("project_id", "revision", "planning_revision_id", "content_hash", "updated_at")
-    return (EncodedBatch("project_planning_heads", columns, ((context.target_project_id, _required(data, "revision"), _required(data, "planningRevisionLogicalId"), _required(data, "contentHash"), _required(data, "updatedAt")),)),)
+    return (EncodedBatch("project_planning_heads", columns, ((context.target_project_id, _required(data, "revision"), *_head_authority(data, ("planningRevisionLogicalId", "contentHash")), _required(data, "updatedAt")),)),)
 
 
 def _outline_revision(record: PackageRecord, data: Mapping[str, object], context: PublicationEncodingContext) -> tuple[EncodedBatch, ...]:
@@ -400,7 +410,7 @@ def _outline_revision(record: PackageRecord, data: Mapping[str, object], context
 
 def _outline_head(record: PackageRecord, data: Mapping[str, object], context: PublicationEncodingContext) -> tuple[EncodedBatch, ...]:
     columns = ("project_id", "chapter_num", "revision", "outline_revision_id", "content_hash", "updated_at")
-    return (EncodedBatch("project_chapter_outline_heads", columns, ((context.target_project_id, _required(data, "chapterNumber"), _required(data, "revision"), _required(data, "outlineRevisionLogicalId"), _required(data, "contentHash"), _required(data, "updatedAt")),)),)
+    return (EncodedBatch("project_chapter_outline_heads", columns, ((context.target_project_id, _required(data, "chapterNumber"), _required(data, "revision"), *_head_authority(data, ("outlineRevisionLogicalId", "contentHash")), _required(data, "updatedAt")),)),)
 
 
 def _canon_entity(record: PackageRecord, data: Mapping[str, object], context: PublicationEncodingContext) -> tuple[EncodedBatch, ...]:
@@ -442,10 +452,31 @@ def _draft_candidate(record: PackageRecord, data: Mapping[str, object], context:
     return (EncodedBatch("draft_candidates", columns, (row,)),)
 
 
+def _restored_review_context(data: Mapping[str, object], context: PublicationEncodingContext, quality_id: str) -> dict[str, object]:
+    # Packages retain the source context digest, not the private runtime manifest.
+    # Bind the restored report and attempt to the same explicit provenance record.
+    return {
+        "kind": "project-backup-review-context-v1",
+        "projectId": context.target_project_id,
+        "qualityReportId": quality_id,
+        "chapterSessionId": _required(data, "chapterLogicalId"),
+        "candidateId": _required(data, "candidateLogicalId"),
+        "candidateHash": _required(data, "candidateHash"),
+        "sourceContextManifestHash": _required(data, "contextManifestHash"),
+    }
+
+
 def _candidate_quality(record: PackageRecord, data: Mapping[str, object], context: PublicationEncodingContext) -> tuple[EncodedBatch, ...]:
     columns = ("id", "project_id", "chapter_session_id", "draft_candidate_id", "candidate_hash", "expected_canon_revision", "expected_planning_hash", "expected_outline_hash", "policy_version", "context_manifest_hash", "provider_id", "provider_profile_revision", "model_name_snapshot", "status", "deterministic_blocks_json", "findings_json", "content_hash", "created_at")
-    row = (context.ids[(record.entity_type, record.logical_id)], context.target_project_id, _required(data, "chapterLogicalId"), _required(data, "candidateLogicalId"), _required(data, "candidateHash"), _required(data, "expectedCanonRevision"), _required(data, "expectedPlanningHash"), _required(data, "expectedOutlineHash"), _required(data, "policyVersion"), _required(data, "contextManifestHash"), None, None, None, _required(data, "status"), _json_value(data, "deterministicBlocks"), _json_value(data, "findings"), _required(data, "contentHash"), _required(data, "createdAt"))
+    row = (context.ids[(record.entity_type, record.logical_id)], context.target_project_id, _required(data, "chapterLogicalId"), _required(data, "candidateLogicalId"), _required(data, "candidateHash"), _required(data, "expectedCanonRevision"), _required(data, "expectedPlanningHash"), _required(data, "expectedOutlineHash"), _required(data, "policyVersion"), canonical_hash(_restored_review_context(data, context, context.ids[(record.entity_type, record.logical_id)])), None, None, None, _required(data, "status"), _json_value(data, "deterministicBlocks"), _json_value(data, "findings"), _required(data, "contentHash"), _required(data, "createdAt"))
     return (EncodedBatch("candidate_quality_reports", columns, (row,)),)
+
+
+def _review_finding_decisions(record: PackageRecord, data: Mapping[str, object], context: PublicationEncodingContext) -> tuple[EncodedBatch, ...]:
+    columns = ("project_id", "attempt_id", "report_hash", "revision", "ignored_finding_ids_json", "updated_at")
+    row = (context.target_project_id, _required(data, "changeSetLogicalId"), _required(data, "reportHash"),
+           _required(data, "revision"), _json_value(data, "ignoredFindingIds"), _required(data, "updatedAt"))
+    return (EncodedBatch("review_finding_decisions", columns, (row,)),)
 
 
 def _change_set_revision(record: PackageRecord, data: Mapping[str, object], context: PublicationEncodingContext) -> tuple[EncodedBatch, ...]:
@@ -454,30 +485,36 @@ def _change_set_revision(record: PackageRecord, data: Mapping[str, object], cont
 
 
 def _change_set(record: PackageRecord, data: Mapping[str, object], context: PublicationEncodingContext) -> tuple[EncodedBatch, ...]:
-    quality = [item for (kind, _), item in context.rewritten.items() if kind == "candidate-quality" and item.get("candidateLogicalId") == data.get("candidateLogicalId")]
-    revisions = [item for (kind, _), item in context.rewritten.items() if kind == "finalization-change-set-revision" and item.get("changeSetLogicalId") == context.ids[(record.entity_type, record.logical_id)]]
-    chapter_matches = [item for key, item in context.rewritten.items() if key[0] == "chapter" and context.ids.get(key) == data.get("chapterLogicalId")]
-    if len(quality) != 1 or not revisions or len(chapter_matches) != 1:
+    quality_pairs = [(context.ids[key], item) for key, item in context.rewritten.items()
+        if key[0] == "candidate-quality" and item.get("candidateLogicalId") == data.get("candidateLogicalId")
+        and item.get("chapterLogicalId") == data.get("chapterLogicalId")]
+    if "qualityReportLogicalId" in data:
+        quality_pairs = [(key, item) for key, item in quality_pairs if key == data["qualityReportLogicalId"]]
+        if data["qualityReportLogicalId"] is not None and len(quality_pairs) != 1:
+            raise _invalid()
+    elif len(quality_pairs) > 1:
+        # Legacy archives cannot resolve repeated reviews without the original pin.
         raise _invalid()
-    chapter = chapter_matches[0]
-    latest = max(revisions, key=lambda item: int(item.get("revision", 0)))
-    manifest: dict[str, object] = {}
+    quality_id, quality = quality_pairs[0] if quality_pairs else (None, {})
+    revisions = [item for (kind, _), item in context.rewritten.items() if kind == "finalization-change-set-revision" and item.get("changeSetLogicalId") == context.ids[(record.entity_type, record.logical_id)]]
+    _, chapter = _record_by_target_id(context, "chapter", data.get("chapterLogicalId"))
+    latest = max(revisions, key=lambda item: int(item.get("revision", 0))) if revisions else {}
+    committed = any(item.entity_type == "finalization-record" and item.data.get("changeSetLogicalId") == record.logical_id for item in context.records.values())
+    status = "committed" if committed else _required(data, "status")
+    if status in {"preparing", "committing"}:
+        status = "invalidated"  # No provider operation or commit lease survives a backup.
+    if status not in {"committed", "awaiting_author", "invalidated", "cancelled", "failed"}:
+        raise _invalid()
+    if status in {"committed", "awaiting_author"} and (not latest or quality_id is None):
+        raise _invalid()
+    manifest = _restored_review_context(quality, context, quality_id) if quality_id is not None else {}
     authority = {"logicalId": record.logical_id, "candidateHash": data.get("candidateHash"), "contentHash": data.get("contentHash")}
     columns = ("id", "project_id", "chapter_session_id", "draft_candidate_id", "quality_report_id", "extraction_id", "idempotency_key", "request_fingerprint", "active_slot", "candidate_hash", "expected_canon_revision", "expected_planning_hash", "expected_outline_hash", "context_manifest_json", "context_manifest_hash", "status", "current_revision", "current_revision_hash", "confirmed_revision", "confirmed_revision_hash", "created_at", "updated_at", "confirmed_at")
-    quality_matches = [context.ids[key] for key, item in context.rewritten.items() if key[0] == "candidate-quality" and item is quality[0]]
-    if len(quality_matches) != 1:
-        raise _invalid()
-    quality_id = quality_matches[0]
-    committed = any(
-        item.entity_type == "finalization-record" and item.data.get("changeSetLogicalId") == record.logical_id
-        for item in context.records.values()
-    )
-    status = "committed" if committed else "awaiting_author"
-    extraction_id = str(uuid5(
-        UUID(context.command_id),
-        f"finalization-extraction/{record.logical_id}",
-    ))
-    row = (context.ids[(record.entity_type, record.logical_id)], context.target_project_id, _required(data, "chapterLogicalId"), _required(data, "candidateLogicalId"), quality_id, extraction_id, _derived_hash(context, "finalization-change-set/idempotency", authority), _derived_hash(context, "finalization-change-set/request", authority), None, _required(data, "candidateHash"), _required(chapter, "expectedCanonRevision"), _required(quality[0], "expectedPlanningHash"), _required(quality[0], "expectedOutlineHash"), canonical_json(manifest), canonical_hash(manifest), status, _required(latest, "revision"), _required(latest, "contentHash"), _required(latest, "revision") if data.get("confirmedAt") is not None else None, _required(latest, "contentHash") if data.get("confirmedAt") is not None else None, _required(data, "createdAt"), _required(data, "updatedAt"), _nullable(data, "confirmedAt"))
+    extraction_id = str(uuid5(UUID(context.command_id), f"finalization-extraction/{record.logical_id}")) if latest else None
+    expected_canon = data.get("expectedCanonRevision", quality.get("expectedCanonRevision", chapter.get("expectedCanonRevision")))
+    expected_planning = data.get("expectedPlanningHash", quality.get("expectedPlanningHash", chapter.get("planningHash")))
+    expected_outline = data.get("expectedOutlineHash", quality.get("expectedOutlineHash", chapter.get("chapterOutlineHash")))
+    row = (context.ids[(record.entity_type, record.logical_id)], context.target_project_id, _required(data, "chapterLogicalId"), _required(data, "candidateLogicalId"), quality_id, extraction_id, _derived_hash(context, "finalization-change-set/idempotency", authority), _derived_hash(context, "finalization-change-set/request", authority), 1 if status == "awaiting_author" else None, _required(data, "candidateHash"), expected_canon, expected_planning, expected_outline, canonical_json(manifest), canonical_hash(manifest), status, latest.get("revision"), latest.get("contentHash"), latest.get("revision") if data.get("confirmedAt") is not None else None, latest.get("contentHash") if data.get("confirmedAt") is not None else None, _required(data, "createdAt"), _required(data, "updatedAt"), _nullable(data, "confirmedAt"))
     return (EncodedBatch("finalization_change_sets", columns, (row,)),)
 
 
@@ -492,6 +529,17 @@ def _final_chapter(record: PackageRecord, data: Mapping[str, object], context: P
     columns = ("id", "project_id", "chapter_session_id", "draft_candidate_id", "finalization_record_id", "chapter_num", "title", "content", "content_hash", "canon_revision", "planning_revision_id", "planning_revision", "planning_hash", "chapter_outline_revision_id", "chapter_outline_revision", "chapter_outline_hash", "finalized_at")
     row = (context.ids[(record.entity_type, record.logical_id)], context.target_project_id, _required(data, "chapterLogicalId"), _required(data, "candidateLogicalId"), _required(data, "finalizationRecordLogicalId"), _required(data, "chapterNumber"), _required(data, "title"), _required(data, "content"), _required(data, "contentHash"), _required(data, "canonRevision"), _required(data, "planningRevisionLogicalId"), _required(data, "planningRevision"), _required(data, "planningHash"), _required(data, "outlineRevisionLogicalId"), _required(data, "chapterOutlineRevision"), _required(data, "chapterOutlineHash"), _required(data, "finalizedAt"))
     return (EncodedBatch("final_chapters", columns, (row,)),)
+
+
+def _continuity_issue(record: PackageRecord, data: Mapping[str, object], context: PublicationEncodingContext) -> tuple[EncodedBatch, ...]:
+    columns = ("id", "project_id", "category", "severity", "status", "source_chapter", "source_finalization_id", "source_canon_revision", "description", "suggestion", "future_target", "resolution_note", "created_at", "updated_at")
+    row = (context.ids[(record.entity_type, record.logical_id)], context.target_project_id,
+           _required(data, "category"), _required(data, "severity"), _required(data, "status"),
+           _nullable(data, "sourceChapterNumber"), _nullable(data, "sourceFinalizationLogicalId"),
+           _nullable(data, "sourceCanonRevision"), _required(data, "description"),
+           _nullable(data, "suggestion"), _nullable(data, "futureTarget"), _nullable(data, "resolutionNote"),
+           _required(data, "createdAt"), _required(data, "updatedAt"))
+    return (EncodedBatch("continuity_issues", columns, (row,)),)
 
 
 def _creation_contract(record: PackageRecord, data: Mapping[str, object], context: PublicationEncodingContext) -> tuple[EncodedBatch, ...]:
@@ -808,10 +856,12 @@ _RECORD_ENCODERS: Mapping[str, RecordEncoder] = MappingProxyType({
     "working-draft": _working_draft,
     "draft-candidate": _draft_candidate,
     "candidate-quality": _candidate_quality,
+    "review-finding-decisions": _review_finding_decisions,
     "finalization-change-set": _change_set,
     "finalization-change-set-revision": _change_set_revision,
     "finalization-record": _finalization_record,
     "final-chapter": _final_chapter,
+    "continuity-issue": _continuity_issue,
     "creation-contract": _creation_contract,
     "creation-contract-engine-ref": _engine_ref,
     "style-contract-template-ref": _template_ref,
@@ -839,6 +889,8 @@ _SPECIAL_RECORD_HANDLERS: Mapping[str, RecordEncoder] = MappingProxyType({
 })
 
 STATIC_TABLE_COLUMNS: Mapping[str, tuple[str, ...]] = MappingProxyType({
+    "review_finding_decisions": ("project_id", "attempt_id", "report_hash", "revision", "ignored_finding_ids_json", "updated_at"),
+    "continuity_issues": ("id", "project_id", "category", "severity", "status", "source_chapter", "source_finalization_id", "source_canon_revision", "description", "suggestion", "future_target", "resolution_note", "created_at", "updated_at"),
     "projects": ("id", "title", "genre", "description", "target_words", "target_chapters", "status", "current_chapter", "archived_at", "lifecycle_revision", "created_at", "updated_at"),
     "project_model_binding_revisions": ("id", "project_id", "revision", "content_hash", "source_project_id", "created_at"),
     "project_model_binding_items": ("binding_revision_id", "task_key", "resolution_status", "provider_id", "provider_name_snapshot", "model_name_snapshot", "item_hash"),
@@ -915,11 +967,14 @@ PUBLICATION_TABLE_ORDER = (
     "chapter_outline_confirmation_requests", "chapter_sessions", "project_chapter_outline_heads",
     "draft_candidates", "working_drafts", "candidate_freeze_requests", "candidate_quality_reports",
     "reference_uses", "finalization_change_sets", "finalization_change_set_revisions",
-    "finalization_records", "final_chapters",
+    "finalization_records", "final_chapters", "continuity_issues", "review_finding_decisions",
 )
 _PUBLICATION_TABLE_POSITION = MappingProxyType({table: index for index, table in enumerate(PUBLICATION_TABLE_ORDER)})
 
 _PUBLICATION_CLOSED_ENUMS: Mapping[tuple[str, str], frozenset[JsonPrimitive]] = MappingProxyType({
+    ("continuity_issues", "category"): frozenset({"time", "location", "character_state", "rule", "fact"}),
+    ("continuity_issues", "severity"): frozenset({"low", "medium", "high"}),
+    ("continuity_issues", "status"): frozenset({"pending", "resolved", "ignored"}),
     ("projects", "status"): frozenset({"drafting", "active", "completed"}),
     ("style_templates", "status"): frozenset({"active", "archived"}),
     ("experience_cards", "status"): frozenset({"active", "archived"}),

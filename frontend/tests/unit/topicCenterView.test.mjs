@@ -23,10 +23,10 @@ async function sources() {
 test('topic center has four truthful destinations and an information-first page identity', async () => {
   const [view, header] = await sources()
   assert.match(view, /MARKET DISCOVERY|IDEA CONVERSATION|DIRECTION LIBRARY|CANDIDATE LIBRARY/)
-  assert.match(header, /市场热门/)
+  assert.match(header, /热门选题建议/)
   assert.match(header, /AI 讨论/)
   assert.match(header, /选题方向/)
-  assert.match(header, /候选种子库/)
+  assert.match(header, /候选种子/)
   assert.match(header, /router-link/)
   assert.doesNotMatch(`${view}\n${header}`, /继续下一步/)
 })
@@ -120,4 +120,12 @@ test('narrow market page leaves vertical scrolling to the page alone', async () 
   assert.match(market, /\.source-list:focus-visible/)
   assert.match(discussion, /\.discussion-list:focus-visible.*\.message-scroll:focus-visible/)
   assert.match(candidates, /\.record-list:focus-visible/)
+})
+
+
+test('market and AI discussion are separate page bodies', async () => {
+  const [view] = await sources()
+  const marketBody = view.split('class="market-workspace">')[1].split('</div>')[0]
+  assert.doesNotMatch(marketBody, /TopicDiscussionPanel|TopicCandidatesPanel/)
+  assert.match(view, /TopicDiscussionPanel v-else-if="activeSection === 'discussions'"/)
 })

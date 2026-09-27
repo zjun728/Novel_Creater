@@ -396,6 +396,13 @@ async def test_candidate_basis_follows_current_outline_not_immutable_session(
     assert candidate_b.outline_revision == outline_r2.revision
     assert candidate_b.canon_revision == 0
     assert workspace.session.chapter_outline_revision == outline_r1.revision
+    # Navigation uses the same current outline as new operations/candidates,
+    # even though the session retains its immutable creation-time pin.
+    from backend.repositories.workbench import WorkbenchRepository
+    from backend.services.workbench import WorkbenchReader
+    entry = await WorkbenchReader(WorkbenchRepository(), transaction_factory).bootstrap(PROJECT, 1)
+    assert entry.outline.revision == outline_r2.revision
+    assert entry.outline.content_hash == outline_r2.content_hash
     assert candidate_a.content_hash == candidate_b.content_hash
     assert len(replay.candidates) == len(third.candidates) == 2
     rows = await disposable_mysql.session.fetchall(

@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
+from backend.services.planning_progress import planning_progress_reason
 from backend.domain.chapter_outlines import (
     ChapterOutline,
     ChapterOutlineDomainError,
@@ -861,6 +862,7 @@ class ChapterOutlineService:
                 confirmed is not None
                 and confirmed.display_status == "current"
             )
+            progress_reason = planning_progress_reason(authorities) if synchronized else None
             capabilities = ChapterOutlineCapabilities(
                 view=True,
                 create_draft=mutations_allowed and not current_draft,
@@ -870,6 +872,7 @@ class ChapterOutlineService:
                     and current_draft
                     and not generation_pending
                     and synchronized
+                    and progress_reason is None
                     and self._planning_binding_ready(binding)
                 ),
                 confirm=(
@@ -915,7 +918,7 @@ class ChapterOutlineService:
                     else None
                 ),
                 capabilities=capabilities,
-                reasons=self._state_reasons(
+                reasons=((progress_reason,) if progress_reason else ()) + self._state_reasons(
                     archived=archived,
                     active_session=active_result,
                     authorities=authorities,

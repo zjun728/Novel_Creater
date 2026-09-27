@@ -301,6 +301,45 @@ function sessionWorkspace(chapterNumber = 1) {
   }
 }
 
+function navigationResponse(path, method, requestedChapter, authoritativeChapter = requestedChapter) {
+  if (path.endsWith('/contracts/head')) { assert.equal(method, 'GET'); return new Response(JSON.stringify({ creationContract: { chapterWordRangePreference: [3000, 5000] } }), { headers: { 'content-type': 'application/json' } }) }
+  if (path === `/api/projects/project-1/workbench/chapters/${requestedChapter}`) {
+    assert.equal(method, 'GET')
+    return new Response(JSON.stringify({
+      project_id: 'project-1', requested_chapter: requestedChapter,
+      authoritative_chapter: authoritativeChapter, volume: null,
+      canon_revision: 5, projection_revision: 5,
+    }), { headers: { 'content-type': 'application/json' } })
+  }
+  if (path === '/api/projects/project-1/workbench/volumes') {
+    assert.equal(method, 'GET')
+    return new Response(JSON.stringify({
+      project_id: 'project-1', authoritative_chapter: authoritativeChapter, volumes: [],
+    }), { headers: { 'content-type': 'application/json' } })
+  }
+  return null
+}
+
+function initialWriterReads(chapterNumber) {
+  return [
+    ['GET', '/api/projects/project-1/chapter-outlines/current'],
+    ['GET', `/api/projects/project-1/workbench/chapters/${chapterNumber}`],
+    ['GET', '/api/projects/project-1/workbench/volumes'],
+  ]
+}
+
+async function clickStartWriting(root) {
+  await waitFor(() => renderedNodes(root, node => (
+    node.props.onClick && renderedText(node).trim() === '开始本章写作'
+  )).length === 1)
+  const [button] = renderedNodes(root, node => (
+    node.props.onClick && renderedText(node).trim() === '开始本章写作'
+  ))
+  assert.equal(Boolean(button.props.disabled), false)
+  await button.props.onClick()
+  await flush()
+}
+
 async function mountWriter(path, fetchImpl) {
   const originalFetch = global.fetch
   global.fetch = fetchImpl
@@ -329,8 +368,8 @@ async function mountWriter(path, fetchImpl) {
         component: Writer,
       },
       {
-        path: '/projects/:projectId/planning/story-blocks',
-        component: { render: () => h('div', 'story blocks') },
+        path: '/projects/:projectId/planning/outlines',
+        component: { render: () => h('div', 'chapter outlines') },
       },
       {
         path: '/projects/:projectId/overview',
@@ -385,7 +424,13 @@ test('mounted Writer stops a wrong chapter after current and exposes only the ex
   const mounted = await mountWriter(
     '/projects/project-1/write/chapters/7',
     async (url, options = {}) => {
-      requests.push([options.method || 'GET', new URL(String(url)).pathname])
+      const path = new URL(String(url)).pathname
+      const method = options.method || 'GET'
+      requests.push([method, path])
+      const navigation = navigationResponse(path, method, 7, 8)
+      if (navigation) return navigation
+      assert.equal(method, 'GET')
+      assert.equal(path, '/api/projects/project-1/chapter-outlines/current')
       return new Response(JSON.stringify(currentOutline({ chapterNumber: 8 })), {
         headers: { 'content-type': 'application/json' },
       })
@@ -393,10 +438,7 @@ test('mounted Writer stops a wrong chapter after current and exposes only the ex
   )
   try {
     await waitFor(() => /章节地址与服务端权威不一致/.test(renderedText(mounted.root)))
-    assert.deepEqual(requests, [[
-      'GET',
-      '/api/projects/project-1/chapter-outlines/current',
-    ]])
+    assert.deepEqual(requests, initialWriterReads(7))
     assert.equal(
       mounted.router.currentRoute.value.fullPath,
       '/projects/project-1/write/chapters/7',
@@ -435,14 +477,18 @@ test('mounted Writer replays an active Session with GET, checks pins, and render
     async (url, options = {}) => {
       const path = new URL(String(url)).pathname
       requests.push([options.method || 'GET', path])
+      const navigation = navigationResponse(path, options.method || 'GET', 1)
+      if (navigation) return navigation
       if (path.endsWith('/finalization')) {
+        assert.equal(options.method || 'GET', 'GET')
+        assert.equal(path, '/api/projects/project-1/chapter-sessions/session-1/finalization')
         return new Response(JSON.stringify({ state: 'empty' }), {
           headers: { 'content-type': 'application/json' },
         })
       }
-      const body = path.endsWith('/chapter-outlines/current')
-        ? current
-        : sessionWorkspace(1)
+      assert.equal(options.method || 'GET', 'GET')
+      assert.ok(['/api/projects/project-1/chapter-outlines/current', '/api/projects/project-1/chapter-sessions/1'].includes(path))
+      const body = path.endsWith('/chapter-outlines/current') ? current : sessionWorkspace(1)
       return new Response(JSON.stringify(body), {
         headers: { 'content-type': 'application/json' },
       })
@@ -451,9 +497,10 @@ test('mounted Writer replays an active Session with GET, checks pins, and render
   try {
     await waitFor(() => /守住雨夜码头/.test(renderedText(mounted.root)))
     assert.deepEqual(requests, [
-      ['GET', '/api/projects/project-1/chapter-outlines/current'],
+      ...initialWriterReads(1),
       ['GET', '/api/projects/project-1/chapter-sessions/1'],
       ['GET', '/api/projects/project-1/chapter-sessions/session-1/finalization'],
+      ['GET', '/api/projects/project-1/contracts/head'],
     ])
     assert.match(renderedText(mounted.root), /林砚/)
     assert.match(renderedText(mounted.root), /不可提前揭示内应/)
@@ -470,7 +517,7 @@ test('mounted Writer replays an active Session with GET, checks pins, and render
   }
 })
 
-test('mounted Writer creates only after confirmed current authority and sends the exact pins', async () => {
+test('mounted Writer reads without creating and sends exact confirmed pins only after the author starts writing', async () => {
   const requests = []
   let createBody
   const mounted = await mountWriter(
@@ -478,16 +525,24 @@ test('mounted Writer creates only after confirmed current authority and sends th
     async (url, options = {}) => {
       const path = new URL(String(url)).pathname
       requests.push([options.method || 'GET', path])
+      const navigation = navigationResponse(path, options.method || 'GET', 1)
+      if (navigation) return navigation
       if (path.endsWith('/chapter-outlines/current')) {
+        assert.equal(options.method || 'GET', 'GET')
+        assert.equal(path, '/api/projects/project-1/chapter-outlines/current')
         return new Response(JSON.stringify(currentOutline()), {
           headers: { 'content-type': 'application/json' },
         })
       }
       if (path.endsWith('/finalization')) {
+        assert.equal(options.method || 'GET', 'GET')
+        assert.equal(path, '/api/projects/project-1/chapter-sessions/session-1/finalization')
         return new Response(JSON.stringify({ state: 'empty' }), {
           headers: { 'content-type': 'application/json' },
         })
       }
+      assert.equal(options.method, 'POST')
+      assert.equal(path, '/api/projects/project-1/chapter-sessions/1')
       createBody = JSON.parse(options.body)
       return new Response(JSON.stringify(sessionWorkspace(1)), {
         status: 201,
@@ -496,11 +551,20 @@ test('mounted Writer creates only after confirmed current authority and sends th
     },
   )
   try {
+    await waitFor(() => /开始本章写作/.test(renderedText(mounted.root)))
+    await flush()
+    assert.deepEqual(requests, initialWriterReads(1))
+    assert.equal(createBody, undefined)
+    await clickStartWriting(mounted.root)
     await waitFor(() => /drafting/.test(renderedText(mounted.root)))
     assert.deepEqual(requests, [
+      ...initialWriterReads(1),
       ['GET', '/api/projects/project-1/chapter-outlines/current'],
       ['POST', '/api/projects/project-1/chapter-sessions/1'],
       ['GET', '/api/projects/project-1/chapter-sessions/session-1/finalization'],
+      ['GET', '/api/projects/project-1/workbench/chapters/1'],
+      ['GET', '/api/projects/project-1/workbench/volumes'],
+      ['GET', '/api/projects/project-1/contracts/head'],
     ])
     assert.deepEqual(createBody, {
       chapterNumber: 1,
@@ -520,7 +584,13 @@ test('mounted Writer gives missing Outline a separate planning recovery link and
   const mounted = await mountWriter(
     '/projects/project-1/write/chapters/1',
     async (url, options = {}) => {
-      requests.push([options.method || 'GET', new URL(String(url)).pathname])
+      const path = new URL(String(url)).pathname
+      const method = options.method || 'GET'
+      requests.push([method, path])
+      const navigation = navigationResponse(path, method, 1, 1)
+      if (navigation) return navigation
+      assert.equal(method, 'GET')
+      assert.equal(path, '/api/projects/project-1/chapter-outlines/current')
       return new Response(JSON.stringify(currentOutline({
         confirmed: false,
         startSession: false,
@@ -531,13 +601,10 @@ test('mounted Writer gives missing Outline a separate planning recovery link and
   )
   try {
     await waitFor(() => /请先完成并确认本章小纲/.test(renderedText(mounted.root)))
-    assert.deepEqual(requests, [[
-      'GET',
-      '/api/projects/project-1/chapter-outlines/current',
-    ]])
+    assert.deepEqual(requests, initialWriterReads(1))
     const links = renderedNodes(mounted.root, node => node.type === 'a')
     assert.equal(
-      links.some(node => node.props.href === '/projects/project-1/planning/story-blocks'),
+      renderedNodes(mounted.root, node => typeof node.props?.onClick === 'function').some(node => /准备本章小纲/.test(renderedText(node))),
       true,
     )
     assert.equal(
@@ -553,12 +620,17 @@ test('mounted Writer fences a late old-route current before any old Session requ
   const oldCurrent = deferred()
   const requests = []
   let currentReads = 0
+  let createBody
   const mounted = await mountWriter(
     '/projects/project-1/write/chapters/1',
     async (url, options = {}) => {
       const path = new URL(String(url)).pathname
       requests.push([options.method || 'GET', path])
+      const navigation = navigationResponse(path, options.method || 'GET', path.endsWith('/chapters/1') ? 1 : 2, currentReads < 2 ? 1 : 2)
+      if (navigation) return navigation
       if (path.endsWith('/chapter-outlines/current')) {
+        assert.equal(options.method || 'GET', 'GET')
+        assert.equal(path, '/api/projects/project-1/chapter-outlines/current')
         currentReads += 1
         if (currentReads === 1) return oldCurrent.promise
         return new Response(JSON.stringify(currentOutline({ chapterNumber: 2 })), {
@@ -566,10 +638,15 @@ test('mounted Writer fences a late old-route current before any old Session requ
         })
       }
       if (path.endsWith('/finalization')) {
+        assert.equal(options.method || 'GET', 'GET')
+        assert.equal(path, '/api/projects/project-1/chapter-sessions/session-2/finalization')
         return new Response(JSON.stringify({ state: 'empty' }), {
           headers: { 'content-type': 'application/json' },
         })
       }
+      assert.equal(options.method, 'POST')
+      assert.equal(path, '/api/projects/project-1/chapter-sessions/2')
+      createBody = JSON.parse(options.body)
       return new Response(JSON.stringify(sessionWorkspace(2)), {
         status: 201,
         headers: { 'content-type': 'application/json' },
@@ -579,7 +656,9 @@ test('mounted Writer fences a late old-route current before any old Session requ
   try {
     await waitFor(() => currentReads === 1)
     await mounted.router.push('/projects/project-1/write/chapters/2')
-    await waitFor(() => requests.some(([method]) => method === 'POST'))
+    await waitFor(() => /开始本章写作/.test(renderedText(mounted.root)))
+    await flush()
+    assert.deepEqual(requests, [...initialWriterReads(1), ...initialWriterReads(2)])
     oldCurrent.resolve(new Response(JSON.stringify(currentOutline({
       chapterNumber: 1,
     })), {
@@ -587,17 +666,30 @@ test('mounted Writer fences a late old-route current before any old Session requ
     }))
     await flush()
 
+    assert.deepEqual(requests, [...initialWriterReads(1), ...initialWriterReads(2)])
+    await clickStartWriting(mounted.root)
     assert.deepEqual(requests, [
-      ['GET', '/api/projects/project-1/chapter-outlines/current'],
+      ...initialWriterReads(1), ...initialWriterReads(2),
       ['GET', '/api/projects/project-1/chapter-outlines/current'],
       ['POST', '/api/projects/project-1/chapter-sessions/2'],
       ['GET', '/api/projects/project-1/chapter-sessions/session-2/finalization'],
+      ['GET', '/api/projects/project-1/workbench/chapters/2'],
+      ['GET', '/api/projects/project-1/workbench/volumes'],
+      ['GET', '/api/projects/project-1/contracts/head'],
     ])
     assert.equal(
       mounted.router.currentRoute.value.fullPath,
       '/projects/project-1/write/chapters/2',
     )
     assert.match(renderedText(mounted.root), /第 2 章/)
+    assert.deepEqual(createBody, {
+      chapterNumber: 2,
+      expectedPlanningRevision: 7,
+      expectedPlanningHash: 'a'.repeat(64),
+      expectedOutlineRevision: 9,
+      expectedOutlineHash: 'c'.repeat(64),
+      expectedCanonRevision: 5,
+    })
   } finally {
     await mounted.close()
   }

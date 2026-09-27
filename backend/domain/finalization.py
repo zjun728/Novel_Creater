@@ -399,6 +399,7 @@ class DeterministicBlock(_StrictValue):
 
 class QualityFinding(_StrictValue):
     id: str = Field(min_length=1, max_length=100)
+    severity: Literal["required", "suggested", "optional"] | None = Field(default=None, exclude_if=lambda value: value is None)
     dimension: QualityDimension
     reason: str = Field(min_length=1, max_length=2000)
     suggested_action: str = Field(

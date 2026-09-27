@@ -22,8 +22,8 @@ EXPECTED_QUERY = (
 V1_4_MANIFEST_HASH = "d4ca983a7748cdf1e05867a2ab4ccb958e76bf82a59aab8e56398693af4dc428"
 
 
-def test_expected_schema_version_is_writer_core_v1_14():
-    assert EXPECTED_SCHEMA_VERSION == "writer-core-v1.14.0"
+def test_expected_schema_version_is_writer_core_v1_15():
+    assert EXPECTED_SCHEMA_VERSION == "writer-core-v1.16.0"
     assert V113_SCHEMA_VERSION == "writer-core-v1.13.0"
     assert v113_manifest_hash() != manifest_hash()
 
@@ -82,10 +82,10 @@ async def test_non_missing_table_errors_are_reraised_unchanged(error):
 
 
 @pytest.mark.asyncio
-async def test_missing_metadata_row_is_rejected_with_reinitialize_guidance():
+async def test_missing_metadata_row_is_rejected_with_incremental_upgrade_guidance():
     session = FakeVersionSession(row=None)
 
-    with pytest.raises(SchemaMismatch, match="reinitialize"):
+    with pytest.raises(SchemaMismatch, match="incremental upgrade"):
         await verify_schema_version(session)
 
     assert session.executed == [(EXPECTED_QUERY, None)]
@@ -109,7 +109,7 @@ async def test_wrong_version_or_hash_is_rejected_with_expected_values(row):
     assert EXPECTED_SCHEMA_VERSION in message
     assert manifest_hash() in message
     assert "backend.scripts.initialize_database" in message
-    assert "reinitialize" in message
+    assert "backend.scripts.upgrade_product_database_v115" in message
     assert session.executed == [(EXPECTED_QUERY, None)]
 
 
@@ -125,7 +125,7 @@ async def test_v1_4_database_is_rejected_read_only():
     with pytest.raises(SchemaMismatch) as raised:
         await verify_schema_version(session)
 
-    assert "writer-core-v1.14.0" in str(raised.value)
+    assert "writer-core-v1.16.0" in str(raised.value)
     assert "writer-core-v1.4.0" in str(raised.value)
     assert session.executed == [(EXPECTED_QUERY, None)]
 

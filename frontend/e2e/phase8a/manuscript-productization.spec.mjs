@@ -84,7 +84,9 @@ function installPageEventLedger(page) {
       expect(ledger.pageErrors).toBe(0)
       expect(ledger.requestFailures).toBe(0)
     },
-    assertExpectedCorruptPageEvents() {
+    async assertExpectedCorruptPageEvents() {
+      // Network responses and their browser console events arrive separately.
+      await expect.poll(() => ledger.consoleErrors).toBe(4)
       const routes = ['manuscript-chapter', 'novel-download-chapter', 'novel-download-volume', 'novel-download-book']
       expect(ledger.responses).toEqual(routes.map(route => ({
         method: 'GET', route, stage: 'corrupt', status: 500,
@@ -227,7 +229,8 @@ async function assertNoWriterConflict(page) {
 async function acceptComplete(page, pageEvents) {
   await page.goto(`/projects/${COMPLETE}/overview`)
   await expect(page.getByRole('heading', { name: '织机赌局 · 完整稿件' })).toBeVisible()
-  await expect(page.getByRole('link', { name: '作品稿件 · 已定稿 3 章' })).toBeVisible()
+  await expect(page.getByText('共 3 章', { exact: true })).toBeVisible()
+  await expect(page.getByRole('link', { name: /正文写作/ })).toHaveAttribute('href', `/projects/${COMPLETE}/write/chapters/4`)
   await page.getByRole('link', { name: '作品稿件', exact: true }).click()
   await expect(page.getByRole('heading', { name: '作品稿件' })).toBeVisible()
   await expect(page.getByText('第1卷 · 第一卷')).toBeVisible()
@@ -239,7 +242,7 @@ async function acceptComplete(page, pageEvents) {
   await expect(page.getByRole('heading', { name: `第 1 章 · ${TITLES[0]}` })).toBeVisible()
   await expect(page.getByLabel('定稿正文')).toContainText(PROSE[0])
   await assertNoWriterConflict(page)
-  await page.getByRole('button', { name: '本章小纲' }).click()
+  await page.getByRole('button', { name: '本章小纲', exact: true }).click()
   await expect(page.getByText('在三日织机赌局中取得一次可验证的喘息')).toBeVisible()
   await assertNoWriterConflict(page)
   await page.locator('#final-reader-next').click()
@@ -249,7 +252,7 @@ async function acceptComplete(page, pageEvents) {
   await expect(page.getByRole('heading', { name: `第 1 章 · ${TITLES[0]}` })).toBeVisible()
   await assertNoWriterConflict(page)
   await page.reload()
-  await expect(page.getByRole('button', { name: '本章小纲' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('button', { name: '本章小纲', exact: true })).toHaveAttribute('aria-pressed', 'true')
   await expect(page.getByRole('link', { name: '进入第 4 章写作' })).toBeVisible()
   await assertNoWriterConflict(page)
   await page.getByRole('link', { name: '返回作品目录' }).click()
@@ -278,7 +281,7 @@ async function acceptComplete(page, pageEvents) {
   await expect(page.getByText('AI 生成工作稿')).toHaveCount(0)
   await page.locator('#manuscript-chapter-1').click()
   await expect(page.getByLabel('定稿正文')).toContainText(PROSE[0])
-  await page.getByRole('button', { name: '本章小纲' }).click()
+  await page.getByRole('button', { name: '本章小纲', exact: true }).click()
   await expect(page.getByText(PINNED_GOAL)).toBeVisible()
   await expect(page.locator('#final-reader-current-action')).toHaveCount(0)
   await page.getByRole('link', { name: '返回作品目录' }).click()
@@ -292,7 +295,9 @@ const PINNED_GOAL = '在三日织机赌局中取得一次可验证的喘息'
 
 async function acceptAwaitingAuthor(page) {
   await page.goto(`/projects/${AWAITING}/overview`)
-  await page.getByRole('link', { name: '作品稿件 · 已定稿 3 章' }).click()
+  await expect(page.getByText('共 3 章', { exact: true })).toBeVisible()
+  await expect(page.getByRole('link', { name: /正文写作/ })).toHaveAttribute('href', `/projects/${AWAITING}/write/chapters/4`)
+  await page.getByRole('link', { name: '作品稿件', exact: true }).click()
   await expect(page.getByRole('link', { name: '继续创作第 4 章' })).toBeVisible()
   await page.getByRole('link', { name: '继续创作第 4 章' }).click()
   await expect(page.getByRole('heading', { name: '章节工作台' })).toBeVisible()
@@ -307,8 +312,8 @@ async function acceptAwaitingAuthor(page) {
   const mappedChapterFiveAction = page.getByRole('link', { name: '准备第 5 章小纲' })
   await expect(mappedChapterFiveAction).toBeVisible()
   await mappedChapterFiveAction.click()
-  await expect(page).toHaveURL(new RegExp(`/projects/${AWAITING}/planning/story-blocks$`, 'u'))
-  await expect(page.getByRole('heading', { name: '故事规划工作台' })).toBeVisible()
+  await expect(page).toHaveURL(new RegExp(`/projects/${AWAITING}/planning/outlines$`, 'u'))
+  await expect(page.getByRole('heading', { name: '章节小纲', exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: '第 5 章小纲' })).toBeVisible()
   await page.getByRole('link', { name: '作品稿件', exact: true }).click()
   await expect(page.getByText('旧账浮出水面', { exact: true })).toBeVisible()
@@ -360,6 +365,6 @@ test('@phase8a accepts the complete awaiting-author and corrupt manuscript workf
   pageEvents.setStage('corrupt')
   await acceptCorrupt(page)
   await page.waitForTimeout(0)
-  pageEvents.assertExpectedCorruptPageEvents()
+  await pageEvents.assertExpectedCorruptPageEvents()
   pageEvents.write()
 })

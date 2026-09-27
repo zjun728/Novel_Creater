@@ -71,7 +71,10 @@ class FakeExtraction:
             'entities': [{'id': '30000000-0000-4000-8000-000000000001', 'entityType': 'person', 'canonicalName': '守门人'}],
             'aliases': [{'id': '30000000-0000-4000-8000-000000000002', 'entityId': '30000000-0000-4000-8000-000000000001', 'alias': '老卒'}],
             'canonEvents': [{'id': '30000000-0000-4000-8000-000000000003', 'entityId': '30000000-0000-4000-8000-000000000001', 'factKind': 'dynamic_event', 'fieldPath': 'location', 'value': '城门', 'evidence': proof, 'effectiveStartChapter': 1, 'effectiveEndChapter': None, 'assertionOperator': 'equals', 'valueCardinality': 'single'}],
-            'storyProgressEvents': [{'id': '30000000-0000-4000-8000-000000000004', 'targetType': 'story_block', 'targetId': block['id'], 'status': 'completed', 'evidence': proof}],
+            'storyProgressEvents': [
+                {'id': '30000000-0000-4000-8000-000000000004', 'targetType': 'story_block', 'targetId': block['id'], 'status': 'completed', 'evidence': proof},
+                {'id': '30000000-0000-4000-8000-000000000008', 'targetType': 'scene_task', 'targetId': block['stages'][0]['sceneTasks'][0]['id'], 'status': 'completed', 'evidence': proof},
+            ],
             'planningPatches': [
                 {'id': '30000000-0000-4000-8000-000000000005', 'targetType': 'plot', 'targetId': plot['id'], 'expectedRevision': plot['revision'], 'expectedHash': plot['contentHash'], 'fieldPath': 'futureDirection', 'replacement': '追查城内接头人。', 'evidence': proof},
                 {'id': '30000000-0000-4000-8000-000000000006', 'targetType': 'plot', 'targetId': plot['id'], 'expectedRevision': plot['revision'], 'expectedHash': plot['contentHash'], 'fieldPath': 'expectedPayoff', 'replacement': '保留入城后的悬念。', 'evidence': proof},

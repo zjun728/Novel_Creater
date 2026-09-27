@@ -15,6 +15,15 @@ const emptyContent = () => ({
   storyBlocks: [],
 })
 
+test('explicit full planning modes reach the generation command', async () => {
+  const store = createStore()
+  const controller = createPlanningWorkspaceController({ store, projectId: () => 'project-1', keyFactory: () => 'expansion-1' })
+  for (const generationMode of ['initial', 'next_block', 'next_volume', 'revise_block']) {
+    await controller.generate('保留既有安排', generationMode)
+    assert.deepEqual(store.calls.at(-1), ['generate', { idempotencyKey: 'expansion-1', authorInstructions: '保留既有安排', generationMode }])
+  }
+})
+
 const completeContent = () => ({
   activeStoryBlockRef: 'block-1',
   volumes: [{
@@ -697,6 +706,7 @@ test('leave protection skips exactly three same-project planning tabs and prompt
     'ProjectPlanningVolumes',
     'ProjectPlanningPlots',
     'ProjectPlanningStoryBlocks',
+    'ProjectPlanningOutlines',
   ]) {
     assert.equal(controller.requestRouteLeave({
       name,
@@ -804,4 +814,34 @@ test('critical generation recovery state also protects leaving without reposting
   await controller.reconcile()
   assert.deepEqual(store.calls, [['reconcile']])
   assert.equal(prompts, 1)
+})
+
+test('character plans opt in through normal dirty aggregate updates and preserve retired nodes', () => {
+  const store = createStore()
+  const controller = createPlanningWorkspaceController({ store, projectId: () => 'project-1', keyFactory: () => 'local-plot' })
+  controller.addPlot()
+  assert.equal(Object.hasOwn(store.localContent.plots[0], 'characterDesign'), false)
+  const design = { entityId: null, displayName: '新人物', nodes: [{ id: 'n1', title: '转变', goal: '保护同伴' }] }
+  controller.updatePlot('local-plot', { characterDesign: design })
+  assert.deepEqual(store.localContent.plots[0].characterDesign, design)
+  assert.equal(store.dirty, true)
+  design.nodes[0].goal = 'external mutation'
+  assert.equal(store.localContent.plots[0].characterDesign.nodes[0].goal, '保护同伴')
+  store.localContent.plots[0].lifecycle = 'retired'
+  controller.updatePlot('local-plot', { characterDesign: null })
+  assert.equal(store.localContent.plots[0].characterDesign.displayName, '新人物')
+})
+
+test('planning confirmation requires meaningful character nodes and supports removing optional plans', () => {
+  const content = completeContent()
+  content.plots[0].characterDesign = { entityId: null, displayName: '主角', nodes: [] }
+  assert.equal(isCompletePlanningAggregate(content), false)
+  content.plots[0].characterDesign.nodes.push({ id: 'n', title: '醒悟', goal: '   ', expectedChapter: null })
+  assert.equal(isCompletePlanningAggregate(content), false)
+  content.plots[0].characterDesign.nodes[0].goal = '主动承担责任'
+  assert.equal(isCompletePlanningAggregate(content), true)
+  content.plots[0].characterDesign.nodes[0].expectedChapter = 1.5
+  assert.equal(isCompletePlanningAggregate(content), false)
+  content.plots[0].characterDesign = null
+  assert.equal(isCompletePlanningAggregate(content), true)
 })

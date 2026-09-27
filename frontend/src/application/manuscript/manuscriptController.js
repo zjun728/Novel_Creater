@@ -1,5 +1,5 @@
 import { shallowRef } from 'vue'
-import { mapProjectNextAction } from '../projects/projectNextAction.js'
+import { mapWorkbenchNextAction } from '../projects/projectNextAction.js'
 
 const COPY = Object.freeze({
   'missing-project': '项目不存在或已被删除', 'missing-chapter': '章节不存在',
@@ -55,7 +55,7 @@ export function createManuscriptController({ api, abortControllerFactory = () =>
     const projectId = normalizeProjectId(rawProjectId); if (!projectId) { preparation.value = preparationState('unavailable'); return preparation.value }
     prepAbort = makeController()
     preparation.value = preparationState('loading')
-    try { const mapped = mapProjectNextAction(await api.projects.preparation(projectId, { signal: prepAbort.signal })); if (!disposed && token === preparationGeneration) preparation.value = preparationState(mapped.state === 'archived' ? 'archived' : mapped.state === 'available' ? 'ready' : 'unavailable', mapped) } catch { if (!disposed && token === preparationGeneration) preparation.value = preparationState('unavailable') }
+    try { const mapped = mapWorkbenchNextAction(await api.projects.preparation(projectId, { signal: prepAbort.signal }), projectId); if (!disposed && token === preparationGeneration) preparation.value = preparationState(mapped.state === 'archived' ? 'archived' : mapped.state === 'available' ? 'ready' : 'unavailable', mapped) } catch { if (!disposed && token === preparationGeneration) preparation.value = preparationState('unavailable') }
     return preparation.value
   }
   function dispose() { disposed = true; generation += 1; preparationGeneration += 1; controller?.abort(); prepAbort?.abort() }

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Container, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 import json
@@ -32,6 +32,8 @@ from backend.domain.project_import_publication import (
 
 # Every v1 emitted authority is classified exactly once; invalid is intentionally empty in v1.
 FORMAL_ENTITY_TYPES = frozenset({
+    "review-finding-decisions",
+    "continuity-issue",
     "project", "creative-seed", "creative-seed-revision", "creative-seed-head",
     "project-seed-selection-revision", "project-selected-seed",
     "story-engine-option", "project-contract-draft", "creation-contract", "style-contract",
@@ -277,6 +279,38 @@ def _rewrite_contract_draft(
         _slot(binding, "id", ("project-model-binding-revision",), ids)
 
 
+def _validate_character_design_references(record: PackageRecord, index: Mapping) -> None:
+    if record.entity_type not in {"planning-draft", "planning-revision"}:
+        return
+    payload = record.data.get("payload")
+    if not isinstance(payload, Mapping):
+        return
+    from backend.domain.planning import CharacterDesign
+    for plot in payload.get("plots", ()):
+        if not isinstance(plot, Mapping):
+            raise _invalid()
+        raw = plot.get("characterDesign")
+        if raw is None:
+            continue
+        try:
+            design = CharacterDesign.model_validate(thaw_json_value(raw))
+        except (TypeError, ValueError):
+            raise _invalid() from None
+        if design.entity_id is not None:
+            target = index.get(("canon-entity", design.entity_id))
+            if target is None or target.data.get("entityType") != "person":
+                raise _invalid()
+
+
+def _rewrite_character_design(plot: dict[str, object], ids: Mapping[tuple[str, str], str]) -> None:
+    design = plot.get("characterDesign")
+    if design is not None:
+        if not isinstance(design, dict):
+            raise _invalid()
+        if design.get("entityId") is not None:
+            _slot(design, "entityId", ("canon-entity",), ids)
+
+
 def _rewrite_planning_draft(payload: dict[str, object], ids: Mapping[tuple[str, str], str]) -> None:
     """Rewrite formal persisted-node IDs while preserving draft client keys."""
     def node(item: object, kind: str) -> dict[str, object]:
@@ -289,7 +323,7 @@ def _rewrite_planning_draft(payload: dict[str, object], ids: Mapping[tuple[str, 
     for item in payload.get("volumes", []):
         node(item, "planning-volume")
     for item in payload.get("plots", []):
-        node(item, "planning-plot")
+        _rewrite_character_design(node(item, "planning-plot"), ids)
     for block_value in payload.get("storyBlocks", []):
         block = node(block_value, "story-block")
         for stage_value in block.get("stages", []):
@@ -302,7 +336,7 @@ def _rewrite_planning(payload: dict[str, object], ids: Mapping[tuple[str, str], 
     for item in payload.get("volumes", []):
         _definition(item, "planning-volume", ids)
     for item in payload.get("plots", []):
-        _definition(item, "planning-plot", ids)
+        _rewrite_character_design(_definition(item, "planning-plot", ids), ids)
     for block_value in payload.get("storyBlocks", []):
         block = _definition(block_value, "story-block", ids)
         for field in ("volumeId", "volumeRef"):
@@ -403,7 +437,10 @@ def _rewrite_finalization(payload: dict[str, object], ids: Mapping[tuple[str, st
     }
     for field, kind in fields.items():
         for item in payload.get(field, []):
-            _definition(item, kind, ids)
+            if field == "entities" and isinstance(item, dict) and str(item.get("id", "")).startswith("canon-entity:"):
+                _slot(item, "id", ("canon-entity",), ids)
+            else:
+                _definition(item, kind, ids)
     entity_types = ("canon-entity", "finalization-entity")
     if "existingEntityIds" in payload:
         values = payload["existingEntityIds"]
@@ -428,6 +465,41 @@ def _rewrite_finalization(payload: dict[str, object], ids: Mapping[tuple[str, st
             _slot(item, "targetId", tuple(kind for values in planning_types.values() for kind in values), ids)
 
 
+_PROGRESS_TARGET_TYPES = {
+    "volume": "planning-volume", "plot": "planning-plot", "story_block": "story-block",
+    "stage": "planning-stage", "scene_task": "scene-task",
+}
+
+
+def _canon_progress_reference(data: Mapping[str, object]) -> tuple[str, str, str] | None:
+    """Interpret only the reserved progress path, never arbitrary fact JSON."""
+    field_path = data.get("fieldPath")
+    if not isinstance(field_path, str) or not field_path.startswith("plot.progress."):
+        return None
+    value = data.get("value")
+    if not isinstance(value, Mapping):
+        raise _invalid()
+    target_type, target_id = value.get("targetType"), value.get("targetId")
+    if (
+        not isinstance(target_type, str) or target_type not in _PROGRESS_TARGET_TYPES
+        or not isinstance(target_id, str) or _LOGICAL_ID_RE.fullmatch(target_id) is None
+        or target_id.split(":", 1)[0] != _PROGRESS_TARGET_TYPES[target_type]
+        or field_path != f"plot.progress.{target_type}.{target_id}"
+    ):
+        raise _invalid()
+    return target_type, _PROGRESS_TARGET_TYPES[target_type], target_id
+
+
+def _validate_canon_progress_reference(
+    record: PackageRecord, identities: Container[tuple[str, str]],
+) -> None:
+    if record.entity_type != "canon-event":
+        return
+    reference = _canon_progress_reference(record.data)
+    if reference is not None and (reference[1], reference[2]) not in identities:
+        raise _invalid()
+
+
 def _rewrite_record_data(
     record: PackageRecord,
     ids: Mapping[tuple[str, str], str],
@@ -439,8 +511,15 @@ def _rewrite_record_data(
         if not isinstance(data, dict):
             raise ValueError
         for field, targets in _REFS.get(record.entity_type, {}).items():
-            optional = field in _OPTIONAL_REF_FIELDS.get(record.entity_type, frozenset())
+            optional = field in _OPTIONAL_REF_FIELDS.get(record.entity_type, frozenset()) or _empty_project_head(record)
             _slot(data, field, tuple(sorted(targets)), ids, optional=optional)
+        if record.entity_type == "canon-event":
+            reference = _canon_progress_reference(data)
+            if reference is not None:
+                target_type, kind, logical_id = reference
+                target_id = _typed_id(logical_id, (kind,), ids)
+                data["value"]["targetId"] = target_id
+                data["fieldPath"] = f"plot.progress.{target_type}.{target_id}"
         if record.entity_type == "draft-candidate":
             provenance = data.get("provenance")
             if not isinstance(provenance, dict):
@@ -465,6 +544,8 @@ def _rewrite_record_data(
             _rewrite_outline(payload, ids)
         elif record.entity_type == "finalization-change-set-revision" and isinstance(payload, dict):
             _rewrite_finalization(payload, ids)
+        elif record.entity_type == "review-finding-decisions":
+            data["ignoredFindingIds"] = sorted(_typed_id(item, ("quality-finding",), ids) for item in data["ignoredFindingIds"])
         elif record.entity_type == "candidate-quality":
             for finding in data.get("findings", []):
                 _definition(finding, "quality-finding", ids)
@@ -815,6 +896,15 @@ def _rewrite_records(
                     payload["contentHash"] = own_hash
 
     for change_set in (record for record in records if record.entity_type == "finalization-change-set"):
+        chapter = package.graph_index.get(("chapter", change_set.data.get("chapterLogicalId")))
+        if chapter is not None:
+            for source_field, target_kind, hash_field in (
+                ("planningRevisionLogicalId", "planning-revision", "expectedPlanningHash"),
+                ("outlineRevisionLogicalId", "chapter-outline-revision", "expectedOutlineHash"),
+            ):
+                authority = rewritten.get((target_kind, chapter.data.get(source_field)))
+                if authority is not None:
+                    rewritten[(change_set.entity_type, change_set.logical_id)][hash_field] = authority["contentHash"]
         revisions = [
             record for record in records
             if record.entity_type == "finalization-change-set-revision"
@@ -826,6 +916,12 @@ def _rewrite_records(
             if not isinstance(target, str):
                 raise _invalid()
             rewritten[(change_set.entity_type, change_set.logical_id)]["contentHash"] = target
+
+    for record in records:
+        if record.entity_type == "review-finding-decisions":
+            attempt = package.graph_index[("finalization-change-set", record.data["changeSetLogicalId"])]
+            quality = rewritten[("candidate-quality", attempt.data["qualityReportLogicalId"])]
+            rewritten[(record.entity_type, record.logical_id)]["reportHash"] = quality["contentHash"]
 
     # Relational pins are repaired only after every rewritten authority hash exists.
     for record in records:
@@ -872,7 +968,7 @@ def _rewrite_records(
             target = rewritten.get((kind, source_logical)) if isinstance(source_logical, str) else None
             if target is not None and isinstance(target.get("contentHash"), str):
                 data["contentHash"] = target["contentHash"]
-        if record.entity_type == "project-contract-head":
+        if record.entity_type == "project-contract-head" and not _empty_project_head(record):
             creation_id = record.data.get("creationContractLogicalId")
             style_id = record.data.get("styleContractLogicalId")
             creation = rewritten.get(("creation-contract", creation_id)) if isinstance(creation_id, str) else None
@@ -945,6 +1041,23 @@ def _rewrite_records(
     return rewritten
 
 
+def _validate_review_entity_references(record: PackageRecord, index: Mapping[tuple[str, str], PackageRecord]) -> None:
+    if record.entity_type != "finalization-change-set-revision":
+        return
+    payload = record.data.get("payload")
+    if not isinstance(payload, Mapping):
+        return
+    for entity in payload.get("entities", ()):
+        if not isinstance(entity, Mapping):
+            raise _invalid()
+        entity_id = entity.get("id")
+        if not isinstance(entity_id, str) or not entity_id.startswith("canon-entity:"):
+            continue
+        target = index.get(("canon-entity", entity_id))
+        if target is None or any(entity.get(field) != target.data.get(field) for field in ("entityType", "canonicalName")):
+            raise _invalid()
+
+
 def _validate_publication_references(package: VerifiedProjectPackage) -> None:
     records = tuple(package.graph_index.values())
     if len(records) != len(package.graph_index):
@@ -955,11 +1068,17 @@ def _validate_publication_references(package: VerifiedProjectPackage) -> None:
         for identity in _publication_embedded_identities(record)
     }
     for identity, record in package.graph_index.items():
+        _validate_character_design_references(record, package.graph_index)
+        _validate_review_entity_references(record, package.graph_index)
+        _validate_canon_progress_reference(record, set(package.graph_index) | embedded)
         if identity != (record.entity_type, record.logical_id) or record.entity_type not in all_v1_record_types():
             raise _invalid()
         for field, target_types in _REFS.get(record.entity_type, {}).items():
             value = record.data.get(field)
-            if value is None and field in _OPTIONAL_REF_FIELDS.get(record.entity_type, frozenset()):
+            if value is None and (
+                field in _OPTIONAL_REF_FIELDS.get(record.entity_type, frozenset())
+                or _empty_project_head(record)
+            ):
                 continue
             if not isinstance(value, str) or not any(
                 (kind, value) in package.graph_index or (kind, value) in embedded
@@ -992,7 +1111,7 @@ def _validate_source_hashes(package: VerifiedProjectPackage) -> None:
             if record.entity_type == "creative-seed-revision":
                 raw = record.data.get("payload")
                 payload, _provenance = decode_seed_revision(
-                    canonical_line(raw).decode("utf-8")
+                    thaw_json_value(raw)
                 )
                 if record.data.get("contentHash") != seed_payload_hash(payload):
                     raise ValueError
@@ -1026,6 +1145,8 @@ def _publication_embedded_identities(record: PackageRecord) -> tuple[tuple[str, 
         logical_id = item.get("logicalId") or item.get("id")
         if logical_id is None and allow_client_key:
             return
+        if kind == "finalization-entity" and isinstance(logical_id, str) and re.fullmatch(r"canon-entity:[1-9][0-9]*", logical_id):
+            return  # A committed definition refers to the independently exported Canon identity.
         if not isinstance(logical_id, str) or re.fullmatch(rf"{re.escape(kind)}:[1-9][0-9]*", logical_id) is None:
             raise _invalid()
         found.append((kind, logical_id))
@@ -1408,6 +1529,8 @@ def _stream_records(archive: zipfile.ZipFile, verified: VerifiedArchiveEntry) ->
 
 
 _REFS: Mapping[str, Mapping[str, frozenset[str]]] = {
+    "review-finding-decisions": {"changeSetLogicalId": frozenset({"finalization-change-set"})},
+    "continuity-issue": {"sourceFinalizationLogicalId": frozenset({"finalization-record"})},
     "creative-seed-revision": {"seedLogicalId": frozenset({"creative-seed"})},
     "creative-seed-head": {"seedLogicalId": frozenset({"creative-seed"}), "revisionLogicalId": frozenset({"creative-seed-revision"})},
     "project-seed-selection-revision": {"seedLogicalId": frozenset({"creative-seed"}), "seedRevisionLogicalId": frozenset({"creative-seed-revision"})},
@@ -1451,7 +1574,7 @@ _REFS: Mapping[str, Mapping[str, frozenset[str]]] = {
     "operation-event": {"operationLogicalId": frozenset({"operation"})},
     "candidate-freeze": {"chapterLogicalId": frozenset({"chapter"}), "candidateLogicalId": frozenset({"draft-candidate"})},
     "candidate-quality": {"chapterLogicalId": frozenset({"chapter"}), "candidateLogicalId": frozenset({"draft-candidate"})},
-    "finalization-change-set": {"chapterLogicalId": frozenset({"chapter"}), "candidateLogicalId": frozenset({"draft-candidate"})},
+    "finalization-change-set": {"qualityReportLogicalId": frozenset({"candidate-quality"}), "chapterLogicalId": frozenset({"chapter"}), "candidateLogicalId": frozenset({"draft-candidate"})},
     "finalization-change-set-revision": {"changeSetLogicalId": frozenset({"finalization-change-set"})},
     "finalization-record": {"chapterLogicalId": frozenset({"chapter"}), "candidateLogicalId": frozenset({"draft-candidate"}), "changeSetLogicalId": frozenset({"finalization-change-set"})},
     "final-chapter": {"chapterLogicalId": frozenset({"chapter"}), "candidateLogicalId": frozenset({"draft-candidate"}), "finalizationRecordLogicalId": frozenset({"finalization-record"}), "planningRevisionLogicalId": frozenset({"planning-revision"}), "outlineRevisionLogicalId": frozenset({"chapter-outline-revision"})},
@@ -1480,6 +1603,38 @@ _HEAD_REVISION_TARGETS: Mapping[str, tuple[str, str]] = {
     "project-planning-head": ("planningRevisionLogicalId", "planning-revision"),
     "project-chapter-outline-head": ("outlineRevisionLogicalId", "chapter-outline-revision"),
 }
+
+_EMPTY_PROJECT_HEAD_FIELDS: Mapping[str, tuple[str, ...]] = {
+    "project-contract-head": ("creationContractLogicalId", "styleContractLogicalId", "contentHash"),
+    "project-bible-head": ("bibleRevisionLogicalId", "contentHash"),
+    "project-planning-head": ("planningRevisionLogicalId", "contentHash"),
+    "project-chapter-outline-head": ("outlineRevisionLogicalId", "contentHash"),
+}
+
+
+def _empty_project_head(record: PackageRecord) -> bool:
+    """Only an unconfirmed head may omit its entire authority tuple."""
+    fields = _EMPTY_PROJECT_HEAD_FIELDS.get(record.entity_type)
+    if fields is None:
+        return False
+    revision = record.data.get("revision")
+    if type(revision) is not int or revision < 0:
+        raise _invalid()
+    if revision == 0:
+        if any(record.data.get(field) is not None for field in fields):
+            raise _invalid()
+        return True
+    for field in fields:
+        # Contract hashes are derived from the two referenced authority records.
+        if record.entity_type == "project-contract-head" and field == "contentHash":
+            continue
+        value = record.data.get(field)
+        if not isinstance(value, str) or not value:
+            raise _invalid()
+        if field == "contentHash" and re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            raise _invalid()
+    return False
+
 
 _PINNED_REVISIONS: Mapping[str, tuple[tuple[str, str, str, str], ...]] = {
     "creation-contract": (("seedRevisionLogicalId", "creative-seed-revision", "seedRevision", "seedHash"),),
@@ -1566,6 +1721,8 @@ def _validate_candidate_basis(
     return basis
 
 _REQUIRED_CLOSURE_FIELDS: Mapping[str, frozenset[str]] = {
+    "review-finding-decisions": frozenset({"revision", "reportHash", "ignoredFindingIds", "updatedAt"}),
+    "continuity-issue": frozenset({"category", "severity", "status", "description", "createdAt", "updatedAt"}),
     "import-provenance": frozenset({
         "category", "sourceEntityType", "sourceLogicalId", "payload",
         "contentHash", "createdAt",
@@ -1597,6 +1754,9 @@ _REQUIRED_CLOSURE_FIELDS: Mapping[str, frozenset[str]] = {
 }
 
 _OPTIONAL_REF_FIELDS: Mapping[str, frozenset[str]] = MappingProxyType({
+    "finalization-change-set": frozenset({"qualityReportLogicalId"}),
+    "canon-event": frozenset({"entityLogicalId"}),
+    "continuity-issue": frozenset({"sourceFinalizationLogicalId"}),
     "creation-contract": frozenset({"bindingRevisionLogicalId"}),
     "project-bible-draft": frozenset({"bindingRevisionLogicalId"}),
     "project-model-binding-revision": frozenset({"sourceProjectLogicalId"}),
@@ -1648,6 +1808,49 @@ def _embedded_identities(record: PackageRecord) -> set[tuple[str, str]]:
     return found
 
 
+def _validate_continuity_issue(data: Mapping, index: Mapping) -> None:
+    for key, allowed in (
+        ("category", {"time", "location", "character_state", "rule", "fact"}),
+        ("severity", {"low", "medium", "high"}),
+        ("status", {"pending", "resolved", "ignored"}),
+    ):
+        if not isinstance(data.get(key), str) or data[key] not in allowed:
+            raise _invalid()
+    for key in ("description", "suggestion", "futureTarget", "resolutionNote"):
+        value = data.get(key)
+        if value is None and key != "description":
+            continue
+        if not isinstance(value, str) or not value.strip() or len(value) > 4000:
+            raise _invalid()
+    if data["status"] != "pending" and not data.get("resolutionNote"):
+        raise _invalid()
+    if any(type(data.get(key)) is not int or not 0 <= data[key] <= 9223372036854775807
+           for key in ("createdAt", "updatedAt")) or data["updatedAt"] < data["createdAt"]:
+        raise _invalid()
+    source = (data.get("sourceChapterNumber"), data.get("sourceFinalizationLogicalId"), data.get("sourceCanonRevision"))
+    if all(value is None for value in source):
+        return
+    chapter, finalization_id, revision = source
+    if (type(chapter) is not int or not 1 <= chapter <= 2147483647
+        or type(revision) is not int or not 1 <= revision <= 2147483647
+        or not isinstance(finalization_id, str)):
+        raise _invalid()
+    finalization = index.get(("finalization-record", finalization_id))
+    finals = [item for (kind, _), item in index.items() if kind == "final-chapter"
+              and item.data.get("finalizationRecordLogicalId") == finalization_id]
+    canons = [item for (kind, _), item in index.items() if kind == "canon-revision"
+              and item.data.get("revisionNumber") == revision]
+    if (finalization is None or len(finals) != 1 or len(canons) != 1
+        or finals[0].data.get("chapterNumber") != chapter
+        or finals[0].data.get("canonRevision") != revision
+        or finalization.data.get("committedCanonRevision") != revision
+        or finals[0].data.get("chapterLogicalId") != finalization.data.get("chapterLogicalId")
+        or finals[0].data.get("candidateLogicalId") != finalization.data.get("candidateLogicalId")
+        or canons[0].data.get("sourceType") != "finalization"
+        or canons[0].data.get("sourceLogicalId") != finalization.data.get("changeSetLogicalId")):
+        raise _invalid()
+
+
 def _validate_graph(records: tuple[PackageRecord, ...]) -> dict[tuple[str, str], PackageRecord]:
     index = {(record.entity_type, record.logical_id): record for record in records}
     if len(index) != len(records) or any(record.entity_type not in all_v1_record_types() for record in records):
@@ -1658,10 +1861,35 @@ def _validate_graph(records: tuple[PackageRecord, ...]) -> dict[tuple[str, str],
             if identity in index:
                 raise _invalid()
             embedded.add(identity)
+    decision_attempts = set()
     for record in records:
         declaration = VALIDATORS.get(record.entity_type)
-        if declaration is None or not declaration.required_fields.issubset(record.data):
+        _validate_character_design_references(record, index)
+        _validate_review_entity_references(record, index)
+        _validate_canon_progress_reference(record, set(index) | embedded)
+        empty_head = _empty_project_head(record)
+        required = declaration.required_fields if declaration is not None else frozenset()
+        if empty_head:
+            required = required - frozenset(_EMPTY_PROJECT_HEAD_FIELDS[record.entity_type])
+        if declaration is None or not required.issubset(record.data):
             raise _invalid()
+        if record.entity_type == "review-finding-decisions":
+            attempt_id = record.data.get("changeSetLogicalId")
+            if not isinstance(attempt_id, str) or attempt_id in decision_attempts:
+                raise _invalid()
+            decision_attempts.add(attempt_id)
+            attempt = index.get(("finalization-change-set", attempt_id))
+            quality_id = attempt.data.get("qualityReportLogicalId") if attempt else None
+            quality = index.get(("candidate-quality", quality_id)) if isinstance(quality_id, str) else None
+            if quality is None or record.data["reportHash"] != quality.data.get("contentHash"):
+                raise _invalid()
+            from backend.domain.review_decisions import validate_package_decisions
+            try:
+                validate_package_decisions(record.data, quality.data)
+            except (ValueError, TypeError, KeyError):
+                raise _invalid() from None
+        if record.entity_type == "continuity-issue":
+            _validate_continuity_issue(record.data, index)
         for field, target_types in _REFS.get(record.entity_type, {}).items():
             value = record.data.get(field)
             if value is not None and (not isinstance(value, str) or not any((kind, value) in index or (kind, value) in embedded for kind in target_types)):
@@ -1723,7 +1951,7 @@ def _validate_graph(records: tuple[PackageRecord, ...]) -> dict[tuple[str, str],
             if hash_field in record.data and record.data[hash_field] != target.data.get("contentHash"):
                 raise _invalid()
         head_target = _HEAD_REVISION_TARGETS.get(record.entity_type)
-        if head_target is not None:
+        if head_target is not None and not empty_head:
             field, target_type = head_target
             target_id = record.data.get(field)
             target = index.get((target_type, target_id)) if isinstance(target_id, str) else None
@@ -1768,7 +1996,7 @@ def _validate_graph(records: tuple[PackageRecord, ...]) -> dict[tuple[str, str],
         try:
             raw_payload = revision.data.get("payload")
             payload, _provenance = decode_seed_revision(
-                canonical_line(raw_payload).decode("utf-8")
+                thaw_json_value(raw_payload)
             )
         except Exception:
             raise _invalid() from None
@@ -1798,11 +2026,16 @@ def _validate_graph(records: tuple[PackageRecord, ...]) -> dict[tuple[str, str],
                 if any(type(value) is not int for value in (start, end, chapter_start, chapter_end)) or not chapter_start <= start <= end <= chapter_end:
                     raise _invalid()
                 seen_fragments.add(key)
-        if record.entity_type == "project-contract-head":
+        if record.entity_type == "project-contract-head" and not _empty_project_head(record):
             targets = [index.get((kind, record.data.get(field))) for field, kind in (("creationContractLogicalId", "creation-contract"), ("styleContractLogicalId", "style-contract"))]
             if any(target is None for target in targets):
                 raise _invalid()
             if "revision" in record.data and any(record.data["revision"] != target.data.get("revision", target.revision) for target in targets if target is not None):
+                raise _invalid()
+        if record.entity_type == "finalization-change-set" and record.data.get("qualityReportLogicalId") is not None:
+            quality = index.get(("candidate-quality", record.data["qualityReportLogicalId"]))
+            if quality is None or any(quality.data.get(field) != record.data.get(field)
+                for field in ("chapterLogicalId", "candidateLogicalId", "candidateHash")):
                 raise _invalid()
         if record.entity_type == "finalization-record":
             change_set = index.get(("finalization-change-set", record.data.get("changeSetLogicalId")))
@@ -1863,7 +2096,8 @@ def _projection(raw: bytes) -> None:
             raise _invalid()
         _exact_keys(item, frozenset({"count", "hashes"}))
         hashes = item["hashes"]
-        if type(item["count"]) is not int or not isinstance(hashes, list) or item["count"] != len(hashes) or hashes != sorted(hashes) or len(set(hashes)) != len(hashes) or any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None for value in hashes):
+        # Each projection row carries its bundle hash; different rows can share it.
+        if type(item["count"]) is not int or not isinstance(hashes, list) or item["count"] != len(hashes) or any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None for value in hashes) or hashes != sorted(hashes):
             raise _invalid()
     if canonical_line(value) != raw:
         raise _invalid()

@@ -277,6 +277,7 @@ class PlanningService:
                     ) from exc
                 except PlanningDomainError as exc:
                     raise PlanningRequestInvalid(str(exc)) from exc
+                await self._validate_character_references(session, command.project_id, normalized)
                 row = {
                     **draft,
                     "draft_revision": int(draft["draft_revision"]) + 1,
@@ -369,6 +370,19 @@ class PlanningService:
                     raise PlanningPreconditionFailed(
                         "Canon and Projection are not synchronized"
                     )
+                if draft.get("source_attempt_id"):
+                    manifest = await self.repository.read_draft_generation_manifest(
+                        session, command.project_id, draft["source_attempt_id"],
+                    )
+                    if isinstance(manifest, (str, bytes, bytearray)):
+                        manifest = json.loads(manifest)
+                    if not isinstance(manifest, dict):
+                        raise PlanningPreconditionFailed("Planning generation provenance is unavailable")
+                    if manifest and manifest.get("expansion"):
+                        from backend.services.planning_expansion import expansion_authority_hash
+                        authority = await self.repository.read_expansion_authority(session, command.project_id)
+                        if expansion_authority_hash(authority) != manifest["expansion"]["authorityHash"]:
+                            raise PlanningPreconditionFailed("Writing progress changed; regenerate the planning continuation before confirmation")
                 now = self.clock()
                 request_row = {
                     "id": self.id_factory(),
@@ -393,6 +407,18 @@ class PlanningService:
                     validate_confirmable_planning(content)
                 except PlanningDomainError as exc:
                     raise PlanningPreconditionFailed(str(exc)) from exc
+                if int(head['revision']) > 0 and self._head_matches_basis(head, basis):
+                    previous = self._planning_from_json(head['content_json'])
+                    if previous.active_story_block_id != content.active_story_block_id:
+                        from backend.services.planning_expansion import validate_manual_continuation
+                        authority = await self.repository.read_expansion_authority(session, command.project_id)
+                        try:
+                            validate_manual_continuation(previous, content, authority)
+                        except (ValueError, StopIteration, KeyError) as exc:
+                            raise PlanningPreconditionFailed('Continuation conditions changed; check arrangements before adopting') from exc
+                await self._validate_character_references(
+                    session, command.project_id, content, projection=projection,
+                )
                 revision_number = int(head["revision"]) + 1
                 revision_row = {
                     "id": self.id_factory(),
@@ -498,6 +524,30 @@ class PlanningService:
                 )
                 for row in rows
             )
+
+    async def inspect_continuation(self, project_id: str):
+        from backend.services.planning_continuation import inspect_continuation
+        from backend.services.planning_generation import PlanningGenerationService
+        self._validate_project(project_id)
+        async with self.transaction_factory() as session:
+            project = await self._lock_project_snapshot(session, project_id)
+            basis = await self.repository.read_current_basis(session, project_id)
+            head = await self.repository.lock_planning_head(session, project_id)
+            if head is None: raise PlanningPreconditionFailed('Planning head is missing')
+            row = await self.repository.read_active_draft(session, project_id)
+            authority = await self.repository.read_expansion_authority(session, project_id)
+            confirmed = self._planning_from_json(head['content_json']) if int(head['revision']) else None
+            plan = PlanningGenerationService._editable_draft(confirmed) if confirmed else None
+            pending = await self.repository.read_active_generation_attempt(session, row['id']) if row else None
+            changed = bool(row and (row['content_hash'] != head['content_hash']
+                           or row['base_head_revision'] != head['revision']))
+            result = inspect_continuation(plan, authority, draft_changed=changed,
+                archived=project.get('archived_at') is not None,
+                basis_ready=basis is not None and (confirmed is None or self._head_matches_basis(head, basis)),
+                generation_pending=pending is not None)
+            result['projectId'] = project_id
+            result['headRevision'] = int(head['revision'])
+            return result
 
     async def get_state(self, project_id: str) -> PlanningState:
         self._validate_project(project_id)
@@ -676,6 +726,22 @@ class PlanningService:
 
     def _planning_json(self, value: PlanningAggregate) -> str:
         return canonical_json(value.model_dump(mode="json", by_alias=True))
+
+    async def _validate_character_references(self, session, project_id, content, *, projection=None):
+        entity_ids = {
+            plot.character_design.entity_id for plot in content.plots
+            if plot.character_design is not None and plot.character_design.entity_id is not None
+        }
+        if not entity_ids:
+            return
+        if projection is None:
+            projection = await self.repository.lock_projection_head(session, project_id)
+        if projection is None:
+            raise PlanningPreconditionFailed("Canon/Projection head is missing")
+        revision = int(projection["canon_revision_number"])
+        for entity_id in sorted(entity_ids):
+            if await self.repository.read_character_entity(session, project_id, entity_id, revision) is None:
+                raise PlanningRequestInvalid("character design must reference a Canon person in this project")
 
     def _basis_values(self, basis: Mapping[str, Any]) -> dict[str, Any]:
         return {field: basis[field] for field in _BASIS_FIELDS}

@@ -31,11 +31,16 @@ const CANONICAL_ROUTES = [
   ['/projects/:projectId/contract', 'ProjectContract'],
   ['/projects/:projectId/bible', 'ProjectBible'],
   ['/projects/:projectId/planning/volumes', 'ProjectPlanningVolumes'],
+  ['/projects/:projectId/continuity/issues', 'ContinuityIssues'],
+  ['/projects/:projectId/continuity/:section(settings|state-memory|arcs|clues)', 'ProjectContinuity'],
   ['/projects/:projectId/planning/plots', 'ProjectPlanningPlots'],
   ['/projects/:projectId/planning/story-blocks', 'ProjectPlanningStoryBlocks'],
+  ['/projects/:projectId/planning/outlines', 'ProjectPlanningOutlines'],
   ['/projects/:projectId/manuscript', 'ProjectManuscript'],
   ['/projects/:projectId/manuscript/chapters/:chapterNumber([1-9]\\d*)', 'FinalChapterReader'],
   ['/projects/:projectId/write/chapters/:chapterNumber([1-9]\\d*)', 'ChapterWriter'],
+  ['/projects/:projectId/workbench', 'ProjectWorkbench'],
+  ['/projects/:projectId/workbench/chapters/:chapterNumber([1-9]\\d*)', 'ChapterWorkbench'],
   ['/settings/providers', 'ProviderSettings'],
   ['/settings/application', 'ApplicationSettings'],
   ['/not-found', 'NotFound'],
@@ -186,6 +191,9 @@ const CANONICAL_ROUTE_VIEWS = [
   'views/ProjectContractView.vue',
   'views/ProjectBibleView.vue',
   'views/ProjectPlanningView.vue',
+  'views/ProjectContinuityView.vue',
+  'views/ContinuityIssuesView.vue',
+  'views/ChapterWorkbenchView.vue',
   'views/ManuscriptIndexView.vue',
   'views/FinalChapterReaderView.vue',
   'views/assets/StyleLibraryView.vue',
@@ -206,7 +214,7 @@ const PRESERVED_FUTURE_RUNTIME = [
   'views/ArchivedProjectStatusView.vue',
 ]
 
-test('planning foundation keeps one store, one workspace and the active story-block editor without outlines', async () => {
+test('planning foundation keeps one store and workspace with a dedicated outline editing tab', async () => {
   const readSource = relativePath => readFile(
     path.join(sourceRoot, relativePath),
     'utf8',
@@ -220,14 +228,17 @@ test('planning foundation keeps one store, one workspace and the active story-bl
   assert.doesNotMatch(client, /createInitial|planning\/initial/)
   assert.doesNotMatch(store, /createInitial|usePlanningStoreV2/)
   assert.doesNotMatch(workspace, /创建滚动规划|createInitial/)
-  assert.match(workspace, /故事规划工作台/)
+  assert.match(workspace, /<h1 id="planning-heading">\{\{ editing \? '调整故事规划' : sectionTitle \}\}<\/h1>/)
+  assert.match(workspace, /const sectionTitle = computed/)
   assert.match(workspace, /完整规划摘要/)
   assert.match(workspace, /planning-load-failure/)
   assert.match(workspace, /重新加载/)
   assert.match(workspace, /v-else-if="!store\.state"/)
   assert.doesNotMatch(workspace, /useVolumeStore|usePlotStore/)
   assert.match(workspace, /StoryBlockEditor/)
-  assert.doesNotMatch(workspace, /outlines|useStoryBlockStore/)
+  assert.doesNotMatch(workspace, /useStoryBlockStore/)
+  assert.match(workspace, /validator: value => \['volumes', 'plots', 'story-blocks', 'outlines'\]\.includes\(value\)/)
+  assert.match(workspace, /<chapter-outline-workspace\s+v-if="activeTab === 'outlines' && store\.outlineState !== undefined"\s+:store="store"\s+:controller="outlineController"\s*\/>/)
   await assert.rejects(
     access(path.join(sourceRoot, 'components/planning/PlanningWorkspaceV2.vue')),
   )
@@ -257,6 +268,8 @@ test('chapter writer has one exact-outline session path and no legacy StoryBlock
     )
   }
   assert.doesNotMatch(writer, /planningStore|usePlanningStore/)
+  assert.doesNotMatch(writer, /ChapterOutlineWorkspace|ChapterOutlineEditor|createChapterOutlineController/)
+  assert.match(writer, /planningOutlinesPath\(projectId\.value\)/)
   assert.doesNotMatch(writer, /watch\(\s*workingDraft/)
   assert.match(writer, /createWorkingDraftAutosave/)
   assert.match(writer, /createChapterWriterController/)
@@ -269,13 +282,17 @@ test('chapter writer has one exact-outline session path and no legacy StoryBlock
   assert.match(store, /const commandBusy = computed\(/)
   assert.match(store, /function assertWriteAvailable\(/)
   assert.match(writer, /请先完成并确认本章小纲/)
+  const startButton = writer.match(/<n-button\s+v-if="!session"[^>]*>/)?.[0]
+  assert.ok(startButton, 'the author must have an explicit session-start button')
+  assert.match(startButton, /:disabled="!outlineAuthority\?\.capabilities\?\.startSession \|\| loading"/)
+  assert.match(startButton, /@click="loadWorkspace\(projectId, chapterNumber, true\)"/)
+  assert.match(writer, /async function loadWorkspace\(nextProjectId, nextChapterNumber, startSession = false\)/)
+  assert.equal((writer.match(/loadWorkspace\([^\n]*, true\)/g) ?? []).length, 1)
+  assert.match(store, /async function openAuthoritative\(nextProjectId, nextChapterNumber, \{ startSession = false \} = \{\}\)/)
+  assert.match(store, /confirmed\.status !== 'current'\s*\|\| current\.capabilities\?\.startSession !== true\s*\|\| !startSession\s*\)\s*\{\s*clearWorkspace\(\)\s*return current/)
   assert.match(
     writer,
-    /<n-button\s+v-if="!session"[\s\S]*?:disabled="true"/,
-  )
-  assert.match(
-    writer,
-    /watch\(\s*\(\)\s*=>\s*\[route\.params\.projectId,\s*route\.params\.chapterNumber\]/,
+    /watch\(\[\(\) => route\.params\.projectId, \(\) => route\.params\.chapterNumber\], \(\[nextProjectId, nextChapterNumber\]\) => \{\s*void loadWorkspace\(String\(nextProjectId \|\| ''\), Number\(nextChapterNumber\)\)\s*\}, \{ immediate: true \}\)/,
   )
   assert.doesNotMatch(client, /chapterSessions\/current|chapterSessions:\s*\{[\s\S]*?current:/)
   assert.doesNotMatch(client, /generateWorkingDraft|generate-working-draft/)
@@ -486,6 +503,24 @@ test('production app and lazy route graph contain only canonical product destina
     projectRoutes.map(route => [route.path, route.name]),
     CANONICAL_ROUTES,
   )
+  const planningRoute = projectRoutes.find(route => route.name === 'ProjectPlanningVolumes')
+  const outlinesRoute = projectRoutes.find(route => route.name === 'ProjectPlanningOutlines')
+  assert.equal(outlinesRoute.component, planningRoute.component)
+  assert.deepEqual(outlinesRoute.props, { activeTab: 'outlines' })
+  for (const name of ['FinalChapterReader', 'ChapterWriter']) {
+    const route = projectRoutes.find(route => route.name === name)
+    assert.equal(typeof route.redirect, 'function')
+    assert.equal(Object.hasOwn(route, 'component'), false)
+    assert.equal(Object.hasOwn(route, 'components'), false)
+    assert.equal(Object.hasOwn(route, 'children'), false)
+    for (const query of [{ source: 'inventory' }, { source: 'inventory', view: 'outline' }]) {
+      assert.deepEqual(route.redirect({ params: { projectId: 'p/a', chapterNumber: '3' }, query, hash: '#passage' }), {
+        path: '/projects/p%2Fa/workbench/chapters/3',
+        query: name === 'FinalChapterReader' ? { ...query, view: query.view || 'text' } : query,
+        hash: '#passage',
+      })
+    }
+  }
   assert.ok(activeFiles.has('App.vue'))
   assert.ok(activeFiles.has('router/projectRoutes.js'))
   for (const canonicalPath of [...CANONICAL_RUNTIME, ...CANONICAL_ROUTE_VIEWS]) {

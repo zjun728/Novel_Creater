@@ -31,6 +31,8 @@ EXPECTED_ROUTER_FILES = {
     "chapter_outlines.py",
     "chapter_sessions.py",
     "contracts.py",
+    "continuity.py",
+    "continuity_issues.py",
     "corpus.py",
     "finalization.py",
     "helpers.py",
@@ -48,6 +50,7 @@ EXPECTED_ROUTER_FILES = {
     "story_engines.py",
     "style_trials.py",
     "topics.py",
+    "workbench.py",
 }
 
 

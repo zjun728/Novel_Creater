@@ -151,6 +151,7 @@ class LoadCandidateBody(_StrictBody):
 
 
 class CreateDraftOperationBody(_StrictBody):
+    reviewReference: dict | None = None
     operationType: Literal[
         "generate_new",
         "rewrite_selection",
@@ -166,6 +167,7 @@ class CreateDraftOperationBody(_StrictBody):
             r"[0-9a-f]{12}$"
         ),
     )
+    previewOnly: bool = False
     authorInstruction: str = Field(default="", max_length=2000)
     startOffset: int | None = Field(default=None, ge=0)
     endOffset: int | None = Field(default=None, ge=1)
@@ -175,13 +177,18 @@ class CreateDraftOperationBody(_StrictBody):
 
     @model_validator(mode="after")
     def require_exact_operation_shape(self):
+        if self.reviewReference is not None:
+            from backend.services.draft_review import review_reference
+            if self.operationType != "generate_new":
+                raise ValueError
+            review_reference(self.reviewReference)
         selection = (
             self.startOffset,
             self.endOffset,
             self.selectedTextHash,
         )
         if self.operationType == "generate_new":
-            if any(value is not None for value in selection):
+            if self.previewOnly or any(value is not None for value in selection):
                 raise ValueError
         elif (
             any(value is None for value in selection)
@@ -873,6 +880,8 @@ async def create_draft_operation(
             start_offset=body.startOffset,
             end_offset=body.endOffset,
             selected_text_hash=body.selectedTextHash,
+            preview_only=body.previewOnly,
+            review_reference=body.reviewReference,
         ))
     except ValidationError:
         raise DraftOperationRequestInvalid() from None
@@ -918,6 +927,40 @@ async def undo_local_draft_operation(
             or workspace.session.chapter_num != chapter_number
         ):
             raise DraftOperationStorageError("undo workspace reload failed")
+        return _public_workspace(workspace)
+    except ValidationError:
+        raise DraftOperationRequestInvalid() from None
+    except Exception as error:
+        _raise_public(error)
+
+
+@router.post("/projects/{pid}/chapter-sessions/{session_id}/working-draft/apply-preview")
+async def apply_local_draft_preview(
+    pid: str,
+    session_id: str,
+    request: Request,
+    draft_service=Depends(get_draft_operation_service),
+    chapter_service=Depends(get_chapter_session_service),
+):
+    try:
+        _require_operation_identity(pid, session_id)
+        raw_body = await _read_draft_operation_create_body(request)
+        body = UndoLocalDraftBody.model_validate(raw_body)
+        chapter_number = await draft_service.apply_local_preview(UndoLocalDraft(
+            project_id=pid,
+            chapter_session_id=session_id,
+            expected_working_draft_revision=body.expectedWorkingDraftRevision,
+            expected_content_hash=body.expectedContentHash,
+            source_operation_id=body.sourceOperationId,
+        ))
+        workspace = await chapter_service.get(pid, chapter_number)
+        if (
+            workspace is None
+            or workspace.project_id != pid
+            or workspace.session.id != session_id
+            or workspace.session.chapter_num != chapter_number
+        ):
+            raise DraftOperationStorageError("preview adoption workspace reload failed")
         return _public_workspace(workspace)
     except ValidationError:
         raise DraftOperationRequestInvalid() from None

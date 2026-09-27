@@ -37,6 +37,5 @@ test('revision-sensitive views refresh project authority after contract confirma
     read('src/views/ProjectExportView.vue'),
   ])
   assert.match(wizard, /projectStore\.loadProject\(props\.projectId\)/)
-  assert.match(exportView, /onMounted/)
-  assert.match(exportView, /reload\(\{ force: true \}\)/)
+  assert.match(exportView, /onBeforeMount\(\(\) => \{\s*void routeProject\.reload\(\{ force: true \}\)\s*\}\)/)
 })

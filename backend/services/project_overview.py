@@ -411,6 +411,11 @@ def build_project_overview(snapshot: object) -> ProjectOverview:
     if source is None:
         raise ProjectOverviewConsistencyError("snapshot")
 
+    continuity = _mapping(source.get("continuity"))
+    pending_count = _exact_int(continuity.get("pending_count")) if continuity is not None else None
+    if pending_count is None:
+        raise ProjectOverviewConsistencyError("continuity")
+
     seed_status = _seed_status(source.get("selected_seed"))
     contract_status = map_artifact_status(head=source.get("contract"))
     bible_status = map_artifact_status(head=source.get("bible"))
@@ -456,8 +461,8 @@ def build_project_overview(snapshot: object) -> ProjectOverview:
             ),
             writer_core=_writer_core(source),
             continuity=OverviewContinuity(
-                availability="pending_module",
-                pending_count=None,
+                availability="available",
+                pending_count=pending_count,
             ),
             recent_achievements=_achievements(
                 source,

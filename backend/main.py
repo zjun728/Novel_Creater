@@ -28,6 +28,9 @@ from backend.domain.routers import (
     assets,
     bibles,
     canon,
+    continuity,
+    continuity_issues,
+    workbench,
     chapter_outlines,
     chapter_sessions,
     contracts,
@@ -706,6 +709,9 @@ app.include_router(finalization.router, prefix="/api")
 app.include_router(assets.router, prefix="/api")
 app.include_router(corpus.router, prefix="/api")
 app.include_router(canon.router, prefix="/api")
+app.include_router(continuity.router, prefix="/api")
+app.include_router(continuity_issues.router, prefix="/api")
+app.include_router(workbench.router, prefix="/api")
 app.include_router(market_sources.router, prefix="/api")
 
 

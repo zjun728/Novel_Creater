@@ -22,7 +22,10 @@ from backend.domain.planning import (
     PlanningAggregate,
     PlanningDomainError,
     normalize_planning_aggregate,
+    validate_confirmable_planning,
 )
+from backend.domain.planning_expansion import validate_expansion_output
+from backend.services.planning_expansion import prepare_expansion, expansion_authority_hash
 from backend.domain.provider_policy import provider_is_generation_ready
 from backend.domain.seeds import decode_seed_revision
 from backend.gateways.planning_provider import PlanningProviderError
@@ -175,6 +178,7 @@ class GeneratePlanningDraft:
     draft_hash: str
     idempotency_key: str
     author_instructions: str
+    generation_mode: str = "volumes_plots"
 
 
 @dataclass(frozen=True)
@@ -234,12 +238,21 @@ class PlanningGenerationService:
             raise PlanningGenerationRetryable()
 
         try:
-            output = await self._gateway.generate(
-                provider=context["provider"],
-                model_name=context["binding"]["model_name_snapshot"],
-                manifest=context["manifest"],
-                author_instructions=command.author_instructions,
-            )
+            expansion = context['manifest'].expansion
+            if expansion is not None and expansion.mode in {'next_block', 'next_volume'} and expansion.target_block_ref:
+                # Reuse existing content without asking a model to copy it.
+                output = context['manifest'].draft.model_copy(update={
+                    'active_story_block_ref': expansion.target_block_ref,
+                }).model_dump(mode='json', by_alias=True)
+            else:
+                output = await self._generate_until_terminal(context,
+                    provider=context["provider"],
+                    model_name=context["binding"]["model_name_snapshot"],
+                    manifest=context["manifest"],
+                    author_instructions=command.author_instructions,
+                )
+                if isinstance(output, PlanningOperationResult):
+                    return output
         except asyncio.CancelledError:
             await self._settle_cancelled(context)
             raise
@@ -270,6 +283,43 @@ class PlanningGenerationService:
         return await self._await_settlement(
             self._publish(command, context, draft_result)
         )
+
+    async def _generate_until_terminal(self, context, **kwargs):
+        # The persisted terminal state fences writes across workers. Polling also
+        # closes the upstream request even when stop was handled by another worker.
+        task = asyncio.create_task(self._gateway.generate(**kwargs))
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=0.5)
+                if done:
+                    return task.result()
+                attempt = context['attempt']
+                result = await self.get_operation(attempt['project_id'], attempt['operation_id'])
+                if result.status != 'pending':
+                    return result
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def cancel_by_key(self, project_id, draft_id, idempotency_key):
+        if not is_safe_planning_idempotency_key(idempotency_key):
+            raise PlanningGenerationRequestInvalid()
+        async with self._transaction() as session:
+            # Same project/head/attempt lock order as generation publication.
+            project = await self.repository.lock_active_project(session, project_id)
+            if project is None:
+                raise PlanningGenerationOperationNotFound()
+            await self.repository.lock_planning_head(session, project_id)
+            attempt = await self.repository.lock_generation_attempt_by_key(session, project_id, idempotency_key)
+            if attempt is None:
+                # Reservation may still be in flight. Never report a false stop.
+                raise PlanningGenerationRetryable()
+            if attempt['draft_id'] != draft_id:
+                raise PlanningGenerationOperationNotFound()
+            if attempt['status'] != 'pending':
+                return self._operation_result(attempt)
+            return await self._fail_locked(session, attempt, 'PlanningGenerationCancelled')
 
     async def get_operation(
         self,
@@ -393,6 +443,16 @@ class PlanningGenerationService:
                 basis=basis,
                 draft=draft,
             )
+            if command.generation_mode != "volumes_plots":
+                try:
+                    authority = await self.repository.read_expansion_authority(session, command.project_id)
+                    expansion = prepare_expansion(command.generation_mode, manifest.draft, int(head["revision"]), authority)
+                    manifest = PlanningGenerationManifest.model_validate({
+                        **manifest.model_dump(mode="json", by_alias=True),
+                        "expansion": expansion.model_dump(mode="json", by_alias=True),
+                    }, strict=True)
+                except (ValueError, TypeError, KeyError, StopIteration):
+                    raise PlanningGenerationNotReady() from None
             manifest_json = canonical_json(
                 manifest.model_dump(mode="json", by_alias=True)
             )
@@ -486,10 +546,14 @@ class PlanningGenerationService:
                 and self._persisted_manifest_matches(attempt, context)
                 and int(attempt["lease_expires_at"]) > self._clock()
             )
+            if current and context["manifest"].expansion is not None:
+                authority = await self.repository.read_expansion_authority(session, command.project_id)
+                current = expansion_authority_hash(authority) == context["manifest"].expansion.authority_hash
             if not current:
                 return await self._supersede_locked(session, attempt)
 
             try:
+                validate_expansion_output(context["manifest"].draft, output, context["manifest"].expansion)
                 previous_draft = self._planning_from_json(
                     draft["content_json"]
                 )
@@ -504,6 +568,8 @@ class PlanningGenerationService:
                     previous_draft=previous_draft,
                     id_factory=self._id,
                 )
+                if context["manifest"].expansion is not None:
+                    validate_confirmable_planning(normalized)
             except (
                 PlanningDomainError,
                 ValidationError,
@@ -1348,6 +1414,7 @@ class PlanningGenerationService:
                 "authorInstructionsHash": canonical_hash(
                     command.author_instructions
                 ),
+                **({"generationMode": command.generation_mode} if command.generation_mode != "volumes_plots" else {}),
             }
         )
 
@@ -1378,6 +1445,7 @@ class PlanningGenerationService:
             raise PlanningGenerationRequestInvalid()
         if (
             not isinstance(command, GeneratePlanningDraft)
+            or command.generation_mode not in {"volumes_plots", "initial", "next_block", "next_volume", "revise_block", "fill_next_block", "fill_next_volume"}
             or not isinstance(command.project_id, str)
             or not command.project_id.strip()
             or not isinstance(command.draft_id, str)
@@ -1386,6 +1454,7 @@ class PlanningGenerationService:
             or command.draft_revision < 1
             or _HASH.fullmatch(command.draft_hash or "") is None
             or not isinstance(command.author_instructions, str)
+            or (command.generation_mode == "revise_block" and not command.author_instructions.strip())
             or len(command.author_instructions)
             > PLANNING_AUTHOR_INSTRUCTIONS_MAX_LENGTH
         ):

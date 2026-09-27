@@ -7,6 +7,7 @@ import asyncio
 import os
 
 from backend.database import close_pool, connection
+from backend.config import install_runtime_configuration, load_runtime_configuration
 from backend.scripts.prepare_phase4b2_browser_db import (
     PROJECT,
     assert_database_name,
@@ -106,6 +107,7 @@ async def main() -> None:
     parser.add_argument("--database", required=True)
     parser.add_argument("--verify-postconditions", action="store_true")
     args = parser.parse_args()
+    install_runtime_configuration(load_runtime_configuration())
     try:
         if args.verify_postconditions:
             await verify_postconditions(args.database)

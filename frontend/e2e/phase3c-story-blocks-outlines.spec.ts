@@ -46,6 +46,7 @@ const OVERVIEW_PATH = `/projects/${PROJECT_ID}/overview`
 const VOLUMES_PATH = `/projects/${PROJECT_ID}/planning/volumes`
 const PLOTS_PATH = `/projects/${PROJECT_ID}/planning/plots`
 const STORY_BLOCKS_PATH = `/projects/${PROJECT_ID}/planning/story-blocks`
+const OUTLINES_PATH = `/projects/${PROJECT_ID}/planning/outlines`
 const WRITER_PATH = `/projects/${PROJECT_ID}/write/chapters/1`
 const WRONG_WRITER_PATH = `/projects/${PROJECT_ID}/write/chapters/2`
 const PLANNING_PATH = `/api/projects/${PROJECT_ID}/planning`
@@ -278,12 +279,12 @@ async function createCompletePlanning(page, runtime) {
   await fillVolume(page)
 
   await settleNavigationBoundary(page, runtime)
-  await page.getByRole('link', { name: '情节线', exact: true }).click()
+  await page.getByRole('navigation', { name: '故事规划分区' }).getByRole('link', { name: '情节线', exact: true }).click()
   await page.getByRole('button', { name: '新增情节线' }).click()
   await fillPlot(page)
 
   await settleNavigationBoundary(page, runtime)
-  await page.getByRole('link', { name: '故事块', exact: true }).click()
+  await page.getByRole('navigation', { name: '故事规划分区' }).getByRole('link', { name: '故事块', exact: true }).click()
   await page.getByRole('button', { name: '新增故事块' }).click()
   await fillStoryBlock(page)
   const activate = page.getByRole('button', { name: '设为当前活动块' })
@@ -293,9 +294,9 @@ async function createCompletePlanning(page, runtime) {
   await settleNavigationBoundary(page, runtime)
   await page.getByRole('link', { name: '分卷', exact: true }).click()
   await settleNavigationBoundary(page, runtime)
-  await page.getByRole('link', { name: '情节线', exact: true }).click()
+  await page.getByRole('navigation', { name: '故事规划分区' }).getByRole('link', { name: '情节线', exact: true }).click()
   await settleNavigationBoundary(page, runtime)
-  await page.getByRole('link', { name: '故事块', exact: true }).click()
+  await page.getByRole('navigation', { name: '故事规划分区' }).getByRole('link', { name: '故事块', exact: true }).click()
   await settleNavigationBoundary(page, runtime)
   await page.reload()
   await expect(page).toHaveURL(new RegExp(`${STORY_BLOCKS_PATH}$`, 'u'))
@@ -314,6 +315,8 @@ async function createCompletePlanning(page, runtime) {
   await expect(page).toHaveURL(new RegExp(`${STORY_BLOCKS_PATH}$`, 'u'))
 
   await confirmPlanning(page, { save: false })
+  await settleNavigationBoundary(page, runtime)
+  await page.goto(OUTLINES_PATH)
 }
 
 
@@ -350,7 +353,7 @@ async function saveAndConfirmOutline(page) {
   ))
   await page.getByRole('button', { name: '保存小纲工作稿' }).click()
   expect((await saved).status()).toBe(200)
-  await page.getByRole('button', { name: '预览并确认小纲' }).click()
+  await page.getByRole('button', { name: /^(采用小纲|更新当前小纲)$/u }).click()
   const dialog = page.getByRole('dialog', { name: '确认章节小纲' })
   const confirmed = waitForNamedResponse(page, 'Outline confirmation', response => (
     isResponse(response, 'POST', OUTLINE_CONFIRM_PATH)
@@ -424,21 +427,21 @@ test('@manual manual StoryBlock Stage SceneTask Planning and Outline create one 
     await createManualOutline(page)
     await settleNavigationBoundary(page, runtime)
     const preparation = waitForNamedResponse(page, 'project preparation', response => (
-      isResponse(response, 'GET', `/api/projects/${PROJECT_ID}/preparation`)
+      isResponse(response, 'GET', `/api/projects/${PROJECT_ID}/overview`)
     ))
     await page.goto(OVERVIEW_PATH)
     const preparationPayload = await (await preparation).json()
-    expect(preparationPayload.authoritativeChapterNumber).toBe(1)
-    expect(preparationPayload.targetPath).toBe(WRITER_PATH)
-    const nextAction = page.locator('a.overview-next-action')
+    expect(preparationPayload.progress.authoritativeChapterNumber).toBe(1)
+    const nextAction = page.locator('a.overview-module').filter({ hasText: '正文写作' })
     await expect(nextAction).toHaveAttribute('href', WRITER_PATH)
     await settleNavigationBoundary(page, runtime)
     const sessionCreated = waitForNamedResponse(page, 'ChapterSession creation', response => (
       isResponse(response, 'POST', SESSION_PATH)
     ))
     await nextAction.click()
+    await page.getByRole('button', { name: '开始本章写作', exact: true }).click()
     expect((await sessionCreated).status()).toBe(201)
-    await expect(page).toHaveURL(new RegExp(`${WRITER_PATH}$`, 'u'))
+    await expect(page).toHaveURL(new RegExp(`/projects/${PROJECT_ID}/workbench/chapters/1$`, 'u'))
     await expect(page.getByText('第 1 章 · revision 1')).toBeVisible()
     await expect(page.getByText('Planning R1')).toBeVisible()
     await expect(page.getByText('Outline R1 · StoryBlock R1')).toBeVisible()
@@ -480,7 +483,7 @@ test('@gateway fake Outline exact Draft and unknown result reconcile only by GET
   })
   try {
     await settleNavigationBoundary(page, runtime)
-    await page.goto(STORY_BLOCKS_PATH)
+    await page.goto(OUTLINES_PATH)
     const created = waitForNamedResponse(page, 'Outline Draft creation', response => (
       isResponse(response, 'POST', OUTLINE_DRAFTS_PATH)
     ))
@@ -641,7 +644,7 @@ test('@supersession Planning R2 supersedes an unpinned Outline while Session kee
     const currentResponse = waitForNamedResponse(page, 'superseded Outline authority', response => (
       isResponse(response, 'GET', OUTLINE_CURRENT_PATH)
     ))
-    await page.goto(STORY_BLOCKS_PATH)
+    await page.goto(OUTLINES_PATH)
     const state = await (await currentResponse).json()
     expect(state.planningAuthority.revision).toBe(2)
     expect(state.confirmedOutline.status).toBe('superseded')
@@ -656,6 +659,7 @@ test('@supersession Planning R2 supersedes an unpinned Outline while Session kee
       isResponse(response, 'POST', SESSION_PATH)
     ))
     await page.goto(WRITER_PATH)
+    await page.getByRole('button', { name: '开始本章写作', exact: true }).click()
     expect((await sessionCreated).status()).toBe(201)
     await expect(page.getByText('Planning R2')).toBeVisible()
     await expect(page.getByText('Outline R2 · StoryBlock R1')).toBeVisible()
@@ -669,12 +673,12 @@ test('@supersession Planning R2 supersedes an unpinned Outline while Session kee
     })
     await settleNavigationBoundary(page, runtime)
     const preparation = waitForNamedResponse(page, 'supersession project preparation', response => (
-      isResponse(response, 'GET', `/api/projects/${PROJECT_ID}/preparation`)
+      isResponse(response, 'GET', `/api/projects/${PROJECT_ID}/overview`)
     ))
     await page.getByRole('link', { name: '项目概览', exact: true }).click()
     expect((await preparation).status()).toBe(200)
     await expect(page).toHaveURL(new RegExp(`${OVERVIEW_PATH}$`, 'u'))
-    const nextAction = page.locator('a.overview-next-action')
+    const nextAction = page.locator('a.overview-module').filter({ hasText: '正文写作' })
     await expect(nextAction).toHaveAttribute('href', WRITER_PATH)
     await settleNavigationBoundary(page, runtime)
     const replay = waitForNamedResponse(page, 'pinned ChapterSession replay', response => (
@@ -715,7 +719,7 @@ test('@archived archived Outline and Writer remain read-only with zero Session w
   let bodyError: unknown = null
   try {
     await settleNavigationBoundary(page, runtime)
-    await page.goto(STORY_BLOCKS_PATH)
+    await page.goto(OUTLINES_PATH)
     await expect(page.getByText('当前小纲为只读权威记录；本地字段与正式引用均不会被改写。'))
       .toBeVisible()
     await expect(page.getByRole('button', { name: '建立新工作稿' })).toHaveCount(0)
@@ -741,7 +745,7 @@ test('@missing-upstream missing Planning authority fails closed before Outline w
     const loaded = page.waitForResponse(response => (
       isResponse(response, 'GET', OUTLINE_CURRENT_PATH)
     ))
-    await page.goto(STORY_BLOCKS_PATH)
+    await page.goto(OUTLINES_PATH)
     const state = await (await loaded).json()
     expect(state.reasons).toContain('planningOrProjectionUnavailable')
     await expect(page.getByText('去补齐故事规划')).toBeVisible()
@@ -764,7 +768,7 @@ test('@canon-mismatch Canon Projection mismatch disables Outline confirmation an
     const loaded = page.waitForResponse(response => (
       isResponse(response, 'GET', OUTLINE_CURRENT_PATH)
     ))
-    await page.goto(STORY_BLOCKS_PATH)
+    await page.goto(OUTLINES_PATH)
     const state = await (await loaded).json()
     expect(state.reasons).toContain('canonProjectionMismatch')
     expect(state.capabilities.createDraft).toBe(true)

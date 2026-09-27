@@ -85,10 +85,12 @@ APPROVED_FORMAL_ROUTES = {
     ("GET", "/api/projects/{pid}/bible/history/{revision}"),
     ("GET", "/api/projects/{pid}/planning"),
     ("GET", "/api/projects/{pid}/planning/history"),
+    ("GET", "/api/projects/{pid}/planning/continuation"),
     ("POST", "/api/projects/{pid}/planning/drafts"),
     ("PUT", "/api/projects/{pid}/planning/drafts/{draft_id}"),
     ("POST", "/api/projects/{pid}/planning/drafts/{draft_id}/confirm"),
     ("POST", "/api/projects/{pid}/planning/drafts/{draft_id}/generate"),
+    ("POST", "/api/projects/{pid}/planning/drafts/{draft_id}/cancel-generation"),
     ("GET", "/api/projects/{pid}/planning/operations/{operation_id}"),
     (
         "GET",
@@ -136,6 +138,7 @@ APPROVED_FORMAL_ROUTES = {
     ("POST", "/api/projects/{pid}/chapter-sessions/{chapter_number}"),
     ("PUT", "/api/projects/{pid}/chapter-sessions/{session_id}/working-draft"),
     ("POST", "/api/projects/{pid}/chapter-sessions/{session_id}/working-draft/undo"),
+    ("POST", "/api/projects/{pid}/chapter-sessions/{session_id}/working-draft/apply-preview"),
     ("POST", "/api/projects/{pid}/chapter-sessions/{session_id}/candidates"),
     ("POST", "/api/projects/{pid}/chapter-sessions/{session_id}/candidates/{candidate_id}/load"),
     (
@@ -223,6 +226,19 @@ APPROVED_FORMAL_ROUTES = {
     ("GET", "/api/projects/{project_id}/projections/memories"),
     ("GET", "/api/projects/{project_id}/projections/arcs"),
     ("GET", "/api/projects/{project_id}/projections/plot-threads"),
+    ("GET", "/api/projects/{project_id}/continuity/entities"),
+    ("GET", "/api/projects/{project_id}/continuity/future-design"),
+    ("POST", "/api/projects/{project_id}/chapter-sessions/{session_id}/finalization/finding-decisions"),
+    ("GET", "/api/projects/{project_id}/continuity/records"),
+    ("GET", "/api/projects/{project_id}/continuity/evidence/{event_id}"),
+    ("GET", "/api/projects/{project_id}/continuity/issues"),
+    ("GET", "/api/projects/{project_id}/continuity/issues/{issue_id}"),
+    ("POST", "/api/projects/{project_id}/continuity/issues"),
+    ("PATCH", "/api/projects/{project_id}/continuity/issues/{issue_id}"),
+    ("GET", "/api/projects/{project_id}/workbench/chapters/{number}"),
+    ("GET", "/api/projects/{project_id}/workbench/chapters/{number}/review"),
+    ("GET", "/api/projects/{project_id}/workbench/volumes"),
+    ("GET", "/api/projects/{project_id}/workbench/volumes/{volume_id}/chapters"),
 }
 
 FORBIDDEN_LEGACY_PREFIXES = (

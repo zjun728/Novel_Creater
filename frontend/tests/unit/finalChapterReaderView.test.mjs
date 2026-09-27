@@ -23,15 +23,25 @@ async function waitFor(predicate, message) { for (let index = 0; index < 20; ind
 function deferred() { let resolve; let reject; const promise = new Promise((a, b) => { resolve = a; reject = b }); return { promise, resolve, reject } }
 
 let vite; let Reader; let historyContext
+const naiveStub = `
+  import {defineComponent,h} from 'vue'
+  const children=s=>Object.values(s).flatMap(x=>x?.()||[])
+  const c=n=>defineComponent({name:n,setup(_,x){return()=>h('div',x.attrs,children(x.slots))}})
+  export const NButton=defineComponent({name:'NButton',setup(_,x){return()=>h('button',x.attrs,children(x.slots))}})
+  export const NResult=defineComponent({name:'NResult',setup(_,x){return()=>h('div',x.attrs,[x.attrs.title,x.attrs.description,...children(x.slots)])}})
+  export const NModal=defineComponent({name:'NModal',props:['show'],setup(props,x){return()=>props.show?h('div',x.attrs,children(x.slots)):null}})
+  export const NSkeleton=c('NSkeleton')
+`
 test.before(async () => {
   const stubId = '\0reader-naive'
-  vite = await createServer({ configFile: false, root, appType: 'custom', logLevel: 'error', server: { middlewareMode: true, hmr: false, ws: false }, plugins: [vuePlugin(), { name: 'reader-naive', enforce: 'pre', resolveId: id => id === 'naive-ui' ? stubId : undefined, load: id => id === stubId ? `import {defineComponent,h} from 'vue';const children=s=>Object.values(s).flatMap(x=>x?.()||[]);const c=n=>defineComponent({name:n,setup(_,x){return()=>h('div',x.attrs,children(x.slots))}});export const NButton=defineComponent({name:'NButton',setup(_,x){return()=>h('button',x.attrs,children(x.slots))}});export const NResult=defineComponent({name:'NResult',setup(_,x){return()=>h('div',x.attrs,[x.attrs.title,x.attrs.description,...children(x.slots)])}});export const NSkeleton=c('NSkeleton')` : undefined }], ssr: { noExternal: ['naive-ui'] }, optimizeDeps: { noDiscovery: true } })
+  vite = await createServer({ configFile: false, root, appType: 'custom', logLevel: 'error', server: { middlewareMode: true, hmr: false, ws: false }, plugins: [vuePlugin(), { name: 'reader-naive', enforce: 'pre', resolveId: id => id === 'naive-ui' ? stubId : undefined, load: id => id === stubId ? naiveStub : undefined }], ssr: { noExternal: ['naive-ui'] }, optimizeDeps: { noDiscovery: true } })
   Reader = (await vite.ssrLoadModule('/src/views/FinalChapterReaderView.vue')).default
   historyContext = (await vite.ssrLoadModule('/src/application/manuscript/manuscriptHistory.js')).MANUSCRIPT_HISTORY_CONTEXT
   const source = await readFile(new URL('../../src/views/FinalChapterReaderView.vue', import.meta.url), 'utf8'); const { descriptor } = parse(source); Reader.render = new Function('Vue', compile(descriptor.template.content, { mode: 'function', prefixIdentifiers: true, bindingMetadata: compileScript(descriptor, { id: 'reader' }).bindings }).code)(VueRuntime)
-  for (const path of ['components/manuscript/FinalChapterArticle.vue', 'components/manuscript/FinalOutlinePanel.vue']) { const component = (await vite.ssrLoadModule(`/src/${path}`)).default; const value = await readFile(new URL(`../../src/${path}`, import.meta.url), 'utf8'); const parsed = parse(value).descriptor; component.render = new Function('Vue', compile(parsed.template.content, { mode: 'function', prefixIdentifiers: true, bindingMetadata: compileScript(parsed, { id: path }).bindings }).code)(VueRuntime) }
+  for (const path of ['components/writer/WorkbenchToolTabs.vue', 'components/manuscript/FinalChapterArticle.vue', 'components/manuscript/FinalOutlinePanel.vue', 'components/manuscript/FinalReviewSummary.vue', 'components/manuscript/FinalChapterVersions.vue']) { const component = (await vite.ssrLoadModule(`/src/${path}`)).default; const value = await readFile(new URL(`../../src/${path}`, import.meta.url), 'utf8'); const parsed = parse(value).descriptor; component.render = new Function('Vue', compile(parsed.template.content, { mode: 'function', prefixIdentifiers: true, bindingMetadata: compileScript(parsed, { id: path }).bindings }).code)(VueRuntime) }
 })
 test.after(async () => { await vite?.close() })
+
 const chapter = (id = 'p', number = 2, lifecycle = 'active') => ({ projectId: id, projectTitle: '书名', lifecycle, volume: { id: 'v', order: 1, title: '卷一' }, chapter: { number, title: `${number}章名`, content: '<b>第一段</b>\n\n第二段', scalarCount: 15, finalizedAt: '2026-01-01T00:00:00Z' }, outline: { chapterGoal: '目标', expectedCharacters: [], continuation: [], plannedTasks: [], scenes: [], forbiddenEarlyEvents: [] }, navigation: { previousChapterNumber: number === 2 ? 1 : number - 1, nextChapterNumber: number === 2 ? 5 : number + 3 } })
 const response = body => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } })
 const errorResponse = (code, status = 500) => new Response(JSON.stringify({ code, message: 'private transport detail', correlationId: 'safe_1' }), { status, headers: { 'content-type': 'application/json' } })
@@ -91,13 +101,77 @@ test('mounted reader switches text and outline by query without reloading chapte
 test('reader view controls change only the view query field', async () => {
   const item = await mount('/projects/p/manuscript/chapters/2?view=text&return=directory')
   try {
-    const outline = find(item.target, n => n.type === 'button' && /本章小纲/.test(textOf(n)))
+    const outline = find(item.target, n => n.type === 'button' && n.props.id === 'final-reader-view-outline')
     await outline.props.onClick()
     await waitFor(() => item.router.currentRoute.value.query.view === 'outline', 'view control did not navigate to outline')
     assert.deepEqual(item.router.currentRoute.value.query, {
       view: 'outline',
       return: 'directory',
     })
+  } finally { item.dispose() }
+})
+
+test('historical review is loaded on demand and a failed read does not hide the manuscript', async () => {
+  let fail = true
+  const reviewData = { projectId: 'p', chapterNumber: 2, finalizationId: 'final-2', canonRevision: 2, summary: '只读审查摘要。', qualityReport: { status: 'completed', deterministicBlocks: [], findings: [], contentHash: 'a'.repeat(64) }, canonEvents: [], storyProgressEvents: [], planningPatches: [] }
+  const item = await mount('/projects/p/manuscript/chapters/2?view=text', { fetchOverride: value => {
+    if (value.endsWith('/workbench/chapters/2/review')) return fail ? errorResponse('temporary_error') : response(reviewData)
+  } })
+  try {
+    assert.equal(item.calls.filter(([url]) => url.endsWith('/review')).length, 0)
+    const button = find(item.target, n => n.props.id === 'final-reader-review')
+    assert.ok(button)
+    button.props.onClick()
+    const retry = await waitFor(() => find(item.target, n => n.props.id === 'final-review-retry'), 'review error did not expose independent retry')
+    assert.match(textOf(item.target), /<b>第一段<\/b>/)
+    assert.doesNotMatch(textOf(item.target), /private transport detail/)
+    fail = false
+    await retry.props.onClick()
+    await waitFor(() => /只读审查摘要/.test(textOf(item.target)), 'review retry did not render the summary')
+    assert.equal(item.calls.filter(([url]) => /\/manuscript\/chapters\/2$/.test(url)).length, 1)
+    assert.equal(item.calls.filter(([url]) => url.endsWith('/review')).length, 2)
+    assert.match(textOf(item.target), /<b>第一段<\/b>/)
+    assert.equal(item.calls.some(([, init]) => init.method && init.method !== 'GET'), false)
+  } finally { item.dispose() }
+})
+
+test('historical tool tabs retain review data and scroll without another request', async () => {
+  const reviewData = { projectId: 'p', chapterNumber: 2, finalizationId: 'final-2', canonRevision: 2, summary: '只读审查摘要。', qualityReport: { status: 'completed', deterministicBlocks: [], findings: [], contentHash: 'a'.repeat(64) }, canonEvents: [], storyProgressEvents: [], planningPatches: [] }
+  const item = await mount('/projects/p/manuscript/chapters/2?view=text', { fetchOverride: value => {
+    if (value.endsWith('/workbench/chapters/2/review')) return response(reviewData)
+  } })
+  try {
+    const tab = key => find(item.target, n => n.props.id === `reader-tool-tab-${key}`)
+    tab('review').props.onClick()
+    await waitFor(() => /只读审查摘要/.test(textOf(item.target)), 'review did not load')
+    const scroll = find(item.target, n => n.props.class === 'final-reader__tool-scroll')
+    scroll.scrollTop = 630
+    tab('reference').props.onClick(); await flush()
+    assert.equal(scroll.scrollTop, 0)
+    tab('review').props.onClick(); await flush()
+    assert.equal(scroll.scrollTop, 630)
+    assert.equal(item.calls.filter(([url]) => url.endsWith('/review')).length, 1)
+    assert.match(textOf(item.target), /<b>第一段<\/b>/)
+    assert.equal(item.calls.some(([, init]) => init.method && init.method !== 'GET'), false)
+  } finally { item.dispose() }
+})
+
+test('switching chapters closes the review and ignores the earlier chapter response', async () => {
+  const pending = deferred(); let signal
+  const item = await mount('/projects/p/manuscript/chapters/2?view=text', { fetchOverride: (value, init) => {
+    if (value.endsWith('/workbench/chapters/2/review')) { signal = init.signal; return pending.promise }
+  } })
+  try {
+    find(item.target, n => n.props.id === 'final-reader-review').props.onClick()
+    await waitFor(() => signal, 'review did not start')
+    await item.router.push('/projects/p/manuscript/chapters/5?view=text')
+    await flush()
+    assert.equal(signal.aborted, true)
+    pending.resolve(response({ projectId: 'p', chapterNumber: 2, finalizationId: 'final-2', canonRevision: 2, summary: '上一章审查不应出现', qualityReport: { status: 'completed', deterministicBlocks: [], findings: [], contentHash: 'a'.repeat(64) }, canonEvents: [], storyProgressEvents: [], planningPatches: [] }))
+    await flush()
+    assert.match(textOf(item.target), /第 5 章/)
+    assert.doesNotMatch(textOf(item.target), /上一章审查不应出现|定稿审查记录/)
+    assert.equal(item.calls.filter(([url]) => url.endsWith('/review')).length, 1)
   } finally { item.dispose() }
 })
 
@@ -115,7 +189,7 @@ test('mounted reader uses response navigation and has no author write controls',
       'final-reader-current-action',
     ]) assert.ok(find(item.target, n => n.props.id === id), `missing stable focus id ${id}`)
     const rendered = textOf(item.target)
-    assert.ok(rendered.indexOf('下一篇') < rendered.indexOf('继续创作契约'))
+    assert.ok(rendered.indexOf('继续创作契约') < rendered.indexOf('下一篇'))
     assert.equal(find(item.target, n => n.type === 'textarea' || n.props.contenteditable), undefined); assert.doesNotMatch(rendered, /编辑本章|提交|生成/)
   } finally { item.dispose() }
 })
@@ -581,7 +655,8 @@ test('reader keeps download and creation state local to verified chapter content
   assert.match(source, /scope: 'chapter'/)
   assert.match(source, /download\.error\.value/)
   assert.match(source, /manuscript\.loadPreparation/)
-  assert.match(source, /!isArchived && !\['idle', 'loading', 'invalid-address', 'missing-project'\]\.includes\(status\)/)
+  assert.match(source, /!\['idle', 'loading', 'invalid-address', 'missing-project'\]\.includes\(status\)/)
+  assert.match(source, /v-if="!isArchived && preparation.status === 'ready'"/)
   assert.match(source, /preparation\.status === 'ready'/)
   assert.match(source, /link\.hidden = true[\s\S]*document\.body\.append\(link\)[\s\S]*link\.remove\(\)/)
   assert.match(source, /manuscript\.loadContent\(id, 0\)/)
@@ -597,4 +672,21 @@ test('article and outline components keep author content plain and bounded', asy
   assert.match(article, /split\(\/\\n/)
   assert.doesNotMatch(article, /v-html|JSON\.stringify|markdown/i)
   assert.match(outline, /chapterGoal.*expectedCharacters.*continuation.*plannedTasks.*scenes.*forbiddenEarlyEvents/s)
+})
+
+test('finalized reader lists saved versions and compares without any write or switch action', async () => {
+  const item = await mount(undefined, { fetchOverride(url) {
+    if (url.endsWith('/chapter-sessions/2')) return response({ projectId: 'p', session: { id: 's', chapterNum: 2 }, candidates: [
+      { id: 'saved', projectId: 'p', chapterSessionId: 's', content: '历史保存正文' },
+    ] })
+  } })
+  try {
+    find(item.target, n => n.props.id === 'reader-tool-tab-versions').props.onClick()
+    const compare = await waitFor(() => find(item.target, n => n.type === 'button' && textOf(n) === '查看与定稿对比'), 'saved version is readable')
+    compare.props.onClick(); await flush()
+    assert.match(textOf(item.target), /历史保存正文/)
+    assert.match(textOf(item.target), /当前定稿/)
+    assert.equal(Boolean(find(item.target, n => n.type === 'button' && /切换|采用/.test(textOf(n)))), false)
+    assert.ok(item.calls.every(([, init]) => !init.method || init.method === 'GET'))
+  } finally { item.dispose() }
 })

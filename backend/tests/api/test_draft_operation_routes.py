@@ -1329,3 +1329,74 @@ def test_formal_operation_event_cursor_rejects_invalid_values_and_old_post_is_go
 
     assert retired.status_code == 404
     assert repository.event_reads == []
+
+
+def test_apply_preview_requires_exact_body_and_returns_authoritative_workspace():
+    client, service, _ = make_client()
+    service.apply_local_preview = service.undo_local
+    path = (
+        f"/api/projects/{PROJECT_ID}/chapter-sessions/{SESSION_ID}/"
+        "working-draft/apply-preview"
+    )
+    body = {
+        "expectedWorkingDraftRevision": 2,
+        "expectedContentHash": OUTPUT_HASH,
+        "sourceOperationId": OPERATION_ID,
+    }
+
+    response = client.post(path, json=body)
+
+    assert response.status_code == 200
+    assert response.json()["workingDraft"] == {
+        "id": "draft-1",
+        "projectId": PROJECT_ID,
+        "chapterSessionId": SESSION_ID,
+        "revision": 3,
+        "content": "撤销后的正文",
+        "contentHash": "4" * 64,
+    }
+    command = service.undos[0]
+    assert command.expected_working_draft_revision == 2
+    assert command.expected_content_hash == OUTPUT_HASH
+    assert command.source_operation_id == OPERATION_ID
+    assert service.chapter_service.reads == [(PROJECT_ID, 7)]
+
+    for invalid in (
+        {**body, "sourceOperationId": "not-a-uuid"},
+        {**body, "unexpected": "LEAK-SENTINEL"},
+        {key: value for key, value in body.items() if key != "expectedContentHash"},
+    ):
+        rejected = client.post(path, json=invalid)
+        assert rejected.status_code == 422
+        assert rejected.json()["code"] == "DraftOperationRequestInvalid"
+        assert "LEAK-SENTINEL" not in rejected.text
+    duplicate = client.post(
+        path,
+        content=(
+            b'{"expectedWorkingDraftRevision":2,'
+            + f'"expectedContentHash":"{OUTPUT_HASH}",'.encode()
+            + f'"sourceOperationId":"{OPERATION_ID}",'.encode()
+            + f'"sourceOperationId":"{OPERATION_ID}"}}'.encode()
+        ),
+        headers={"content-type": "application/json"},
+    )
+    wrong_content_type = client.post(
+        path, content=json.dumps(body), headers={"content-type": "text/plain"},
+    )
+    assert duplicate.status_code == 422
+    assert wrong_content_type.status_code == 422
+    assert len(service.undos) == 1
+
+
+
+def test_preview_create_returns_proposed_revision_without_applying():
+    client, service, _ = make_client()
+    service.result = replace(service.result, operation_type="rewrite_selection",
+                             result_working_draft_revision=2, result_content_hash=HASH,
+                             result_selection_start=2, result_selection_end=4)
+    path = f"/api/projects/{PROJECT_ID}/chapter-sessions/{SESSION_ID}/draft-operations"
+    response = client.post(path, json=local_create_body(previewOnly=True))
+    assert response.status_code == 200
+    assert response.json()["resultWorkingDraftRevision"] == 2
+    assert service.commands[-1].preview_only is True
+    assert client.post(path, json=create_body(previewOnly=True)).status_code == 422

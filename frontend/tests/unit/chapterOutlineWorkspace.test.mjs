@@ -481,7 +481,7 @@ test('history drawer is immutable, status-aware, and has no authoring actions', 
   }
 })
 
-test('embedded outline workspace is mounted only beneath the story-block editor', async () => {
+test('outline workspace is mounted only in the dedicated outline section', async () => {
   const contents = await readFile(
     source('components/planning/PlanningWorkspace.vue'),
     'utf8',
@@ -489,9 +489,9 @@ test('embedded outline workspace is mounted only beneath the story-block editor'
   const storyBlockPosition = contents.indexOf('<story-block-editor')
   const outlinePosition = contents.indexOf('<chapter-outline-workspace')
   assert.ok(storyBlockPosition >= 0)
-  assert.ok(outlinePosition > storyBlockPosition)
+  assert.ok(outlinePosition >= 0)
   assert.match(
-    contents.slice(storyBlockPosition, outlinePosition + 100),
-    /activeTab === 'story-blocks'/,
+    contents.slice(outlinePosition, outlinePosition + 180),
+    /activeTab === 'outlines'/,
   )
 })

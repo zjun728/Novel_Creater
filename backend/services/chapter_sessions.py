@@ -17,6 +17,7 @@ from backend.domain.json_contracts import canonical_hash
 from backend.http_errors import ProjectNotFound
 from backend.repositories.chapter_sessions import (
     ActiveChapterSessionConflict,
+    CURRENT_GENERATION_FIELDS,
     authoritative_chapter,
 )
 
@@ -124,20 +125,7 @@ class ChapterSessionService:
         "projectionRevision",
         "projectionHash",
     )
-    _GENERATION_FIELDS = (
-        "selection_revision",
-        "seed_id",
-        "seed_revision_id",
-        "seed_hash",
-        "contract_revision",
-        "creation_contract_id",
-        "creation_hash",
-        "style_contract_id",
-        "style_hash",
-        "bible_revision",
-        "bible_revision_id",
-        "bible_hash",
-    )
+    _GENERATION_FIELDS = CURRENT_GENERATION_FIELDS
 
     def __init__(self, repository, *, transaction_factory, connection_factory=None):
         self.repository = repository

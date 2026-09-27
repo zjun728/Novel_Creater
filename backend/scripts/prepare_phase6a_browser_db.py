@@ -8,6 +8,7 @@ import re
 import time
 from pathlib import Path
 
+from backend.config import clear_runtime_configuration, install_runtime_configuration, load_runtime_configuration
 from backend.database import close_pool, connection, transaction
 from backend.domain.assets import PACKAGE_VERSION, load_asset_package
 from backend.domain.bibles import BiblePayload
@@ -260,8 +261,15 @@ async def verify_postconditions(database_name: str) -> None:
 async def main() -> None:
     parser = argparse.ArgumentParser(); parser.add_argument("--database", required=True); parser.add_argument("--verify-postconditions", action="store_true")
     args = parser.parse_args()
-    try: await (verify_postconditions(args.database) if args.verify_postconditions else prepare(args.database))
-    finally: await close_pool()
+    snapshot = load_runtime_configuration()
+    install_runtime_configuration(snapshot)
+    try:
+        await (verify_postconditions(args.database) if args.verify_postconditions else prepare(args.database))
+    finally:
+        try:
+            await close_pool()
+        finally:
+            clear_runtime_configuration(snapshot)
 
 
 if __name__ == "__main__": asyncio.run(main())

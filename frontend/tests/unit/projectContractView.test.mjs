@@ -918,12 +918,12 @@ test('story engine refuses missing author-visible profile identifiers without sa
   })
 
   try {
-    assert.equal(inputForLabel(mounted.root, '渠道定位标识').props.value, '')
-    assert.equal(inputForLabel(mounted.root, '题材定位标识').props.value, '')
+    assert.equal(inputForLabel(mounted.root, '目标发布渠道').props.value, '')
+    assert.equal(inputForLabel(mounted.root, '作品题材').props.value, '')
     await trigger(findByText(mounted.root, 'button', '保存本节'), 'onClick')
 
     assert.equal(saveCalls, 0)
-    assert.match(textContent(mounted.root), /渠道定位标识和题材定位标识均不能为空。/)
+    assert.match(textContent(mounted.root), /请填写目标发布渠道和作品题材。/)
     assert.ok(naiveBehaviorModule.focusEvents.includes('NAlert.$el'))
   } finally {
     mounted.app.unmount()
@@ -950,8 +950,8 @@ test('story engine trims and saves custom profile identifiers without mapping or
   })
 
   try {
-    const channel = inputForLabel(mounted.root, '渠道定位标识')
-    const genre = inputForLabel(mounted.root, '题材定位标识')
+    const channel = inputForLabel(mounted.root, '目标发布渠道')
+    const genre = inputForLabel(mounted.root, '作品题材')
     assert.equal(channel.props.value, 'initial-channel')
     assert.equal(genre.props.value, 'initial-genre')
     await trigger(channel, 'onInput', { target: { value: '  custom-channel  ' } })
@@ -1482,7 +1482,7 @@ test('workspace locks active controls without dropping local values while reload
   }))
   try {
     await flush()
-    const channel = inputForLabel(mounted.root, '渠道定位标识')
+    const channel = inputForLabel(mounted.root, '目标发布渠道')
     await trigger(channel, 'onInput', { target: { value: '作者尚未保存的渠道' } })
     interactionLocked.value = true
     await flush()
@@ -1540,7 +1540,7 @@ test('save conflict locks the whole document and requires keep or discard before
   try {
     await flush()
     await trigger(findByText(mounted.root, 'button', '编辑本节'), 'onClick')
-    const channel = inputForLabel(mounted.root, '渠道定位标识')
+    const channel = inputForLabel(mounted.root, '目标发布渠道')
     await trigger(channel, 'onInput', { target: { value: '尚未保存的作者渠道' } })
     await trigger(findByText(mounted.root, 'button', '保存本节'), 'onClick')
 
@@ -2166,6 +2166,40 @@ test('style selection keeps rapid A to B navigation on B when A fails late', asy
     assert.match(sourceText, /createLatestRequestGuard/)
   } finally {
     mounted.app.unmount()
+  }
+})
+
+test('unavailable ranking is explained without hiding manual style and asset selection', async () => {
+  for (const component of [StyleSelectionStep, AssetScopeStep]) {
+    const mounted = mountWithPinia(component, { projectId: 'project-1', selectionRevision: 3 }, store => {
+      store.projectId = 'project-1'
+      store.draft.draft.primaryStyleRef = { id: 'style-1', revision: 1, contentHash: HASH_A }
+      const assets = useCreationAssetStore()
+      assets.loadStyleTemplates = async () => {
+        assets.styleTemplates = [{ id: 'style-1', revision: 1, contentHash: HASH_A, name: '直接推进型' }]
+      }
+      assets.loadExperienceCards = async () => {
+        assets.experienceCards = [{ id: 'card-1', revision: 1, contentHash: HASH_B, title: '伤势延续', category: 'action_conflict' }]
+      }
+      assets.loadRecommendations = async () => {
+        const result = { rankingUnavailable: true, fullBrowseAvailable: true, assetRecommendations: [], corpusRecommendations: [] }
+        assets.recommendations = result
+        return result
+      }
+      useCorpusStore().loadSources = async () => []
+    })
+    try {
+      await flush()
+      assert.match(textContent(mounted.root), /AI 推荐暂时不可用/)
+      assert.match(textContent(mounted.root), /仍可从完整.*库手动选择/)
+      assert.ok(walk(mounted.root).some(node => node.props['data-component'] === 'NSelect'))
+      assert.equal(walk(mounted.root).some(node => /当前.*没有.*推荐/.test(node.props.description || '')), false)
+      useCreationAssetStore().recommendations = { rankingUnavailable: false, assetRecommendations: [], corpusRecommendations: [] }
+      await nextTick()
+      assert.doesNotMatch(textContent(mounted.root), /AI 推荐暂时不可用/)
+    } finally {
+      mounted.app.unmount()
+    }
   }
 })
 

@@ -6,6 +6,7 @@ import { createModalFocusManager } from '../common/modalFocusManager.js'
 const props = defineProps({
   open: { type: Boolean, default: false },
   history: { type: Array, default: () => [] },
+  overlayZIndex: { type: Number, default: undefined },
 })
 const emit = defineEmits(['close'])
 const dialog = ref(null)
@@ -87,7 +88,7 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="body">
-    <div v-if="open" class="drawer-backdrop" @click.self="close">
+    <div v-if="open" class="drawer-backdrop" :style="{ zIndex: overlayZIndex }" @click.self="close">
       <aside
         ref="dialog"
         class="history-drawer"

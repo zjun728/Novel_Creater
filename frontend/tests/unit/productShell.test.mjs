@@ -132,14 +132,18 @@ test('active and archived project contexts have different module surfaces', asyn
   assert.deepEqual(
     active.projectContext.modules.map(item => [item.label, item.path, item.selected]),
     [
+      ['工作台', '/projects/project%201/workbench', false],
       ['项目概览', '/projects/project%201/overview', true],
+      ['作品稿件', '/projects/project%201/manuscript', false],
+      ['故事规划', '/projects/project%201/planning/volumes', false],
       ['创作种子', '/projects/project%201/seeds', false],
       ['创作契约', '/projects/project%201/contract', false],
       ['创作圣经', '/projects/project%201/bible', false],
-      ['分卷规划', '/projects/project%201/planning/volumes', false],
-      ['情节线', '/projects/project%201/planning/plots', false],
-      ['故事块', '/projects/project%201/planning/story-blocks', false],
-      ['作品稿件', '/projects/project%201/manuscript', false],
+      ['设定库', '/projects/project%201/continuity/settings', false],
+      ['当前状态与记忆', '/projects/project%201/continuity/state-memory', false],
+      ['人物弧光', '/projects/project%201/continuity/arcs', false],
+      ['线索与伏笔', '/projects/project%201/continuity/clues', false],
+      ['连续性问题', '/projects/project%201/continuity/issues', false],
       ['项目资料', '/projects/project%201/settings/project', false],
       ['模型绑定', '/projects/project%201/settings/models', false],
       ['导出与备份', '/projects/project%201/settings/export', false],
@@ -151,11 +155,10 @@ test('active and archived project contexts have different module surfaces', asyn
       section.items.map(item => item.label),
     ]),
     [
-      ['', ['项目概览']],
+      ['', ['工作台', '项目概览', '作品稿件', '故事规划']],
       ['创作基础', ['创作种子', '创作契约', '创作圣经']],
-      ['故事规划', ['分卷规划', '情节线', '故事块']],
-      ['写作与稿件', ['作品稿件']],
-      ['项目配置', ['项目资料', '模型绑定', '导出与备份']],
+      ['设定与连续性', ['设定库', '当前状态与记忆', '人物弧光', '线索与伏笔', '连续性问题']],
+      ['项目设置', ['项目资料', '模型绑定', '导出与备份']],
     ],
   )
   const seeds = createProductShellModel({
@@ -203,13 +206,17 @@ test('active and archived project contexts have different module surfaces', asyn
   assert.deepEqual(
     archived.projectContext.modules.map(item => [item.label, item.path, item.selected]),
     [
+      ['工作台', '/projects/archived-1/workbench', false],
       ['项目概览', '/projects/archived-1/overview', true],
+      ['作品稿件', '/projects/archived-1/manuscript', false],
+      ['故事规划', '/projects/archived-1/planning/volumes', false],
       ['创作契约', '/projects/archived-1/contract', false],
       ['创作圣经', '/projects/archived-1/bible', false],
-      ['分卷规划', '/projects/archived-1/planning/volumes', false],
-      ['情节线', '/projects/archived-1/planning/plots', false],
-      ['故事块', '/projects/archived-1/planning/story-blocks', false],
-      ['作品稿件', '/projects/archived-1/manuscript', false],
+      ['设定库', '/projects/archived-1/continuity/settings', false],
+      ['当前状态与记忆', '/projects/archived-1/continuity/state-memory', false],
+      ['人物弧光', '/projects/archived-1/continuity/arcs', false],
+      ['线索与伏笔', '/projects/archived-1/continuity/clues', false],
+      ['连续性问题', '/projects/archived-1/continuity/issues', false],
       ['项目资料', '/projects/archived-1/settings/project', false],
       ['导出与备份', '/projects/archived-1/settings/export', false],
     ],
@@ -239,6 +246,17 @@ test('active and archived project contexts have different module surfaces', asyn
   )
 })
 
+test('independent continuity issues navigation selects correctly for active and archived projects', async () => {
+  const { createProductShellModel } = await loadShellModule()
+  for (const archivedAt of [null, 100]) {
+    const shell = createProductShellModel({ route: route('ContinuityIssues', '/projects/p/continuity/issues', { projectId: 'p' }), project: { id: 'p', title: '旧城', archivedAt }, viewportWidth: 1440 })
+    const selected = shell.projectContext.modules.filter(item => item.selected)
+    assert.deepEqual(selected.map(item => item.key), ['continuity-issues'])
+    assert.equal(selected[0].path, '/projects/p/continuity/issues')
+    assert.equal(shell.routeTitle, archivedAt === null ? '连续性问题' : '已归档连续性问题')
+  }
+})
+
 test('each planning tab selects its own truthful grouped navigation item', async () => {
   const { createProductShellModel } = await loadShellModule()
   const titles = {
@@ -255,11 +273,8 @@ test('each planning tab selects its own truthful grouped navigation item', async
     })
     const planning = shell.projectContext.modules.find(item => item.selected)
     assert.equal(planning.selected, true)
-    assert.equal(planning.path, {
-      ProjectPlanningVolumes: '/projects/project-1/planning/volumes',
-      ProjectPlanningPlots: '/projects/project-1/planning/plots',
-      ProjectPlanningStoryBlocks: '/projects/project-1/planning/story-blocks',
-    }[name])
+    assert.equal(planning.key, 'planning')
+    assert.equal(planning.path, '/projects/project-1/planning/volumes')
     assert.equal(shell.routeTitle, titles[name])
   }
 
@@ -269,7 +284,7 @@ test('each planning tab selects its own truthful grouped navigation item', async
     }),
     project: { id: 'old', title: '旧稿', archivedAt: 1 },
   })
-  assert.equal(archived.projectContext.modules.find(item => item.key === 'plots').selected, true)
+  assert.equal(archived.projectContext.modules.find(item => item.key === 'planning').selected, true)
   assert.equal(archived.routeTitle, '已归档情节线规划')
 
   const archivedStoryBlocks = createProductShellModel({
@@ -279,7 +294,7 @@ test('each planning tab selects its own truthful grouped navigation item', async
     project: { id: 'old', title: '旧稿', archivedAt: 1 },
   })
   assert.equal(
-    archivedStoryBlocks.projectContext.modules.find(item => item.key === 'story-blocks').selected,
+    archivedStoryBlocks.projectContext.modules.find(item => item.key === 'planning').selected,
     true,
   )
   assert.equal(archivedStoryBlocks.routeTitle, '已归档故事块规划')
@@ -566,7 +581,7 @@ test('real memory router renders global project and settings shell states', asyn
     settings.html,
     /<a(?=[^>]*href="\/settings\/providers")(?=[^>]*aria-current="page")[^>]*>/,
   )
-  assert.match(settings.html, /class="product-topbar__title"[^>]*>Provider 与模型</)
+  assert.match(settings.html, /class="product-topbar__title"[^>]*>服务商与模型</)
   assert.deepEqual(projects.requests, [])
   assert.deepEqual(assets.requests, [])
   assert.deepEqual(settings.requests, [])
@@ -766,6 +781,9 @@ test('the real project overview consumes shell hydration without a duplicate rea
     assert.deepEqual(requests, [
       'http://127.0.0.1:8000/api/projects/project-1',
       'http://127.0.0.1:8000/api/projects/project-1/overview',
+      'http://127.0.0.1:8000/api/projects/project-1/preparation',
+      'http://127.0.0.1:8000/api/projects/project-1/planning',
+      'http://127.0.0.1:8000/api/projects/project-1/manuscript',
     ])
     assert.match(html, /class="product-sidebar__project-title"[^>]*>典镇山河</)
   } finally {

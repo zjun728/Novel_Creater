@@ -140,7 +140,7 @@ def test_repository_exposes_exact_outline_persistence_contract():
 
 
 @pytest.mark.asyncio
-async def test_current_authorities_are_one_normalized_exact_generation_read():
+async def test_current_authorities_read_exact_continuation_and_projection_revision():
     session = CapturingSession(
         rows=[
             {
@@ -173,8 +173,10 @@ async def test_current_authorities_are_one_normalized_exact_generation_read():
         "projection_revision": 5,
         "projection_hash": "b" * 64,
         "planning_content": {"storyBlocks": [], "volumes": []},
+        "previous_final_chapter": None,
+        "actual_progress": (),
     }
-    _, sql, args = session.calls[-1]
+    _, sql, args = session.calls[0]
     compact = _compact(sql)
     assert args == ("p1",)
     assert "FROM project_planning_heads planning_head" in compact
@@ -187,6 +189,10 @@ async def test_current_authorities_are_one_normalized_exact_generation_read():
     assert "creation.content_hash=planning.creation_hash" in compact
     assert "provider_profiles" not in compact
     assert all(not key.endswith("_json") for key in result)
+    assert session.calls[1][2] == ("p1",)
+    assert "ORDER BY chapter_num DESC LIMIT 1" in _compact(session.calls[1][1])
+    assert session.calls[2][2] == ("p1", 5)
+    assert "field_path LIKE 'plot.progress.%%'" in _compact(session.calls[2][1])
 
 
 @pytest.mark.asyncio

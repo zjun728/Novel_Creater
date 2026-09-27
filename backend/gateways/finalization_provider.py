@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Mapping
 from hashlib import sha256
-import math
 from typing import Protocol, runtime_checkable
 
 import httpx
@@ -16,12 +16,17 @@ from backend.domain.finalization import (
     PlanningPatch,
     QualityFinding,
     QualityReportPayload,
+    change_set_payload,
 )
+from backend.domain.finalization_evidence import source_paragraphs
+from backend.domain.json_contracts import canonical_json
 from backend.gateways.openai_json_transport import OpenAIJSONTransport
 from backend.prompts.finalization import (
     FinalizationProviderManifest,
     build_extraction_messages,
     build_quality_messages,
+    build_progress_audit_messages,
+    _progress_scope,
 )
 
 
@@ -29,8 +34,10 @@ PROVIDER_TIMEOUT_SECONDS = 600
 MAX_PROVIDER_RESPONSE_BYTES = 512 * 1024
 _SAFE_ERROR = "Finalization provider failed"
 _EVIDENCE_FIELDS = frozenset({
-    "startScalar", "endScalar", "confidence", "rationale",
+    "quote", "confidence", "rationale",
 })
+_PARAGRAPH_EVIDENCE_FIELDS = frozenset({"paragraphIds", "confidence", "rationale"})
+_PARAGRAPH_RANGE_EVIDENCE_FIELDS = frozenset({"paragraphRange", "confidence", "rationale"})
 
 
 class FinalizationProviderError(RuntimeError):
@@ -68,10 +75,38 @@ class FinalizationExtractionProvider(Protocol):
 
 
 def _hydrate_evidence(value: object, prose: str) -> dict[str, object]:
-    if type(value) is not dict or frozenset(value.keys()) != _EVIDENCE_FIELDS:
+    if type(value) is not dict or frozenset(value.keys()) not in (_EVIDENCE_FIELDS, _PARAGRAPH_EVIDENCE_FIELDS, _PARAGRAPH_RANGE_EVIDENCE_FIELDS):
         raise ValueError(_SAFE_ERROR)
-    start = value["startScalar"]
-    end = value["endScalar"]
+    if 'paragraphRange' in value:
+        selected = value['paragraphRange']
+        if type(selected) is not dict or frozenset(selected) != {'start', 'end'}:
+            raise ValueError(_SAFE_ERROR)
+        paragraphs = source_paragraphs(prose)
+        positions = {paragraph['id']: index for index, paragraph in enumerate(paragraphs)}
+        if any(type(selected[key]) is not str or selected[key] not in positions for key in ('start', 'end')):
+            raise ValueError(_SAFE_ERROR)
+        first, last = positions[selected['start']], positions[selected['end']]
+        if first > last:
+            raise ValueError(_SAFE_ERROR)
+        start, end = paragraphs[first]['startScalar'], paragraphs[last]['endScalar']
+    elif 'paragraphIds' in value:
+        ids = value['paragraphIds']
+        paragraphs = source_paragraphs(prose)
+        positions = {paragraph['id']: index for index, paragraph in enumerate(paragraphs)}
+        if type(ids) is not list or not ids or any(type(item) is not str or item not in positions for item in ids):
+            raise ValueError(_SAFE_ERROR)
+        indexes = [positions[item] for item in ids]
+        if indexes != list(range(indexes[0], indexes[0] + len(indexes))):
+            raise ValueError(_SAFE_ERROR)
+        start, end = paragraphs[indexes[0]]['startScalar'], paragraphs[indexes[-1]]['endScalar']
+    else:
+        quote = value["quote"]
+        if not isinstance(quote, str) or not quote.strip():
+            raise ValueError(_SAFE_ERROR)
+        start = prose.find(quote)
+        if start < 0 or prose.find(quote, start + 1) >= 0:
+            raise ValueError(_SAFE_ERROR)
+        end = start + len(quote)
     confidence = value["confidence"]
     if (
         type(start) is not int
@@ -83,6 +118,17 @@ def _hydrate_evidence(value: object, prose: str) -> dict[str, object]:
         or type(confidence) is bool
     ):
         raise ValueError(_SAFE_ERROR)
+    rationale = value["rationale"]
+    if not isinstance(rationale, str):
+        raise ValueError(_SAFE_ERROR)
+    # A rationale cannot rely on paragraph references outside the stored quote.
+    paragraphs_by_id = {p['id']: p for p in source_paragraphs(prose)}
+    for reference in re.findall(r"(?<![A-Za-z0-9_])p\d+(?![A-Za-z0-9_])", rationale):
+        paragraph = paragraphs_by_id.get(reference)
+        if paragraph is None:
+            raise ValueError(_SAFE_ERROR)
+        start = min(start, paragraph['startScalar'])
+        end = max(end, paragraph['endScalar'])
     excerpt_hash = sha256(prose[start:end].encode("utf-8")).hexdigest()
     return {
         "startScalar": start,
@@ -106,52 +152,6 @@ def _hydrate_nested(value: object, prose: str) -> object:
             )
         return result
     return value
-
-
-def _drop_items_with_unusable_evidence(
-    value: object,
-    prose: str,
-) -> object:
-    if type(value) is not dict:
-        return value
-    result = dict(value)
-    for collection in (
-        "canonEvents",
-        "storyProgressEvents",
-        "planningPatches",
-        "planningSuggestions",
-    ):
-        items = value.get(collection)
-        if type(items) is not list:
-            continue
-        kept = []
-        for item in items:
-            evidence = item.get("evidence") if type(item) is dict else None
-            if (
-                type(evidence) is not dict
-                or frozenset(evidence.keys()) != _EVIDENCE_FIELDS
-            ):
-                kept.append(item)
-                continue
-            start = evidence["startScalar"]
-            end = evidence["endScalar"]
-            confidence = evidence["confidence"]
-            rationale = evidence["rationale"]
-            usable = (
-                type(start) is int
-                and type(end) is int
-                and 0 <= start < end <= len(prose)
-                and type(confidence) in (int, float)
-                and type(confidence) is not bool
-                and math.isfinite(float(confidence))
-                and 0 <= float(confidence) <= 1
-                and isinstance(rationale, str)
-                and bool(rationale.strip())
-            )
-            if usable:
-                kept.append(item)
-        result[collection] = kept
-    return result
 
 
 def _drop_planning_patches_with_disallowed_fields(value: object) -> object:
@@ -189,6 +189,8 @@ def _parse_quality(value: object, prose: str) -> tuple[QualityFinding, ...] | No
             raise ValueError(_SAFE_ERROR)
         if type(value["findings"]) is not list:
             raise ValueError(_SAFE_ERROR)
+        if any(not isinstance(item, dict) or item.get('severity') not in ('required', 'suggested', 'optional') for item in value['findings']):
+            raise ValueError(_SAFE_ERROR)
         hydrated = _hydrate_nested(value["findings"], prose)
         report = QualityReportPayload.model_validate({
             "status": "completed",
@@ -202,12 +204,113 @@ def _parse_quality(value: object, prose: str) -> tuple[QualityFinding, ...] | No
 
 def _parse_extraction(value: object, prose: str) -> FinalizationChangeSet | None:
     try:
-        filtered = _drop_items_with_unusable_evidence(value, prose)
-        hydrated = _hydrate_nested(filtered, prose)
+        value = _validate_progress_basis(value, prose)
+        hydrated = _hydrate_nested(value, prose)
         hydrated = _drop_planning_patches_with_disallowed_fields(hydrated)
-        return FinalizationChangeSet.model_validate(hydrated)
+        parsed = FinalizationChangeSet.model_validate(hydrated)
+        # Only coalesce the same assertion at the same source location. Validate
+        # identities first; never hide a malformed response or merge transitions.
+        seen = set()
+        events = []
+        for event, key in zip(parsed.canon_events, change_set_payload(parsed)["canonEvents"]):
+            key.pop("id")
+            key["evidence"].pop("rationale")
+            key["evidence"].pop("confidence")
+            signature = canonical_json(key)
+            if signature not in seen:
+                seen.add(signature)
+                events.append(event)
+        return parsed.model_copy(update={"canon_events": tuple(events)})
     except (ValidationError, ValueError, TypeError, KeyError, UnicodeError):
         return None
+
+
+def _validate_progress_basis(value: object, prose: str) -> object:
+    """Validate transient model reasoning without extending persisted ChangeSets."""
+    if type(value) is not dict or type(value.get('storyProgressEvents')) is not list:
+        raise ValueError(_SAFE_ERROR)
+    result = dict(value)
+    events = []
+    paragraphs = {p['id']: p for p in source_paragraphs(prose)}
+    for event in value['storyProgressEvents']:
+        if type(event) is not dict:
+            raise ValueError(_SAFE_ERROR)
+        clean = dict(event)
+        basis = clean.pop('completionBasis', None)
+        if type(basis) is not dict or set(basis) != {'execution', 'unmetRequirements', 'supportingParagraphIds'}:
+            raise ValueError(_SAFE_ERROR)
+        execution = basis['execution']
+        unmet = basis['unmetRequirements']
+        support = basis['supportingParagraphIds']
+        if execution not in ('observed', 'planned', 'uncertain'):
+            raise ValueError(_SAFE_ERROR)
+        if type(unmet) is not list or any(type(item) is not str or not item.strip() for item in unmet):
+            raise ValueError(_SAFE_ERROR)
+        if clean.get('status') == 'completed' and (execution != 'observed' or unmet):
+            raise ValueError(_SAFE_ERROR)
+        if type(support) is not list or not support or any(type(item) is not str or item not in paragraphs for item in support):
+            raise ValueError(_SAFE_ERROR)
+        if len(set(support)) != len(support):
+            raise ValueError(_SAFE_ERROR)
+        evidence = _hydrate_evidence(clean.get('evidence'), prose)
+        for identity in support:
+            paragraph = paragraphs[identity]
+            if not (evidence['startScalar'] <= paragraph['startScalar'] and paragraph['endScalar'] <= evidence['endScalar']):
+                raise ValueError(_SAFE_ERROR)
+        events.append(clean)
+    result['storyProgressEvents'] = events
+    return result
+
+
+def _apply_progress_audit(value: dict, audit: object, manifest: FinalizationProviderManifest | None = None) -> dict | None:
+    """Only replace existing progress proposals; never accept additions/upgrades."""
+    if type(audit) is not dict or set(audit) != {'decisions'} or type(audit['decisions']) is not list:
+        return None
+    proposed = {event['id']: event for event in value['storyProgressEvents'] if event['targetType'] == 'scene_task'}
+    decisions = {}
+    for decision in audit['decisions']:
+        if type(decision) is not dict or set(decision) != {'id', 'status', 'completionBasis', 'evidence'}:
+            return None
+        identity = decision['id']
+        if type(identity) is not str or identity not in proposed or identity in decisions:
+            return None
+        if decision['status'] == 'completed' and proposed[identity]['status'] != 'completed':
+            return None
+        decisions[identity] = decision
+    if set(decisions) != set(proposed):
+        return None
+    events = [{**event, **decisions.get(event['id'], {})} for event in value['storyProgressEvents']]
+    if manifest is not None:
+        scope = _progress_scope(manifest)
+        states = {task['id']: task['confirmedStatus'] for stage in scope.get('stages', [])
+                  for task in stage['requiredSceneTasks']}
+        states.update({e['targetId']: e['status'] for e in events if e['targetType'] == 'scene_task'})
+        descendants = {('stage', stage['id']): [task['id'] for task in stage['requiredSceneTasks']]
+                       for stage in scope.get('stages', [])}
+        if scope.get('available'):
+            descendants[('story_block', scope['storyBlockId'])] = [task for ids in descendants.values() for task in ids]
+        for event in events:
+            if event['targetType'] == 'scene_task' or event['status'] != 'completed':
+                continue
+            children = descendants.get((event['targetType'], event['targetId']))
+            if children is None:
+                return None
+            if any(states.get(child) != 'completed' for child in children):
+                # Keep the already validated source interval when replacing a
+                # parent's now-obsolete "all children completed" explanation.
+                location = _hydrate_evidence(event['evidence'], manifest.candidate_prose)
+                referenced = [p for p in source_paragraphs(manifest.candidate_prose)
+                              if p['endScalar'] > location['startScalar'] and p['startScalar'] < location['endScalar']]
+                if not referenced:
+                    return None
+                event['status'] = 'advanced'
+                event['completionBasis'] = {**event['completionBasis'], 'unmetRequirements': ['关联场景任务尚未全部完成']}
+                event['evidence'] = {
+                    'paragraphRange': {'start': referenced[0]['id'], 'end': referenced[-1]['id']},
+                    'confidence': event['evidence']['confidence'],
+                    'rationale': '本次复核后，关联场景任务尚未全部完成，父阶段或故事块仅保留推进状态。',
+                }
+    return {**value, 'storyProgressEvents': events}
 
 
 class _FinalizationGateway:
@@ -363,6 +466,16 @@ class FinalizationExtractionGateway(_FinalizationGateway):
             provider=provider, model_name=model_name, messages=messages,
         )
         parsed = _parse_extraction(value, frozen.candidate_prose)
+        if parsed is not None and parsed.story_progress_events:
+            scene_events = [event for event in value['storyProgressEvents'] if event['targetType'] == 'scene_task']
+            audit = await self._request(
+                provider=provider, model_name=model_name,
+                messages=build_progress_audit_messages(manifest=frozen, events=scene_events),
+            ) if scene_events else {'decisions': []}
+            reviewed = _apply_progress_audit(value, audit, frozen)
+            parsed = _parse_extraction(reviewed, frozen.candidate_prose) if reviewed is not None else None
+            audit = None
+            reviewed = None
         value = None
         if parsed is None:
             provider = None

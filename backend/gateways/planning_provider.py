@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from uuid import uuid4
 from collections.abc import Mapping
 from typing import Protocol, TypeAlias, runtime_checkable
 
@@ -77,6 +78,29 @@ def _assign_missing_editable_node_identities(value: object) -> object:
             normalized_nodes.append(normalized_node)
         normalized[section] = normalized_nodes
     return normalized
+
+
+def _assign_missing_completion_child_identities(value, existing_block=None):
+    # Only wholly new child nodes may receive server-generated temporary keys.
+    # A partial persisted identity is invalid and must never be repaired here.
+    from copy import deepcopy
+    result = deepcopy(value)
+    if not isinstance(result, dict): return result
+    block = result.get('nextStoryBlock')
+    if not isinstance(block, dict): return result
+    previous = existing_block.model_dump(mode='json', by_alias=True) if existing_block else None
+    def visit(node, old=None):
+        if not isinstance(node, dict): return
+        if old is None and not any(node.get(k) is not None for k in ('clientNodeKey', 'id', 'revision', 'contentHash')):
+            node['clientNodeKey'] = 'completion-' + str(uuid4())
+        for field in ('stages', 'sceneTasks'):
+            children = node.get(field, [])
+            old_children = (old or {}).get(field, [])
+            if isinstance(children, list):
+                for index, child in enumerate(children):
+                    visit(child, old_children[index] if index < len(old_children) else None)
+    visit(block, previous)
+    return result
 
 
 class PlanningProviderGateway:
@@ -175,16 +199,20 @@ class PlanningProviderGateway:
             try:
                 if not isinstance(value, dict):
                     raise TypeError(_SAFE_ERROR)
-                draft = DraftPlanningAggregate.model_validate(
-                    value,
-                    strict=True,
-                )
-                if (
-                    draft.active_story_block_ref
-                    != frozen_draft.active_story_block_ref
-                    or draft.story_blocks != frozen_draft.story_blocks
-                ):
-                    raise ValueError(_SAFE_ERROR)
+                from backend.domain.planning_expansion import validate_expansion_output, merge_continuation, merge_block_adjustment, merge_completion
+                if frozen_manifest.expansion is not None and frozen_manifest.expansion.mode.startswith('fill_'):
+                    existing_block = next((b for b in frozen_draft.story_blocks if b.id == frozen_manifest.expansion.target_block_ref), None)
+                    value = _assign_missing_completion_child_identities(value, existing_block)
+                    draft = merge_completion(frozen_draft, value, frozen_manifest.expansion)
+                elif frozen_manifest.expansion is not None and frozen_manifest.expansion.mode == "revise_block":
+                    draft = merge_block_adjustment(frozen_draft, value, frozen_manifest.expansion)
+                elif frozen_manifest.expansion is not None and frozen_manifest.expansion.mode != "initial":
+                    if frozen_manifest.expansion.target_block_ref is None:
+                        value = _assign_missing_completion_child_identities(value)
+                    draft = merge_continuation(frozen_draft, value, frozen_manifest.expansion)
+                else:
+                    draft = DraftPlanningAggregate.model_validate(value, strict=True)
+                validate_expansion_output(frozen_draft, draft, frozen_manifest.expansion)
                 result = draft.model_dump(
                     mode="json",
                     by_alias=True,

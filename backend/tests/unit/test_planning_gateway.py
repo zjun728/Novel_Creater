@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import re
 
 import httpx
 import pytest
@@ -760,7 +761,25 @@ async def test_planning_safe_error_releases_all_sensitive_exception_references(
             "Authorization",
         ),
     )
-    assert caplog.text == ""
+    # Diagnostics are limited to an opaque request ID and closed failure metadata.
+    if failure == "domain":
+        assert caplog.records == []
+    else:
+        expected = {
+            "transport": ("transport", "None"),
+            "http": ("http_status", "503"),
+            "json": ("envelope_json", "200"),
+            "envelope": ("content_shape", "200"),
+        }
+        stage, status = expected[failure]
+        assert len(caplog.records) == 1
+        record = caplog.records[0]
+        assert record.name == "backend.gateways.openai_json_transport"
+        assert record.exc_info is None
+        assert re.fullmatch(
+            rf"provider_json_failed request_id=[0-9a-f]{{32}} stage={stage} http_status={status}",
+            record.getMessage(),
+        )
 
 
 @pytest.mark.asyncio

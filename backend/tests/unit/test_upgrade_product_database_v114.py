@@ -8,7 +8,7 @@ from hashlib import sha256
 import pytest
 
 from backend.domain.market_sources import PACKAGE_VERSION
-from backend.schema_manifest import STATEMENT_DELIMITER, created_table_names, manifest_hash
+from backend.schema_manifest import STATEMENT_DELIMITER
 from backend.scripts.upgrade_product_database_v114 import (
     MARKET_SOURCE_INVENTORY_INCOMPATIBLE,
     ProductUpgradeDependencies,
@@ -28,6 +28,8 @@ from backend.scripts.upgrade_product_database_v114 import (
     run_product_upgrade,
     topic_statements,
     upgrade_v113_to_v114,
+    v114_table_names as created_table_names,
+    v114_manifest_hash as manifest_hash,
     v113_manifest_hash,
     v113_statements,
     v113_table_names,
@@ -1050,3 +1052,16 @@ def test_backup_directory_must_be_a_dedicated_new_leaf(tmp_path):
 
     with pytest.raises(SchemaUpgradeError, match="directory preflight"):
         _ensure_private_backup_directory(existing)
+
+
+def test_historical_upgrade_ignores_future_schema_fragments(monkeypatch):
+    from backend import schema_manifest
+    from backend.scripts.upgrade_product_database_v114 import (
+        V113_MANIFEST_HASH, V114_MANIFEST_HASH, _validate_static_manifest,
+    )
+    monkeypatch.setattr(schema_manifest, 'FRAGMENTS', (*schema_manifest.FRAGMENTS, 'future.sql'))
+    _validate_static_manifest()
+    assert v113_manifest_hash() == V113_MANIFEST_HASH
+    assert manifest_hash() == V114_MANIFEST_HASH
+    assert len(v113_table_names()) == 91
+    assert len(created_table_names()) == 99

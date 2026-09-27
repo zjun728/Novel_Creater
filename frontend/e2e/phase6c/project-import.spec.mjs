@@ -60,7 +60,9 @@ test('@phase6c imports a real backup atomically and recovers its unknown result'
     expectedFailedRequest: consumerFailure,
   })
   await page.goto(`/projects/${sourceProjectId}/overview`, { timeout: uiTimeout })
-  await expect(page.getByText('PROJECT OVERVIEW', { exact: true })).toBeVisible({ timeout: uiTimeout })
+  await expect(page.getByRole('heading', { name: '创作模块', exact: true })).toBeVisible({ timeout: uiTimeout })
+  await page.getByRole('link', { name: '导出与备份', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '导出与备份', exact: true })).toBeVisible({ timeout: uiTimeout })
 
   const backupDownload = page.waitForEvent('download', { timeout: uiTimeout })
   await page.getByRole('button', { name: '创建项目备份' }).click()
@@ -101,7 +103,8 @@ test('@phase6c imports a real backup atomically and recovers its unknown result'
   await page.getByRole('link', { name: '模型绑定' }).click()
   await expect(page.getByRole('heading', { name: importedTitle })).toBeVisible({ timeout: uiTimeout })
   await expect(page.getByText('Not Ready', { exact: true })).toBeVisible()
-  await page.getByRole('link', { name: '项目概览' }).click()
+  await page.getByRole('link', { name: '导出与备份', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '导出与备份', exact: true })).toBeVisible({ timeout: uiTimeout })
 
   const finalDownload = page.waitForEvent('download', { timeout: uiTimeout })
   await page.getByRole('button', { name: '下载整本定稿' }).click()

@@ -31,7 +31,7 @@ _COMMENT_MARKERS = ("--", "#", "/*", "*/")
 _UNSAFE_LEXEMES = ("`", '"', "@", ":=")
 _FUNCTION_CALL = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _SAFE_READ_FUNCTIONS = frozenset(
-    {"char_length", "field", "lower", "max", "trim"}
+    {"char_length", "field", "lower", "max", "min", "trim"}
 )
 _GROUPING_TOKENS = frozenset(
     {"and", "exists", "from", "in", "or", "where"}

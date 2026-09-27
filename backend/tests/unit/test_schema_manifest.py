@@ -28,13 +28,16 @@ EXPECTED_FRAGMENTS = (
     "25_bible.sql",
     "30_planning.sql",
     "40_drafts.sql",
+    "42_review_decisions.sql",
     "50_canon.sql",
     "60_projections.sql",
+    "65_continuity_issues.sql",
     "70_corpus.sql",
     "80_project_imports.sql",
 )
 
 EXPECTED_TABLES = {
+    "review_finding_decisions",
     "schema_metadata",
     "projects",
     "creative_seeds",
@@ -132,6 +135,7 @@ EXPECTED_TABLES = {
     "plot_thread_projections",
     "projection_heads",
     "reference_uses",
+    "continuity_issues",
     "project_package_import_commands",
     "project_import_provenance",
 }
@@ -162,7 +166,7 @@ def _raw_table_statement(table_name: str) -> str:
 def test_manifest_has_exact_ordered_fragments_and_tables():
     assert FRAGMENTS == EXPECTED_FRAGMENTS
     assert set(created_table_names()) == EXPECTED_TABLES
-    assert len(created_table_names()) == len(EXPECTED_TABLES) == 99
+    assert len(created_table_names()) == len(EXPECTED_TABLES) == 101
     assert set(created_table_names()).isdisjoint(
         {"task_model_bindings", "task_model_binding_items", "contract_asset_refs"}
     )
@@ -176,6 +180,26 @@ def test_fragment_reader_is_bounded_and_topic_fragment_has_exact_eight_tables():
     assert all(_compact(statement).startswith("create table ") for statement in statements)
     with pytest.raises(ValueError, match="outside the schema manifest"):
         read_fragment_statements("../19_topics.sql")
+
+
+def test_continuity_issue_fragment_has_project_owned_fixed_sources_and_list_indexes():
+    statement = _table_statement("continuity_issues")
+    assert len(read_fragment_statements("65_continuity_issues.sql")) == 1
+    assert FRAGMENTS.index("50_canon.sql") < FRAGMENTS.index("65_continuity_issues.sql")
+    assert FRAGMENTS.index("65_continuity_issues.sql") < FRAGMENTS.index("80_project_imports.sql")
+    for contract in (
+        "unique key uq_continuity_issue_project_id (project_id, id)",
+        "key ix_continuity_issue_status (project_id, status, created_at, id)",
+        "key ix_continuity_issue_created (project_id, created_at, id)",
+        "foreign key (project_id) references projects(id) on delete cascade",
+        "foreign key (project_id, source_finalization_id) references finalization_records(project_id, id) on delete restrict",
+        "foreign key (project_id, source_canon_revision) references canon_revisions(project_id, revision_number) on delete restrict",
+        "check (status in ('pending','resolved','ignored'))",
+        "check (status = 'pending' or resolution_note is not null)",
+        "source_chapter is null and source_finalization_id is null and source_canon_revision is null",
+        "check (created_at >= 0 and updated_at >= created_at)",
+    ):
+        assert contract in statement
 
 
 def test_manifest_uses_portable_normalized_hash(monkeypatch):

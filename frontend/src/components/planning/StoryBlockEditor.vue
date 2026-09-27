@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 const props = defineProps({
   modelValue: { type: Array, default: () => [] },
@@ -29,6 +29,20 @@ const emit = defineEmits([
 ])
 
 const nodeKey = node => String(node?.id || node?.clientNodeKey || '')
+const chosenVolume = ref(null)
+const currentVolume = computed(() => String(props.modelValue.find(
+  block => nodeKey(block) === String(props.activeStoryBlockRef || ''),
+)?.volumeRef || ''))
+const visibleVolume = computed({
+  get: () => chosenVolume.value ?? currentVolume.value,
+  set: value => { chosenVolume.value = value },
+})
+const visibleBlocks = computed(() => props.modelValue
+  .map((block, blockIndex) => ({ block, blockIndex }))
+  .filter(({ block }) => !visibleVolume.value || !block.volumeRef || String(block.volumeRef) === visibleVolume.value))
+watch(() => props.volumes.map(nodeKey), keys => {
+  if (chosenVolume.value && !keys.includes(chosenVolume.value)) chosenVolume.value = null
+})
 const activeNodes = items => (
   Array.isArray(items) ? items.filter(node => node.lifecycle === 'active') : []
 )
@@ -222,6 +236,20 @@ function undo() {
       把分卷与情节线落实为可执行的阶段和场景任务；当前活动故事块会成为后续写作焦点。
     </p>
 
+    <div class="volume-filter">
+      <label>查看分卷
+        <select v-model="visibleVolume">
+          <option value="">全部分卷</option>
+          <option v-for="volume in volumes" :key="nodeKey(volume)" :value="nodeKey(volume)">
+            {{ volume.title || '未命名分卷' }}{{ nodeKey(volume) === currentVolume ? ' · 当前故事块所在卷' : '' }}
+          </option>
+        </select>
+      </label>
+      <button v-if="currentVolume" type="button" @click="chosenVolume = null">定位当前卷</button>
+      <span>{{ visibleBlocks.length }} 个故事块（包含未分卷的新草稿）</span>
+    </div>
+    <p v-if="!visibleBlocks.length" role="status">该范围尚无故事块，可切换分卷查看。</p>
+
     <aside
       v-if="undoAvailable && !readOnly"
       class="undo-note"
@@ -235,7 +263,7 @@ function undo() {
     </aside>
 
     <article
-      v-for="(block, blockIndex) in modelValue"
+      v-for="{ block, blockIndex } in visibleBlocks"
       :key="nodeKey(block)"
       class="story-block-card"
       :class="{
@@ -616,6 +644,9 @@ h2 { margin:4px 0 0; font:600 28px Georgia,'Noto Serif SC',serif; }
 .block-heading,.nested-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; }
 .block-heading>div { display:flex; align-items:center; gap:12px; color:var(--nc-muted); font-size:12px; letter-spacing:.06em; }
 .block-heading h3 { margin:0; color:var(--nc-ink); font:600 19px Georgia,'Noto Serif SC',serif; letter-spacing:0; }
+.volume-filter { display:flex; flex-wrap:wrap; align-items:end; gap:12px; margin:16px 0; }
+.volume-filter label { min-width:180px; flex:1; }
+.volume-filter span { padding:10px 0; color:var(--nc-muted); font-size:12px; }
 .active-mark { color:var(--nc-vermilion); }
 fieldset { margin:0; padding:0; border:0; }
 .block-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; margin-top:14px; }

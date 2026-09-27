@@ -1,6 +1,6 @@
 import { computed, ref, shallowRef, toRaw } from 'vue'
 
-import { mapProjectNextAction } from '../projects/projectNextAction.js'
+import { mapWorkbenchNextAction } from '../projects/projectNextAction.js'
 import { finalChapterPath as projectFinalChapterPath } from '../../router/projectRoutes.js'
 import { generateId } from '../../utils/id.js'
 import { sha256Text } from '../../utils/sha256Text.js'
@@ -66,6 +66,7 @@ export function createFinalizationController({
   getReview = unavailable('getReview'),
   prepare = unavailable('prepare'),
   correct = unavailable('correct'),
+  decideFinding = unavailable('decideFinding'),
   confirm = unavailable('confirm'),
   cancel = unavailable('cancel'),
   revoke = unavailable('revoke'),
@@ -77,7 +78,7 @@ export function createFinalizationController({
   getChapterNumber = () => null,
   reloadPreparation = unavailable('reloadPreparation'),
   readFinalizedChapter = unavailable('readFinalizedChapter'),
-  mapNextAction = mapProjectNextAction,
+  mapNextAction = mapWorkbenchNextAction,
   finalizedChapterPath = projectFinalChapterPath,
   idFactory = generateId,
 } = {}) {
@@ -177,7 +178,7 @@ export function createFinalizationController({
     let currentAction = unavailableCurrentAction(mapNextAction)
     if (preparation.status === 'fulfilled') {
       try {
-        currentAction = mapNextAction(preparation.value)
+        currentAction = mapNextAction(preparation.value, target.projectId)
       } catch {
         currentAction = unavailableCurrentAction(mapNextAction)
       }
@@ -342,9 +343,23 @@ export function createFinalizationController({
     }, '修正未保存，请刷新后重试。')
   }
 
+  async function setFindingIgnored(findingId, ignored) {
+    return run(async active => {
+      const value = review.value
+      const finding = value?.qualityReport?.findings?.find(item => item.id === findingId)
+      if (value?.status !== 'awaiting_author' || finalized.value || value.confirmation || finding?.severity !== 'optional') throw new TypeError('finding decision unavailable')
+      const next = await decideFinding({ ...currentRevision(value), attemptId: value.attemptId,
+        qualityReportHash: value.qualityReport.contentHash,
+        expectedDecisionsRevision: value.findingDecisions?.revision || 0, findingId, ignored })
+      if (!active()) return null
+      review.value = next
+      return next
+    }, '建议处理状态未能确认保存，请重新读取后再试。')
+  }
+
   async function confirmChangeSet() {
     return run(async active => {
-      if (primaryAction.value !== 'confirm') {
+      if (primaryAction.value !== 'confirm' || review.value?.qualityReport?.findings?.some(item => item.severity === 'required')) {
         throw new TypeError('finalization confirmation is unavailable')
       }
       await confirm(currentRevision(review.value))
@@ -449,6 +464,7 @@ export function createFinalizationController({
     load,
     prepareCandidate,
     correctChangeSet,
+    setFindingIgnored,
     confirmChangeSet,
     cancelReview,
     revokeReview,

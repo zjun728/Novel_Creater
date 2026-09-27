@@ -74,11 +74,15 @@ test('local selection operation flushes exact text, previews separately, then ex
     },
     reloadWorkspace: async () => ({
       workingDraft: {
-        revision: 5,
-        contentHash: resultHash,
-        content: `左侧${replacement}右侧`,
+        revision: 4,
+        contentHash: HASH,
+        content: '左侧目标右侧',
       },
     }),
+    applyLocalPreview: async command => {
+      calls.push(['apply', command])
+      return { workingDraft: { revision: 5, contentHash: resultHash, content: `左侧${replacement}右侧` } }
+    },
     undoLocalDraft: async command => {
       calls.push(['undo', command])
       return { workingDraft: { revision: 6, contentHash: HASH, content: '左侧目标右侧' } }
@@ -93,7 +97,8 @@ test('local selection operation flushes exact text, previews separately, then ex
     operationType: 'rewrite_selection',
     partialOutput: replacement,
     partialOutputHash: textHash(replacement),
-    resultContentHash: resultHash,
+    resultWorkingDraftRevision: 5,
+    resultContentHash: HASH,
     resultSelectionStart: 2,
     resultSelectionEnd: 5,
   }))
@@ -103,10 +108,16 @@ test('local selection operation flushes exact text, previews separately, then ex
   assert.equal(calls[0][1].startOffset, 2)
   assert.equal(calls[0][1].endOffset, 4)
   assert.equal(calls[0][1].selectedTextHash, textHash('目标'))
+  assert.equal(calls[0][1].previewOnly, true)
+  assert.equal(controller.editorText.value, '左侧目标右侧')
+  assert.equal(controller.replacementPreview.value, replacement)
+  assert.equal(controller.undoAvailable.value, false)
+  await controller.applyLocalPreview()
+  assert.equal(state.resetCalls.at(-1).workingDraft.content, `左侧${replacement}右侧`)
   assert.equal(controller.undoAvailable.value, true)
   assert.deepEqual(controller.restoredSelection.value, { startOffset: 2, endOffset: 5 })
   await controller.undoLastLocal()
-  assert.deepEqual(calls[1], ['undo', {
+  assert.deepEqual(calls[2], ['undo', {
     expectedWorkingDraftRevision: 5,
     expectedContentHash: resultHash,
     sourceOperationId: OPERATION_ID,
@@ -150,16 +161,18 @@ test('local cancellation with preview preserves editor and unknown undo reconcil
       operationType: 'rewrite_selection',
       partialOutput: '新片段',
       partialOutputHash: textHash('新片段'),
-      resultContentHash: resultHash,
+      resultWorkingDraftRevision: 5,
+      resultContentHash: HASH,
       resultSelectionStart: 2,
       resultSelectionEnd: 5,
     }),
     reloadWorkspace: async () => {
       reloads += 1
       return reloads === 1
-        ? { workingDraft: { revision: 5, contentHash: resultHash, content: '新正文' } }
+        ? { workingDraft: { revision: 4, contentHash: HASH, content: '左侧目标右侧' } }
         : { workingDraft: { revision: 6, contentHash: HASH, content: '已撤销' } }
     },
+    applyLocalPreview: async () => ({ workingDraft: { revision: 5, contentHash: resultHash, content: '新正文' } }),
     undoLocalDraft: async () => {
       undoCalls += 1
       throw new ApiError({
@@ -171,6 +184,8 @@ test('local cancellation with preview preserves editor and unknown undo reconcil
   })
   completed.setSelection({ startOffset: 2, endOffset: 4, selectedText: '目标' })
   await completed.runSelectionOperation('rewrite_selection')
+  assert.equal(completed.undoAvailable.value, false)
+  await completed.applyLocalPreview()
   assert.equal(completed.undoAvailable.value, true)
   await completed.undoLastLocal()
   assert.equal(undoCalls, 1)
@@ -987,16 +1002,17 @@ test('failed expired unknown and known rejection never replace local text', asyn
   }
 })
 
-test('failed full-draft generation exposes its partial output for one explicit recovery', async () => {
+for (const terminalStatus of ['failed', 'expired']) {
+test(`${terminalStatus} full-draft generation exposes its partial output for one explicit recovery`, async () => {
   const state = autosave({ text: '作者原稿', revision: 4, hash: HASH })
   const partial = '服务端已经生成的部分正文。'
   const controller = operationController({
     autosave: state,
     createDraftOperation: async () => operation({
-      status: 'failed',
+      status: terminalStatus,
       partialOutput: partial,
       partialOutputHash: textHash(partial),
-      failureCode: 'DraftProviderFailed',
+      failureCode: terminalStatus === 'failed' ? 'DraftProviderFailed' : null,
     }),
   })
 
@@ -1015,6 +1031,18 @@ test('failed full-draft generation exposes its partial output for one explicit r
   assert.equal(state.flushCalls, 2)
   assert.equal(controller.recoverablePartialDraft.value, null)
   assert.equal(await controller.recoverPartialDraft(), false)
+})
+}
+
+test('review generation carries immutable reference through controller and coordinator', async () => {
+  const reference = { attemptId: OPERATION_ID, candidateId: SESSION_ID, candidateHash: HASH,
+    changeSetRevision: 2, changeSetHash: HASH, qualityReportHash: HASH }
+  const calls = []
+  const controller = operationController({ createDraftOperation: async value => { calls.push(value); return operation() } })
+  await controller.generateWorkingDraft({ reviewReference: reference })
+  assert.deepEqual(calls[0].reviewReference, reference)
+  assert.equal(Object.isFrozen(calls[0].reviewReference), true)
+  assert.equal(calls[0].authorInstruction, '')
 })
 
 test('partial recovery is unavailable for empty, local, or reset failed operations', async () => {
@@ -1263,3 +1291,30 @@ test('dispose fences a pending navigation without allowing its late flush to rev
   assert.equal(await controller.saveCandidate(), false)
   assert.equal(candidateStarts, 0)
 })
+
+for (const action of ['cancel', 'edit', 'context']) {
+  test(`local preview ${action} cannot write or expose undo`, async () => {
+    let applied = 0
+    const state = autosave({ text: '左侧目标右侧', revision: 4, hash: HASH })
+    const controller = operationController({
+      autosave: state,
+      createDraftOperation: async () => operation({
+        operationType: 'rewrite_selection', partialOutput: '新片段',
+        resultWorkingDraftRevision: 5, resultContentHash: HASH,
+        resultSelectionStart: 2, resultSelectionEnd: 5,
+      }),
+      reloadWorkspace: async () => ({ workingDraft: { revision: 4, contentHash: HASH, content: '左侧目标右侧' } }),
+      applyLocalPreview: async () => { applied += 1; throw new Error('must not write') },
+    })
+    controller.setSelection({ startOffset: 2, endOffset: 4, selectedText: '目标' })
+    await controller.runSelectionOperation('rewrite_selection')
+    assert.equal(controller.canApplyLocalPreview.value, true)
+    if (action === 'cancel') controller.cancelLocalPreview()
+    if (action === 'edit') { controller.edit('手动修改'); controller.edit('左侧目标右侧') }
+    if (action === 'context') controller.resetContext()
+    assert.equal(await controller.applyLocalPreview(), false)
+    assert.equal(applied, 0)
+    assert.equal(controller.undoAvailable.value, false)
+    assert.equal(state.resetCalls.at(-1).workingDraft.content, '左侧目标右侧')
+  })
+}

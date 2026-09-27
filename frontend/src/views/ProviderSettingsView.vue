@@ -1,30 +1,35 @@
 <script setup>
+import { computed } from 'vue'
+import { useRoute } from 'vue-router'
+const route = useRoute()
+const bindingPath = computed(() => typeof route.query.projectId === 'string' ? `/projects/${encodeURIComponent(route.query.projectId)}/settings/models` : '/projects')
 import ProviderSettings from '../components/settings/ProviderSettings.vue'
 </script>
 
 <template>
   <section class="provider-route">
     <header class="route-heading">
-      <p>LOCAL MODEL SETTINGS</p>
-      <h1>Provider 与模型</h1>
+
+      <h1>服务商与模型</h1>
       <span>私密配置只写入本机后端，页面仅显示是否已配置的安全摘要。</span>
       <nav aria-label="设置页面">
-        <router-link to="/settings/providers" aria-current="page">Provider 档案</router-link>
+        <router-link to="/settings/providers" aria-current="page">服务商与模型</router-link>
         <router-link to="/settings/application">应用默认与诊断</router-link>
       </nav>
     </header>
     <section class="settings-sheet">
       <provider-settings />
     </section>
+    <footer class="settings-return"><span>新增与测试不会修改已生成的作品内容。</span><router-link :to="bindingPath">{{ route.query.projectId ? '返回项目模型绑定' : '选择项目并绑定模型' }}</router-link></footer>
   </section>
 </template>
 
 <style scoped>
 .provider-route {
   min-height: 100%;
-  padding: clamp(22px, 4vw, 48px);
+  padding: 24px 36px;
   color: #302a23;
-  background: #f4efe4;
+  background: var(--nc-canvas);
 }
 .route-heading,
 .settings-sheet {
@@ -32,7 +37,7 @@ import ProviderSettings from '../components/settings/ProviderSettings.vue'
   margin-inline: auto;
 }
 .route-heading {
-  padding-bottom: 24px;
+  padding-bottom: 12px;
   border-bottom: 1px solid #d4c7b2;
 }
 .route-heading p {
@@ -44,7 +49,7 @@ import ProviderSettings from '../components/settings/ProviderSettings.vue'
 .route-heading h1 {
   margin: 8px 0 0;
   font-family: Georgia, 'Noto Serif SC', serif;
-  font-size: clamp(32px, 5vw, 50px);
+  font-size: 30px;
   font-weight: 600;
 }
 .route-heading span {
@@ -58,10 +63,11 @@ import ProviderSettings from '../components/settings/ProviderSettings.vue'
 .route-heading nav a[aria-current='page'] { border-color: #8f3d32; color: #7d3128; background: #efe2d3; }
 .settings-sheet {
   margin-top: 24px;
-  padding: clamp(18px, 3vw, 32px);
+  padding: 20px;
   border: 1px solid #d8cbb7;
   border-radius: 14px;
   background: #fffdf8;
   box-shadow: 0 20px 56px rgba(58, 43, 27, .07);
 }
+.settings-return{display:flex;justify-content:space-between;align-items:center;gap:20px;max-width:1120px;margin:24px auto;padding:20px;background:var(--nc-paper);font-size:13px;color:var(--nc-muted)}.settings-return a{padding:12px 24px;background:var(--nc-vermilion);color:white;border-radius:6px;text-decoration:none}
 </style>

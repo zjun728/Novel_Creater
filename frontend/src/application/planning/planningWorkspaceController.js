@@ -9,6 +9,7 @@ const VOLUME_FIELDS = Object.freeze([
 ])
 
 const PLOT_FIELDS = Object.freeze([
+  'characterDesign',
   'title',
   'plotType',
   'storyQuestion',
@@ -58,6 +59,19 @@ function validMoveDirection(direction) {
   return direction === -1 || direction === 1
 }
 
+export function characterDesignIssues(design) {
+  if (design == null) return []
+  const issues = []
+  if (!hasText(design.displayName)) issues.push('请填写计划人物名称。')
+  if (!Array.isArray(design.nodes) || !design.nodes.length) issues.push('请至少添加一个变化节点，或移除整个人物计划。')
+  for (const [index, node] of (design.nodes || []).entries()) {
+    if (!hasText(node.title)) issues.push(`变化节点 ${index + 1} 需要填写名称。`)
+    if (!['stage', 'goal', 'belief', 'relationship', 'ability'].some(field => hasText(node[field]))) issues.push(`变化节点 ${index + 1} 请至少填写阶段、目标、信念、关系或能力中的一项。`)
+    if (node.expectedChapter != null && (!Number.isSafeInteger(node.expectedChapter) || node.expectedChapter <= 0)) issues.push(`变化节点 ${index + 1} 的预计章节须为正整数，或留空。`)
+  }
+  return issues
+}
+
 export function isCompletePlanningAggregate(content) {
   if (!content) return false
   const volumes = activeNodes(content.volumes)
@@ -72,7 +86,7 @@ export function isCompletePlanningAggregate(content) {
     !hasText(volume.title) || !hasText(volume.coreChange)
   ))) return false
   if (plots.some(plot => (
-    !hasText(plot.title) || !hasText(plot.storyQuestion)
+    !hasText(plot.title) || !hasText(plot.storyQuestion) || characterDesignIssues(plot.characterDesign).length > 0
   ))) return false
 
   const activeBlockId = String(content.activeStoryBlockRef || '')
@@ -119,6 +133,7 @@ function projectPlanningRoute(route, projectId) {
       'ProjectPlanningVolumes',
       'ProjectPlanningPlots',
       'ProjectPlanningStoryBlocks',
+      'ProjectPlanningOutlines',
     ].includes(String(route?.name || ''))
     && String(route?.params?.projectId || '') === String(projectId || '')
   )
@@ -228,7 +243,9 @@ export function createPlanningWorkspaceController({
       order: Math.max(0, ...existing.map(item => Number(item.order) || 0)) + 1,
       lifecycle: 'active',
     }
-    for (const field of fields) node[field] = field.endsWith('s') ? [] : ''
+    for (const field of fields) {
+      if (field !== 'characterDesign') node[field] = field.endsWith('s') ? [] : ''
+    }
     return replaceCollection(collection, [
       ...existing,
       node,
@@ -298,7 +315,9 @@ export function createPlanningWorkspaceController({
       order: 1,
       lifecycle: 'active',
     }
-    for (const field of fields) node[field] = field.endsWith('s') ? [] : ''
+    for (const field of fields) {
+      if (field !== 'characterDesign') node[field] = field.endsWith('s') ? [] : ''
+    }
     if (childCollection) node[childCollection] = []
     return node
   }
@@ -717,12 +736,13 @@ export function createPlanningWorkspaceController({
     return result
   }
 
-  async function generate(instructions = authorInstructions.value) {
+  async function generate(instructions = authorInstructions.value, generationMode = 'volumes_plots') {
     if (!canGenerate.value) return undefined
     const ticket = projectTicket()
     const result = await store.generateDraft({
       idempotencyKey: String(keyFactory()),
       authorInstructions: String(instructions || ''),
+      ...(generationMode !== 'volumes_plots' ? { generationMode } : {}),
     })
     if (result?.status === 'succeeded' && projectTicketIsCurrent(ticket)) {
       checkpointStoryBlockUndo()

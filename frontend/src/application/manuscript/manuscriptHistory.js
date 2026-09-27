@@ -18,7 +18,7 @@ function routeIdentity(route) {
 }
 
 function isManuscriptRoute(route) {
-  return ['ProjectManuscript', 'FinalChapterReader'].includes(String(route?.name || ''))
+  return ['ProjectManuscript', 'FinalChapterReader', 'ChapterWorkbench'].includes(String(route?.name || ''))
     || /\/projects\/[^/]+\/manuscript(?:\/chapters\/[^/?#]+)?(?:[?#]|$)/u.test(routeKey(route))
 }
 

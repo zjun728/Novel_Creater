@@ -73,6 +73,22 @@ class ChapterOutlineRepository:
         result["chapter_capacity_policy"] = self._json(
             result["chapter_capacity_policy"],
         )
+        if int(result["canon_revision"]) > 0:
+            result["previous_final_chapter"] = await session.fetchone(
+                """SELECT id,chapter_num,canon_revision,content,content_hash
+                     FROM final_chapters WHERE project_id=%s
+                     ORDER BY chapter_num DESC LIMIT 1""",
+                (project_id,),
+            )
+            result["actual_progress"] = await session.fetchall(
+                """SELECT revision_number,subject_key,entity_id,field_path,
+                          payload_json,content_hash
+                     FROM plot_thread_projections
+                    WHERE project_id=%s AND revision_number=%s
+                      AND field_path LIKE 'plot.progress.%%'
+                    ORDER BY field_path,id""",
+                (project_id, result["projection_revision"]),
+            )
         return result
 
     async def lock_outline_head(

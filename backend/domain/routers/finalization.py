@@ -23,6 +23,7 @@ from backend.services.finalization import (
     CancelFinalization,
     ConfirmFinalization,
     CorrectFinalization,
+    DecideFinding,
     FinalizationConflict,
     FinalizationPreflightConflict,
     FinalizationService,
@@ -118,6 +119,29 @@ class ConfirmFinalizationBody(_StrictBody):
 
 class CommitFinalizationBody(ConfirmFinalizationBody):
     idempotencyKey: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class FindingDecisionBody(ConfirmFinalizationBody):
+    attemptId: str = Field(min_length=1, max_length=36)
+    qualityReportHash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expectedDecisionsRevision: int = Field(ge=0)
+    findingId: str = Field(min_length=1, max_length=100)
+    ignored: bool
+
+
+@router.post('/projects/{project_id}/chapter-sessions/{session_id}/finalization/finding-decisions')
+async def decide_finding(project_id: str, session_id: str, body: FindingDecisionBody,
+                         service: FinalizationService = Depends(get_finalization_service)):
+    try:
+        return await service.decide_finding(DecideFinding(
+            project_id=project_id, chapter_session_id=session_id,
+            expected_revision=body.expectedRevision, expected_revision_hash=body.expectedRevisionHash,
+            attempt_id=body.attemptId, report_hash=body.qualityReportHash,
+            expected_decisions_revision=body.expectedDecisionsRevision,
+            finding_id=body.findingId, ignored=body.ignored,
+        ))
+    except (FinalizationConflict, FinalizationDataCorruption, TypeError, ValueError) as error:
+        _raise_public(error)
 
 
 def _raise_public(error: Exception) -> None:

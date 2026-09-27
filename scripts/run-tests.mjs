@@ -219,7 +219,9 @@ function createSuites(rootDirectory, environment) {
       ],
       pytestTempStages.unitApi,
     ],
-    [node, ['--test', ...scriptTests]],
+    // These contract tests create/remove fixtures under shared repository roots.
+    // Run files sequentially so runtime scans cannot observe another test's cleanup.
+    [node, ['--test', '--test-concurrency=1', ...scriptTests]],
     [node, ['--test', ...frontendTests]],
   ]
   const integration = [
@@ -507,7 +509,13 @@ function cleanupPytestNamespace(rootDirectory) {
     allowNamespaceFile: true,
   })
   if (verified.namespaceStats.isDirectory()) {
-    rmdirSync(verified.namespace)
+    try {
+      rmdirSync(verified.namespace)
+    } catch (error) {
+      // Other tasks may retain evidence beside the approved pytest stages.
+      if (error?.code === 'ENOTEMPTY' || error?.code === 'EEXIST') return
+      throw error
+    }
   } else {
     rmSync(verified.namespace, { force: true })
   }

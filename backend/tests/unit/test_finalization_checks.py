@@ -299,6 +299,32 @@ def test_change_set_context_accepts_exact_evidence_canon_and_planning_identities
     )
 
 
+@pytest.mark.parametrize("kind,entity_id,valid", [
+    ("stable_definition", None, False),
+    ("stable_definition", "entity-1", True),
+    ("dynamic_event", None, True),
+    ("claim", None, True),
+])
+def test_review_context_enforces_canon_event_contract_before_confirmation(kind, entity_id, valid):
+    content = "正文证据"
+    canon, planning = _change_set_context()
+    evidence = _context_change_set(content).story_progress_events[0].evidence.model_dump(by_alias=True, mode="json")
+    change_set = _context_change_set(content, canonEvents=[{
+        "id": "event-1", "entityId": entity_id, "factKind": kind,
+        "fieldPath": "fact.test", "value": "已发生事实", "evidence": evidence,
+        "effectiveStartChapter": 1, "effectiveEndChapter": None,
+        "assertionOperator": "equals", "valueCardinality": "single",
+    }])
+    def validate():
+        validate_change_set_context(change_set, candidate_content=content,
+                                    canon_context=canon, planning_context=planning)
+    if valid:
+        validate()
+    else:
+        with pytest.raises(ValueError, match="stable_definition requires an entity_id"):
+            validate()
+
+
 @pytest.mark.parametrize("mutation", ("unknown_entity", "bad_evidence", "planning_drift"))
 def test_change_set_context_rejects_closed_reference_or_evidence_drift(mutation):
     content = "正文证据"

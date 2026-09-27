@@ -104,14 +104,27 @@ test('Phase 4B3 browser graph uses only visible UI for four local tools, cancel,
     '@selection-tools completes four local tools, preserves cancelled prose, and undoes once',
   ])
   const body = declarations[0].bodySource
-  for (const label of ['AI 改写', 'AI 润色', 'AI 扩写', 'AI 缩写', '停止生成', '撤销本次 AI 修改']) {
+  for (const label of ['AI 改写', '去 AI 味/润色', 'AI 扩写', 'AI 缩写', '停止生成', '撤销本次 AI 修改']) {
     assert.equal(body.includes(label), true, label)
   }
   assert.match(body, /replacementPreview/u)
   assert.match(body, /runtime\.finish\(\)/u)
   assert.match(body, /assertHealthy\(evidence/u)
   assert.doesNotMatch(spec, /page\.(?:request|route|evaluate)|\bfetch\(|\baxios\b/u)
-  assert.doesNotMatch(spec, /\.toHaveValue\(|console\.(?:log|error)/u)
+  assert.doesNotMatch(spec, /console\.(?:log|error)/u)
+  // Only the author's synthetic instruction may be compared as clear text.
+  // Generated prose and replacement previews must retain digest-only assertions.
+  assert.equal((spec.match(/\.toHaveValue\(/gu) ?? []).length, 1)
+  assert.match(spec, /await expect\(instruction\)\.toHaveValue\(/u)
+  for (const fragment of [
+    "getByRole('textbox', { name: '作者临时要求' })",
+    "getByLabel('选区改写预设', { exact: true }).selectOption('加强心理')",
+    "getByRole('button', { name: '填入改写要求' }).click()",
+    "保留人物称谓。",
+    "加强选区心理描写",
+    'assertExactWrites(evidence, [',
+    'count: 4, statuses: [200]',
+  ]) assert.equal(spec.includes(fragment), true, fragment)
   for (const fragment of [
     'fullyParallel: false',
     'workers: 1',

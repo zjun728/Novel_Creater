@@ -212,6 +212,11 @@ class FakePlanningGenerationService:
         self.key_queries.append((project_id, idempotency_key))
         return self.result
 
+    async def cancel_by_key(self, project_id, draft_id, idempotency_key):
+        self._raise()
+        self.key_queries.append((project_id, draft_id, idempotency_key))
+        return self.result
+
 
 def make_client():
     service = FakePlanningService()
@@ -228,6 +233,18 @@ def make_client():
         service,
         generation_service,
     )
+
+
+def test_author_stop_uses_exact_draft_and_safe_generation_key():
+    client, _, service = make_client()
+    service.result = replace(service.result, status='failed', failure_code='PlanningGenerationCancelled', loaded=False, loaded_draft_revision=None)
+    response = client.post('/api/projects/p1/planning/drafts/d1/cancel-generation', json={'idempotencyKey': 'prepare-1'})
+    assert response.status_code == 200
+    assert response.json()['failureCode'] == 'PlanningGenerationCancelled'
+    assert service.key_queries == [('p1', 'd1', 'prepare-1')]
+    rejected = client.post('/api/projects/p1/planning/drafts/d1/cancel-generation', json={'idempotencyKey': 'sk-TestSentinel123456'})
+    assert rejected.status_code == 422
+    assert service.key_queries == [('p1', 'd1', 'prepare-1')]
 
 
 def test_state_and_history_are_explicit_camel_case_public_dtos():

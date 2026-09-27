@@ -46,6 +46,7 @@ export function canonicalPlanningContentForUi(content) {
       'futureDirection',
       'expectedPayoff',
       'relatedCharacters',
+      'characterDesign',
     ])),
     storyBlocks: (content.storyBlocks || []).map(block => ({
       ...editableNode(block, [
@@ -805,7 +806,7 @@ export const usePlanningStore = defineStore('planning', () => {
         error.value = {
           status: 0,
           code: result.failureCode || 'PlanningGenerationFailed',
-          message: '规划生成失败，本地内容未改变',
+          message: result.failureCode === 'PlanningGenerationCancelled' ? '已停止规划生成，原工作稿已保留' : '规划生成失败，本地内容未改变',
           correlationId: '',
         }
       } else {
@@ -869,6 +870,7 @@ export const usePlanningStore = defineStore('planning', () => {
           draftHash: currentDraft.contentHash,
           idempotencyKey: command.idempotencyKey,
           authorInstructions: command.authorInstructions,
+          ...(command.generationMode ? { generationMode: command.generationMode } : {}),
         },
       )
       if (!generationIsCurrent(requestGeneration, targetProjectId)) {
@@ -900,6 +902,27 @@ export const usePlanningStore = defineStore('planning', () => {
       const publicFailure = outcomeUnknownFailure()
       error.value = publicError(publicFailure)
       throw publicFailure
+    }
+  }
+
+  async function cancelGeneration() {
+    const targetProjectId = projectId.value
+    const targetDraftId = state.value?.draft?.draftId
+    const key = generationRecoveryKey.value
+    if (!generating.value || !key || !targetDraftId) return null
+    const requestGeneration = generationGuard.begin()
+    try {
+      const result = await api.planning.cancelGeneration(targetProjectId, targetDraftId, key)
+      if (!generationIsCurrent(requestGeneration, targetProjectId)) return null
+      generationOperation.value = result
+      return await acceptGenerationOperation(result, { requestGeneration, targetProjectId, targetDraftId })
+    } catch (failure) {
+      if (generationIsCurrent(requestGeneration, targetProjectId)) {
+        generationOutcomeUnknown.value = true
+        generating.value = true
+        error.value = { ...publicError(failure), message: '尚未确认停止，请重试停止或核对原操作；原稿保持锁定。' }
+      }
+      throw failure
     }
   }
 
@@ -2085,6 +2108,7 @@ export const usePlanningStore = defineStore('planning', () => {
     saveDraft,
     confirmDraft,
     generateDraft,
+    cancelGeneration,
     reconcileGeneration,
     loadOutline,
     ensureOutlineLoaded,

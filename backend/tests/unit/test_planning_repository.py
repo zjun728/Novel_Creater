@@ -8,6 +8,9 @@ from backend.repositories.planning import PlanningRepository
 
 
 PUBLIC_METHODS = {
+    "read_character_entity",
+    "read_draft_generation_manifest",
+    "read_expansion_authority",
     "lock_active_project",
     "read_project_any",
     "read_current_basis",
@@ -503,6 +506,8 @@ def test_phase3b_planning_router_exposes_only_the_closed_revisioned_contract():
     assert routes == {
         ("GET", "/projects/{pid}/planning"),
         ("GET", "/projects/{pid}/planning/history"),
+        ("GET", "/projects/{pid}/planning/continuation"),
+        ("POST", "/projects/{pid}/planning/drafts/{draft_id}/cancel-generation"),
         ("POST", "/projects/{pid}/planning/drafts"),
         ("PUT", "/projects/{pid}/planning/drafts/{draft_id}"),
         (

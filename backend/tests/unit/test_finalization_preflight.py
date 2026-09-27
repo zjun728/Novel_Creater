@@ -210,3 +210,45 @@ async def test_unapplicable_future_patch_never_reaches_author_confirmation(actio
         await getattr(service, action)(command)
     assert type(raised.value).__name__ == 'FinalizationPreflightConflict'
     assert repository.inserted_revisions == repository.confirmed == repository.advanced == []
+
+
+@pytest.mark.asyncio
+async def test_prepare_preserves_nested_canon_json_when_demoting_protected_list_patch():
+    snapshot, payload = _inputs()
+    payload['canonEvents'] = [{
+        'id': 'nested-event', 'entityId': None, 'factKind': 'dynamic_event',
+        'fieldPath': 'world.fact', 'value': {'facts': [{'active': True, 'tags': ['甲', '乙']}], 'optional': None},
+        'evidence': payload['planningPatches'][0]['evidence'],
+        'assertionOperator': 'equals', 'valueCardinality': 'single',
+    }]
+    payload['planningPatches'][0].update(fieldPath='openQuestions', replacement=['后续问题甲', '后续问题乙'])
+    original = FinalizationChangeSet.model_validate(payload)
+    repository = FakeRepository(snapshots=[snapshot, deepcopy(snapshot)])
+    service, _, _, _ = _service(repository, extraction_result=original)
+    result = await service.prepare(_command())
+    assert result.status == 'awaiting_author'
+    saved = repository.inserted_revisions[0]['change_set']
+    assert saved.canon_events == original.canon_events
+    assert saved.planning_suggestions[0].evidence == original.planning_patches[0].evidence
+    assert '后续问题甲' in saved.planning_suggestions[0].message
+    assert '后续问题乙' in saved.planning_suggestions[0].message
+    assert repository.inserted_revisions[0]['content_hash'] == change_set_hash(saved)
+    with pytest.raises(TypeError):
+        saved.canon_events[0].value['facts'][0]['active'] = False
+
+
+def test_demotion_serializes_frozen_nested_replacement_without_mutating_original():
+    from backend.domain.finalization import change_set_payload
+    from backend.services.finalization_checks import demote_protected_planning_patches
+
+    snapshot, payload = _inputs()
+    nested = {'values': [{'text': '甲', 'flags': [True, None]}]}
+    payload['planningPatches'][0]['replacement'] = nested
+    original = FinalizationChangeSet.model_validate(payload)
+    result = demote_protected_planning_patches(original, snapshot['planning_context'])
+    assert change_set_payload(original)['planningPatches'][0]['replacement'] == nested
+    assert result.planning_suggestions[0].id == original.planning_patches[0].id
+    assert result.planning_suggestions[0].evidence == original.planning_patches[0].evidence
+    assert '{"values":[{"flags":[true,null],"text":"甲"}]}' in result.planning_suggestions[0].message
+    with pytest.raises(TypeError):
+        original.planning_patches[0].replacement['values'][0]['text'] = '乙'

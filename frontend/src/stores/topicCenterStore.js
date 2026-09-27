@@ -19,6 +19,12 @@ export function createTopicCenterStore(topicApi = api.topics, storeId = 'topic-c
     const handoffBusy = ref(false)
     const error = ref(null)
     const lastSendFailure = ref(null)
+    const selectedEvidence = ref([])
+    const discussionSubject = ref(null)
+    const marketSuggestionState = ref(null)
+    const directionCandidateState = ref(null)
+    const savedSuggestionKeys = ref([])
+    const discussionRecommendation = ref(null)
     const discussionListGuard = createLatestRequestGuard()
     const directionListGuard = createLatestRequestGuard()
     const candidateListGuard = createLatestRequestGuard()
@@ -123,14 +129,10 @@ export function createTopicCenterStore(topicApi = api.topics, storeId = 'topic-c
     }
 
     async function saveDirection(discussionId, data) {
-      const value = await topicApi.saveDirection(discussionId, data)
-      await loadDirections()
-      return value
+      return topicApi.saveDirection(discussionId, data)
     }
     async function saveCandidate(discussionId, data) {
-      const value = await topicApi.saveCandidate(discussionId, data)
-      await loadCandidates()
-      return value
+      return topicApi.saveCandidate(discussionId, data)
     }
     async function archiveCandidate(candidateId, expectedVersion) {
       const value = await topicApi.archiveCandidate(candidateId, expectedVersion)
@@ -156,6 +158,7 @@ export function createTopicCenterStore(topicApi = api.topics, storeId = 'topic-c
     return {
       discussions, directions, candidates, activeDiscussion, activeDirection,
       activeCandidate, loading, sending, handoffBusy, error, lastSendFailure,
+      selectedEvidence, discussionSubject, marketSuggestionState, discussionRecommendation, directionCandidateState, savedSuggestionKeys,
       loadDiscussions, loadDirections, loadCandidates, openDiscussion,
       openDirection, openCandidate, createDiscussion, sendMessage,
       clearSendFailure, saveDirection, saveCandidate, archiveCandidate, handoff, leaveSection,

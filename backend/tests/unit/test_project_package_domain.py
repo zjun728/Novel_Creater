@@ -136,12 +136,12 @@ def test_import_provenance_is_a_closed_record_and_keeps_inert_payload_hash() -> 
     )
 
     snapshot = _snapshot()
-    snapshot["operation_records"] = [record]
-    operations = next(
+    snapshot["graph_records"] = [record]
+    graph = next(
         entry for entry in build_structured_entries(snapshot)
-        if entry.path == "history/operations.jsonl"
+        if entry.path == "project/graph.jsonl"
     )
-    assert operations.data == canonical_line(record.to_public_dict())
+    assert graph.data == canonical_line(record.to_public_dict())
 
     encoded = encode_provenance_batch(
         (record,),

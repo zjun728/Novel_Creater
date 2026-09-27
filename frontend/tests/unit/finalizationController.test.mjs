@@ -39,6 +39,28 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
+test('finding decision saves report identity and revision, failure retains authoritative state', async () => {
+  const initial = structuredClone(review)
+  initial.qualityReport.findings = [{ id: 'optional', severity: 'optional' }]
+  initial.findingDecisions = { revision: 0, ignoredFindingIds: [] }
+  let fail = false
+  const calls = []
+  const controller = createFinalizationController({ getReview: async () => structuredClone(initial), decideFinding: async command => {
+    calls.push(command)
+    if (fail) throw Error('conflict')
+    return { ...initial, findingDecisions: { revision: 1, ignoredFindingIds: ['optional'] } }
+  } })
+  await controller.load()
+  await controller.setFindingIgnored('optional', true)
+  assert.equal(calls[0].qualityReportHash, HASH_A)
+  assert.equal(calls[0].expectedDecisionsRevision, 0)
+  assert.equal(controller.review.value.findingDecisions.revision, 1)
+  fail = true
+  await assert.rejects(controller.setFindingIgnored('optional', false))
+  assert.deepEqual(controller.review.value.findingDecisions.ignoredFindingIds, ['optional'])
+  assert.match(controller.error.value, /重新读取/)
+})
+
 const preparation = {
   lifecycle: 'active',
   nextAction: 'prepare_chapter_outline',
@@ -536,9 +558,13 @@ test('unknown commit recovery keeps the original chapter and runs post-commit wo
 })
 
 
-test('reset fences late post-finalization reads from the previous chapter', async () => {
+test('reset fences late post-finalization reads from the previous chapter', { timeout: 10000 }, async () => {
   let releasePreparation
   let releaseChapter
+  let markPreparationStarted
+  let markChapterStarted
+  const preparationStarted = new Promise(resolve => { markPreparationStarted = resolve })
+  const chapterStarted = new Promise(resolve => { markChapterStarted = resolve })
   const confirmed = {
     ...review,
     confirmation: { revision: 1, contentHash: HASH_A },
@@ -548,16 +574,14 @@ test('reset fences late post-finalization reads from the previous chapter', asyn
     commit: async () => committed(4),
     getProjectId: () => 'p1',
     getChapterNumber: () => 4,
-    reloadPreparation: () => new Promise(resolve => { releasePreparation = resolve }),
-    readFinalizedChapter: () => new Promise(resolve => { releaseChapter = resolve }),
+    reloadPreparation: () => new Promise(resolve => { releasePreparation = resolve; markPreparationStarted() }),
+    readFinalizedChapter: () => new Promise(resolve => { releaseChapter = resolve; markChapterStarted() }),
     idFactory: () => '44444444-4444-4444-8444-444444444444',
   })
   await controller.load()
 
   const pending = controller.commitChapter()
-  for (let attempt = 0; attempt < 20 && (!releasePreparation || !releaseChapter); attempt += 1) {
-    await new Promise(resolve => setImmediate(resolve))
-  }
+  await Promise.all([preparationStarted, chapterStarted])
   assert.equal(typeof releasePreparation, 'function')
   assert.equal(typeof releaseChapter, 'function')
   controller.reset()

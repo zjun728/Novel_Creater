@@ -1,8 +1,9 @@
 <script setup>
-import { ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { NAlert, NButton } from 'naive-ui'
 
 import { useTopicCenterStore } from '@/stores/topicCenterStore'
+import { createModalFocusManager } from '../common/modalFocusManager.js'
 
 const props = defineProps({
   show: { type: Boolean, default: false },
@@ -14,6 +15,19 @@ const topics = useTopicCenterStore()
 const projectTitle = ref('')
 const error = ref('')
 const handoffAttempt = ref(null)
+const dialog = ref(null)
+const titleInput = ref(null)
+const focus = createModalFocusManager({ getDialog: () => dialog.value, getInitialFocus: () => titleInput.value })
+watch(() => props.show, async visible => {
+  if (visible) { await nextTick(); if (props.show) focus.mount() }
+  else focus.unmount()
+})
+onBeforeUnmount(() => focus.unmount())
+function close() { if (!topics.handoffBusy) emit('close') }
+function keydown(event) {
+  if (event.key === 'Escape') { event.preventDefault(); close() }
+  focus.trapTab(event)
+}
 
 watch(() => [
   props.show,
@@ -49,7 +63,7 @@ function handoffKeyFor(title) {
 
 async function createProject() {
   const title = projectTitle.value.trim()
-  if (!props.candidate || !props.version || !title) return
+  if (!props.candidate || !props.version || !title || topics.handoffBusy) return
   error.value = ''
   try {
     const handoff = await topics.handoff(props.candidate.id, props.version.version, {
@@ -65,21 +79,23 @@ async function createProject() {
 </script>
 
 <template>
-  <div v-if="show" class="dialog-backdrop" @keydown.esc="emit('close')">
-    <section class="project-dialog" role="dialog" aria-modal="true" aria-labelledby="candidate-project-title">
+  <Teleport to="body">
+  <div v-if="show" class="dialog-backdrop" @keydown="keydown">
+    <section ref="dialog" class="project-dialog" role="dialog" aria-modal="true" aria-labelledby="candidate-project-title">
       <p>EXACT VERSION HANDOFF</p>
       <h2 id="candidate-project-title">从指定版本创建项目</h2>
       <div class="candidate-stamp"><strong>《{{ version?.payload?.title }}》</strong><span>候选版本 {{ version?.version }}</span></div>
       <p class="explanation">这里只复制当前指定版本。创建后，项目种子仍为“待确认”，你可以在项目内检查和编辑，再手动确认进入创作契约。</p>
       <n-alert v-if="error" type="error" aria-live="assertive">{{ error }}</n-alert>
       <label for="candidate-project-name">项目名称</label>
-      <input id="candidate-project-name" v-model="projectTitle" maxlength="200" autofocus>
+      <input ref="titleInput" id="candidate-project-name" v-model="projectTitle" :disabled="topics.handoffBusy" maxlength="200">
       <footer>
-        <n-button :disabled="topics.handoffBusy" @click="emit('close')">取消</n-button>
+        <n-button :disabled="topics.handoffBusy" @click="close">取消</n-button>
         <n-button type="primary" :disabled="!projectTitle.trim()" :loading="topics.handoffBusy" @click="createProject">创建项目并检查种子</n-button>
       </footer>
     </section>
   </div>
+  </Teleport>
 </template>
 
 <style scoped>

@@ -206,3 +206,44 @@ test('origin failure stays hidden on another discussion and reappears with canon
   assert.equal(settings.props.href, '/settings/providers')
   mounted.app.unmount()
 })
+
+test('provider failure explains recovery in Chinese and preserves the exact input', async () => {
+  const pinia = createPinia(); setActivePinia(pinia)
+  const store = storeModule.createTopicCenterStore({
+    sendMessage: async () => { throw Object.assign(new Error('Topic model request failed'), { code: 'TOPIC_PROVIDER_FAILED' }) },
+  }, 'topic-center')()
+  store.activeDiscussion = { discussion: { id: 'provider-failed-d1', title: '失败恢复' }, messages: [], requests: [] }
+  const mounted = mountWith(pinia); await flush()
+  const textarea = find(mounted.target, item => item.type === 'textarea')
+  textarea.value = '失败后保留的完整想法'
+  textarea.listeners.input({ target: textarea }); await flush()
+  await find(mounted.target, item => item.type === 'button' && textOf(item).includes('发送给 AI')).props.onClick()
+  await flush()
+  assert.equal(textarea.value, '失败后保留的完整想法')
+  assert.match(textOf(mounted.target), /模型请求失败.*输入已保留/)
+  assert.doesNotMatch(textOf(mounted.target), /Topic model request failed/)
+  mounted.app.unmount()
+})
+
+
+test('blank discussion page creates only on explicit first send and carries no recommendation basis', async () => {
+  const calls = []
+  const pinia = createPinia(); setActivePinia(pinia)
+  const store = storeModule.createTopicCenterStore({
+    createDiscussion: async title => { calls.push(['create', title]); return { id: 'blank-first-send', title } },
+    getDiscussion: async () => ({ discussion: { id: 'blank-first-send', title: '自己的想法' }, messages: [], requests: [] }),
+    sendMessage: async (id, data) => { calls.push(['send', id, data]); return { status: 'succeeded', requestId: 'r-blank', assistantMessageId: 'm-blank', result: { reply: '已接受', directionSuggestions: [], candidateSuggestions: [] } } },
+  }, 'topic-center')()
+  const mounted = mountWith(pinia); await flush()
+  assert.deepEqual(calls, [])
+  assert.match(textOf(mounted.target), /从你的想法开始/)
+  const input = find(mounted.target, item => item.type === 'textarea')
+  input.value = '自己的想法，不带推荐'
+  input.listeners.input({ target: input }); await flush()
+  await find(mounted.target, item => item.type === 'button' && textOf(item).includes('发送给 AI')).props.onClick(); await flush()
+  assert.equal(calls.length, 2)
+  assert.equal(calls[1][2].content, '自己的想法，不带推荐')
+  assert.deepEqual(calls[1][2].evidence, [])
+  assert.equal(calls[1][2].subject, null)
+  mounted.app.unmount()
+})

@@ -2,6 +2,7 @@
 
 import { ApiError, parseApiError } from './api-error.js'
 import { sha256Text } from '../../utils/sha256Text.js'
+import { normalizeReviewReference } from '../../utils/reviewReference.js'
 import { unicodeScalarLength } from '../../utils/unicodeScalarText.js'
 import { parseProjectOverview } from '../../application/projects/projectOverview.js'
 import {
@@ -189,7 +190,7 @@ function projectImportForm(file, fields = {}) {
   }
   return form
 }
-const get = path => request('GET', path)
+const get = (path, options = {}) => request('GET', path, undefined, DEFAULT_TIMEOUT, options?.signal)
 const post = (path, body, timeoutMs) => request('POST', path, body, timeoutMs)
 const put = (path, body) => request('PUT', path, body)
 const del = (path, body) => request('DELETE', path, body)
@@ -712,6 +713,24 @@ function planningArray(value, label, mapper) {
   return value.map(mapper)
 }
 
+function withCharacterDesign(source, result) {
+  if (!Object.hasOwn(source, 'characterDesign')) return result
+  if (source.characterDesign === null) return { ...result, characterDesign: null }
+  const design = source.characterDesign
+  if (!design || typeof design !== 'object' || Array.isArray(design)
+    || (design.entityId !== null && typeof design.entityId !== 'string')
+    || typeof design.displayName !== 'string' || !Array.isArray(design.nodes) || design.nodes.length > 50) {
+    throw new TypeError('Invalid Planning character design')
+  }
+  const fields = ['id', 'title', 'stage', 'goal', 'belief', 'relationship', 'ability']
+  const nodes = design.nodes.map(node => {
+    if (!node || fields.some(field => typeof node[field] !== 'string')
+      || (node.expectedChapter !== null && (!Number.isSafeInteger(node.expectedChapter) || node.expectedChapter < 1))) throw new TypeError('Invalid Planning character node')
+    return pickDefined(node, [...fields, 'expectedChapter'])
+  })
+  return { ...result, characterDesign: { entityId: design.entityId, displayName: design.displayName, nodes } }
+}
+
 function planningDraftContent(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new TypeError('Expected Planning draft content')
@@ -726,7 +745,7 @@ function planningDraftContent(value) {
     plots: planningArray(
       value.plots,
       'plots',
-      item => pickDefined(item, PLANNING_PLOT_FIELDS),
+      item => withCharacterDesign(item, pickDefined(item, PLANNING_PLOT_FIELDS)),
     ),
     storyBlocks: planningArray(value.storyBlocks, 'storyBlocks', block => ({
       ...pickDefined(block, PLANNING_BLOCK_FIELDS),
@@ -959,12 +978,12 @@ function chapterOutlinePlanningContent(value) {
       )
     )),
     plots: planningArray(source.plots, 'plots', item => (
-      chapterOutlinePlanningNode(
+      withCharacterDesign(item, chapterOutlinePlanningNode(
         item,
         CHAPTER_OUTLINE_PLANNING_PLOT_FIELDS,
         ['relatedCharacters'],
         'Plot',
-      )
+      ))
     )),
     storyBlocks: planningArray(source.storyBlocks, 'storyBlocks', block => ({
       ...chapterOutlinePlanningNode(
@@ -1809,8 +1828,8 @@ function draftOperationCommand(value) {
   const source = draftOperationObject(value, 'command')
   const local = LOCAL_DRAFT_OPERATION_TYPES.has(source.operationType)
   const fields = local
-    ? DRAFT_OPERATION_LOCAL_COMMAND_FIELDS
-    : DRAFT_OPERATION_GENERATE_COMMAND_FIELDS
+    ? [...DRAFT_OPERATION_LOCAL_COMMAND_FIELDS, ...(source.previewOnly === true ? ['previewOnly'] : [])]
+    : [...DRAFT_OPERATION_GENERATE_COMMAND_FIELDS, ...(Object.hasOwn(source, 'reviewReference') ? ['reviewReference'] : [])]
   if (
     hasSensitiveDraftOperationKey(source)
     || Object.keys(source).length !== fields.length
@@ -1850,6 +1869,8 @@ function draftOperationCommand(value) {
       'selected text hash',
     )
   }
+  if (source.previewOnly === true) command.previewOnly = true
+  if (!local && Object.hasOwn(source, 'reviewReference')) command.reviewReference = normalizeReviewReference(source.reviewReference)
   return Object.freeze(command)
 }
 
@@ -2374,7 +2395,7 @@ function finalizationReview(value) {
       })),
       findings: (report.findings || []).map(item => ({
         ...pickDefined(finalizationObject(item, 'finding'), [
-          'id', 'dimension', 'reason', 'suggestedAction',
+          'id', 'dimension', 'severity', 'reason', 'suggestedAction',
         ]),
         evidence: finalizationEvidence(item.evidence),
       })),
@@ -2402,6 +2423,10 @@ function finalizationReview(value) {
     candidateId: source.candidateId,
     candidateHash: finalizationHash(source.candidateHash, 'Candidate hash'),
     qualityReport,
+    ...(source.findingDecisions ? { findingDecisions: {
+      revision: source.findingDecisions.revision,
+      ignoredFindingIds: [...source.findingDecisions.ignoredFindingIds],
+    } } : {}),
     changeSet,
     confirmation,
   }
@@ -2870,6 +2895,7 @@ export const api = {
   },
 
   planning: {
+    checkContinuation: projectId => get(`/projects/${segment(projectId)}/planning/continuation`),
     get: async projectId => planningStateResponse(await get(
       `/projects/${segment(projectId)}/planning`,
     )),
@@ -2909,6 +2935,7 @@ export const api = {
             'draftRevision',
             'draftHash',
             'authorInstructions',
+            'generationMode',
           ]),
           idempotencyKey: opaqueKey,
         },
@@ -2924,6 +2951,14 @@ export const api = {
         ),
         opaqueId,
       )
+    },
+    cancelGeneration: async (projectId, draftId, idempotencyKey) => {
+      const opaqueKey = planningIdempotencyKey(idempotencyKey)
+      if (!opaqueKey) throw new TypeError('Invalid Planning idempotency key')
+      return planningOperationResponse(await post(
+        `/projects/${segment(projectId)}/planning/drafts/${segment(draftId)}/cancel-generation`,
+        { idempotencyKey: opaqueKey },
+      ))
     },
     getOperationByIdempotencyKey: async (projectId, idempotencyKey) => {
       const opaqueKey = planningIdempotencyKey(idempotencyKey)
@@ -3086,6 +3121,15 @@ export const api = {
         body,
       )
     },
+    applyLocalPreview: async (projectId, sessionId, command) => {
+      const normalizedProjectId = draftOperationUuid(projectId, 'project id')
+      const normalizedSessionId = draftOperationUuid(sessionId, 'session id')
+      const body = undoLocalDraftCommand(command)
+      return post(
+        `/projects/${segment(normalizedProjectId)}/chapter-sessions/${segment(normalizedSessionId)}/working-draft/apply-preview`,
+        body,
+      )
+    },
     saveCandidate: (projectId, sessionId, data) => post(
       `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/candidates`,
       {
@@ -3113,6 +3157,10 @@ export const api = {
         'expectedOutlineHash', 'idempotencyKey',
       ]),
       FINALIZATION_PREPARE_TIMEOUT,
+    )),
+    decideFinding: async (projectId, sessionId, data) => finalizationReview(await post(
+      `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/finalization/finding-decisions`,
+      pickDefined(data, ['expectedRevision', 'expectedRevisionHash', 'attemptId', 'qualityReportHash', 'expectedDecisionsRevision', 'findingId', 'ignored']),
     )),
     correctFinalization: async (projectId, sessionId, data) => (
       finalizationReviewed(await post(
@@ -3154,6 +3202,27 @@ export const api = {
         ]),
       ))
     ),
+  },
+
+  continuityIssues: {
+    list: (projectId, filters = {}, options = {}) => get(`/projects/${segment(projectId)}/continuity/issues${queryString(filters)}`, options),
+    get: (projectId, issueId, options = {}) => get(`/projects/${segment(projectId)}/continuity/issues/${segment(issueId)}`, options),
+    create: (projectId, payload) => post(`/projects/${segment(projectId)}/continuity/issues`, payload),
+    update: (projectId, issueId, payload) => request('PATCH', `/projects/${segment(projectId)}/continuity/issues/${segment(issueId)}`, payload),
+  },
+
+  continuity: {
+    futureDesign: (projectId, filters = {}, options = {}) => get(`/projects/${segment(projectId)}/continuity/future-design${queryString(filters)}`, options),
+    entities: (projectId, filters = {}, options = {}) => get(`/projects/${segment(projectId)}/continuity/entities${queryString(filters)}`, options),
+    records: (projectId, filters = {}, options = {}) => get(`/projects/${segment(projectId)}/continuity/records${queryString(filters)}`, options),
+    evidence: (projectId, eventId, options = {}) => get(`/projects/${segment(projectId)}/continuity/evidence/${segment(eventId)}`, options),
+  },
+
+  workbench: {
+    review: (projectId, number, options = {}) => get(`/projects/${segment(projectId)}/workbench/chapters/${segment(number)}/review`, options),
+    bootstrap: (projectId, number, options = {}) => get(`/projects/${segment(projectId)}/workbench/chapters/${segment(number)}`, options),
+    volumes: (projectId, options = {}) => get(`/projects/${segment(projectId)}/workbench/volumes`, options),
+    chapters: (projectId, volumeId, filters = {}, options = {}) => get(`/projects/${segment(projectId)}/workbench/volumes/${segment(volumeId)}/chapters${queryString(filters)}`, options),
   },
 
   canon: {

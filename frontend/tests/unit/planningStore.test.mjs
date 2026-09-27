@@ -234,6 +234,31 @@ function operation(overrides = {}) {
   }
 }
 
+test('author stop settles the operation and ignores a late generation response', async () => {
+  const pending = deferred()
+  const cancelled = operation({ status: 'failed', failureCode: 'PlanningGenerationCancelled', loaded: false, loadedDraftRevision: null })
+  await withApiMethods([
+    [api.planning, 'get', async () => readyState()],
+    [api.planning, 'history', async () => ({ items: [] })],
+    [api.planning, 'generateDraft', () => pending.promise],
+    [api.planning, 'cancelGeneration', async () => cancelled],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.load('project-1')
+    const before = JSON.parse(JSON.stringify(store.state.draft.content))
+    const generating = store.generateDraft({ idempotencyKey: 'author-stop', authorInstructions: '' })
+    assert.equal(store.generating, true)
+    await store.cancelGeneration()
+    assert.equal(store.generating, false)
+    assert.match(store.error.message, /已停止/)
+    pending.resolve(operation())
+    await generating
+    assert.equal(store.generationOperation.failureCode, 'PlanningGenerationCancelled')
+    assert.deepEqual(store.state.draft.content, before)
+  })
+})
+
 function deferred() {
   let resolve
   let reject

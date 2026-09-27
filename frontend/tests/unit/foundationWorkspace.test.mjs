@@ -580,7 +580,9 @@ test('Seed, Contract, and Bible expose the same complete Chinese author-state co
       assert.match(page, new RegExp(label), `missing shared author-state label: ${label}`)
     }
     assert.match(page, /confirmationAdapter/)
-    assert.doesNotMatch(page, /重新签署|确认并进入|下一步/)
+    assert.doesNotMatch(page, /重新签署|确认并进入/)
+    // Explanatory prose may describe the next step; action labels stay explicit.
+    assert.doesNotMatch(page, />\s*下一步\s*</)
   }
 
   assert.match(pages[0], /title="创作种子"/)

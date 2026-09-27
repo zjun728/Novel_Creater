@@ -133,7 +133,8 @@ test('Phase 8A visible workflow is wide-screen only and mutation safe', () => {
   ]) assert.equal(spec.includes(marker), true, marker)
   assert.match(spec, /mappedChapterFiveAction\.click\(\)/u)
   assert.match(spec, /章节地址与服务端权威不一致/u)
-  assert.equal(spec.includes('/planning/story-blocks$'), true)
+  assert.equal(spec.includes('/planning/outlines$'), true)
+  assert.match(spec, /name: '章节小纲', exact: true/u)
   assert.match(spec, /第 5 章小纲/u)
   assert.match(spec, /assertFinalSequence\(chapterText, \[0\]\)/u)
   assert.match(spec, /assertFinalSequence\(volumeText, \[0, 1, 2\]\)/u)
@@ -389,7 +390,9 @@ function phase8aHarness(scenario) {
         if (scenario === 'SIGINT' || scenario === 'SIGTERM') {
           assert.equal(settings.signal, undefined)
           await realBoundedCommand(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' }, {
-            label: 'real injected schema cleanup', timeoutMs: 5_000, settleMs: 500,
+            // Windows compiles the Job Object supervisor before starting Node.
+            // Keep a finite startup budget that tolerates a busy test host.
+            label: 'real injected schema cleanup', timeoutMs: 30_000, settleMs: 1_000,
             stopTimeoutMs: 1_000,
           })
         }

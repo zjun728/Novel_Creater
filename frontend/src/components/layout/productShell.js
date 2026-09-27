@@ -13,9 +13,12 @@ import {
   projectLibraryPath,
   projectContractPath,
   projectBiblePath,
+  projectContinuityPath,
+  continuityIssuesPath,
   planningVolumesPath,
   planningPlotsPath,
   planningStoryBlocksPath,
+  planningOutlinesPath,
   parsePositiveChapterNumber,
   manuscriptPath,
   projectModelSettingsPath,
@@ -77,13 +80,15 @@ function isMissingProject(error) {
 
 function routeTitle(route, project) {
   const name = routeName(route)
+  if (name === 'ContinuityIssues') return isArchived(project) ? '已归档连续性问题' : '连续性问题'
+  if (name === 'ProjectContinuity') return ({ settings: '设定库', 'state-memory': '当前状态与记忆', arcs: '人物弧光', clues: '线索与伏笔' }[route?.params?.section] || '世界与连续性')
   if (name === 'ProjectLibrary') return '项目库'
   if (name === 'TopicMarket') return '市场发现'
   if (name === 'TopicDiscussions') return '选题讨论'
   if (name === 'TopicDirections') return '方向库'
   if (name === 'TopicCandidates') return '候选种子库'
   if (name === 'ArchivedProjects') return '已归档项目'
-  if (name === 'ProviderSettings') return 'Provider 与模型'
+  if (name === 'ProviderSettings') return '服务商与模型'
   if (name === 'ApplicationSettings') return '应用默认与诊断'
   if (name === 'StyleLibrary') return '风格模板库'
   if (name === 'ExperienceLibrary') return '经验卡库'
@@ -109,6 +114,7 @@ function routeTitle(route, project) {
   if (name === 'ProjectPlanningStoryBlocks') {
     return isArchived(project) ? '已归档故事块规划' : '故事块规划'
   }
+  if (name === 'ProjectPlanningOutlines') return isArchived(project) ? '已归档章节小纲' : '章节小纲'
   if (name === 'ProjectModelSettings') {
     return isArchived(project) ? '已归档模型绑定' : '模型绑定'
   }
@@ -124,6 +130,9 @@ function routeTitle(route, project) {
   }
   if (name === 'ChapterWriter') {
     try { return `第 ${parsePositiveChapterNumber(route?.params?.chapterNumber)} 章写作` } catch { return '写作台' }
+  }
+  if (name === 'ChapterWorkbench') {
+    try { return `第 ${parsePositiveChapterNumber(route?.params?.chapterNumber)} 章工作台` } catch { return '章节工作台' }
   }
   if (name === 'NotFound' || name === 'NotFoundFallback') return '页面不存在'
   return String(route?.meta?.shellTitle || 'Novel Creator')
@@ -168,7 +177,10 @@ export function createProductShellModel({
     })
     const sections = [
       section('', [
+        item('workbench', '工作台', `/projects/${encodeURIComponent(project.id)}/workbench`, '写', ['ChapterWorkbench', 'ChapterWriter', 'ProjectWorkbench']),
         item('overview', '项目概览', overviewPath, '概', ['ProjectOverview']),
+        item('manuscript', '作品稿件', manuscriptPath(project.id), '稿', ['ProjectManuscript', 'FinalChapterReader']),
+        item('planning', '故事规划', planningVolumesPath(project.id), '规', ['ProjectPlanningVolumes', 'ProjectPlanningPlots', 'ProjectPlanningStoryBlocks', 'ProjectPlanningOutlines']),
       ]),
       section('创作基础', [
         ...(!archived ? [
@@ -177,21 +189,14 @@ export function createProductShellModel({
         item('contract', '创作契约', projectContractPath(project.id), '契', ['ProjectContract']),
         item('bible', '创作圣经', projectBiblePath(project.id), '圣', ['ProjectBible']),
       ]),
-      section('故事规划', [
-        item('volumes', '分卷规划', planningVolumesPath(project.id), '卷', ['ProjectPlanningVolumes']),
-        item('plots', '情节线', planningPlotsPath(project.id), '线', ['ProjectPlanningPlots']),
-        item('story-blocks', '故事块', planningStoryBlocksPath(project.id), '块', ['ProjectPlanningStoryBlocks']),
+      section('设定与连续性', [
+        ...Object.entries({ settings: '设定库', 'state-memory': '当前状态与记忆', arcs: '人物弧光', clues: '线索与伏笔' }).map(([key, label]) => ({
+          ...item(`continuity-${key}`, label, projectContinuityPath(project.id, key), '续', []),
+          selected: routeName(route) === 'ProjectContinuity' && route?.params?.section === key,
+        })),
+        item('continuity-issues', '连续性问题', continuityIssuesPath(project.id), '问', ['ContinuityIssues']),
       ]),
-      section('写作与稿件', [
-        item(
-          'manuscript',
-          '作品稿件',
-          manuscriptPath(project.id),
-          '稿',
-          ['ProjectManuscript', 'FinalChapterReader', 'ChapterWriter'],
-        ),
-      ]),
-      section('项目配置', [
+      section('项目设置', [
         item('project-settings', '项目资料', projectSettingsPath(project.id), '资', ['ProjectSettings']),
         ...(!archived ? [
           item('models', '模型绑定', projectModelSettingsPath(project.id), '模', ['ProjectModelSettings']),

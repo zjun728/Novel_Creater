@@ -79,8 +79,8 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="manuscript-index" aria-labelledby="manuscript-index-title" :aria-busy="manuscript.content.value.status === 'loading'">
-    <header class="manuscript-index__sheet manuscript-index__header">
-      <p class="manuscript-index__eyebrow">FINAL MANUSCRIPT</p>
+    <header class="manuscript-index__header">
+
       <h1 id="manuscript-index-title" tabindex="-1">作品稿件</h1>
     </header>
     <section v-if="manuscript.content.value.status === 'loading' && !directory" class="manuscript-index__sheet">
@@ -98,11 +98,6 @@ onBeforeUnmount(() => {
         <div><dt>字数</dt><dd>{{ directory.summary.totalScalarCount.toLocaleString('zh-CN') }}</dd></div>
       </dl>
 
-      <p v-if="isArchived" class="manuscript-index__readonly">项目已归档，稿件仅供阅读与下载。</p>
-      <p v-else-if="['loading', 'idle'].includes(preparation.status)" role="status">正在读取当前创作位置</p>
-      <template v-else-if="preparation.status === 'ready'"><p>当前创作位置：{{ preparation.nextAction.label }}</p><router-link id="manuscript-index-current-action" class="manuscript-index__action" :to="preparation.nextAction.targetPath">{{ preparation.nextAction.label }}</router-link></template>
-      <div v-else-if="preparation.status === 'unavailable'" class="manuscript-index__local-error">创作状态暂时无法读取。<button id="manuscript-index-preparation-retry" type="button" @click="loadPreparation">重新读取</button></div>
-
       <details v-if="hasChapters && download.options.value?.available && download.options.value.formats.length" class="manuscript-download-menu" :aria-busy="download.busy.value">
         <summary id="manuscript-index-download" :aria-disabled="download.busy.value" @click="download.busy.value && $event.preventDefault()">下载定稿</summary>
         <div class="manuscript-download-menu__actions">
@@ -117,16 +112,23 @@ onBeforeUnmount(() => {
       <manuscript-chapter-list v-else :project-id="projectId" :volumes="directory.volumes" :formats="download.options.value?.available ? download.options.value.formats : []" :downloadable-chapters="downloadableChapters" :download-chapter="downloadChapter" :busy="download.busy.value" />
       <div v-if="manuscript.content.value.status === 'unavailable'" class="manuscript-index__local-error" role="alert">目录暂时无法更新，已保留可安全显示的内容。<button id="manuscript-index-content-retry" type="button" @click="retryContent">重新读取</button></div>
     </section>
+    <footer class="manuscript-index__footer">      <p v-if="isArchived" class="manuscript-index__readonly">项目已归档，稿件仅供阅读与下载。</p>
+      <p v-else-if="['loading', 'idle'].includes(preparation.status)" role="status">正在读取当前创作位置</p>
+      <template v-else-if="preparation.status === 'ready'"><p>当前创作位置：{{ preparation.nextAction.label }}</p><router-link id="manuscript-index-current-action" class="manuscript-index__action" :to="preparation.nextAction.targetPath">{{ preparation.nextAction.label }}</router-link></template>
+      <div v-else-if="preparation.status === 'unavailable'" class="manuscript-index__local-error">创作状态暂时无法读取。<button id="manuscript-index-preparation-retry" type="button" @click="loadPreparation">重新读取</button></div>
+
+</footer>
   </section>
 </template>
 
 <style scoped>
-.manuscript-index { min-width:0; min-height:100%; padding:clamp(24px,5vw,64px); overflow-wrap:anywhere; color:var(--nc-ink); background:var(--nc-canvas); }
-.manuscript-index__sheet { width:min(1040px,100%); min-width:0; margin:auto; padding:clamp(26px,5vw,54px); border:1px solid var(--nc-border); background:var(--nc-paper); box-shadow:0 24px 64px rgba(58,43,27,.07); }
+.manuscript-index__header { width:min(1240px,100%); margin:0 auto 20px; }.manuscript-index__footer { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; position:sticky; bottom:0; background:var(--nc-paper); border-top:1px solid var(--nc-border); padding:12px 20px; margin-top:20px; }
+.manuscript-index { min-width:0; min-height:100%; padding:24px 36px; overflow-wrap:anywhere; color:var(--nc-ink); background:var(--nc-canvas); }
+.manuscript-index__sheet { width:min(1240px,100%); min-width:0; margin:auto; padding:20px 24px; border:1px solid var(--nc-border); background:var(--nc-paper); border-radius:6px; }
 .manuscript-index__eyebrow { margin:0 0 10px; color:var(--nc-vermilion); font:700 11px Georgia,serif; letter-spacing:.16em; }
-h1 { margin:0; font:600 clamp(34px,6vw,58px) Georgia,'Noto Serif SC',serif; }
+h1 { margin:0; font:600 30px Georgia,'Noto Serif SC',serif; }
 .manuscript-index__title { margin:12px 0 0; color:var(--nc-muted); font:500 18px Georgia,'Noto Serif SC',serif; }
-.manuscript-index__summary { display:flex; gap:28px; margin:26px 0; }.manuscript-index__summary div { display:grid; gap:4px; }.manuscript-index__summary dt { color:var(--nc-muted); font-size:12px; }.manuscript-index__summary dd { margin:0; font:700 18px Georgia,'Noto Serif SC',serif; }
+.manuscript-index__summary { display:flex; gap:24px; margin:12px 0; }.manuscript-index__summary div { display:grid; gap:4px; }.manuscript-index__summary dt { color:var(--nc-muted); font-size:12px; }.manuscript-index__summary dd { margin:0; font:700 18px Georgia,'Noto Serif SC',serif; }
 .manuscript-index__action {
   display: inline-flex;
   min-height: 44px;
@@ -139,7 +141,7 @@ h1 { margin:0; font:600 clamp(34px,6vw,58px) Georgia,'Noto Serif SC',serif; }
   font: 600 14px Georgia, 'Noto Serif SC', serif;
 }
 .manuscript-download-menu {
-  margin: 22px 0;
+  margin: 12px 0;
   border: 1px solid var(--nc-border);
   background: var(--nc-paper);
 }

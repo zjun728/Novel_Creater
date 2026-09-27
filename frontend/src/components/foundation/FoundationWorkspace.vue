@@ -5,11 +5,12 @@ defineProps({
   purpose: { type: String, required: true },
   statusLabel: { type: String, default: '' },
   readOnly: { type: Boolean, default: false },
+  focused: { type: Boolean, default: false },
 })
 </script>
 
 <template>
-  <section class="foundation-workspace" :class="{ 'foundation-workspace--readonly': readOnly }">
+  <section class="foundation-workspace" :class="{ 'foundation-workspace--readonly': readOnly, 'foundation-workspace--focused': focused }">
     <header class="foundation-workspace__header">
       <p class="foundation-workspace__kicker">AUTHORING FOUNDATION</p>
       <div>
@@ -20,7 +21,7 @@ defineProps({
     </header>
 
     <div class="foundation-workspace__grid">
-      <aside class="foundation-workspace__index" aria-label="文档目录">
+      <aside v-if="!focused" class="foundation-workspace__index" aria-label="文档目录">
         <slot name="index" />
       </aside>
       <aside class="foundation-workspace__status" aria-label="文档状态与操作">
@@ -33,10 +34,25 @@ defineProps({
         <slot name="document" />
       </section>
     </div>
+    <footer v-if="$slots.footer" class="foundation-workspace__footer"><slot name="footer" /></footer>
   </section>
 </template>
 
 <style scoped>
+.foundation-workspace.foundation-workspace--focused { padding:24px 36px 0; }
+.foundation-workspace--focused .foundation-workspace__grid { grid-template-areas:'document status'; grid-template-columns:minmax(0,1fr) 280px; }
+.foundation-workspace--focused .foundation-workspace__kicker { display:none; }
+.foundation-workspace--focused .foundation-workspace__header { border:0; padding-bottom:0; }
+.foundation-workspace.foundation-workspace--focused h1 { font-size:30px; }
+.foundation-workspace--focused :deep(.seed-document__title) { padding:24px 28px; border-bottom:1px solid var(--nc-border); }
+.foundation-workspace--focused :deep(.seed-document__title h2) { font-size:34px; }
+.foundation-workspace--focused :deep(.seed-document__title p),.foundation-workspace--focused :deep(.foundation-document-section header p) { display:none; }
+.foundation-workspace--focused :deep(.foundation-document-section) { padding:22px 28px; }
+.foundation-workspace--focused :deep(.foundation-document-section h2) { font-size:20px; }
+.foundation-workspace--focused .foundation-workspace__document { background:var(--nc-paper); box-shadow:none; border-radius:6px; }
+.foundation-workspace__footer { position:sticky; bottom:0; display:flex; align-items:center; justify-content:flex-end; gap:12px; padding:16px 0; margin-top:24px; background:var(--nc-paper); border-top:1px solid var(--nc-border); z-index:2; }
+.foundation-workspace__footer :deep(p) { margin-right:auto; color:var(--nc-muted); font-size:13px; }
+@media(max-width:760px) { .foundation-workspace--focused .foundation-workspace__grid { grid-template-areas:'status' 'document'; grid-template-columns:1fr; } .foundation-workspace__footer { flex-wrap:wrap; } }
 .foundation-workspace {
   --paper:var(--nc-paper);
   --ink:var(--nc-ink);

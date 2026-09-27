@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from backend.domain.json_contracts import canonical_hash
 
@@ -42,6 +42,50 @@ class _StrictPlanningValue(BaseModel):
                 for key, item in value.items()
             }
         return value
+
+
+class CharacterPlanNode(_StrictPlanningValue):
+    id: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=1, max_length=200)
+    stage: str = Field(default="", max_length=4000)
+    goal: str = Field(default="", max_length=4000)
+    belief: str = Field(default="", max_length=4000)
+    relationship: str = Field(default="", max_length=4000)
+    ability: str = Field(default="", max_length=4000)
+    expected_chapter: int | None = Field(default=None, alias="expectedChapter", ge=1)
+
+    @model_validator(mode="after")
+    def meaningful_identity(self) -> Self:
+        if not self.id.strip() or not self.title.strip():
+            raise ValueError("character plan node identity and title must not be blank")
+        return self
+
+
+class CharacterDesign(_StrictPlanningValue):
+    entity_id: str | None = Field(default=None, alias="entityId", min_length=1, max_length=100)
+    display_name: str = Field(alias="displayName", min_length=1, max_length=200)
+    nodes: tuple[CharacterPlanNode, ...] = Field(max_length=50)
+
+    @model_validator(mode="after")
+    def validate_design(self) -> Self:
+        if not self.display_name.strip() or (self.entity_id is not None and not self.entity_id.strip()):
+            raise ValueError("character design name and entity reference must not be blank")
+        if len({node.id for node in self.nodes}) != len(self.nodes):
+            raise ValueError("character plan node IDs must be unique within a Plot")
+        return self
+
+
+class _CharacterDesignValue(_StrictPlanningValue):
+    character_design: CharacterDesign | None = Field(default=None, alias="characterDesign")
+
+    @model_serializer(mode="wrap")
+    def serialize_optional_design(self, handler):
+        # Preserve planning-v1 historical hashes in every nested model_dump consumer.
+        result = handler(self)
+        if self.character_design is None:
+            result.pop("characterDesign", None)
+            result.pop("character_design", None)
+        return result
 
 
 class DraftNode(_StrictPlanningValue):
@@ -85,7 +129,7 @@ class DraftVolume(DraftNode):
     forbidden_events: tuple[str, ...] = Field(alias="forbiddenEvents")
 
 
-class DraftPlot(DraftNode):
+class DraftPlot(DraftNode, _CharacterDesignValue):
     order: int = Field(ge=1)
     title: str = Field(min_length=1, max_length=200)
     plot_type: PlotType = Field(alias="plotType")
@@ -161,7 +205,7 @@ class Volume(PersistedNode):
     forbidden_events: tuple[str, ...] = Field(alias="forbiddenEvents")
 
 
-class Plot(PersistedNode):
+class Plot(PersistedNode, _CharacterDesignValue):
     order: int = Field(ge=1)
     title: str = Field(min_length=1, max_length=200)
     plot_type: PlotType = Field(alias="plotType")
@@ -445,6 +489,8 @@ def normalize_planning_aggregate(
             "expectedPayoff": node.expected_payoff,
             "relatedCharacters": node.related_characters,
         }
+        if node.character_design is not None:
+            fields["characterDesign"] = node.character_design.model_dump(mode="json", by_alias=True)
         revision, content_hash = _revisioned_identity(
             node,
             node_id=node_id,
@@ -618,6 +664,13 @@ def planning_content_hash(value: Mapping[str, object]) -> str:
 def validate_confirmable_planning(value: PlanningAggregate) -> None:
     """Reject an incomplete future plan before immutable confirmation."""
 
+    for plot in value.plots:
+        if plot.lifecycle == "active" and plot.character_design is not None:
+            if not plot.character_design.nodes:
+                raise PlanningDomainError("character design requires at least one planned node before confirmation")
+            if any(not any(getattr(node, field).strip() for field in ("stage", "goal", "belief", "relationship", "ability"))
+                   for node in plot.character_design.nodes):
+                raise PlanningDomainError("character plan nodes require a planned stage or dimension before confirmation")
     volumes = {node.id: node for node in value.volumes}
     plots = {node.id: node for node in value.plots}
     active_volumes = {key: node for key, node in volumes.items() if node.lifecycle == "active"}

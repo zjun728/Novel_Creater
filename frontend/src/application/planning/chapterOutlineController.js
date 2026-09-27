@@ -85,6 +85,11 @@ export function createChapterOutlineController({
   const generationDisabledReason = computed(() => {
     if (hasCriticalRecovery.value) return '上次小纲生成结果尚未核对，请先恢复权威状态。'
     if (store.outlineDirty) return '请先保存本地修改，再使用 AI 生成。'
+    const reasons = new Set(store.outlineState?.reasons || [])
+    if (reasons.has('activeStoryBlockCompleted')) return '当前故事块已完成，请先安排并确认后续故事规划。'
+    if (reasons.has('activeStoryBlockTasksCompleted')) return '当前故事块没有剩余写作任务，请先调整并确认后续故事规划。'
+    if (reasons.has('planningProgressUnavailable')) return '后续规划进度暂时无法核实，请重新读取。'
+    if (store.outlineState?.canonProjectionAuthority?.synchronized === false) return '正文事实尚未同步完成，请重新读取进度后继续。'
     if (!editable.value) return '当前章节小纲不可编辑。'
     if (store.outlineState?.capabilities?.generate !== true) {
       return '小纲模型尚未就绪；手工编辑仍可继续。'
@@ -104,6 +109,9 @@ export function createChapterOutlineController({
         label: '返回项目概览',
         path: projectOverviewPath(targetProjectId),
       }]
+    }
+    if (reasons.has('activeStoryBlockCompleted') || reasons.has('activeStoryBlockTasksCompleted')) {
+      return [{ label: '调整后续故事规划', path: planningStoryBlocksPath(targetProjectId) }]
     }
     if (reasons.has('planningOrProjectionUnavailable')) {
       return [

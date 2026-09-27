@@ -49,7 +49,7 @@ PROJECT_OWNED_TABLES = frozenset({
     "draft_candidates", "working_draft_revisions", "draft_operation_events", "candidate_freeze_requests",
     "candidate_quality_reports", "finalization_change_sets", "finalization_change_set_revisions",
     "finalization_records", "final_chapters", "canon_entities", "entity_aliases", "canon_revisions",
-    "canon_events", "reference_uses",
+    "canon_events", "reference_uses", "continuity_issues", "review_finding_decisions",
 })
 
 SHARED_EXCLUDED_TABLES = frozenset({
@@ -72,6 +72,8 @@ INTERNAL_NON_PACKAGE_TABLES = frozenset({
 # Each project-owned table has an intentionally direct or normalized package record identity.
 # Request/attempt pairs share inert history types so no command can be replayed on import.
 PROJECT_TABLE_RECORD_TYPES: Mapping[str, str] = MappingProxyType({
+    "review_finding_decisions": "review-finding-decisions",
+    "continuity_issues": "continuity-issue",
     "projects": "project", "creative_seeds": "creative-seed", "creative_seed_revisions": "creative-seed-revision",
     "creative_seed_heads": "creative-seed-head", "project_seed_selection_revisions": "project-seed-selection-revision",
     "project_selected_seeds": "project-selected-seed", "project_model_binding_revisions": "project-model-binding-revision",
@@ -915,6 +917,19 @@ for _table, _column in {
 _policy_copy["chapter_sessions"]["story_block_id"] = "nested_logical_reference"
 _policy_copy["canon_revisions"]["source_id"] = "polymorphic_logical_reference"
 _policy_copy["project_model_binding_revisions"]["source_project_id"] = "normalized_inert_evidence"
+_policy_copy["review_finding_decisions"] = {
+    "project_id": "derived", "attempt_id": "logical_reference",
+    "report_hash": "public_field", "revision": "public_field",
+    "ignored_finding_ids_json": "public_field", "updated_at": "public_field",
+}
+_policy_copy["continuity_issues"] = {
+    "id": "derived", "project_id": "derived",
+    "category": "public_field", "severity": "public_field", "status": "public_field",
+    "source_chapter": "public_field", "source_finalization_id": "logical_reference",
+    "source_canon_revision": "public_field", "description": "public_field",
+    "suggestion": "public_field", "future_target": "public_field",
+    "resolution_note": "public_field", "created_at": "public_field", "updated_at": "public_field",
+}
 PROJECT_TABLE_COLUMN_POLICIES = MappingProxyType({
     table: MappingProxyType(policy) for table, policy in _policy_copy.items()
 })
@@ -950,6 +965,7 @@ _INDIRECT_OWNERSHIP_JOINS: Mapping[str, OwnershipJoin] = MappingProxyType({
 })
 
 _ORDER_COLUMNS: Mapping[str, tuple[str, ...]] = MappingProxyType({
+    "review_finding_decisions": ("attempt_id",),
     "creation_contract_corpus_fragment_refs": (
         "creation_contract_id", "sort_order", "corpus_fragment_id", "chapter_char_start", "chapter_char_end"
     ),
@@ -1037,6 +1053,8 @@ _REFERENCE_TARGET_BY_COLUMN: Mapping[str, str] = MappingProxyType({
     "working_draft_id": "working_drafts",
 })
 _REFERENCE_TARGET_OVERRIDES: Mapping[tuple[str, str], str] = MappingProxyType({
+    ("review_finding_decisions", "attempt_id"): "finalization_change_sets",
+    ("continuity_issues", "source_finalization_id"): "finalization_records",
     ("asset_recommendation_requests", "attempt_id"): "asset_recommendation_attempts",
     ("bible_confirmation_requests", "draft_id"): "project_bible_drafts",
     ("canon_events", "revision_id"): "canon_revisions",
@@ -1130,6 +1148,7 @@ def _public_field_name(column: str, allowlist: frozenset[str]) -> str | None:
     direct = _camel_case(column)
     aliases = {
         "chapter_num": "chapterNumber",
+        "source_chapter": "sourceChapterNumber",
         "deterministic_blocks_json": "deterministicBlocks",
         "draft_json": "payload",
         "evidence_json": "evidence",
@@ -1183,6 +1202,8 @@ def _column_export_decision(table: str, column: str, category: str) -> str:
         return "createdAt"
     allowlist = RECORD_FIELD_ALLOWLISTS[PROJECT_TABLE_RECORD_TYPES[table]]
     explicit = {
+        ("review_finding_decisions", "ignored_finding_ids_json"): "ignoredFindingIds",
+        ("review_finding_decisions", "attempt_id"): "changeSetLogicalId",
         ("bible_confirmation_requests", "result_hash"): "contentHash",
         ("planning_confirmation_requests", "planning_draft_id"): "draftLogicalId",
         ("planning_confirmation_requests", "result_hash"): "contentHash",
@@ -1231,7 +1252,7 @@ PACKAGE_COLUMN_EXPORT_DECISION_FINGERPRINT = sha256(
     _PACKAGE_COLUMN_EXPORT_DECISION_MANIFEST.encode("utf-8")
 ).hexdigest()
 if PACKAGE_COLUMN_EXPORT_DECISION_FINGERPRINT != (
-    "67383ba721bd03d14b40d87214c489c46223bc4c2b708f586823fea508292c9f"
+    "2f2beb50978de827b627163a4ae9eed8cfba0dcdc51ab32b81588416c6b794be"
 ):
     raise RuntimeError("project package export decisions require an explicit audit")
 
@@ -1335,6 +1356,8 @@ def _register_planning_nodes(
 def _rewrite_planning_payload(
     planning: PlanningAggregate | DraftPlanningAggregate,
     identities: Mapping[tuple[str, object], str],
+    canon_entity_ids: Mapping[object, str] | None = None,
+    canon_entity_types: Mapping[object, str] | None = None,
 ) -> dict[str, object]:
     payload = planning.model_dump(mode="json", by_alias=True)
 
@@ -1347,6 +1370,13 @@ def _rewrite_planning_payload(
         replace_definition(node, dumped, "planning-volume")
     for node, dumped in zip(planning.plots, payload["plots"], strict=True):
         replace_definition(node, dumped, "planning-plot")
+        design = dumped.get("characterDesign")
+        if isinstance(design, dict) and design.get("entityId") is not None:
+            entity_id = design["entityId"]
+            if (canon_entity_ids is None or entity_id not in canon_entity_ids
+                    or canon_entity_types is None or canon_entity_types.get(entity_id) != "person"):
+                raise _invalid()
+            design["entityId"] = canon_entity_ids[entity_id]
     for block, dumped_block in zip(planning.story_blocks, payload["storyBlocks"], strict=True):
         replace_definition(block, dumped_block, "story-block")
         if isinstance(planning, PlanningAggregate):
@@ -1537,6 +1567,28 @@ _FINALIZATION_PLANNING_TARGET_KINDS: Mapping[str, str] = MappingProxyType({
 })
 
 
+def _rewrite_canon_progress_reference(
+    data: Mapping[str, object], planning_identities: Mapping[tuple[str, object], str],
+) -> dict[str, object]:
+    result = dict(data)
+    field = data.get("fieldPath")
+    if not isinstance(field, str) or not field.startswith("plot.progress."):
+        return result
+    value = data.get("value")
+    if not isinstance(value, Mapping):
+        raise _invalid()
+    target_type, raw_id = value.get("targetType"), value.get("targetId")
+    if not isinstance(target_type, str) or not isinstance(raw_id, str):
+        raise _invalid()
+    kind = _FINALIZATION_PLANNING_TARGET_KINDS.get(target_type)
+    if kind is None or field != f"plot.progress.{target_type}.{raw_id}":
+        raise _invalid()
+    logical_id = _authority_id(planning_identities, kind, raw_id)
+    result["value"] = {**value, "targetId": logical_id}
+    result["fieldPath"] = f"plot.progress.{target_type}.{logical_id}"
+    return result
+
+
 def _next_authority_logical_id(counters: dict[str, int], kind: str) -> str:
     counters[kind] = counters.get(kind, 0) + 1
     return f"{kind}:{counters[kind]}"
@@ -1548,6 +1600,9 @@ def _rewrite_finalization_change_set(
     planning_identities: Mapping[tuple[str, object], str],
     canon_entity_ids: Mapping[object, str],
     counters: dict[str, int],
+    canon_entity_definitions: Mapping[object, Mapping[str, object]] | None = None,
+    project_id: str | None = None,
+    attempt_id: str | None = None,
 ) -> dict[str, object]:
     payload = change_set_payload(change_set)
     local_id_fields = (
@@ -1575,7 +1630,19 @@ def _rewrite_finalization_change_set(
         for value, dumped in zip(values, dumped_values, strict=True):
             if value.id in local_ids:
                 raise _invalid()
-            logical_id = _next_authority_logical_id(counters, kind)
+            entity_key = value.id
+            if kind == "finalization-entity" and project_id is not None and attempt_id is not None:
+                from backend.domain.finalization_identity import finalization_storage_id
+                scoped_id = finalization_storage_id(project_id, attempt_id, "entity", value.id)
+                if scoped_id in canon_entity_ids:
+                    entity_key = scoped_id
+            logical_id = canon_entity_ids.get(entity_key) if kind == "finalization-entity" else None
+            if logical_id is not None and canon_entity_definitions is not None:
+                definition = canon_entity_definitions.get(entity_key)
+                if definition is None or definition["canonical_name"] != value.canonical_name or definition["entity_type"] != value.entity_type.value:
+                    logical_id = None  # An earlier uncommitted revision can propose a different definition.
+            if logical_id is None:
+                logical_id = _next_authority_logical_id(counters, kind)
             local_ids[value.id] = logical_id
             dumped["id"] = logical_id
 
@@ -1993,7 +2060,10 @@ class ProjectPackageRepository:
                 }
 
                 authority_payloads: dict[int, object] = {
-                    row_id: _rewrite_planning_payload(model, authority_identities)
+                    row_id: _rewrite_planning_payload(
+                        model, authority_identities, identity_maps["canon_entities"],
+                        {row["id"]: row["entity_type"] for row in rows_by_table["canon_entities"]},
+                    )
                     for row_id, model in planning_models.items()
                 }
                 authority_payloads.update({
@@ -2007,13 +2077,16 @@ class ProjectPackageRepository:
                     for row_id, model in outline_models.items()
                 })
                 authority_payloads.update({
-                    row_id: _rewrite_finalization_change_set(
-                        model,
+                    id(row): _rewrite_finalization_change_set(
+                        finalization_change_set_models[id(row)],
+                        project_id=project_id,
+                        attempt_id=row["change_set_id"],
                         planning_identities=authority_identities,
                         canon_entity_ids=identity_maps["canon_entities"],
+                        canon_entity_definitions={row["id"]: row for row in rows_by_table["canon_entities"]},
                         counters=authority_counters,
                     )
-                    for row_id, model in finalization_change_set_models.items()
+                    for row in rows_by_table["finalization_change_set_revisions"]
                 })
                 final_chapter_rows_by_id = {
                     row["id"]: row for row in rows_by_table["final_chapters"]
@@ -2249,7 +2322,7 @@ class ProjectPackageRepository:
                     record_order = row["record_order"]
                     if type(record_order) is not int or record_order <= 0:
                         raise _invalid()
-                    operation_records.append(PackageRecord(
+                    graph_records.append(PackageRecord(
                         "import-provenance",
                         f"import-provenance:{record_order}",
                         order=record_order,
@@ -2276,8 +2349,11 @@ class ProjectPackageRepository:
                                 "createdAt": row["created_at"],
                                 "completedAt": row["completed_at"],
                             }
-                            record_order = max((item.order for item in operation_records), default=0) + 1
-                            operation_records.append(PackageRecord(
+                            record_order = max(
+                                (item.order for item in graph_records if item.entity_type == "import-provenance"),
+                                default=0,
+                            ) + 1
+                            graph_records.append(PackageRecord(
                                 "import-provenance", f"import-provenance:{record_order}",
                                 order=record_order, data={
                                     "category": "unsupported-history",
@@ -2320,6 +2396,8 @@ class ProjectPackageRepository:
                                 continue
                             if category == "logical_reference":
                                 if value is None:
+                                    if table == "finalization_change_sets" and column == "quality_report_id":
+                                        data["qualityReportLogicalId"] = None
                                     continue
                                 target_table = _reference_target(table, column)
                                 target_logical_id = identity_maps[target_table].get(value)
@@ -2437,6 +2515,21 @@ class ProjectPackageRepository:
                             if row["result_hash"] is not None:
                                 data["contentHash"] = row["result_hash"]
 
+                        if table == "review_finding_decisions":
+                            attempt = next((item for item in rows_by_table["finalization_change_sets"]
+                                            if item["id"] == row["attempt_id"]), None)
+                            quality = next((item for item in rows_by_table["candidate_quality_reports"]
+                                            if attempt and item["id"] == attempt.get("quality_report_id")), None)
+                            if quality is None or row["report_hash"] != quality["content_hash"]:
+                                raise _invalid()
+                            from backend.domain.review_decisions import validate_package_decisions
+                            raw_findings = _json_value(quality["findings_json"])
+                            validate_package_decisions(data, {"status": quality["status"], "findings": raw_findings})
+                            finding_ids = {source["id"]: target["id"] for source, target in
+                                           zip(raw_findings, quality_findings_payloads[id(quality)], strict=True)}
+                            data["ignoredFindingIds"] = sorted(finding_ids[item] for item in data["ignoredFindingIds"])
+                        if table == "canon_events":
+                            data = _rewrite_canon_progress_reference(data, authority_identities)
                         record = PackageRecord(
                             entity_type=record_type,
                             logical_id=logical_id,

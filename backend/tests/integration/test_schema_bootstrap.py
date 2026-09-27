@@ -53,7 +53,7 @@ EXPECTED_TABLES = {
     "final_chapters", "canon_entities", "entity_aliases", "canon_revisions",
     "canon_events", "current_state_projections", "memory_views",
     "arc_projections", "plot_thread_projections", "projection_heads",
-    "reference_uses", "project_package_import_commands",
+    "reference_uses", "continuity_issues", "project_package_import_commands",
     "project_import_provenance",
 }
 

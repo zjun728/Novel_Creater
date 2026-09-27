@@ -1,11 +1,13 @@
 <script setup>
+import { useId } from 'vue'
+const titleId = useId()
 defineProps({ outline: { type: Object, required: true } })
 const labels = Object.freeze({ chapterGoal: '本章目标', expectedCharacters: '预计人物', continuation: '延续项', plannedTasks: '计划任务', scenes: '场景', forbiddenEarlyEvents: '禁止提前发生事项' })
 function value(items) { return Array.isArray(items) ? (items.length ? items.join('；') : '无') : items || '无' }
 </script>
 <template>
-  <section class="final-outline-panel" aria-labelledby="final-outline-title">
-    <h2 id="final-outline-title">本章小纲</h2>
+  <section class="final-outline-panel" :aria-labelledby="titleId">
+    <h2 :id="titleId">本章小纲</h2>
     <dl><template v-for="(label, key) in labels" :key="key"><dt>{{ label }}</dt><dd>{{ value(outline[key]) }}</dd></template></dl>
   </section>
 </template>

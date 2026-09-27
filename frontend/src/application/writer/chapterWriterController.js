@@ -82,6 +82,7 @@ export function createChapterWriterController({
   cancelDraftOperation,
   reloadWorkspace,
   undoLocalDraft: undoLocalDraftRequest,
+  applyLocalPreview: applyLocalPreviewRequest,
   idFactory = generateId,
   pollScheduler,
   writeBusy = false,
@@ -114,6 +115,14 @@ export function createChapterWriterController({
   const actionBusy = computed(() => actionLock.value)
   const authorInstructionState = ref('')
   const selectionState = ref(null)
+  const pendingLocalPreview = ref(null)
+  const canApplyLocalPreview = computed(() => {
+    const preview = pendingLocalPreview.value
+    return Boolean(preview && !preview.stale && !actionLock.value && !currentBusy(writeBusy)
+      && preview.fence.editGeneration === editGeneration
+      && preview.fence.contextGeneration === contextGeneration
+      && autosave.text?.value === preview.fence.visibleText)
+  })
   const undoEligibilityState = ref(null)
   const restoredSelectionState = ref(null)
   const recoveredPartialOperationId = ref(null)
@@ -127,6 +136,7 @@ export function createChapterWriterController({
   })
   const replacementPreview = computed(() => {
     coordinatorRevision.value
+    if (pendingLocalPreview.value) return pendingLocalPreview.value.replacement
     return coordinator.busy && coordinator.previewKind === 'replacement'
       ? coordinator.preview
       : null
@@ -160,7 +170,7 @@ export function createChapterWriterController({
     coordinatorRevision.value
     const operation = coordinator.operation
     if (
-      operation?.status !== 'failed'
+      !['failed', 'expired'].includes(operation?.status)
       || operation.operationType !== 'generate_new'
       || operation.id === recoveredPartialOperationId.value
       || typeof operation.partialOutput !== 'string'
@@ -254,6 +264,7 @@ export function createChapterWriterController({
     const changed = autosave.edit(nextText)
     if (autosave.text?.value !== before) {
       editGeneration += 1
+      if (pendingLocalPreview.value) pendingLocalPreview.value = { ...pendingLocalPreview.value, stale: true }
       undoEligibilityState.value = null
       restoredSelectionState.value = null
     }
@@ -285,6 +296,7 @@ export function createChapterWriterController({
     retryFence = null
     invalidateAction()
     authorInstructionState.value = ''
+    pendingLocalPreview.value = null
     selectionState.value = null
     undoEligibilityState.value = null
     restoredSelectionState.value = null
@@ -300,6 +312,7 @@ export function createChapterWriterController({
     retryFence = null
     invalidateAction()
     authorInstructionState.value = ''
+    pendingLocalPreview.value = null
     selectionState.value = null
     undoEligibilityState.value = null
     restoredSelectionState.value = null
@@ -392,7 +405,7 @@ export function createChapterWriterController({
     }
   }
 
-  async function generateWorkingDraft() {
+  async function generateWorkingDraft({ reviewReference } = {}) {
     const token = claimAction('generate')
     if (token === null) return false
     undoEligibilityState.value = null
@@ -409,6 +422,7 @@ export function createChapterWriterController({
       let request
       try {
         request = coordinator.generateNew({
+          ...(reviewReference ? { reviewReference } : {}),
           expectedWorkingDraftRevision: authority.revision,
           expectedContentHash: authority.contentHash,
           authorInstruction: authorInstructionState.value,
@@ -569,11 +583,26 @@ export function createChapterWriterController({
     if (
       operation?.status !== 'completed'
       || !LOCAL_OPERATION_TYPES.has(operation.operationType)
-      || result?.workingDraft?.revision !== operation.resultWorkingDraftRevision
-      || result?.workingDraft?.contentHash !== operation.resultContentHash
+      || (!fence.previewOnly && result?.workingDraft?.revision !== operation.resultWorkingDraftRevision)
+      || (!fence.previewOnly && result?.workingDraft?.contentHash !== operation.resultContentHash)
       || coordinator.resultSelection === null
     ) return false
+    if (fence.previewOnly && (result.workingDraft.content !== fence.visibleText
+      || result.workingDraft.revision !== fence.baseRevision
+      || result.workingDraft.contentHash !== fence.baseHash)) return false
     if (!resyncIfUnchanged(result, fence)) return false
+    if (fence.previewOnly) {
+      pendingLocalPreview.value = Object.freeze({
+        fence, original: fence.selectedText, replacement: operation.partialOutput,
+        selection: coordinator.resultSelection,
+        command: Object.freeze({
+          expectedWorkingDraftRevision: fence.baseRevision,
+          expectedContentHash: fence.baseHash,
+          sourceOperationId: operation.id,
+        }),
+      })
+      return true
+    }
     undoEligibilityState.value = Object.freeze({
       expectedWorkingDraftRevision: operation.resultWorkingDraftRevision,
       expectedContentHash: operation.resultContentHash,
@@ -587,6 +616,7 @@ export function createChapterWriterController({
     if (!LOCAL_OPERATION_TYPES.has(operationType)) {
       throw new TypeError('invalid local draft operation type')
     }
+    if (pendingLocalPreview.value) return false
     const token = claimAction('local')
     if (token === null) return false
     undoEligibilityState.value = null
@@ -600,6 +630,10 @@ export function createChapterWriterController({
         editGeneration,
         contextGeneration,
         visibleText: autosave.text?.value,
+        previewOnly: true,
+        baseRevision: authority.revision,
+        baseHash: authority.contentHash,
+        selectedText: captured.selectedText,
       }
       retryFence = fence
       let request
@@ -608,6 +642,7 @@ export function createChapterWriterController({
           expectedWorkingDraftRevision: authority.revision,
           expectedContentHash: authority.contentHash,
           authorInstruction: authorInstructionState.value,
+          previewOnly: true,
           startOffset: captured.startOffset,
           endOffset: captured.endOffset,
           selectedTextHash: await sha256Text(captured.selectedText),
@@ -628,6 +663,40 @@ export function createChapterWriterController({
     } finally {
       releaseAction(token)
       touchCoordinator()
+    }
+  }
+
+  function cancelLocalPreview() {
+    if (actionLock.value) return false
+    pendingLocalPreview.value = null
+    return true
+  }
+
+  async function applyLocalPreview() {
+    if (!canApplyLocalPreview.value) return false
+    const preview = pendingLocalPreview.value
+    const token = claimAction('apply-preview')
+    if (token === null) return false
+    try {
+      if (!await flushPersistedDraft() || !isActionCurrent(token)) return false
+      const authority = persistedAuthority(autosave)
+      if (authority.revision !== preview.command.expectedWorkingDraftRevision
+        || authority.contentHash !== preview.command.expectedContentHash
+        || autosave.text?.value !== preview.fence.visibleText) return false
+      const request = applyLocalPreviewRequest || unavailable('applyLocalPreview')
+      const restored = await request(preview.command)
+      if (!isActionCurrent(token)) return null
+      if (!resyncIfUnchanged(restored, preview.fence)) return false
+      undoEligibilityState.value = Object.freeze({
+        expectedWorkingDraftRevision: restored.workingDraft.revision,
+        expectedContentHash: restored.workingDraft.contentHash,
+        sourceOperationId: preview.command.sourceOperationId,
+      })
+      restoredSelectionState.value = preview.selection
+      pendingLocalPreview.value = null
+      return restored
+    } finally {
+      releaseAction(token)
     }
   }
 
@@ -675,6 +744,10 @@ export function createChapterWriterController({
     cancelGeneration,
     recoverPartialDraft,
     runSelectionOperation,
+    applyLocalPreview,
+    cancelLocalPreview,
+    pendingLocalPreview,
+    canApplyLocalPreview,
     undoLastLocal,
     canNavigate,
     edit,

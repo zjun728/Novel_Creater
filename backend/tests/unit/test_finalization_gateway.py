@@ -40,8 +40,7 @@ def _response(payload, request):
 
 def _evidence():
     return {
-        "startScalar": 0,
-        "endScalar": 2,
+        "quote": "沈砚",
         "confidence": 0.8,
         "rationale": "开篇动作",
     }
@@ -50,6 +49,7 @@ def _evidence():
 def _quality_payload():
     return {"findings": [{
         "id": "finding-1",
+        "severity": "suggested",
         "dimension": "pacing",
         "reason": "推进略快",
         "suggestedAction": "增加行动后的反应",
@@ -99,9 +99,15 @@ def test_concrete_gateways_satisfy_narrow_protocols():
         (FinalizationExtractionGateway, "extract", _extraction_payload, FinalizationChangeSet),
     ],
 )
+@pytest.mark.parametrize("wire_format", ["quote", "paragraphRange"])
 async def test_gateway_makes_one_bounded_call_and_returns_closed_domain_value(
-    gateway_type, method, payload, result_type, caplog,
+    gateway_type, method, payload, result_type, caplog, wire_format, monkeypatch,
 ):
+    if wire_format == "paragraphRange":
+        monkeypatch.setitem(globals(), "_evidence", lambda: {
+            "paragraphRange": {"start": "p1", "end": "p1"},
+            "confidence": 0.8, "rationale": "开篇动作",
+        })
     requests = []
 
     def handler(request):
@@ -180,7 +186,7 @@ async def test_evidence_hash_is_computed_from_candidate_and_provider_cannot_supp
 
 
 @pytest.mark.asyncio
-async def test_extraction_drops_only_items_with_empty_evidence_ranges():
+async def test_extraction_rejects_unanchored_items_without_silently_dropping_them():
     payload = _extraction_payload()
     payload["canonEvents"] = [{
         "id": "event-1",
@@ -199,8 +205,7 @@ async def test_extraction_drops_only_items_with_empty_evidence_ranges():
         "targetId": None,
         "message": "没有可定位证据的建议。",
         "evidence": {
-            "startScalar": 2,
-            "endScalar": 2,
+            "quote": "",
             "confidence": 0.5,
             "rationale": "空区间",
         },
@@ -209,13 +214,11 @@ async def test_extraction_drops_only_items_with_empty_evidence_ranges():
         lambda request: _response(payload, request)
     ))
 
-    result = await _call(
-        gateway, "extract", provider=_provider(),
-        model_name="finalization-model", manifest=_manifest(),
-    )
-
-    assert [item.id for item in result.canon_events] == ["event-1"]
-    assert [item.id for item in result.planning_suggestions] == ["suggestion-1"]
+    with pytest.raises(FinalizationProviderError):
+        await _call(
+            gateway, "extract", provider=_provider(),
+            model_name="finalization-model", manifest=_manifest(),
+        )
 
 
 @pytest.mark.asyncio

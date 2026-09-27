@@ -6,12 +6,14 @@ const ProjectSeedsView = () => import('../views/ProjectSeedsView.vue')
 const ProjectContractView = () => import('../views/ProjectContractView.vue')
 const ProjectBibleView = () => import('../views/ProjectBibleView.vue')
 const ProjectPlanningView = () => import('../views/ProjectPlanningView.vue')
+const ProjectContinuityView = () => import('../views/ProjectContinuityView.vue')
+const ContinuityIssuesView = () => import('../views/ContinuityIssuesView.vue')
 const StyleLibraryView = () => import('../views/assets/StyleLibraryView.vue')
 const ExperienceLibraryView = () => import('../views/assets/ExperienceLibraryView.vue')
 const CorpusLibraryView = () => import('../views/assets/CorpusLibraryView.vue')
-const ChapterWriterView = () => import('../views/ChapterWriterView.vue')
+const ProjectWorkbenchEntryView = () => import('../views/ProjectWorkbenchEntryView.vue')
+const ChapterWorkbenchView = () => import('../views/ChapterWorkbenchView.vue')
 const ManuscriptIndexView = () => import('../views/ManuscriptIndexView.vue')
-const FinalChapterReaderView = () => import('../views/FinalChapterReaderView.vue')
 const ProviderSettingsView = () => import('../views/ProviderSettingsView.vue')
 const ApplicationSettingsView = () => import('../views/ApplicationSettingsView.vue')
 const ProjectModelSettingsView = () => import('../views/ProjectModelSettingsView.vue')
@@ -89,12 +91,24 @@ export function planningVolumesPath(projectId) {
   return `/projects/${segment(projectId)}/planning/volumes`
 }
 
+export function projectContinuityPath(projectId, section = 'settings') {
+  return `/projects/${segment(projectId)}/continuity/${segment(section)}`
+}
+
+export function continuityIssuesPath(projectId) {
+  return `/projects/${segment(projectId)}/continuity/issues`
+}
+
 export function planningPlotsPath(projectId) {
   return `/projects/${segment(projectId)}/planning/plots`
 }
 
 export function planningStoryBlocksPath(projectId) {
   return `/projects/${segment(projectId)}/planning/story-blocks`
+}
+
+export function planningOutlinesPath(projectId) {
+  return `/projects/${segment(projectId)}/planning/outlines`
 }
 
 export function projectModelSettingsPath(projectId) {
@@ -111,6 +125,10 @@ export function projectExportPath(projectId) {
 
 export function chapterWriterPath(projectId, chapterNumber) {
   return `/projects/${segment(projectId)}/write/chapters/${positiveChapterNumber(chapterNumber)}`
+}
+
+export function chapterWorkbenchPath(projectId, chapterNumber) {
+  return `/projects/${segment(projectId)}/workbench/chapters/${positiveChapterNumber(chapterNumber)}`
 }
 
 export function manuscriptPath(projectId) {
@@ -224,6 +242,16 @@ export const projectRoutes = Object.freeze([
     props: true,
   },
   {
+    path: '/projects/:projectId/continuity/issues',
+    name: 'ContinuityIssues',
+    component: ContinuityIssuesView,
+  },
+  {
+    path: '/projects/:projectId/continuity/:section(settings|state-memory|arcs|clues)',
+    name: 'ProjectContinuity',
+    component: ProjectContinuityView,
+  },
+  {
     path: '/projects/:projectId/planning/plots',
     name: 'ProjectPlanningPlots',
     component: ProjectPlanningView,
@@ -236,6 +264,12 @@ export const projectRoutes = Object.freeze([
     props: { activeTab: 'story-blocks' },
   },
   {
+    path: '/projects/:projectId/planning/outlines',
+    name: 'ProjectPlanningOutlines',
+    component: ProjectPlanningView,
+    props: { activeTab: 'outlines' },
+  },
+  {
     path: '/projects/:projectId/manuscript',
     name: 'ProjectManuscript',
     component: ManuscriptIndexView,
@@ -244,13 +278,18 @@ export const projectRoutes = Object.freeze([
   {
     path: '/projects/:projectId/manuscript/chapters/:chapterNumber([1-9]\\d*)',
     name: 'FinalChapterReader',
-    component: FinalChapterReaderView,
-    props: true,
+    redirect: to => ({ path: chapterWorkbenchPath(to.params.projectId, to.params.chapterNumber), query: { ...to.query, view: to.query.view || 'text' }, hash: to.hash }),
   },
   {
     path: '/projects/:projectId/write/chapters/:chapterNumber([1-9]\\d*)',
     name: 'ChapterWriter',
-    component: ChapterWriterView,
+    redirect: to => ({ path: chapterWorkbenchPath(to.params.projectId, to.params.chapterNumber), query: to.query, hash: to.hash }),
+  },
+  { path: '/projects/:projectId/workbench', name: 'ProjectWorkbench', component: ProjectWorkbenchEntryView },
+  {
+    path: '/projects/:projectId/workbench/chapters/:chapterNumber([1-9]\\d*)',
+    name: 'ChapterWorkbench',
+    component: ChapterWorkbenchView,
     props: true,
   },
   {

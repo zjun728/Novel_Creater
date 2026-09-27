@@ -191,7 +191,14 @@ class ProjectOverviewRepository:
             if latest is not None:
                 final_aggregate.update(dict(latest))
 
+        continuity = await session.fetchone(
+            """SELECT COUNT(*) AS pending_count FROM continuity_issues
+                WHERE project_id=%s AND status='pending'""",
+            (project_id,),
+        )
+
         return {
+            "continuity": self._mapping_or_none(continuity),
             "project": dict(project),
             "selected_seed": self._mapping_or_none(selected_seed),
             "contract": self._mapping_or_none(contract),

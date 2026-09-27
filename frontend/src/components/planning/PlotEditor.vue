@@ -1,5 +1,7 @@
 <script setup>
+import CharacterDesignEditor from './CharacterDesignEditor.vue'
 const props = defineProps({
+  projectId: { type: String, default: '' },
   modelValue: { type: Array, default: () => [] },
   readOnly: { type: Boolean, default: false },
   disabled: { type: Boolean, default: false },
@@ -133,6 +135,7 @@ function remove(node) {
           />
         </label>
       </fieldset>
+      <character-design-editor :model-value="plot.characterDesign" :project-id="projectId" :disabled="controlDisabled(plot)" @update:model-value="update(plot, 'characterDesign', $event)" />
       <footer v-if="!readOnly && plot.lifecycle !== 'retired'">
         <button type="button" :disabled="disabled || cannotMove(plot, -1)" @click="move(plot, -1)">上移</button>
         <button type="button" :disabled="disabled || cannotMove(plot, 1)" @click="move(plot, 1)">下移</button>

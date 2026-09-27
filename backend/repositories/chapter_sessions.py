@@ -11,6 +11,11 @@ from backend.repositories.project_lifecycle import lock_active_project
 
 _EMPTY_PARTIAL_TEXT = ""
 _EMPTY_PARTIAL_HASH = sha256(_EMPTY_PARTIAL_TEXT.encode("utf-8")).hexdigest()
+CURRENT_GENERATION_FIELDS = (
+    'selection_revision', 'seed_id', 'seed_revision_id', 'seed_hash',
+    'contract_revision', 'creation_contract_id', 'creation_hash',
+    'style_contract_id', 'style_hash', 'bible_revision', 'bible_revision_id', 'bible_hash',
+)
 
 
 class ActiveChapterSessionConflict(RuntimeError):
@@ -47,6 +52,26 @@ SELECT session.*,outline.content_json AS chapter_outline_json,
 
 
 class ChapterSessionRepository:
+    async def invalidate_adjusted_review(self, session, project_id, session_id, reference, now):
+        affected = await session.execute(
+            """UPDATE finalization_change_sets
+                  SET status='invalidated',active_slot=NULL,updated_at=%s
+                WHERE project_id=%s AND chapter_session_id=%s AND id=%s
+                  AND status='awaiting_author' AND active_slot=1
+                  AND current_revision=%s AND current_revision_hash=%s""",
+            (now, project_id, session_id, reference["attemptId"],
+             reference["changeSetRevision"], reference["changeSetHash"]),
+        )
+        return affected == 1
+
+    async def read_review_for_draft_operation(self, session, project_id, session_id, reference):
+        from backend.repositories.finalization import FinalizationRepository
+        repository = FinalizationRepository()
+        attempt = await repository.lock_current_attempt(session, project_id, session_id)
+        view = await repository.read_current_view(session, project_id, session_id)
+        candidate = await repository.lock_candidate(session, project_id, session_id, reference["candidateId"])
+        return {"attempt": attempt, "view": view, "candidate": candidate}
+
     async def lock_project(self, session, project_id: str):
         return await lock_active_project(session, project_id)
 

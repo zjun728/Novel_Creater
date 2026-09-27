@@ -239,7 +239,21 @@ test('chapter session store edits working draft without creating candidate', asy
   })
 })
 
-test('authoritative writer entry reads current then creates from exact returned pins', async () => {
+test('opening a startable chapter is read-only until the author starts it', async () => {
+  const current = currentOutline()
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async () => current],
+    [api.chapterSessions, 'create', async () => assert.fail('read must never create a session')],
+    [api.chapterSessions, 'get', async () => assert.fail('absent session must not be loaded')],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useChapterSessionStore()
+    assert.equal(await store.openAuthoritative('project-1', 1), current)
+    assert.equal(store.session, null)
+  })
+})
+
+test('explicit writer start reads current then creates from exact returned pins', async () => {
   const calls = []
   const current = currentOutline()
   await withApiMethods([
@@ -263,7 +277,7 @@ test('authoritative writer entry reads current then creates from exact returned 
     setActivePinia(createPinia())
     const store = useChapterSessionStore()
 
-    const authority = await store.openAuthoritative('project-1', 1)
+    const authority = await store.openAuthoritative('project-1', 1, { startSession: true })
 
     assert.equal(authority, current)
     assert.equal(store.session.id, 'session-1')
@@ -437,7 +451,7 @@ test('authoritative no-session result clears a prior workspace in the same route
     setActivePinia(createPinia())
     const store = useChapterSessionStore()
 
-    await store.openAuthoritative('project-1', 1)
+    await store.openAuthoritative('project-1', 1, { startSession: true })
     assert.equal(store.session.id, 'session-1')
     await store.openAuthoritative('project-1', 1)
 
@@ -794,8 +808,8 @@ test('late current response is fenced before it can write state or trigger Sessi
   ], async () => {
     setActivePinia(createPinia())
     const store = useChapterSessionStore()
-    const stale = store.openAuthoritative('project-1', 1)
-    const current = store.openAuthoritative('project-2', 2)
+    const stale = store.openAuthoritative('project-1', 1, { startSession: true })
+    const current = store.openAuthoritative('project-2', 2, { startSession: true })
     await current
     first.resolve(currentOutline({ projectId: 'project-1', chapterNumber: 1 }))
     assert.equal(await stale, null)

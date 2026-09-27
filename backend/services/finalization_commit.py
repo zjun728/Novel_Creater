@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import json
 from typing import Callable
 from uuid import uuid4
+from backend.domain.finalization_identity import finalization_storage_id
 
 from backend.domain.canon import (
     AssertionOperator,
@@ -129,23 +130,34 @@ def build_canon_commit(
 ) -> CommitCanonRevision:
     """Translate one confirmed ChangeSet into the existing Canon command."""
 
+    def storage_id(kind: str, value: str) -> str:
+        # Model identifiers are review-local, while Canon keys are global.
+        # Scope short IDs too: projects and later chapters reuse model IDs.
+        # Committed replays return their stored result before this translation.
+        return finalization_storage_id(project_id, source_id, kind, value)
+
+    entity_ids = {item.id: storage_id("entity", item.id) for item in change_set.entities}
     entities = tuple(
         CanonEntityCreate(
-            id=item.id,
+            id=entity_ids[item.id],
             entity_type=item.entity_type,
             canonical_name=item.canonical_name,
         )
         for item in change_set.entities
     )
     aliases = tuple(
-        AliasCreate(id=item.id, entity_id=item.entity_id, alias=item.alias)
+        AliasCreate(
+            id=storage_id("alias", item.id),
+            entity_id=entity_ids.get(item.entity_id, item.entity_id),
+            alias=item.alias,
+        )
         for item in change_set.aliases
     )
     events = [
         CanonEventCreate(
-            id=item.id,
+            id=storage_id("event", item.id),
             event=CanonEventInput(
-                entity_id=item.entity_id,
+                entity_id=entity_ids.get(item.entity_id, item.entity_id),
                 fact_kind=item.fact_kind,
                 field_path=item.field_path,
                 value=thaw_json(item.value),
@@ -161,7 +173,7 @@ def build_canon_commit(
     ]
     events.extend(
         CanonEventCreate(
-            id=item.id,
+            id=storage_id("progress", item.id),
             event=CanonEventInput(
                 entity_id=None,
                 fact_kind=FactKind.DYNAMIC_EVENT,
@@ -391,6 +403,10 @@ class AtomicFinalizationService:
             )
             if blocks:
                 raise FinalizationCommitInvalid("finalization precheck failed")
+            from backend.domain.review_decisions import has_required_findings
+            review = await self.repository.read_current_view(session, command.project_id, command.chapter_session_id)
+            if has_required_findings((review or {}).get('qualityReport')):
+                raise FinalizationCommitInvalid('required findings unresolved')
 
             if await self.canon_committer.repository.find_idempotent(
                 session, command.project_id, command.idempotency_key,

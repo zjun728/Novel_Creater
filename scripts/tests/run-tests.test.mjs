@@ -760,6 +760,67 @@ test('a default preparation failure spawns no child and redacts its environment'
   }
 })
 
+test('the default lifecycle preserves non-approved pytest evidence without failing a successful suite', () => {
+  const fixture = createFormalFakeRoot()
+  const retainedEvidence = path.join(fixture.pytestNamespace, 'astra-final-unit', 'evidence.txt')
+  const stderr = captureStderr()
+  mkdirSync(path.dirname(retainedEvidence), { recursive: true })
+  writeFileSync(retainedEvidence, 'another task owns this evidence')
+
+  try {
+    const exitCode = runSuites(['unit'], {
+      rootDirectory: fixture.rootDirectory,
+      environment: lifecycleFailureEnvironment,
+      spawnSyncImpl(_command, args) {
+        const stage = pytestBasetemp({ args })
+        if (stage !== null) {
+          assertApprovedPytestStage(stage)
+          const ownedStage = path.join(fixture.rootDirectory, stage)
+          mkdirSync(ownedStage, { recursive: true })
+          writeFileSync(path.join(ownedStage, 'current-run.txt'), 'owned test artifact')
+        }
+        return { status: 0 }
+      },
+      stderr: stderr.stream,
+    })
+
+    assert.equal(exitCode, 0)
+    assert.equal(stderr.value(), '')
+    assert.equal(readFileSync(retainedEvidence, 'utf8'), 'another task owns this evidence')
+    assert.equal(existsSync(fixture.keepEvidence), true)
+    assert.equal(existsSync(fixture.pytestNamespace), true)
+    for (const stage of Object.values(approvedPytestTempStages)) {
+      assert.equal(existsSync(path.join(fixture.rootDirectory, stage)), false)
+    }
+  } finally {
+    rmSync(fixture.rootDirectory, { recursive: true, force: true })
+  }
+})
+
+for (const code of ['ENOTEMPTY', 'EEXIST']) {
+  test(`a nonempty shared namespace does not hide ${code} while removing an approved stage`, () => {
+    const fixture = createFormalFakeRoot()
+    const retainedEvidence = path.join(fixture.pytestNamespace, 'another-task.txt')
+    const stage = path.join(fixture.rootDirectory, approvedPytestTempStages.unitApi)
+    const failure = Object.assign(new Error('approved stage still cannot be removed'), { code })
+    const lifecycle = createPytestTempLifecycle({
+      rmSyncImpl(target) {
+        assert.equal(target, stage)
+        throw failure
+      },
+    })
+    writeFileSync(retainedEvidence, 'preserve other work')
+
+    try {
+      assert.throws(() => lifecycle.cleanupAll(fixture.rootDirectory), error => error === failure)
+      assert.equal(existsSync(stage), true)
+      assert.equal(readFileSync(retainedEvidence, 'utf8'), 'preserve other work')
+    } finally {
+      rmSync(fixture.rootDirectory, { recursive: true, force: true })
+    }
+  })
+}
+
 for (const location of ['artifactRoot', 'pytestNamespace', 'stage']) {
   test(`the default lifecycle rejects a ${location} junction without touching its target`, () => {
     const fixture = createReparsePointFixture(location)

@@ -70,9 +70,9 @@ function close() {
       <n-spin :show="loading">
         <n-alert v-if="error" type="error" class="drawer-state">
           {{ error }}
-          <template #action>
+          <div class="alert-actions">
             <n-button size="small" @click="emit('retry')">重试</n-button>
-          </template>
+          </div>
         </n-alert>
 
         <article v-else-if="detail" class="asset-folio">

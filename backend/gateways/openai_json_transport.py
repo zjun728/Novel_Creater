@@ -7,6 +7,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import json
 import math
+import logging
+from uuid import uuid4
 
 import httpx
 
@@ -29,6 +31,7 @@ _ADDITIONAL_PRIVATE_REQUEST_KEYS = frozenset(
         "dsn",
     }
 )
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -656,7 +659,9 @@ class OpenAIJSONTransport:
         messages: Sequence[Mapping[str, str]],
     ) -> OpenAIJSONTransportResult:
         """Make one admitted bounded call and return no sensitive errors."""
-
+        request_id = uuid4().hex
+        stage = "runtime_config"
+        http_status = None
         try:
             client = await self._admit()
         except asyncio.CancelledError:
@@ -665,6 +670,7 @@ class OpenAIJSONTransport:
             messages = ()
             return OPENAI_JSON_TRANSPORT_CANCELLED
         if client is None:
+            _logger.warning("provider_json_failed request_id=%s stage=admission", request_id)
             return OPENAI_JSON_TRANSPORT_FAILURE
 
         result = OPENAI_JSON_TRANSPORT_FAILURE
@@ -770,10 +776,14 @@ class OpenAIJSONTransport:
                 },
                 content=request_body_bytes,
             )
+            stage = "transport"
             async with asyncio.timeout(self._timeout_seconds):
                 response = await client.send(request, stream=True)
+                http_status = response.status_code
+                stage = "http_status"
                 if not response.is_success:
                     raise ValueError("remote failure")
+                stage = "response_headers"
                 content_encoding = response.headers.get(
                     "content-encoding",
                     "",
@@ -793,6 +803,7 @@ class OpenAIJSONTransport:
                         raise ValueError("response too large")
                 response_close = response.aclose
                 response.aclose = _defer_response_close
+                stage = "response_read"
                 try:
                     async for chunk in response.aiter_raw():
                         remaining = (
@@ -812,22 +823,29 @@ class OpenAIJSONTransport:
                     response.aclose = response_close
                     response_close = None
 
+            stage = "response_encoding"
             response_text = bytes(response_bytes).decode("utf-8")
+            stage = "response_safety"
             if provider_response_text_contains_secret(
                 response_text,
                 secrets,
             ):
                 raise ValueError("unsafe response")
+            stage = "envelope_json"
             envelope = json.loads(response_text)
+            stage = "response_safety"
             if provider_response_value_contains_secret(envelope, secrets):
                 raise ValueError("unsafe response")
+            stage = "content_shape"
             content = validate_provider_response_text(
                 envelope["choices"][0]["message"]["content"],
                 strip=True,
             )
             if provider_response_text_contains_secret(content, secrets):
                 raise ValueError("unsafe response")
+            stage = "content_json"
             decoded_value = json.loads(content)
+            stage = "response_safety"
             if provider_response_value_contains_secret(
                 decoded_value,
                 secrets,
@@ -841,7 +859,11 @@ class OpenAIJSONTransport:
             cancelled = True
             initial_cancellation_observed = 1
             result = OPENAI_JSON_TRANSPORT_CANCELLED
-        except Exception:
+        except Exception as error:
+            if isinstance(error, (TimeoutError, httpx.TimeoutException)):
+                stage = "timeout"
+            elif isinstance(error, httpx.TransportError):
+                stage = "transport"
             result = OPENAI_JSON_TRANSPORT_FAILURE
         finally:
             cleanup = self._register_cleanup(
@@ -893,10 +915,15 @@ class OpenAIJSONTransport:
                 result = OPENAI_JSON_TRANSPORT_CANCELLED
             elif not close_succeeded:
                 result = OPENAI_JSON_TRANSPORT_FAILURE
+                stage = "cleanup"
             if observed:
                 _restore_cancellations(current, observed)
             current = None
 
+        if not result.succeeded and not result.cancelled:
+            # Closed phase labels and numeric status only: no response, URL,
+            # prompt, exception text or credentials enter the diagnostic log.
+            _logger.warning("provider_json_failed request_id=%s stage=%s http_status=%s", request_id, stage, http_status)
         return result
 
 

@@ -1,5 +1,5 @@
 <script setup>
-import { onBeforeRouteLeave } from 'vue-router'
+import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import { NButton, NResult, NSkeleton } from 'naive-ui'
 import { ref } from 'vue'
 
@@ -16,6 +16,8 @@ defineProps({
   },
 })
 const routeProject = useRouteProject()
+const router = useRouter()
+function returnToProject() { void router.push(`/projects/${routeProject.project.value.id}/overview`) }
 const message = useAppMessage()
 const operationBusy = ref(false)
 const dirty = ref(false)
@@ -66,14 +68,15 @@ onBeforeRouteLeave(() => {
 
   <section v-else class="model-settings-page">
     <section class="model-settings-sheet">
-      <p class="eyebrow">PROJECT SETTINGS · MODEL SNAPSHOT</p>
-      <h1>{{ routeProject.project.value?.title || '项目模型绑定' }}</h1>
+      <h1>模型绑定</h1>
       <p class="intro">
-        模型调整只影响之后的新任务；历史结果继续记录当时的 Provider、模型与绑定 revision。
+        为本项目选择创作使用的模型；调整只影响之后的新任务。
       </p>
       <TaskModelBinding
         :project-id="projectId"
         :readonly="routeProject.state.value === 'archived'"
+        @saved="returnToProject"
+        @cancel="returnToProject"
         @busy-change="operationBusy = $event"
         @dirty-change="dirty = $event"
       />
@@ -82,9 +85,10 @@ onBeforeRouteLeave(() => {
 </template>
 
 <style scoped>
-.model-settings-page { min-height: 100%; padding: clamp(22px, 4vw, 52px); color: #302a23; background: #f4efe4; }
-.model-settings-sheet { width: min(1080px, 100%); margin-inline: auto; padding: clamp(22px, 4vw, 42px); border: 1px solid #d8cbb7; border-radius: 14px; background: #fffdf8; box-shadow: 0 22px 60px rgba(58, 43, 27, .065); }
+.model-settings-page { min-height: 100%; padding: 24px 36px; color: #302a23; background: var(--nc-canvas); }
+.model-settings-sheet { width: min(1080px, 100%); margin-inline: auto; padding: 28px; border: 1px solid #d8cbb7; border-radius: 14px; background: #fffdf8; box-shadow: 0 22px 60px rgba(58, 43, 27, .065); }
 .eyebrow { margin: 0; color: #9a3f32; font: 700 10px Georgia, serif; letter-spacing: .17em; }
-h1 { margin: 8px 0 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: clamp(30px, 5vw, 46px); font-weight: 600; }
+h1 { margin: 8px 0 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: 30px; font-weight: 600; }
 .intro { max-width: 72ch; margin: 10px 0 28px; color: #766c60; font-size: 13px; line-height: 1.75; }
+.model-settings-sheet{padding:24px 28px}.intro{margin-bottom:18px}h1{margin:0}
 </style>

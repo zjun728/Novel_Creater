@@ -19,6 +19,7 @@ from backend.repositories.project_lifecycle import (
 
 
 _PROJECT_OWNED_DELETE_ORDER = (
+    "continuity_issues",
     "reference_uses",
     "final_chapters",
     "finalization_records",
@@ -265,6 +266,10 @@ class ProjectRepository:
                WHERE project_id=%s""",
             (project_id,),
         )
+        outline_authorities = (
+            await self.chapter_outline_repository.read_current_authorities(session, project_id)
+            if max_final_chapter_number and active_session is None else None
+        )
         model_tasks = await session.fetchall(
             f"""SELECT item.task_key,item.resolution_status,
                        CASE WHEN
@@ -313,6 +318,7 @@ class ProjectRepository:
             "max_final_chapter_number": max_final_chapter_number,
             "authoritative_chapter_number": authoritative_chapter_number,
             "canon_projection": canon_projection,
+            "outline_authorities": outline_authorities,
             "outline_head": outline_head,
             "outline_draft": outline_draft,
             "outline_operation": outline_operation,

@@ -194,6 +194,9 @@ class _ChapterAuthorityRepository:
 
 
 class _OutlineAuthorityRepository:
+    async def read_current_authorities(self, session, project_id):
+        return None
+
     def __init__(self, *, head=None, draft=None, attempt=None):
         self.head = head
         self.draft = draft
@@ -489,7 +492,7 @@ async def test_preparation_priority_is_operation_session_then_foundation_and_pla
             _contract(),
             (
                 "prepare_chapter_outline",
-                "/projects/project%20%2F%20%E4%B8%80/planning/story-blocks",
+                "/projects/project%20%2F%20%E4%B8%80/planning/outlines",
                 "chapter_outline_missing",
             ),
         ),
@@ -737,7 +740,7 @@ async def test_outline_operation_draft_and_confirmed_head_have_fixed_priority():
         "canon_projection": _current_projection(),
     }
     story_blocks_path = (
-        "/projects/project%20%2F%20%E4%B8%80/planning/story-blocks"
+        "/projects/project%20%2F%20%E4%B8%80/planning/outlines"
     )
     writer_path = (
         "/projects/project%20%2F%20%E4%B8%80/write/chapters/8"

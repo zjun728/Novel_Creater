@@ -310,7 +310,9 @@ async def test_load_preparation_context_decodes_closed_heads_canon_references_an
     } for key in ("audit", "extraction")]
     session = CapturingSession(
         rows=[head], all_rows=[entities, states, references, bindings,
-                              [{"content_json": json.dumps(historical)}]],
+                              [{"content_json": json.dumps(historical)}],
+                              [{"field_path": "plot.progress.scene_task.task-1",
+                                "payload_json": '{"targetType":"scene_task","targetId":"task-1","status":"completed"}'}]],
     )
 
     result = await FinalizationRepository().load_preparation_context(
@@ -323,6 +325,10 @@ async def test_load_preparation_context_decodes_closed_heads_canon_references_an
         "value": "城门",
     }
     assert result["canon_context"]["currentState"][1]["payload"] == "守城"
+    assert result["canon_context"]["actualProgress"] == [{
+        "field_path": "plot.progress.scene_task.task-1",
+        "payload": {"targetType": "scene_task", "targetId": "task-1", "status": "completed"},
+    }]
     assert result["planning_context"]["content"] == {"volumes": []}
     assert result["outline_context"]["content"]["chapterGoal"] == "进入城中。"
     assert result["planning_context"]["protectedNodeIds"] == [
@@ -499,6 +505,7 @@ async def test_read_current_view_decodes_only_public_report_and_change_set():
             "source": "extraction", "payload": payload,
         },
         "confirmation": None,
+        "findingDecisions": {"revision": 0, "ignoredFindingIds": []},
     }
 
 

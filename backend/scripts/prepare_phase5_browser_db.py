@@ -118,7 +118,7 @@ async def verify_postconditions(database_name: str) -> None:
             )
             progress = await session.fetchone(
                 """SELECT field_path,payload_json FROM plot_thread_projections
-                    WHERE project_id=%s AND field_path LIKE 'plot.progress.%%'""",
+                    WHERE project_id=%s AND field_path LIKE 'plot.progress.story_block.%%'""",
                 (PROJECT,),
             )
             planning = await session.fetchone(
@@ -127,6 +127,24 @@ async def verify_postconditions(database_name: str) -> None:
                      JOIN planning_revisions revision
                        ON revision.id=head.planning_revision_id
                     WHERE head.project_id=%s""",
+                (PROJECT,),
+            )
+            issues = await session.fetchall(
+                """SELECT issue.category,issue.severity,issue.status,issue.description,
+                          issue.suggestion,issue.future_target,issue.resolution_note,
+                          issue.source_chapter,issue.source_finalization_id,
+                          issue.source_canon_revision,issue.created_at,issue.updated_at,
+                          record.id AS finalization_id,
+                          record.committed_canon_revision AS finalization_canon_revision,
+                          chapter.chapter_num AS final_chapter_number
+                     FROM continuity_issues issue
+                     LEFT JOIN finalization_records record
+                       ON record.project_id=issue.project_id
+                      AND record.id=issue.source_finalization_id
+                     LEFT JOIN final_chapters chapter
+                       ON chapter.project_id=issue.project_id
+                      AND chapter.finalization_record_id=issue.source_finalization_id
+                    WHERE issue.project_id=%s""",
                 (PROJECT,),
             )
         finally:
@@ -196,6 +214,23 @@ async def verify_postconditions(database_name: str) -> None:
         or planning_payload["plots"][0]["futureDirection"] != "追查城内接头人。"
     ):
         raise RuntimeError("Phase5 future planning projection is invalid")
+    if len(issues) != 1:
+        raise RuntimeError("Phase5 continuity issue count is invalid")
+    issue = issues[0]
+    if not (
+        issue["category"] == "time"
+        and issue["severity"] == "medium"
+        and issue["status"] == "resolved"
+        and issue["description"] == "第一章入城时间需与后续行程核对。"
+        and issue["suggestion"] == "后续出城前交代经过时长。"
+        and issue["future_target"] == "在第二章补充时间说明。"
+        and issue["resolution_note"] == "已核对第一章入城顺序，后续仅补充时间说明。"
+        and issue["source_chapter"] == issue["final_chapter_number"] == 1
+        and issue["source_finalization_id"] == issue["finalization_id"]
+        and issue["source_canon_revision"] == issue["finalization_canon_revision"] == 1
+        and issue["updated_at"] > issue["created_at"]
+    ):
+        raise RuntimeError("Phase5 continuity issue persistence or source is invalid")
 
 
 async def main() -> None:

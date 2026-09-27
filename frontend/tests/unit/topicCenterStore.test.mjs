@@ -11,6 +11,32 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
+test('successful topic saves remain successful without a list refresh', async () => {
+  setActivePinia(createPinia())
+  const store = createTopicCenterStore({
+    saveDirection: async () => ({ directionId: 'd1', version: 1 }),
+    saveCandidate: async () => ({ candidateId: 'c1', version: 1 }),
+    listDirections: async () => { throw new Error('offline') },
+    listCandidates: async () => { throw new Error('offline') },
+  }, 'topic-save-receipts')()
+  assert.deepEqual(await store.saveDirection('discussion', {}), { directionId: 'd1', version: 1 })
+  assert.deepEqual(await store.saveCandidate('discussion', {}), { candidateId: 'c1', version: 1 })
+})
+
+test('leaving topics preserves the selected discussion basis within the current app session', () => {
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  const useStore = createTopicCenterStore({}, 'topic-context-retention')
+  const store = useStore()
+  store.selectedEvidence = [{ snapshotId: 'snapshot-1', contentHash: 'a'.repeat(64) }]
+  store.discussionSubject = { kind: 'candidate', id: 'candidate-1', version: 2 }
+  store.leaveSection()
+  const returned = useStore(pinia)
+  assert.equal(returned.selectedEvidence[0].snapshotId, 'snapshot-1')
+  assert.equal(returned.discussionSubject.version, 2)
+  assert.deepEqual(useStore(createPinia()).selectedEvidence, [])
+})
+
 test('late list and detail responses cannot replace newer topic state', async () => {
   setActivePinia(createPinia())
   const oldList = deferred()

@@ -1,9 +1,13 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, nextTick } from 'vue'
 import { NAlert, NButton, NEmpty, NSpin, NTag } from 'naive-ui'
 
+import { clearTopicContext } from '@/application/topics/topicContext'
+import { enterBlankTopicDiscussion } from '@/application/topics/topicSuggestionController'
 import { providerSettingsPath } from '@/router/projectRoutes'
 import { useTopicCenterStore } from '@/stores/topicCenterStore'
+import { TOPIC_FIELD_LABELS } from '../../application/topics/topicRevision.js'
+import { topicSuggestionKey } from '../../application/topics/topicSuggestionKey.js'
 import {
   clearTopicDraft,
   readTopicDraft,
@@ -19,9 +23,11 @@ const emit = defineEmits(['remove-evidence', 'clear-subject'])
 const topics = useTopicCenterStore()
 const discussionTitle = ref('')
 const localError = ref('')
+const saveNotice = ref('')
 const creating = ref(false)
+const blankDraft = computed({ get: () => readTopicDraft('blank-topic'), set: value => writeTopicDraft('blank-topic', value) })
 const savingKey = ref('')
-const savedKeys = ref([])
+const savedKeys = computed({ get: () => topics.savedSuggestionKeys || [], set: value => { topics.savedSuggestionKeys = value } })
 
 const detail = computed(() => topics.activeDiscussion)
 const discussionId = computed(() => detail.value?.discussion?.id || '')
@@ -31,10 +37,11 @@ const draft = computed({
     if (discussionId.value) writeTopicDraft(discussionId.value, value)
   },
 })
+const recommendation = computed(() => topics.discussionRecommendation?.discussionId === discussionId.value ? topics.discussionRecommendation : null)
 const messages = computed(() => detail.value?.messages || [])
 const suggestionRequests = computed(() => (detail.value?.requests || []).filter(request => (
   request.status === 'succeeded' && request.assistantMessageId && request.result
-)))
+)).slice().reverse())
 const sendFailure = computed(() => (
   topics.lastSendFailure?.discussionId === discussionId.value ? topics.lastSendFailure : null
 ))
@@ -42,7 +49,11 @@ const providerNotReady = computed(() => sendFailure.value?.code === 'TOPIC_PROVI
 const sendFailureMessage = computed(
   () => (providerNotReady.value
     ? '默认模型尚未配置。请先完成配置，返回后可继续发送；当前输入已保留。'
-    : sendFailure.value?.message || 'AI 讨论暂时失败，输入内容已保留'),
+    : ({
+      TOPIC_PROVIDER_FAILED: '模型请求失败，输入已保留。请稍后重试；持续失败时可到设置检查模型连接。',
+      TOPIC_INVALID_RESPONSE: '模型返回的内容不完整，输入已保留。请重试或补充更明确的要求。',
+      TOPIC_OUTCOME_UNKNOWN: '发送结果暂未确认，输入已保留。请先重新打开本讨论核对回复，避免重复发送。',
+    }[sendFailure.value?.code] || 'AI 讨论暂时失败，输入已保留。请核对讨论记录后再试。')),
 )
 
 function commandKey() {
@@ -61,6 +72,7 @@ async function createDiscussion() {
   creating.value = true
   localError.value = ''
   try {
+    clearTopicContext(topics)
     await topics.createDiscussion(title)
     discussionTitle.value = ''
   } catch (failure) {
@@ -70,9 +82,25 @@ async function createDiscussion() {
   }
 }
 
+async function sendBlankDiscussion() {
+  const content = blankDraft.value.trim()
+  if (!content || creating.value || topics.sending) return
+  creating.value = true
+  localError.value = ''
+  try {
+    const created = await topics.createDiscussion(content.slice(0, 40))
+    clearTopicContext(topics)
+    await nextTick()
+    writeTopicDraft(created.discussion.id, content)
+    blankDraft.value = ''
+    await send()
+  } catch (failure) { localError.value = failure?.message || '讨论创建失败，输入已保留' }
+  finally { creating.value = false }
+}
+
 async function openDiscussion(id) {
   localError.value = ''
-  try { await topics.openDiscussion(id) } catch (failure) {
+  try { await topics.openDiscussion(id); clearTopicContext(topics) } catch (failure) {
     localError.value = failure?.message || '讨论记录加载失败'
   }
 }
@@ -85,7 +113,7 @@ async function send() {
   localError.value = ''
   try {
     await topics.sendMessage(targetDiscussionId, {
-      content,
+      content: recommendation.value ? `${content}\n\n本次指定讨论的建议：${recommendation.value.title}` : content,
       idempotencyKey: commandKey(),
       evidence: evidencePayload(),
       subject: props.subject ? {
@@ -118,13 +146,13 @@ async function saveSuggestion(kind, request, payload, index) {
   if (!discussionId || savingKey.value) return
   savingKey.value = key
   localError.value = ''
+  saveNotice.value = ''
   const data = {
     messageId: request.assistantMessageId,
     payload,
     evidence: (request.basis?.evidence || []).map(
       ({ snapshotId, contentHash }) => ({ snapshotId, contentHash }),
     ),
-    idempotencyKey: commandKey(),
   }
   const requestSubject = request.basis?.subject
   if (requestSubject?.kind === kind) {
@@ -132,9 +160,11 @@ async function saveSuggestion(kind, request, payload, index) {
     data.expectedVersion = requestSubject.version
   }
   try {
+    data.idempotencyKey = await topicSuggestionKey(discussionId, request.id, kind, index)
     if (kind === 'direction') await topics.saveDirection(discussionId, data)
     else await topics.saveCandidate(discussionId, data)
     savedKeys.value = [...savedKeys.value, key]
+    saveNotice.value = kind === 'direction' ? '已保存，可在方向库查看。' : '已保存，可在候选种子库查看。'
   } catch (failure) {
     localError.value = failure?.message || '保存失败，请核对当前版本后重试'
   } finally {
@@ -145,13 +175,14 @@ async function saveSuggestion(kind, request, payload, index) {
 
 <template>
   <section class="discussion-panel" :class="{ compact }" aria-labelledby="discussion-panel-title">
-    <header class="panel-heading">
-      <div><p>IDEA CONVERSATION</p><h2 id="discussion-panel-title">AI 选题讨论</h2></div>
+    <header class="panel-heading" hidden>
+      <div><p>IDEA CONVERSATION</p><h2>AI 选题讨论</h2></div>
       <n-tag :bordered="false">显式保存</n-tag>
     </header>
-    <p class="panel-intro">从空白想法开始，不依赖市场证据或既有方向。AI 的回复只是建议，不会自动进入正式库。</p>
+    <p class="panel-intro" hidden>从空白想法开始，不依赖市场证据或既有方向。AI 的回复只是建议，不会自动进入正式库。</p>
 
     <n-alert v-if="localError" type="error" aria-live="assertive" class="panel-alert">{{ localError }}</n-alert>
+    <n-alert v-if="saveNotice" type="success" aria-live="polite" class="panel-alert">{{ saveNotice }}</n-alert>
     <n-alert
       v-if="sendFailure"
       type="error"
@@ -165,11 +196,8 @@ async function saveSuggestion(kind, request, payload, index) {
     </n-alert>
     <div class="discussion-layout">
       <aside class="discussion-index" aria-label="讨论列表">
-        <form class="new-discussion" @submit.prevent="createDiscussion">
-          <label for="topic-discussion-title">新讨论标题</label>
-          <input id="topic-discussion-title" v-model="discussionTitle" maxlength="300" placeholder="例如：东方玄幻里的县城秩序重建">
-          <n-button attr-type="submit" size="small" :disabled="!discussionTitle.trim()" :loading="creating">开始讨论</n-button>
-        </form>
+        <h2 id="discussion-panel-title">讨论记录</h2>
+        <n-button class="new-discussion-button" :disabled="topics.sending" @click="enterBlankTopicDiscussion(topics)">＋ 新讨论</n-button>
         <div class="discussion-list" tabindex="0">
           <button
             v-for="item in topics.discussions"
@@ -186,6 +214,7 @@ async function saveSuggestion(kind, request, payload, index) {
       <div class="conversation">
         <template v-if="detail">
           <header class="conversation-title"><strong>{{ detail.discussion.title }}</strong><span>{{ messages.length }} 条消息</span></header>
+          <div v-if="recommendation" class="subject-chip"><span>围绕建议：{{ recommendation.title }}</span><button type="button" @click="topics.discussionRecommendation = null">移除建议上下文</button></div>
           <div v-if="subject" class="subject-chip">
             <span>正在继续讨论：{{ subject.title }} · 版本 {{ subject.version }}</span>
             <button type="button" @click="emit('clear-subject')">移除上下文</button>
@@ -201,20 +230,7 @@ async function saveSuggestion(kind, request, payload, index) {
               <small>{{ message.role === 'user' ? '我' : 'AI 建议' }}</small><p>{{ message.content }}</p>
             </article>
             <n-empty v-if="!messages.length" description="写下你的想法，开始第一轮讨论。" />
-            <template v-for="request in suggestionRequests" :key="request.id">
-              <article v-for="(suggestion, index) in request.result.directionSuggestions" :key="`d:${index}`" class="suggestion">
-                <small>方向建议</small><h3>{{ suggestion.title }}</h3><p>{{ suggestion.readerPromise }}</p>
-                <n-button size="small" :disabled="savedKeys.includes(`${request.id}:direction:${index}`)" :loading="savingKey === `${request.id}:direction:${index}`" @click="saveSuggestion('direction', request, suggestion, index)">
-                  {{ savedKeys.includes(`${request.id}:direction:${index}`) ? '已保存为方向' : '保存为方向' }}
-                </n-button>
-              </article>
-              <article v-for="(suggestion, index) in request.result.candidateSuggestions" :key="`c:${index}`" class="suggestion candidate">
-                <small>候选种子建议</small><h3>{{ suggestion.title }}</h3><p>{{ suggestion.logline }}</p>
-                <n-button size="small" :disabled="savedKeys.includes(`${request.id}:candidate:${index}`)" :loading="savingKey === `${request.id}:candidate:${index}`" @click="saveSuggestion('candidate', request, suggestion, index)">
-                  {{ savedKeys.includes(`${request.id}:candidate:${index}`) ? '已保存为候选种子' : '保存为候选种子' }}
-                </n-button>
-              </article>
-            </template>
+
           </div>
           <div class="composer">
             <label for="topic-message">继续讨论</label>
@@ -223,13 +239,40 @@ async function saveSuggestion(kind, request, payload, index) {
             <p aria-live="polite">{{ topics.sending ? 'AI 正在分析你的想法，请稍候……' : '' }}</p>
           </div>
         </template>
-        <n-empty v-else description="选择一个讨论，或从左侧创建新讨论。" />
+        <div v-else class="blank-conversation">
+          <h3>从你的想法开始</h3><p>这是一场空白讨论，不包含创作推荐或市场资料。</p>
+          <label for="blank-topic-message">你的想法</label>
+          <textarea id="blank-topic-message" v-model="blankDraft" rows="6" maxlength="20000" placeholder="写下你的灵感、人物或故事设想……" @keydown.enter.exact.prevent="sendBlankDiscussion" />
+          <n-button type="primary" :disabled="!blankDraft.trim() || creating || topics.sending" :loading="creating" @click="sendBlankDiscussion">发送给 AI</n-button>
+        </div>
       </div>
+      <aside class="direction-summary" aria-label="方向摘要">
+        <h2>方向摘要</h2><p v-if="!suggestionRequests.length" class="summary-empty">讨论后，这里会呈现可保存的方向与候选种子。</p>
+            <template v-for="request in suggestionRequests" :key="request.id">
+              <article v-for="(suggestion, index) in request.result.directionSuggestions" :key="`d:${index}`" class="suggestion">
+                <small>待保存 · 方向建议</small><h3>{{ suggestion.title }}</h3><h4>故事张力</h4><p>{{ suggestion.readerPromise }}</p><h4>长篇空间</h4><p>{{ suggestion.longFormPotential }}</p>
+                <details class="suggestion-details"><summary>查看完整方向</summary><dl><div v-for="(value, field) in suggestion" :key="field"><dt>{{ TOPIC_FIELD_LABELS[field] || '内容' }}</dt><dd>{{ value }}</dd></div></dl></details>
+                <n-button size="small" :disabled="savedKeys.includes(`${request.id}:direction:${index}`)" :loading="savingKey === `${request.id}:direction:${index}`" @click="saveSuggestion('direction', request, suggestion, index)">
+                  {{ savedKeys.includes(`${request.id}:direction:${index}`) ? '已保存为方向' : '保存为方向' }}
+                </n-button>
+              </article>
+              <article v-for="(suggestion, index) in request.result.candidateSuggestions" :key="`c:${index}`" class="suggestion candidate">
+                <small>候选种子建议</small><h3>{{ suggestion.title }}</h3><p>{{ suggestion.logline }}</p>
+                <details class="suggestion-details"><summary>查看完整候选种子</summary><dl><div v-for="(value, field) in suggestion" :key="field"><dt>{{ TOPIC_FIELD_LABELS[field] || '内容' }}</dt><dd>{{ value }}</dd></div></dl></details>
+                <n-button size="small" :disabled="savedKeys.includes(`${request.id}:candidate:${index}`)" :loading="savingKey === `${request.id}:candidate:${index}`" @click="saveSuggestion('candidate', request, suggestion, index)">
+                  {{ savedKeys.includes(`${request.id}:candidate:${index}`) ? '已保存为候选种子' : '保存为候选种子' }}
+                </n-button>
+              </article>
+            </template>
+      </aside>
     </div>
+    <footer class="topic-footer">先讨论，再保存方向；候选种子创建后才进入项目。</footer>
   </section>
 </template>
 
 <style scoped>
+.blank-conversation{display:flex;flex-direction:column;gap:14px;align-self:start}.blank-conversation textarea{padding:14px;background:#fffefa;border:1px solid #ddd5c8;border-radius:6px;font:inherit}.blank-conversation p{color:#6f685e}.blank-conversation :deep(.n-button){align-self:flex-end}
+.suggestion-details{margin:12px 0;font-size:13px}.suggestion-details summary{cursor:pointer;color:#8f3f31}.suggestion-details dl{display:grid;gap:12px}.suggestion-details dt{font-weight:600}.suggestion-details dd{margin:5px 0 0;white-space:pre-wrap;line-height:1.8;overflow-wrap:anywhere}
 .discussion-panel { min-width:0; padding:22px; border:1px solid #d8c9b5; background:rgba(255,253,248,.94); }
 .panel-heading,.conversation-title,.composer>div { display:flex; align-items:center; justify-content:space-between; gap:12px; }
 .panel-heading p { margin:0; color:#9a4938; font:750 9px Georgia,serif; letter-spacing:.14em; }
@@ -255,4 +298,11 @@ async function saveSuggestion(kind, request, payload, index) {
 .composer { display:grid; gap:7px; padding-top:13px; border-top:1px solid #e1d6c5; }.composer textarea{resize:vertical}.composer small{color:#8c7b68}.composer p{min-height:18px;margin:0;color:#48654f;font-size:10px}
 .compact .discussion-layout { grid-template-columns:1fr; }.compact .discussion-index{border-right:0;border-bottom:1px solid #e1d6c5}.compact .discussion-list{max-height:150px}.compact .message-scroll{max-height:360px}
 @media(max-width:720px){.discussion-panel{padding:16px}.discussion-layout{grid-template-columns:1fr}.discussion-index{border-right:0;border-bottom:1px solid #e1d6c5}.discussion-list{max-height:none;overflow-y:visible}.conversation{padding:12px}.message-scroll{max-height:none;overflow-y:visible}.composer>div{align-items:flex-start;flex-direction:column}.composer :deep(.n-button){width:100%}}
+
+.discussion-panel{padding:0;border:0;background:none}.discussion-layout{grid-template-columns:216px minmax(0,1fr) 322px;gap:16px;border:0;height:calc(100dvh - 348px);min-height:400px}.discussion-index,.conversation,.direction-summary{border:1px solid #ddd5c8;border-radius:6px;background:#fffefa;min-height:0;padding:18px}.discussion-index{display:flex;flex-direction:column}.discussion-index h2,.direction-summary>h2{font-size:15px;font-weight:500;margin:0 0 16px}.new-discussion-button{width:100%;min-height:46px}.discussion-list{flex:1;max-height:none}.discussion-list button.active{background:#efe2d7;border:0;border-radius:10px}.conversation{display:flex;flex-direction:column;gap:10px;padding:20px}.message-scroll{flex:1;max-height:none;min-height:80px}.composer{flex-shrink:0}.composer textarea{max-height:120px}.message.assistant{max-width:100%;border:0;background:none;padding:10px 0}.message.user{border:0;border-radius:10px}.direction-summary{overflow-y:auto}.direction-summary .suggestion{border:0;border-bottom:1px solid #ddd5c8;border-radius:0;background:none;margin:0 0 18px;padding:0 0 18px}.direction-summary h3{font-size:23px}.direction-summary h4{font-size:16px;margin:16px 0 6px}.direction-summary p{font-size:14px}.direction-summary :deep(.n-button){width:100%;min-height:40px}.summary-empty{color:#6f685e;line-height:1.8}.blank-conversation{flex:1}.blank-conversation textarea{min-height:100px;max-height:220px}.topic-footer{position:fixed;bottom:0;left:224px;right:0;min-height:76px;padding:26px 36px;background:#fffefa;border-top:1px solid #ddd5c8;color:#6f685e;font-size:13px;z-index:10}
+@media(min-width:1120px) and (max-height:820px){.discussion-layout{height:calc(100dvh - 296px);min-height:360px;grid-template-columns:190px minmax(0,1fr) 290px}.conversation{padding:14px}.composer textarea{max-height:85px}.composer p{min-height:0}.discussion-index,.direction-summary{padding:14px}}
+@media(max-width:1119px){.discussion-layout{grid-template-columns:180px minmax(0,1fr);height:auto}.direction-summary{grid-column:1/-1}.topic-footer{left:72px}}
+@media(max-width:760px){.discussion-layout{grid-template-columns:1fr}.topic-footer{left:0}.direction-summary{grid-column:auto}}
+.panel-heading[hidden],.panel-intro[hidden]{display:none}
+.topic-footer :deep(.n-button--primary-type),.discussion-panel :deep(.n-button--primary-type),.direction-summary :deep(.n-button){--n-color:#934735!important;--n-color-hover:#803b2c!important;--n-color-pressed:#803b2c!important;--n-text-color:#fffefa!important;--n-text-color-hover:#fffefa!important;--n-text-color-pressed:#fffefa!important;--n-border:1px solid #934735!important;--n-border-hover:1px solid #934735!important;background:#934735;color:#fffefa}.record-list>button strong{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.record-list>button span{font-family:inherit;font-size:12px}.status-tabs{margin:0 8px 18px}.discussion-list strong{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.conversation-title strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.conversation-title span{flex-shrink:0}
 </style>

@@ -1,6 +1,8 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
-import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute } from 'vue-router'
+import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
+import { api } from '../api/db/client.js'
+import { createPlanningContinuation } from '../application/planning/planningContinuation.js'
 
 import { createPlanningWorkspaceController } from '../application/planning/planningWorkspaceController.js'
 import PlanningWorkspace from '../components/planning/PlanningWorkspace.vue'
@@ -10,6 +12,7 @@ import {
   planningPlotsPath,
   planningStoryBlocksPath,
   planningVolumesPath,
+  planningOutlinesPath,
 } from '../router/projectRoutes.js'
 import { useOperationStore } from '../stores/operationStore.js'
 import { usePlanningStore } from '../stores/planningStore.js'
@@ -19,7 +22,7 @@ const props = defineProps({
   activeTab: {
     type: String,
     default: '',
-    validator: value => ['', 'volumes', 'plots', 'story-blocks'].includes(value),
+    validator: value => ['', 'volumes', 'plots', 'story-blocks', 'outlines'].includes(value),
   },
 })
 const route = useRoute()
@@ -28,10 +31,19 @@ const planningStore = usePlanningStore()
 const operationStore = useOperationStore()
 const message = useAppMessage()
 const projectId = computed(() => String(route.params.projectId || ''))
+const router = useRouter()
+const continuation = createPlanningContinuation({
+  projectId: () => projectId.value,
+  loadPreparation: id => api.projects.preparation(id),
+  navigate: path => router.push(path),
+})
+watch(projectId, continuation.reset)
+onBeforeUnmount(continuation.reset)
 const ROUTE_TABS = Object.freeze({
   ProjectPlanningVolumes: 'volumes',
   ProjectPlanningPlots: 'plots',
   ProjectPlanningStoryBlocks: 'story-blocks',
+  ProjectPlanningOutlines: 'outlines',
 })
 const activeTab = computed(() => (
   props.activeTab || ROUTE_TABS[String(route.name)] || 'volumes'
@@ -100,6 +112,10 @@ onBeforeUnmount(() => (
       >
         故事块
       </router-link>
+      <router-link
+        :to="planningOutlinesPath(projectId)"
+        :aria-current="activeTab === 'outlines' ? 'page' : undefined"
+      >章节小纲</router-link>
     </nav>
 
     <section v-if="routeProject.state.value === 'loading'" class="route-sheet" aria-busy="true">
@@ -114,20 +130,30 @@ onBeforeUnmount(() => (
       <h1>项目暂时无法加载</h1>
       <button type="button" @click="routeProject.reload">重试</button>
     </section>
+    <template v-else>
+    <aside v-if="continuation.message.value" class="continuation-status" role="status">
+      <span>{{ continuation.message.value }}</span>
+      <button type="button" :disabled="continuation.pending.value" @click="continuation.proceed">重新查询下一步</button>
+    </aside>
     <planning-workspace
-      v-else
       :store="planningStore"
       :controller="controller"
       :active-tab="activeTab"
+      @confirmed="continuation.proceed"
+      @continue="continuation.proceed"
+      @section="tab => router.push(tab === 'plots' ? planningPlotsPath(projectId) : planningStoryBlocksPath(projectId))"
     />
+    </template>
   </section>
 </template>
 
 <style scoped>
-.planning-page { min-height:100%; padding:clamp(18px,4vw,54px); color:var(--nc-ink); background:var(--nc-canvas); }
+.planning-page { min-height:100%; padding:24px 32px; color:var(--nc-ink); background:var(--nc-canvas); }
+.continuation-status { display:flex; align-items:center; justify-content:space-between; gap:16px; width:min(1120px,100%); margin:0 auto 16px; padding:14px; background:var(--nc-paper); border:1px solid var(--nc-border); }
 .planning-tabs { display:flex; width:min(1120px,100%); gap:4px; margin:0 auto 16px; border-bottom:1px solid var(--nc-border); }
 .planning-tabs a { position:relative; padding:10px 18px; color:var(--nc-muted); text-decoration:none; }
 .planning-tabs a[aria-current="page"] { color:var(--nc-ink); font-weight:700; }
 .planning-tabs a[aria-current="page"]::after { position:absolute; right:12px; bottom:-1px; left:12px; height:2px; background:var(--nc-vermilion); content:''; }
 .route-sheet { width:min(1120px,100%); margin:auto; padding:32px; border:1px solid var(--nc-border); background:var(--nc-paper); }
+@media(max-width:700px){.planning-tabs{gap:0;flex-wrap:wrap}.planning-tabs a{padding:10px 12px;white-space:nowrap;font-size:14px}}
 </style>

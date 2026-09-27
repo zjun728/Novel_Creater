@@ -106,42 +106,29 @@ onBeforeUnmount(() => {
   <section class="asset-library" aria-labelledby="style-library-title">
     <header class="library-hero">
       <div>
-        <p class="eyebrow">CREATIVE ASSETS · STYLE INDEX</p>
         <h1 id="style-library-title">风格模板库</h1>
         <span>查看批准示例与使用边界；项目会在创作契约中冻结具体版本。</span>
       </div>
+
+    </header>
       <nav class="library-tabs" aria-label="创作资产分类">
         <router-link to="/assets/styles" aria-current="page">风格模板</router-link>
         <router-link to="/assets/experience">经验卡</router-link>
-        <router-link to="/assets/corpus">语料档案室</router-link>
+        <router-link to="/assets/corpus">语料档案</router-link>
       </nav>
-    </header>
 
-    <section class="inventory-ledger" aria-label="风格资产清单">
-      <div>
-        <span>ASSET PACKAGE</span>
-        <strong>{{ inventory.assetPackageVersion || '—' }}</strong>
-      </div>
-      <div>
-        <span>TAXONOMY</span>
-        <strong>{{ inventory.taxonomyPackageVersion || '—' }}</strong>
-      </div>
-      <div class="inventory-count">
-        <span>APPROVED STYLES</span>
-        <strong>{{ inventory.styleCount ?? '—' }}</strong>
-      </div>
-    </section>
 
+    <details class="asset-package"><summary>资产版本信息</summary><p>{{ inventory.assetPackageVersion || '—' }} · {{ inventory.taxonomyPackageVersion || '—' }}</p><span>{{ inventory.styleCount ?? '—' }}</span></details>
     <n-alert v-if="store.inventoryError" type="warning" class="state-alert">
       {{ store.inventoryError }}
-      <template #action><n-button size="small" @click="loadInventory">重试清单</n-button></template>
+      <div class="alert-actions"><n-button size="small" @click="loadInventory">重试清单</n-button></div>
     </n-alert>
 
     <section class="filter-ribbon" aria-label="风格筛选">
       <n-input
         v-model:value="search"
         clearable
-        placeholder="搜索风格名称或 stable key"
+        placeholder="搜索风格名称或标识"
         aria-label="搜索风格"
       />
       <n-select v-model:value="genre" :options="genreOptions" clearable placeholder="题材" aria-label="按题材筛选" />
@@ -151,7 +138,7 @@ onBeforeUnmount(() => {
 
     <n-alert v-if="store.styleError" type="error" class="state-alert">
       {{ store.styleError }}
-      <template #action><n-button size="small" @click="retryList">重试</n-button></template>
+      <div class="alert-actions"><n-button size="small" @click="retryList">重试</n-button></div>
     </n-alert>
 
     <div v-if="store.loadingStyles" class="loading-grid" aria-busy="true">
@@ -245,4 +232,14 @@ onBeforeUnmount(() => {
 @media (max-width: 900px) { .filter-ribbon { grid-template-columns: repeat(2, minmax(0, 1fr)); } .style-grid { grid-template-columns: 1fr; } }
 @media (max-width: 620px) { .asset-library { padding: 22px 16px; } .library-hero { align-items: flex-start; flex-direction: column; } .inventory-ledger { grid-template-columns: 1fr; } .inventory-ledger > div { border-right: 0; border-bottom: 1px solid #ddd1bf; } .inventory-count { text-align: left; } .filter-ribbon { grid-template-columns: 1fr; } .style-card { grid-template-columns: 44px minmax(0, 1fr); } }
 @media (prefers-reduced-motion: reduce) { .style-card { transition: none; } }
+
+.asset-library,.corpus-library{padding:24px 36px;background:var(--nc-canvas)}
+.library-hero h1{font-size:30px;letter-spacing:normal;margin:0}
+.library-tabs{display:flex;gap:12px;margin-top:24px;flex-wrap:wrap}
+.library-tabs a{min-width:130px;padding:10px 16px;border:1px solid var(--nc-border);border-radius:6px;background:var(--nc-paper);color:var(--nc-ink);text-decoration:none;font-size:13px}
+.library-tabs a[aria-current=page]{background:var(--nc-vermilion);color:white;border-color:var(--nc-vermilion)}
+.style-grid,.card-grid,.source-grid{grid-template-columns:minmax(0,1fr)}
+.style-card,.source-card{min-height:180px;border-radius:6px;grid-template-columns:44px minmax(0,1fr)}
+@media(max-width:680px){.asset-library,.corpus-library{padding:20px 16px}.library-tabs a{min-width:0}}
+.asset-package{margin-top:16px;color:var(--nc-muted);font-size:12px}.asset-package summary{cursor:pointer}.library-tabs{border:0;border-radius:0;padding:0;background:transparent}.method-card{min-height:180px;box-shadow:none;border-radius:6px}
 </style>

@@ -97,7 +97,7 @@ def _schema_foreign_key_edges() -> dict[tuple[str, str], tuple[str, str]]:
 def test_explicit_ownership_inventory_closes_over_every_create_only_schema_table() -> None:
     schema_tables = _schema_tables()
 
-    assert len(schema_tables) == 99
+    assert len(schema_tables) == 101
     assert PROJECT_OWNED_TABLES | SHARED_EXCLUDED_TABLES | INTERNAL_NON_PACKAGE_TABLES == schema_tables
     assert PROJECT_OWNED_TABLES.isdisjoint(SHARED_EXCLUDED_TABLES)
     assert PROJECT_OWNED_TABLES.isdisjoint(INTERNAL_NON_PACKAGE_TABLES)
@@ -338,7 +338,7 @@ def test_owned_query_plan_closes_over_all_owned_tables_with_safe_static_sql() ->
             direct += 1
             assert plan.scope_table == table
             assert plan.scope_column == "project_id"
-    assert (direct, indirect, special) == (53, 6, 1)
+    assert (direct, indirect, special) == (55, 6, 1)
 
 
 @pytest.mark.asyncio
@@ -960,7 +960,7 @@ async def test_repository_materializes_every_owned_plan_and_returns_secret_free_
     ).read_snapshot("project-db", 7)
 
     plan_calls = [(sql, args) for sql, args in session.calls if sql in {plan.sql for plan in PROJECT_OWNED_QUERY_PLANS.values()}]
-    assert len(plan_calls) == len(PROJECT_OWNED_QUERY_PLANS) == 60
+    assert len(plan_calls) == len(PROJECT_OWNED_QUERY_PLANS) == 62
     assert all(args == ("project-db",) for _, args in plan_calls)
     assert snapshot.source_project_logical_id == "project:1"
     assert snapshot.graph_records[0].logical_id == "project:1"
@@ -2127,7 +2127,7 @@ def test_every_non_secret_classified_column_has_an_explicit_export_or_normalizat
         for decision in PACKAGE_COLUMN_EXPORT_DECISIONS.values()
     )
     assert PACKAGE_COLUMN_EXPORT_DECISION_FINGERPRINT == (
-        "67383ba721bd03d14b40d87214c489c46223bc4c2b708f586823fea508292c9f"
+        "2f2beb50978de827b627163a4ae9eed8cfba0dcdc51ab32b81588416c6b794be"
     )
     assert {
         (table, column): PACKAGE_COLUMN_EXPORT_DECISIONS[(table, column)]
@@ -2359,7 +2359,7 @@ async def test_import_provenance_backup_is_project_scoped_stable_and_lossless() 
         pool=_SnapshotPool(session), session_factory=lambda value: value,
     ).read_snapshot("project-db", 7)
     records = tuple(
-        record for record in snapshot.operation_records
+        record for record in snapshot.graph_records
         if record.entity_type == "import-provenance"
     )
 
@@ -2367,6 +2367,7 @@ async def test_import_provenance_backup_is_project_scoped_stable_and_lossless() 
         "import-provenance:1", "import-provenance:2",
     ]
     assert records[0].data["payload"] == {"safe": True}
+    assert not any(record.entity_type == "import-provenance" for record in snapshot.operation_records)
     assert records[1].data["payload"] == payload
     assert [record.data["contentHash"] for record in records] == ["b" * 64, "a" * 64]
     sql, args = next(
@@ -2423,7 +2424,7 @@ async def test_import_provenance_backup_is_project_scoped_stable_and_lossless() 
         pool=_SnapshotPool(second_session), session_factory=lambda value: value,
     ).read_snapshot("project-db", 7)
     round_trip = tuple(
-        record for record in second.operation_records
+        record for record in second.graph_records
         if record.entity_type == "import-provenance"
     )
     assert [record.data["payload"] for record in round_trip] == [
@@ -2432,3 +2433,56 @@ async def test_import_provenance_backup_is_project_scoped_stable_and_lossless() 
     assert [record.data["contentHash"] for record in round_trip] == [
         record.data["contentHash"] for record in records
     ]
+
+
+@pytest.mark.asyncio
+async def test_unsuccessful_confirmations_share_graph_provenance_order_and_pass_archive_preflight(tmp_path):
+    from backend.domain.project_import_plans import read_verified_project_package
+    from backend.domain.project_packages import build_structured_entries
+    from backend.services.project_packages import write_deterministic_zip
+
+    tables = (
+        "contract_confirmation_requests", "bible_confirmation_requests",
+        "planning_confirmation_requests", "chapter_outline_confirmation_requests",
+    )
+    rows = {"projects": [_owned_row(
+        "projects", id="project-db", lifecycle_revision=7, title="Source",
+        genre="test", description="safe", target_words=1000, target_chapters=10,
+        status="drafting", current_chapter=0, created_at=1, updated_at=2,
+    )]}
+    rows.update({table: [_owned_row(
+        table, id=f"failed-{table}", project_id="project-db", status="failed",
+        created_at=10, completed_at=11,
+    )] for table in tables})
+    existing = [{
+        "record_order": order, "category": "unsupported-history",
+        "source_entity_type": "operation", "source_logical_id": f"operation:{order}",
+        "payload_json": '{"safe":true}', "content_hash": "a" * 64, "created_at": 1,
+    } for order in (1, 9)]
+    session = _SnapshotSession(rows, extra_rows={"FROM project_import_provenance": existing})
+    snapshot = await ProjectPackageRepository(
+        pool=_SnapshotPool(session), session_factory=lambda value: value,
+    ).read_snapshot("project-db", 7)
+    archive = tmp_path / "confirmation-history.zip"
+    write_deterministic_zip(
+        archive, build_structured_entries(snapshot),
+        project_logical_id=snapshot.source_project_logical_id, counts=snapshot.counts,
+    )
+    package = read_verified_project_package(archive)
+    provenance = [record for record in package.graph_index.values()
+                  if record.entity_type == "import-provenance"]
+    assert {record.order for record in provenance} == {1, 9, 10, 11, 12, 13}
+    assert {record.logical_id for record in provenance} == {
+        f"import-provenance:{order}" for order in (1, 9, 10, 11, 12, 13)
+    }
+    assert not snapshot.operation_records
+    histories = [record for record in provenance if record.order > 9]
+    assert {record.data["sourceEntityType"] for record in histories} == {
+        PROJECT_TABLE_RECORD_TYPES[table] for table in tables
+    }
+    assert all(record.data["payload"] == {
+        "status": "failed", "createdAt": 10, "completedAt": 11,
+    } for record in histories)
+    plan = build_publication_plan(package, "10000000-0000-4000-8000-000000000006", "Imported")
+    batch = next(batch for batch in plan.batches if batch.table == "project_import_provenance")
+    assert len(batch.rows) == 6

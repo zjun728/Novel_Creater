@@ -177,7 +177,7 @@ _BIBLE_DOCUMENT = {
 
 
 def build_seed_fixture_document(provenance=None):
-    payload = SeedPayload.model_validate(SEED_PAYLOAD, strict=True)
+    payload, _ = decode_seed_revision(SEED_PAYLOAD)
     return seed_revision_document(payload, provenance)
 
 
@@ -192,7 +192,7 @@ def validate_seed_fixture_document(document, expected_hash):
 
 
 def build_creation_fixture_document():
-    seed = SeedPayload.model_validate(SEED_PAYLOAD, strict=True)
+    seed, _ = decode_seed_revision(SEED_PAYLOAD)
     engine = option(1)
     document = {
         "schemaVersion": "creation-contract-v1",
@@ -282,6 +282,7 @@ import os
 from contextlib import asynccontextmanager
 
 from backend.database import close_pool, connection, transaction
+from backend.config import install_runtime_configuration, load_runtime_configuration
 from backend.repositories.contracts import ContractRepository
 from backend.repositories.chapter_outlines import ChapterOutlineRepository
 from backend.repositories.chapter_sessions import ChapterSessionRepository
@@ -309,6 +310,7 @@ from backend.tests.integration.test_project_archive import _insert_confirmed_bib
 NOW = 2_020_000_000_000
 
 async def main():
+    install_runtime_configuration(load_runtime_configuration())
     async with connection() as session:
         version = await session.fetchone("SELECT VERSION() AS version")
         assert_mysql_8_version(version)
@@ -998,8 +1000,10 @@ const VERIFICATION_SOURCE = MYSQL8_VERSION_PROOF_SOURCE + String.raw`
 import asyncio
 import os
 from backend.database import close_pool, connection
+from backend.config import install_runtime_configuration, load_runtime_configuration
 
 async def main():
+    install_runtime_configuration(load_runtime_configuration())
     async with connection() as session:
         version = await session.fetchone("SELECT VERSION() AS version")
         assert_mysql_8_version(version)

@@ -5,8 +5,24 @@ import { compile } from '@vue/compiler-dom'
 import { createSSRApp, h, ref } from 'vue'
 import * as VueRuntime from 'vue'
 import { renderToString } from '@vue/server-renderer'
+import NaiveUI from 'naive-ui'
 
 const source = path => readFile(new URL(`../../src/${path}`, import.meta.url), 'utf8')
+
+test('interrupted generation renders an actionable partial recovery button with the real alert component', async () => {
+  const view = await source('views/ChapterWriterView.vue')
+  const template = view.match(/<n-alert\s+v-if="controller\.recoverablePartialDraft\.value"[\s\S]*?<\/n-alert>/u)?.[0]
+  assert.ok(template)
+  const render = new Function('Vue', compile(template, { mode: 'function', prefixIdentifiers: true }).code)(VueRuntime)
+  const app = createSSRApp({
+    setup: () => ({ controller: { recoverablePartialDraft: ref({ scalarCount: 24 }) }, commandDisabled: false, recoverPartialDraft() {} }),
+    render,
+  })
+  app.component('n-alert', NaiveUI.NAlert)
+  app.component('n-button', NaiveUI.NButton)
+  const html = await renderToString(app)
+  assert.match(html, /<button\b[^>]*>[\s\S]*?载入部分稿[\s\S]*?<\/button>/)
+})
 
 async function renderWriterStatusTag({ finalized, hasSession = true }) {
   const view = await source('views/ChapterWriterView.vue')
@@ -116,8 +132,8 @@ test('operation status is a shallow readable overlay with one auditable busy loc
   assert.match(view, /plain-text-draft-editor[\s\S]*?:readonly="editorReadonly"/)
   assert.match(view, /plain-text-draft-editor[\s\S]*?:model-value="controller\.editorText\.value"/)
   assert.match(view, /plain-text-draft-editor[\s\S]*?:streaming="controller\.streamingPreview\.value !== null"/)
-  assert.match(view, /writer-outline-link[\s\S]*?:aria-disabled="controller\.actionBusy\.value"/)
-  assert.match(view, /@click="guardBusyNavigation"/)
+  assert.match(view, /workbench-outline-dialog/)
+  assert.match(view, /:disabled="controller\.actionBusy\.value \|\| finalization\.busy\.value \|\| protectionBusy"/)
   assert.match(view, /返回项目[\s\S]*?:disabled="controller\.actionBusy\.value"|:disabled="controller\.actionBusy\.value"[\s\S]*?返回项目/)
   assert.match(view, /controller\.dispose\(\)/)
   assert.doesNotMatch(view, /operation\.output|providerId|modelName|failureCode|idempotencyKey/)
@@ -167,13 +183,15 @@ test('stop generation is available only while the controller marks the current o
   assert.match(view, /<template v-else>[\s\S]*?AI 生成工作稿[\s\S]*?保存为候选[\s\S]*?<\/template>/)
   assert.match(view, /:disabled="commandDisabled"/)
   assert.match(view, /:loading="controller\.actionBusy\.value"/)
-  assert.match(view, /:aria-disabled="controller\.actionBusy\.value"/)
-  assert.match(view, /onBeforeRouteLeave\(async \(\) => await controller\.canNavigate\(\)\)/)
+  assert.match(view, /onBeforeRouteLeave/)
+  assert.match(view, /onBeforeRouteLeave\(async \(\) => await canLeaveWorkspace\(\)\)/)
+  assert.match(view, /controller\.beforeUnloadRisk\.value \|\| reviewDirty\.value/)
+  assert.match(view, /@dirty-change="reviewDirty = \$event"/)
 })
 
 test('local generation rejection shows one fixed safe fallback only without an operation status', async () => {
   const view = await source('views/ChapterWriterView.vue')
-  const body = functionBody(view, 'async function generateWorkingDraft()')
+  const body = functionBody(view, 'async function performGeneration()')
   const invoke = new Function(
     'controller',
     'actionError',
@@ -212,7 +230,8 @@ test('author instruction input enforces a Unicode-scalar limit with an accessibl
   const input = view.match(/<n-input id="author-instruction"[^>]*\/>/)?.[0]
   assert.ok(input)
   assert.doesNotMatch(input, /maxlength|show-count/)
-  assert.match(input, /aria-describedby="author-instruction-count"/)
+  assert.match(input, /aria-describedby="author-instruction-help author-instruction-count"/)
+  assert.match(view, /id="author-instruction-help"/)
   assert.match(input, /@update:value="updateAuthorInstruction"/)
   assert.match(view, /unicodeScalarLength|limitUnicodeScalarText/)
   assert.match(view, /id="author-instruction-count"[^>]*aria-live="polite"/)
@@ -227,7 +246,7 @@ test('non-empty exact selection reveals four compact local tools with one shared
   assert.match(view, /v-if="validSelection" class="selection-tools"/)
   for (const [label, operationType] of [
     ['AI 改写', 'rewrite_selection'],
-    ['AI 润色', 'polish_selection'],
+    ['去 AI 味/润色', 'polish_selection'],
     ['AI 扩写', 'expand_selection'],
     ['AI 缩写', 'compress_selection'],
   ]) {
@@ -275,11 +294,13 @@ test('candidate workbench compares exactly two read-only drafts and loads explic
   assert.match(view, /unicodeScalarLength\(String\(candidate\.content \?\? ''\)\)/)
   assert.match(view, /candidate\.contentHash\.slice\(0, 8\)/)
   assert.match(view, /formatCandidateTime\(candidate\.createdAt\)/)
-  assert.match(view, /@click="loadCandidate\(candidate\)"[^>]*>载入为工作稿<\/n-button>/)
+  assert.match(view, /@click="openCandidatePreview\(candidate\)"[^>]*>查看与当前稿对比<\/n-button>/)
   assert.match(view, /:disabled="candidateSelectionDisabled\(candidate\.id\)"/)
-  assert.match(view, /v-if="selectedCandidates\.length === 2"[\s\S]{0,100}class="candidate-comparison"/)
-  assert.equal((view.match(/class="candidate-comparison-pane"/g) || []).length, 1)
-  assert.match(view, /<pre>\{\{ candidate\.content \}\}<\/pre>/)
+  assert.match(view, /v-if="selectedCandidates\.length === 2"[\s\S]{0,200}@click="savedComparisonOpen = true"/)
+  assert.match(view, /savedComparisonOpen && selectedCandidates\.length === 2/)
+  assert.match(view, /v-for="pane in comparisonPanes"/)
+  assert.match(view, /<pre tabindex="0" :aria-label="pane\.label">\{\{ pane\.content \|\| '暂无正文' \}\}<\/pre>/)
+  assert.match(view, /v-if="previewCandidate" type="primary"[^>]*@click="confirmCandidateSwitch"/)
   assert.match(view, /controller\.resetContext\(\)[\s\S]{0,80}selectedCandidateIds\.value = \[\]/)
   assert.doesNotMatch(view, /v-model[^>]*candidate\.content|contenteditable|融合候选|fusion|diff-match-patch|candidate-modal|history-drawer/)
   assert.match(view, /workspace-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 320px/)
@@ -290,11 +311,11 @@ test('writer status tag switches from drafting to one finalized author label', a
 
   assert.match(
     view,
-    /finalization\.finalized\.value\s*\?\s*'已定稿'\s*:\s*session\s*\?\s*'drafting'/,
+    /finalization\.finalized\.value\s*\?\s*'已定稿'\s*:\s*session\s*\?\s*'创作中'/,
   )
 
   const draftingHtml = await renderWriterStatusTag({ finalized: false })
-  assert.match(draftingHtml, />drafting<\/span>/)
+  assert.match(draftingHtml, />创作中<\/span>/)
   assert.doesNotMatch(draftingHtml, /已定稿/)
 
   const finalizedHtml = await renderWriterStatusTag({ finalized: true })

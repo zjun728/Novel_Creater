@@ -7,6 +7,7 @@ from hashlib import sha256
 import os
 from pathlib import Path
 
+from backend.config import clear_runtime_configuration, install_runtime_configuration, load_runtime_configuration
 from backend.database import close_pool, connection, get_pool, transaction
 from backend.domain.contracts import FrozenCorpusFragment
 from backend.domain.routers.projects import _service as project_lifecycle_service
@@ -252,10 +253,10 @@ async def prepare(database_name: str) -> None:
     if authority.lifecycle != "active":
         raise RuntimeError("Phase6B active preparation authority is invalid")
     snapshot = await asyncio.wait_for(
-        ProjectPackageRepository(pool=await get_pool()).read_snapshot(PROJECT, 0),
+        ProjectPackageRepository(pool=await get_pool()).read_snapshot(PROJECT, 1),
         timeout=30,
     )
-    if snapshot.lifecycle_revision != 0:
+    if snapshot.lifecycle_revision != 1:
         raise RuntimeError("Phase6B active package snapshot authority is invalid")
 
 
@@ -302,7 +303,7 @@ async def verify_postconditions(database_name: str) -> None:
     if (
         project is None
         or project.get("archived_at") is None
-        or project.get("lifecycle_revision") != 1
+        or project.get("lifecycle_revision") != 2
     ):
         raise RuntimeError("Phase6B project did not reach the archived authority")
     if int(finals.get("count") or 0) < 1:
@@ -326,6 +327,8 @@ async def main() -> None:
     parser.add_argument("--verify-postconditions", action="store_true")
     args = parser.parse_args()
     exit_code = 0
+    snapshot = load_runtime_configuration()
+    install_runtime_configuration(snapshot)
     try:
         if args.verify_postconditions:
             await verify_postconditions(args.database)
@@ -338,7 +341,10 @@ async def main() -> None:
     except PreparationServiceTimeout:
         exit_code = 63
     finally:
-        await close_pool()
+        try:
+            await close_pool()
+        finally:
+            clear_runtime_configuration(snapshot)
     if exit_code:
         diagnostic = os.environ.get("PHASE6B_FIXTURE_STATE_PATH", "")
         if diagnostic:

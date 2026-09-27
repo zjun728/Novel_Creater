@@ -24,6 +24,8 @@ _check_db.py
 小说txt/
 
 # QA browser/runtime artifacts
+.codex-test-artifacts/
+.review-worktrees/
 .worktrees/
 .playwright-cli/
 .pytest_cache/
@@ -42,6 +44,11 @@ tmp/live-server-logs/
 tmp/live-qa-contract-output/
 tmp/playwright-run/
 tmp/__pycache__/
+
+# Retained local prototype sketches and one-off QA dependencies
+tmp/astra-qa-deps/
+tmp/brainstorm-topic-center*.html
+tmp/p0-d-foundation-layout-options.html
 tmp/realistic-flow-qa/*.png
 tmp/realistic-flow-qa/*.log
 tmp/realistic-flow-qa/*.pid

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from hashlib import sha256
 
 import pytest
 from pydantic import ValidationError
@@ -65,6 +66,72 @@ def _manifest(**overrides):
         data,
         strict=True,
     )
+
+
+def _continuation_data(content="已经过河，船留在北岸。"):
+    data = _manifest_data(author_instructions="")
+    data.update(chapter_number=2, canon_revision=1)
+    data["projection"]["revision"] = 1
+    data["continuity"] = {
+        "previous_chapter": {
+            "id": "final-1", "chapter_number": 1, "canon_revision": 1,
+            "content": content, "content_hash": sha256(content.encode()).hexdigest(),
+        },
+        "actual_progress": [],
+    }
+    return data
+
+
+def test_legacy_manifest_roundtrip_preserves_replay_fingerprint():
+    from backend.domain.json_contracts import canonical_hash
+    from backend.services.chapter_outline_generation import ChapterOutlineGenerationService
+    from backend.tests.unit.test_chapter_outline_generation_service import _command
+
+    legacy = _manifest().model_dump(mode="json", by_alias=True)
+    assert "continuity" not in legacy
+    command = _command(draft_hash=legacy["draft_hash"],
+                       author_instructions=legacy["author_instructions"])
+    assert ChapterOutlineGenerationService._fingerprint_from_persisted(
+        {"input_manifest": legacy, "input_manifest_hash": canonical_hash(legacy)}, command,
+    ) == ChapterOutlineGenerationService._request_fingerprint(command, legacy)
+
+
+def test_continuation_preserves_ending_and_rejects_oversized_full_text():
+    module = _prompt_module()
+    content = "上章正文。" * 100 + "最终停在北岸，船未离开。"
+    manifest = module.ChapterOutlineGenerationManifest.model_validate(_continuation_data(content))
+    messages = module.build_chapter_outline_messages(manifest=manifest)
+    evidence = json.loads(messages[1]["content"])
+    assert evidence["manifest"]["continuity"]["previous_chapter"]["content"] == content
+    with pytest.raises(ValidationError):
+        module.ChapterOutlineGenerationManifest.model_validate(_continuation_data("章" * 30_000))
+
+
+@pytest.mark.parametrize("mutation", ("hash", "chapter", "revision", "missing", "future", "completed", "duplicate", "extra"))
+def test_continuation_rejects_inconsistent_or_untrusted_evidence(mutation):
+    data = _continuation_data()
+    continuity = data["continuity"]
+    previous = continuity["previous_chapter"]
+    task = data["allowed_scene_tasks"][0]
+    event = {"chapterNumber": 1, "targetId": task.id,
+             "targetType": "scene_task", "status": "advanced"}
+    if mutation == "hash":
+        previous["content"] += "篡改"
+    elif mutation == "chapter":
+        previous["chapter_number"] = 2
+    elif mutation == "revision":
+        previous["canon_revision"] = 2
+    elif mutation == "missing":
+        continuity["previous_chapter"] = None
+    elif mutation == "future":
+        event["chapterNumber"] = 2
+    elif mutation == "completed":
+        event["status"] = "completed"
+    elif mutation == "extra":
+        event["secret"] = "not allowed"
+    continuity["actual_progress"] = [event, event] if mutation == "duplicate" else [event]
+    with pytest.raises(ValidationError):
+        _prompt_module().ChapterOutlineGenerationManifest.model_validate(data, strict=True)
 
 
 def test_manifest_is_strict_frozen_closed_and_reuses_formal_domain_models():

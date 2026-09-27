@@ -211,21 +211,21 @@ function handleDelete(provider) {
   <section class="provider-settings" aria-labelledby="provider-heading">
     <header class="section-heading">
       <div>
-        <p class="eyebrow">本机模型档案</p>
-        <h3 id="provider-heading">AI Provider 配置</h3>
+
+        <h3 id="provider-heading">模型服务</h3>
       </div>
-      <n-button type="primary" size="small" :disabled="providerActionBusy" @click="openNew">新增 Provider</n-button>
+      <n-button type="primary" size="small" :disabled="providerActionBusy" @click="openNew">新增模型服务</n-button>
     </header>
 
     <n-alert type="info" :bordered="false" class="mb-4">
-      浏览器只保留公开摘要与“是否已配置”标记；API Key 和 Base URL 不会出现在任何响应、列表或编辑回显中。
+      私密配置仅保存在本机后端，列表与编辑页不回显原值。
     </n-alert>
     <n-alert v-if="loadError" type="error" class="mb-4">
       {{ loadError }}
-      <template #action><n-button size="tiny" @click="loadProviders">重试</n-button></template>
+      <div class="alert-actions"><n-button size="tiny" @click="loadProviders">重试</n-button></div>
     </n-alert>
 
-    <n-empty v-if="!providerStore.loading && !providerStore.providers.length" description="还没有 Provider 配置" class="empty-state" />
+    <n-empty v-if="!providerStore.loading && !providerStore.providers.length" description="尚未添加模型服务" class="empty-state" />
     <div v-else class="provider-list">
       <n-card v-for="provider in providerStore.providers" :key="provider.id" size="small" class="provider-card">
         <template #header>
@@ -238,7 +238,7 @@ function handleDelete(provider) {
         </template>
         <div class="provider-meta">
           <div><span>模型</span><strong>{{ provider.model || '未填写' }}</strong></div>
-          <div><span>类型</span><strong>{{ provider.providerType }}</strong></div>
+          <div><span>类型</span><strong>{{ provider.providerType === 'openai-compatible' ? 'OpenAI 兼容' : provider.providerType }}</strong></div>
           <div><span>API Key</span><strong>{{ provider.hasKey ? '已配置' : '未配置' }}</strong></div>
           <div><span>Base URL</span><strong>{{ provider.hasBaseURL ? '已配置' : '未配置' }}</strong></div>
         </div>
@@ -288,7 +288,7 @@ function handleDelete(provider) {
     <n-modal
       :show="showForm"
       preset="card"
-      :title="editingProvider ? '编辑 Provider' : '新增 Provider'"
+      :title="editingProvider ? '编辑模型服务' : '新增模型服务'"
       :mask-closable="!saving"
       :close-on-esc="!saving"
       :closable="!saving"
@@ -311,7 +311,7 @@ function handleDelete(provider) {
 .section-heading { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-bottom: 16px; }
 .section-heading h3 { margin: 2px 0 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: 21px; }
 .eyebrow { margin: 0; color: #8b6f47; font-size: 11px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; }
-.provider-list { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.provider-list { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
 .provider-card { border-color: #dfd6c4; background: #fffdf8; }
 .provider-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-weight: 700; }
 .provider-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 18px; }

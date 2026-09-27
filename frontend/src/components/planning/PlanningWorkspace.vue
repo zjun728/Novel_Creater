@@ -15,8 +15,15 @@ import ActualProgressPanel from './ActualProgressPanel.vue'
 import ChapterOutlineWorkspace from './ChapterOutlineWorkspace.vue'
 import PlanningHistoryDrawer from './PlanningHistoryDrawer.vue'
 import PlotEditor from './PlotEditor.vue'
+import CharacterPlanDetails from '../continuity/CharacterPlanDetails.vue'
 import StoryBlockEditor from './StoryBlockEditor.vue'
 import VolumeEditor from './VolumeEditor.vue'
+import PlanningReader from './PlanningReader.vue'
+import PlanningComparison from './PlanningComparison.vue'
+import { planningExpansionAvailability } from '../../application/planning/planningExpansion.js'
+import { api } from '../../api/db/client.js'
+import { createPlanningContinuationCheck } from '../../application/planning/planningContinuationCheck.js'
+import PlanningContinuationPanel from './PlanningContinuationPanel.vue'
 
 const props = defineProps({
   store: { type: Object, required: true },
@@ -24,11 +31,76 @@ const props = defineProps({
   activeTab: {
     type: String,
     required: true,
-    validator: value => ['volumes', 'plots', 'story-blocks'].includes(value),
+    validator: value => ['volumes', 'plots', 'story-blocks', 'outlines'].includes(value),
   },
 })
 
+const emit = defineEmits(['confirmed', 'continue', 'section'])
+const editing = ref(false)
 const confirmOpen = ref(false)
+const stopping = ref(false)
+async function stopGeneration() {
+  if (stopping.value) return
+  stopping.value = true
+  try { await props.store.cancelGeneration() } finally { stopping.value = false }
+}
+const confirmedContent = computed(() => canonicalPlanningContentForUi(props.store.state?.futurePlan || null))
+const readingContent = computed(() => confirmedContent.value || planningContent.value)
+const expansionAvailability = computed(() => planningExpansionAvailability(props.store.state, readingContent.value))
+const expansionHasDraftChanges = computed(() => !!(confirmedContent.value && props.store.state?.draft
+  && props.store.state.draft.contentHash !== props.store.state.head?.contentHash))
+const continuation = createPlanningContinuationCheck({
+  projectId: () => props.store.projectId || props.store.state?.projectId,
+  load: id => api.planning.checkContinuation(id),
+})
+async function prepareContinuation(action) {
+  if (props.store.dirty || props.controller.editorLocked.value || props.controller.readOnly.value) return
+  const scope = props.controller.projectScope.value
+  const fresh = await continuation.reload()
+  if (scope !== props.controller.projectScope.value || !fresh || props.store.dirty
+      || props.controller.editorLocked.value || props.controller.readOnly.value) return
+  const allowed = fresh.actions.find(item => item.mode === action.mode && item.kind === action.kind)
+  if (!allowed) return
+  await startEditing()
+  if (!editing.value || scope !== props.controller.projectScope.value) return
+  try {
+    if (allowed.kind === 'reuse') {
+      props.controller.selectActiveStoryBlock(fresh.targetBlock.id)
+      if (!await props.controller.save()) return
+    } else {
+      if (!props.controller.canGenerate.value) {
+        props.controller.notice.value = props.controller.generationDisabledReason.value || '当前无法生成，请检查模型设置和工作稿状态。'
+        return
+      }
+      const operation = await props.controller.generate(undefined, allowed.mode)
+      if (operation?.status !== 'succeeded') return
+    }
+    if (scope === props.controller.projectScope.value) openConfirm()
+  } finally { if (scope === props.controller.projectScope.value) await continuation.reload() }
+}
+watch(
+  () => [props.store.projectId || props.store.state?.projectId, props.store.state?.head?.revision,
+    props.store.state?.draft?.draftRevision, props.store.generationOperation?.status],
+  () => { void continuation.reload() }, { immediate: true },
+)
+async function preparePlan(mode) {
+  await startEditing()
+  if (editing.value) await props.controller.generate(undefined, mode)
+}
+async function startEditing() {
+  if (props.controller.readOnly.value || props.controller.editorLocked.value) return
+  const scope = props.controller.projectScope.value
+  if (!props.store.state?.draft) {
+    try { await props.controller.createManualDraft() } catch { return }
+  }
+  if (scope === props.controller.projectScope.value && props.controller.editable.value) editing.value = true
+}
+const sectionTitle = computed(() => ({
+  volumes: '分卷规划',
+  plots: '情节线',
+  'story-blocks': '故事块',
+  outlines: '章节小纲',
+}[props.activeTab]))
 const confirmDialog = ref(null)
 const confirmInitial = ref(null)
 const confirmFocus = createModalFocusManager({
@@ -155,8 +227,14 @@ function handleConfirmKeydown(event) {
 }
 
 async function confirmPlanning() {
+  const scope = props.controller.projectScope.value
   try {
-    if (await props.controller.confirm()) confirmOpen.value = false
+    if (await props.controller.confirm() && scope === props.controller.projectScope.value) {
+      confirmOpen.value = false
+      editing.value = false
+      props.controller.authorInstructions.value = ''
+      emit('confirmed')
+    }
   } catch {
     // The Store exposes only its public error envelope in the workspace.
   }
@@ -172,7 +250,7 @@ watch(confirmOpen, async open => {
 })
 watch(
   () => props.controller.projectScope.value,
-  () => { confirmOpen.value = false },
+  () => { confirmOpen.value = false; editing.value = false },
 )
 watch(
   () => String(
@@ -193,6 +271,7 @@ watch(
   { immediate: true },
 )
 onBeforeUnmount(() => {
+  continuation.reset()
   confirmFocus.unmount()
   props.controller.requestRouteLeave = originalRequestRouteLeave
   props.controller.beforeUnload = originalBeforeUnload
@@ -203,15 +282,15 @@ onBeforeUnmount(() => {
   <section class="planning-workspace" aria-labelledby="planning-heading">
     <header class="workspace-header">
       <div>
-        <p class="eyebrow">STORY PLANNING · ONE AGGREGATE</p>
-        <h1 id="planning-heading">故事规划工作台</h1>
-        <p class="lede">
-          像编辑部整理手稿一样，先写清长期变化与持续追问，再把完整规划交给故事块执行。
+        <h1 id="planning-heading">{{ editing ? '调整故事规划' : sectionTitle }}</h1>
+        <p v-if="activeTab === 'outlines'" class="lede">根据已确认的故事规划编写当前章小纲，保存并核对后再采用。</p>
+        <p v-else class="lede">
+          {{ editing ? '调整未来安排，不改写已定稿正文。保存并核对修改后，再确认采用。' : '默认阅读；选择目录仅查看内容，主动调整后才进入编辑。' }}
         </p>
       </div>
       <div class="revision-strip" aria-label="规划版本">
-        <div><span>确认版本</span><strong>{{ revisionLabel }}</strong></div>
-        <div><span>工作草稿</span><strong>{{ draftLabel }}</strong></div>
+        <div><span>{{ activeTab === 'outlines' ? '故事规划版本' : '确认版本' }}</span><strong>{{ revisionLabel }}</strong></div>
+        <div v-if="activeTab !== 'outlines'"><span>工作草稿</span><strong>{{ draftLabel }}</strong></div>
       </div>
     </header>
 
@@ -241,6 +320,11 @@ onBeforeUnmount(() => {
       </button>
     </section>
 
+    <section v-if="store.generating && store.generationRecoveryKey" class="paper-panel" role="status">
+      <p>正在准备规划。原安排仍然有效，完成后先核对工作稿。</p>
+      <button type="button" :disabled="stopping" @click="run(stopGeneration)">{{ stopping ? '正在停止…' : '停止准备' }}</button>
+    </section>
+
     <section v-if="store.loading && !store.state" class="paper-panel" aria-busy="true">
       正在展开规划手稿…
     </section>
@@ -255,26 +339,52 @@ onBeforeUnmount(() => {
         当前项目或规划修订为只读状态；可以查阅正文规划与历史，不能克隆、编辑或写入。
       </aside>
 
-      <actual-progress-panel
-        :items="store.state.actualProgress"
-        :status="store.state.canonProjectionStatus"
-        :planning-content="planningContent"
+      <chapter-outline-workspace
+        v-if="activeTab === 'outlines' && store.outlineState !== undefined"
+        :store="store"
+        :controller="outlineController"
       />
 
-      <section v-if="!store.state.draft && !controller.readOnly.value" class="paper-panel empty-draft">
-        <span>BLANK DRAFT</span>
-        <h2>从空白工作稿开始</h2>
-        <p>可以先只建立分卷和情节线并保存；补齐故事块、阶段与场景任务后才能确认。</p>
+      <template v-if="activeTab !== 'outlines'">
+      <planning-continuation-panel
+        v-if="!editing && confirmedContent"
+        :result="continuation.result.value" :loading="continuation.loading.value" :error="continuation.error.value"
+        :disabled="controller.editorLocked.value || controller.readOnly.value" :dirty="store.dirty"
+        @check="continuation.reload" @action="action => run(() => prepareContinuation(action))"
+        @edit="startEditing" @continue="emit('continue')"
+      />
+      <details class="progress-disclosure">
+        <summary>查看已定稿正文进度</summary>
+        <actual-progress-panel
+          :items="store.state.actualProgress"
+          :status="store.state.canonProjectionStatus"
+          :planning-content="planningContent"
+        />
+      </details>
+
+      <p v-if="!editing && store.state.draft && confirmedContent" class="notice">已有{{ store.dirty ? '未保存的本地修改' : '待确认工作稿' }}，尚未替换下方已确认安排。点击“调整规划”继续处理。</p>
+      <planning-reader v-if="!editing && readingContent" :key="controller.projectScope.value" :content="readingContent" :section="activeTab" :draft="!confirmedContent" />
+
+      <section v-if="!controller.readOnly.value && expansionAvailability.initial" class="paper-panel ai-panel">
+        <h2>{{ expansionAvailability.initial ? '准备首次故事规划' : '准备后续故事安排' }}</h2>
+        <p>{{ expansionAvailability.initial ? '基于已确认的创作基础，生成分卷、情节线与第一个故事块，包含阶段和场景任务。' : '根据已定稿正文与实际进度准备后续安排；已有后续故事块将优先复用。' }}生成后请核对工作稿，确认采用后再继续创作。</p>
+        <button v-if="expansionAvailability.initial" :disabled="controller.editorLocked.value || store.dirty" @click="run(() => preparePlan('initial'))">生成完整故事规划</button>
+      </section>
+
+      <section v-if="!readingContent && !store.state.draft && !controller.readOnly.value" class="paper-panel empty-draft">
+        <span>{{ store.state.futurePlan ? 'REVISE PLAN' : 'BLANK DRAFT' }}</span>
+        <h2>{{ store.state.futurePlan ? '修订已确认规划' : '从空白工作稿开始' }}</h2>
+        <p>{{ store.state.futurePlan ? '以当前已确认规划建立工作稿，修改未来安排；旧版本和已定稿事实继续保留。' : '可以先只建立分卷和情节线并保存；补齐故事块、阶段与场景任务后才能确认。' }}</p>
         <button
           type="button"
           :disabled="!controller.canCreateDraft.value"
-          @click="run(controller.createManualDraft)"
+          @click="startEditing"
         >
-          建立空白规划工作稿
+          {{ store.state.futurePlan ? '建立修订工作稿' : '建立空白规划工作稿' }}
         </button>
       </section>
 
-      <section v-else-if="planningContent" class="workspace-sheet">
+      <section v-if="editing && planningContent" class="workspace-sheet">
         <div
           class="workspace-scroll"
           :class="{ 'streaming-read-only': controller.localOverlay.value }"
@@ -294,6 +404,7 @@ onBeforeUnmount(() => {
           <plot-editor
             v-else-if="activeTab === 'plots'"
             :model-value="planningContent.plots || []"
+            :project-id="String(store.projectId || store.state?.projectId || '')"
             :read-only="!controller.editable.value"
             :disabled="controller.editorLocked.value"
             @add="controller.addPlot"
@@ -361,11 +472,14 @@ onBeforeUnmount(() => {
                 </ol>
               </li>
             </ol>
-            <p v-if="controller.complete.value" class="complete-note">
+            <p v-if="!store.state.draft" class="complete-note">
+              当前展示已确认规划。需要调整未来安排时，请先建立修订工作稿。
+            </p>
+            <p v-else-if="controller.complete.value" class="complete-note">
               聚合已完整。请先保存所有本地编辑，再确认不可变修订。
             </p>
             <p v-else class="incomplete-note">
-              当前可保存为工作稿，但尚缺完整故事块 / 阶段 / 场景任务，不能确认。
+              当前可保存为工作稿，但尚有未填写的规划内容。请补齐上方提示后确认。
             </p>
           </section>
         </div>
@@ -376,13 +490,7 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <chapter-outline-workspace
-        v-if="activeTab === 'story-blocks' && store.outlineState !== undefined"
-        :store="store"
-        :controller="outlineController"
-      />
-
-      <section v-if="store.state.draft && controller.editable.value" class="ai-panel">
+      <section v-if="editing && store.state.draft && controller.editable.value" class="ai-panel">
         <label for="planning-author-instructions">作者补充要求（可选）</label>
         <textarea
           id="planning-author-instructions"
@@ -397,8 +505,14 @@ onBeforeUnmount(() => {
           :disabled="!controller.canGenerate.value"
           @click="run(controller.generate)"
         >
-          AI 生成当前规划工作稿
+          AI 生成分卷与情节线
         </button>
+        <p>此按钮调整分卷与情节线并保留已有故事块。首次完整规划和进度承接请使用上方对应入口，也可以手工调整阶段与场景任务。</p>
+        <template v-if="confirmedContent && activeStoryBlock && !expansionAvailability.nextBlock">
+          <button type="button" :disabled="!controller.canGenerate.value || expansionHasDraftChanges || !controller.authorInstructions.value.trim()"
+            @click="run(() => preparePlan('revise_block'))">按要求 AI 调整当前故事块</button>
+          <p>先填写补充要求。仅调整当前块的未来安排；已推进的任务和已完成阶段保持原样。生成后请对比确认，正在写作的章节结束前不可调整。</p>
+        </template>
         <p v-if="controller.generationDisabledReason.value">
           {{ controller.generationDisabledReason.value }}
         </p>
@@ -406,7 +520,11 @@ onBeforeUnmount(() => {
 
       <footer class="workspace-actions">
         <button type="button" @click="controller.historyOpen.value = true">修订历史</button>
-        <template v-if="controller.editable.value">
+        <button v-if="!editing && readingContent && !controller.readOnly.value" type="button" :disabled="controller.editorLocked.value" @click="startEditing">调整规划</button>
+        <button v-if="!editing && confirmedContent && activeTab !== 'story-blocks'" type="button" class="primary" @click="emit('section', activeTab === 'volumes' ? 'plots' : 'story-blocks')">{{ activeTab === 'volumes' ? '查看情节线' : '查看故事块' }}</button>
+        <button v-if="!editing && confirmedContent && activeTab === 'story-blocks' && !controller.readOnly.value" type="button" class="primary" :disabled="controller.editorLocked.value" @click="emit('continue')">继续创作</button>
+        <button v-if="editing" type="button" :disabled="controller.editorLocked.value" @click="editing = false">返回阅读（保留工作稿）</button>
+        <template v-if="editing && controller.editable.value">
           <button
             type="button"
             :disabled="!controller.canSave.value"
@@ -424,6 +542,7 @@ onBeforeUnmount(() => {
           </button>
         </template>
       </footer>
+      </template>
     </template>
 
     <Teleport to="body">
@@ -439,6 +558,10 @@ onBeforeUnmount(() => {
           <p>IMMUTABLE REVISION</p>
           <h2>确认完整规划修订</h2>
           <p>确认后会形成不可变历史版本。本次只提交已经保存的完整聚合，不会静默改写旧修订。</p>
+          <planning-comparison :before="confirmedContent" :after="planningContent" />
+          <template v-for="plot in planningContent?.plots || []" :key="nodeId(plot)">
+            <CharacterPlanDetails v-if="plot.lifecycle !== 'retired' && plot.characterDesign" :design="plot.characterDesign" />
+          </template>
           <dl>
             <div><dt>分卷</dt><dd>{{ counts.volumes }}</dd></div>
             <div><dt>情节线</dt><dd>{{ counts.plots }}</dd></div>
@@ -451,7 +574,7 @@ onBeforeUnmount(() => {
           </p>
           <footer>
             <button ref="confirmInitial" type="button" :disabled="store.confirming" @click="closeConfirm">返回核对</button>
-            <button type="button" class="primary" :disabled="store.confirming" @click="confirmPlanning">确认并签印</button>
+            <button type="button" class="primary" :disabled="!controller.canConfirm.value" @click="confirmPlanning">确认采用并继续</button>
           </footer>
         </section>
       </div>
@@ -467,9 +590,12 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .planning-workspace { width:min(1120px,100%); margin:auto; color:var(--nc-ink); }
+.progress-disclosure { margin-bottom:14px; }
+.progress-disclosure>summary { padding:10px 14px; border:1px solid var(--nc-border); background:var(--nc-paper); cursor:pointer; }
+.paper-panel.empty-draft { margin-bottom:14px; padding:16px 20px; }
 .workspace-header { display:flex; align-items:end; justify-content:space-between; gap:28px; margin-bottom:20px; }
 .eyebrow,.aggregate-summary p:first-child,.empty-draft>span { margin:0; color:var(--nc-vermilion); font:700 10px Georgia,serif; letter-spacing:.18em; }
-h1 { margin:6px 0 0; font:600 clamp(32px,5vw,52px) Georgia,'Noto Serif SC',serif; }
+h1 { margin:0; font:500 28px Georgia,'Noto Serif SC',serif; }
 .lede { max-width:650px; margin:10px 0 0; color:var(--nc-muted); line-height:1.75; }
 .revision-strip { display:flex; flex:none; overflow:hidden; border:1px solid var(--nc-border); border-radius:10px; background:var(--nc-paper); }
 .revision-strip div { display:grid; min-width:100px; padding:10px 14px; }
@@ -510,14 +636,14 @@ dd { margin:4px 0 0; font:600 20px Georgia,serif; }
 .ai-panel p { margin:0; color:var(--nc-muted); font-size:12px; }
 button { border:1px solid var(--nc-border); border-radius:6px; padding:9px 13px; color:var(--nc-ink); background:var(--nc-paper); cursor:pointer; }
 button:disabled { cursor:not-allowed; opacity:.45; }
-.primary { border-color:var(--nc-vermilion); color:var(--nc-vermilion); }
-.workspace-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:14px; }
+.primary { border-color:var(--nc-vermilion); background:var(--nc-vermilion); color:var(--nc-paper); }
+.workspace-actions { position:sticky; bottom:0; z-index:3; display:flex; justify-content:flex-end; gap:10px; margin-top:14px; padding:14px 0; background:var(--nc-canvas); border-top:1px solid var(--nc-border); }
 .confirm-backdrop { position:fixed; z-index:34; inset:0; display:grid; place-items:center; padding:24px; background:color-mix(in srgb,var(--nc-ink) 38%,transparent); }
-.confirm-panel { width:min(620px,100%); padding:26px; color:var(--nc-ink); background:var(--nc-paper); box-shadow:0 24px 64px color-mix(in srgb,var(--nc-ink) 22%,transparent); }
+.confirm-panel { width:min(1060px,100%); max-height:85vh; overflow-y:auto; padding:26px; color:var(--nc-ink); background:var(--nc-paper); box-shadow:0 24px 64px color-mix(in srgb,var(--nc-ink) 22%,transparent); }
 .confirm-panel>p:first-child { color:var(--nc-vermilion); font:700 10px Georgia,serif; letter-spacing:.17em; }
 .confirm-panel h2 { font:600 28px Georgia,'Noto Serif SC',serif; }
 .confirm-panel dl { grid-template-columns:repeat(5,1fr); }
 .confirm-active { margin:14px 0 0; padding:10px 12px; border-left:2px solid var(--nc-vermilion); background:var(--nc-canvas); color:var(--nc-muted); }
-.confirm-panel footer { display:flex; justify-content:flex-end; gap:10px; margin-top:20px; }
+.confirm-panel footer { position:sticky; bottom:-26px; display:flex; justify-content:flex-end; gap:10px; margin-top:20px; padding:14px 0; background:var(--nc-paper); }
 @media(max-width:760px){.workspace-header{align-items:start;flex-direction:column}.revision-strip{width:100%}.revision-strip div{flex:1}.aggregate-summary dl,.confirm-panel dl{grid-template-columns:repeat(2,1fr)}.workspace-scroll{max-height:none}.error-summary{align-items:start;flex-direction:column}.error-summary button{margin-left:0}}
 </style>

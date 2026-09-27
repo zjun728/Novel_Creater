@@ -160,6 +160,10 @@ def _change_set(planning, content):
             "id": "30000000-0000-4000-8000-000000000004",
             "targetType": "story_block", "targetId": block.id,
             "status": "completed", "evidence": evidence,
+        }, {
+            "id": "30000000-0000-4000-8000-000000000008",
+            "targetType": "scene_task", "targetId": block.stages[0].scene_tasks[0].id,
+            "status": "completed", "evidence": evidence,
         }],
         "planningPatches": [{
             "id": "30000000-0000-4000-8000-000000000005",
@@ -446,7 +450,7 @@ async def test_atomic_finalization_rolls_back_late_failure_then_commits_and_repl
         )
         progress = await session.fetchone(
             """SELECT field_path,payload_json FROM plot_thread_projections
-                WHERE project_id=%s AND field_path LIKE 'plot.progress.%%'""",
+                WHERE project_id=%s AND field_path LIKE 'plot.progress.story_block.%%'""",
             (PROJECT_ID,),
         )
         planning_head = await session.fetchone(

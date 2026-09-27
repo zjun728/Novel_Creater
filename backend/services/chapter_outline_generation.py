@@ -30,6 +30,8 @@ from backend.gateways.chapter_outline_provider import (
 from backend.http_errors import ProjectArchived
 from backend.prompts.chapter_outline import (
     ChapterOutlineGenerationManifest,
+    OutlineContinuity,
+    PreviousFinalChapter,
     PlanningAuthority,
     ProjectionAuthority,
     PublicBindingAuthority,
@@ -48,6 +50,7 @@ from backend.services.chapter_outlines import (
     ChapterOutlineRequestInvalid,
     authoritative_chapter,
 )
+from backend.services.planning_progress import actual_block_progress
 from backend.services.planning_generation import (
     PublicModelSummary,
     is_safe_planning_idempotency_key,
@@ -877,6 +880,10 @@ class ChapterOutlineGenerationService:
                 authority["active_session"]
             ),
             "max_final": authority["max_final"],
+            "continuity_hash": canonical_hash({
+                "previous": authority["authorities"].get("previous_final_chapter"),
+                "progress": authority["authorities"].get("actual_progress", []),
+            }) if authority["authorities"] is not None else None,
             "basis": {
                 key: authority["basis"].get(key)
                 for key in _PLANNING_BASIS_FIELDS
@@ -1006,6 +1013,19 @@ class ChapterOutlineGenerationService:
                     raise ValueError("stale selected SceneTask")
             else:
                 tasks = active_tasks
+            continuity = cls._continuity(authority["authorities"], block)
+            completed = {
+                (item.target_type, item.target_id)
+                for item in continuity.actual_progress
+                if item.status == "completed"
+            }
+            if ("story_block", block.id) in completed:
+                raise ValueError("StoryBlock is already completed")
+            tasks = tuple(task for task in tasks
+                          if ("scene_task", task.id) not in completed
+                          and ("stage", task.stage_id) not in completed)
+            remaining_stage_ids = {task.stage_id for task in tasks}
+            stages = tuple(stage for stage in stages if stage.id in remaining_stage_ids)
             capacity = cls._capacity_policy(
                 authority["authorities"]["chapter_capacity_policy"]
             )
@@ -1048,6 +1068,7 @@ class ChapterOutlineGenerationService:
                     "draft_revision": command.draft_revision,
                     "draft_hash": command.draft_hash,
                     "author_instructions": command.author_instructions,
+                    "continuity": continuity,
                     "binding": PublicBindingAuthority(
                         revision_id=str(binding["binding_revision_id"]),
                         revision=int(binding["binding_revision"]),
@@ -1070,6 +1091,21 @@ class ChapterOutlineGenerationService:
             raise ChapterOutlineGenerationNotReady(
                 "ChapterOutline generation manifest is unavailable"
             ) from None
+
+    @staticmethod
+    def _continuity(current, block):
+        previous = None
+        progress = []
+        if int(current["canon_revision"]) > 0:
+            row = current["previous_final_chapter"]
+            if row is not None:
+                previous = PreviousFinalChapter(
+                    id=row["id"], chapter_number=row["chapter_num"],
+                    canon_revision=row["canon_revision"], content=row["content"],
+                    content_hash=row["content_hash"],
+                )
+            progress = actual_block_progress(current, block)
+        return OutlineContinuity(previous_chapter=previous, actual_progress=tuple(progress))
 
     @staticmethod
     def _capacity_policy(value):

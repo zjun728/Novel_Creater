@@ -433,7 +433,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     )
   }
 
-  async function openAuthoritative(nextProjectId, nextChapterNumber) {
+  async function openAuthoritative(nextProjectId, nextChapterNumber, { startSession = false } = {}) {
     const {
       projectId: targetProjectId,
       chapterNumber: targetChapterNumber,
@@ -498,6 +498,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
         if (
           confirmed.status !== 'current'
           || current.capabilities?.startSession !== true
+          || !startSession
         ) {
           clearWorkspace()
           return current
@@ -855,7 +856,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     )
   }
 
-  async function undoLocalDraft(nextProjectId, command) {
+  async function undoLocalDraft(nextProjectId, command, action = 'undoLocalDraft') {
     const undoCommand = requireUndoCommand(command)
     const {
       projectId: targetProjectId,
@@ -872,7 +873,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     const targetStateGeneration = stateGeneration
     undoingDraft.value = true
     try {
-      const restored = await api.chapterSessions.undoLocalDraft(
+      const restored = await api.chapterSessions[action](
         targetProjectId,
         sessionId,
         undoCommand,
@@ -953,6 +954,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     listDraftOperationEvents,
     cancelDraftOperation,
     undoLocalDraft,
+    applyLocalPreview: (nextProjectId, command) => undoLocalDraft(nextProjectId, command, 'applyLocalPreview'),
     reloadCurrentWorkspace,
     saveCandidate,
     loadCandidate,

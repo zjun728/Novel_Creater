@@ -32,3 +32,6 @@ export function genreLabel(value) {
 export function creationStageLabel(value) {
   return displayLabel(CREATION_STAGE_LABELS, value)
 }
+
+const CATEGORY_LABELS = Object.freeze({ action_conflict: '动作与冲突', character_arcs: '人物弧光', dialogue: '对话', emotion: '情绪', ensemble: '群像', information_release: '信息揭示', interiority: '内心活动', long_arc_continuity: '长篇连续性', pacing: '节奏', plot_organization: '情节组织', progression_economy: '成长与资源', suspense: '悬念' })
+export function categoryLabel(value) { return displayLabel(CATEGORY_LABELS, value) }

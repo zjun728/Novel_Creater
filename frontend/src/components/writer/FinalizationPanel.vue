@@ -1,6 +1,11 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { NAlert, NButton, NCard, NInput, NTag } from 'naive-ui'
+import { evidenceExcerpt } from '../../application/writer/finalizationEvidence.js'
+import { effectiveReviewFindings, referenceFromReview } from '../../utils/reviewReference.js'
+import FinalizationValueEditor from './FinalizationValueEditor.vue'
+import AddCanonFactEditor from './AddCanonFactEditor.vue'
+import ReviewResultsDialog from './ReviewResultsDialog.vue'
 
 
 const props = defineProps({
@@ -8,11 +13,20 @@ const props = defineProps({
   candidates: { type: Array, default: () => [] },
   planningContent: { type: Object, default: null },
   disabled: { type: Boolean, default: false },
+  chapterNumber: { type: Number, default: 0 },
+  draftStale: { type: Boolean, default: false },
+  selectedFinding: { type: String, default: '' },
 })
+const emit = defineEmits(['read-finalized', 'dirty-change', 'locate-finding', 'adjust-review'])
 
 const selectedCandidateId = ref('')
+const resultsOpen = ref(false)
+const changesSection = ref(null)
 const changeSetDraft = ref(null)
 const revokeConfirmation = ref(false)
+const valueEditorPending = ref(new Map())
+const addedFactPending = ref(false)
+const factBuilderMounted = ref(false)
 const review = computed(() => props.controller.review.value)
 const postFinalization = computed(() => props.controller.postFinalization.value)
 const busy = computed(() => props.disabled || props.controller.busy.value || props.controller.recoveryPending?.value)
@@ -29,18 +43,44 @@ const confirmed = computed(() => {
 })
 const editable = computed(() => (
   Boolean(changeSetDraft.value)
+  && review.value?.status === 'awaiting_author'
   && !confirmed.value
   && !props.controller.finalized.value
   && !busy.value
+  && !props.draftStale
 ))
 const changed = computed(() => {
   const current = review.value?.changeSet?.payload
   return Boolean(current && changeSetDraft.value)
     && JSON.stringify(current) !== JSON.stringify(changeSetDraft.value)
 })
-const findings = computed(() => review.value?.qualityReport?.findings || [])
+const pendingFields = computed(() => addedFactPending.value || [...valueEditorPending.value.values()].some(Boolean))
+const unsaved = computed(() => changed.value || pendingFields.value)
+const reviewCandidateContent = computed(() => props.candidates.find(item => item.id === review.value?.candidateId
+  && item.contentHash === review.value?.candidateHash)?.content || '')
+const factEntities = computed(() => {
+  const values = new Map((changeSetDraft.value?.existingEntityIds || []).map(id => [id, { id, label: id }]))
+  for (const item of changeSetDraft.value?.entities || []) values.set(item.id, item)
+  return [...values.values()]
+})
+const findings = computed(() => effectiveReviewFindings(review.value))
+const requiredFindings = computed(() => findings.value.some(item => item.severity === 'required'))
+async function decideFinding(id, ignored) {
+  if (!editable.value || unsaved.value) return
+  try { await props.controller.setFindingIgnored(id, ignored) } catch { /* controller owns error */ }
+}
 const hardBlocks = computed(() => props.controller.hardBlocks.value)
+const resultsStale = computed(() => props.draftStale || ['invalidated', 'cancelled'].includes(review.value?.status) || props.controller.finalized.value)
+watch(() => review.value?.attemptId, () => { resultsOpen.value = false }, { flush: 'sync' })
+async function checkChanges() {
+  await nextTick()
+  changesSection.value?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+  changesSection.value?.focus({ preventScroll: true })
+}
 let previousCandidateIds = new Set()
+
+watch(unsaved, value => emit('dirty-change', value), { immediate: true, flush: 'sync' })
+onBeforeUnmount(() => emit('dirty-change', false))
 
 watch(currentCandidates, values => {
   const ids = new Set(values.map(item => item.id))
@@ -55,12 +95,18 @@ watch(currentCandidates, values => {
 
 watch(() => review.value?.changeSet, value => {
   revokeConfirmation.value = false
+  valueEditorPending.value.clear()
+  addedFactPending.value = false
+  factBuilderMounted.value = false
   changeSetDraft.value = value?.payload ? structuredClone(value.payload) : null
 }, { immediate: true, deep: false, flush: 'sync' })
 
 function evidenceText(evidence) {
   if (!evidence) return '无正文定位'
-  return `正文字符 ${evidence.startScalar}–${evidence.endScalar}`
+  const candidate = props.candidates.find(item => item.id === review.value?.candidateId
+    && item.contentHash === review.value?.candidateHash)
+  const excerpt = evidenceExcerpt(candidate?.content, evidence)
+  return `正文字符 ${evidence.startScalar}–${evidence.endScalar}：${excerpt ? `“${excerpt}”` : '原文片段不可用，请重新读取候选稿。'}`
 }
 
 function displayValue(value) {
@@ -113,6 +159,7 @@ function targetLabel(item) {
 }
 
 const fieldLabel = value => ({
+  'author.observation': '作者补录事实',
   status: '状态',
   skills: '技能',
   debts: '债务',
@@ -122,13 +169,14 @@ async function prepareSelected() {
   if (!selectedCandidate.value) return
   try {
     await props.controller.prepareCandidate(selectedCandidate.value)
+    if (review.value?.qualityReport || hardBlocks.value.length) resultsOpen.value = true
   } catch {
     // The controller owns the fixed public error.
   }
 }
 
 async function saveCorrection() {
-  if (!editable.value || !changed.value) return
+  if (!editable.value || !changed.value || pendingFields.value) return
   try {
     await props.controller.correctChangeSet(changeSetDraft.value)
   } catch {
@@ -137,7 +185,7 @@ async function saveCorrection() {
 }
 
 async function confirmChangeSet() {
-  if (!editable.value || changed.value) return
+  if (!editable.value || unsaved.value) return
   try {
     await props.controller.confirmChangeSet()
   } catch {
@@ -152,7 +200,43 @@ function removePlanningPatch(id) {
   if (index !== -1) patches.splice(index, 1)
 }
 
+function excludeFact(id) {
+  if (!editable.value) return
+  const events = changeSetDraft.value.canonEvents
+  const index = events.findIndex(item => item.id === id)
+  if (index !== -1) {
+    valueEditorPending.value.delete(id)
+    events.splice(index, 1)
+  }
+}
+
+function updateFactValue(id, value) {
+  if (!editable.value) return
+  const item = changeSetDraft.value.canonEvents.find(event => event.id === id)
+  if (item) item.value = JSON.parse(JSON.stringify(value))
+}
+
+function excludeAlias(id) {
+  if (!editable.value) return
+  const aliases = changeSetDraft.value.aliases
+  const index = aliases.findIndex(item => item.id === id)
+  if (index !== -1) aliases.splice(index, 1)
+}
+
+function addFact(item) {
+  if (!editable.value || changeSetDraft.value.canonEvents.some(event => event.id === item.id)) return
+  changeSetDraft.value.canonEvents.push(item)
+}
+
+function excludeProgress(id) {
+  if (!editable.value) return
+  const events = changeSetDraft.value.storyProgressEvents
+  const index = events.findIndex(item => item.id === id)
+  if (index !== -1) events.splice(index, 1)
+}
+
 async function commitChapter() {
+  if (props.draftStale) return
   try {
     await props.controller.commitChapter()
   } catch {
@@ -185,7 +269,16 @@ async function refreshPostFinalization() {
 
 <template>
   <n-card title="定稿审查" :bordered="false" class="finalization-panel">
-    <p class="panel-intro">作者确认后，正文、Canon、进度与未来规划会在同一事务中提交。</p>
+    <p class="panel-intro">核对审稿意见与本章变更后，由你确认定稿。</p>
+    <n-button v-if="review?.qualityReport || hardBlocks.length" block @click="resultsOpen = true">查看本章审查结果</n-button>
+    <ReviewResultsDialog v-model:show="resultsOpen" :chapter-number="chapterNumber" :title="review?.changeSet?.payload?.title || ''"
+      :report="review?.qualityReport" :blocks="hardBlocks" :content="reviewCandidateContent" :disabled="busy"
+      :stale="resultsStale" :can-adjust="!!referenceFromReview(review) && !unsaved"
+      :decisions="review?.findingDecisions" :can-decide="editable && !unsaved" :error="controller.error.value"
+      @decide="decideFinding" @reload="controller.load().catch(() => {})"
+      :can-check-changes="!!changeSetDraft" @locate="emit('locate-finding', $event)" @adjust="emit('adjust-review')" @check-changes="checkChanges" />
+    <n-alert v-if="review?.status === 'invalidated'" type="warning" title="需要重新审稿">旧审稿已失效。请保存当前正文为候选稿，再重新审查。</n-alert>
+    <n-alert v-else-if="draftStale && !controller.finalized.value" type="warning" title="正文或小纲已变化">旧审稿不能作为当前正文的定稿依据。请先放弃或撤销旧审查，保存当前稿后重新审查。</n-alert>
 
     <n-alert
       v-if="controller.error.value"
@@ -200,7 +293,7 @@ async function refreshPostFinalization() {
     >核对撤销结果</n-button>
 
     <n-alert
-      v-if="review?.status === 'failed' && !hardBlocks.length"
+      v-if="review?.status === 'failed' && !hardBlocks.length && !controller.busy.value"
       type="warning"
       title="本次审查未完成"
       class="panel-alert"
@@ -214,6 +307,7 @@ async function refreshPostFinalization() {
       >
         正文与对应小纲已进入作品稿件。你可以继续当前创作步骤，也可以先回看本章定稿。
       </n-alert>
+      <p v-if="postFinalization?.currentAction.state === 'unavailable' && postFinalization.currentAction.description" class="finalized-transition-status" role="status">{{ postFinalization.currentAction.description }}</p>
       <nav class="finalized-actions" aria-label="定稿后下一步">
         <p
           v-if="!postFinalization"
@@ -245,6 +339,7 @@ async function refreshPostFinalization() {
           v-if="postFinalization?.finalizedChapterReadable"
           class="finalized-action finalized-action--secondary"
           :to="postFinalization.finalizedChapterPath"
+          @click="emit('read-finalized')"
         >查看本章定稿</router-link>
       </nav>
     </template>
@@ -274,7 +369,7 @@ async function refreshPostFinalization() {
         :loading="controller.busy.value"
         :disabled="busy || !selectedCandidate"
         @click="prepareSelected"
-      >审查并定稿</n-button>
+      >{{ controller.busy.value ? '正在审查…' : '审查并定稿' }}</n-button>
     </template>
 
     <template v-else>
@@ -285,17 +380,11 @@ async function refreshPostFinalization() {
             {{ review.qualityReport?.status === 'completed' ? '已完成' : '未完成，不阻断' }}
           </n-tag>
         </div>
-        <ul v-if="findings.length" class="review-list">
-          <li v-for="item in findings" :key="item.id">
-            <strong>{{ item.reason }}</strong>
-            <span>{{ item.suggestedAction }}</span>
-            <small>{{ evidenceText(item.evidence) }}</small>
-          </li>
-        </ul>
+        <p v-if="findings.length" class="muted">共 {{ findings.length }} 条质量建议，打开审查结果查看分类、原文和调整建议。</p>
         <p v-else class="muted">没有质量建议；作者仍需核对下方事实变更。</p>
       </section>
 
-      <section v-if="changeSetDraft" class="review-section change-set" aria-label="完整变更集">
+      <section v-if="changeSetDraft" ref="changesSection" tabindex="-1" class="review-section change-set" aria-label="完整变更集">
         <div class="section-heading">
           <h3>本章变更集</h3>
           <n-tag size="small">修订 {{ review.changeSet.revision }}</n-tag>
@@ -312,28 +401,45 @@ async function refreshPostFinalization() {
           <label v-for="item in changeSetDraft.aliases" :key="item.id">
             <span>别名</span>
             <n-input v-model:value="item.alias" :disabled="!editable" />
+            <n-button size="small" :disabled="!editable" @click="excludeAlias(item.id)">移除此别名</n-button>
           </label>
         </div>
 
         <div v-if="changeSetDraft.canonEvents.length" class="change-group">
           <h4>Canon 事实</h4>
+          <p class="muted">对照原文修正事实内容，或排除提取错误的事实。保存修正并通过校验后，才可确认。</p>
           <article v-for="item in changeSetDraft.canonEvents" :key="item.id" class="change-item">
             <strong>{{ fieldLabel(item.fieldPath) }}</strong>
             <pre>{{ displayValue(item.value) }}</pre>
             <small>{{ evidenceText(item.evidence) }}</small>
+            <details class="fact-correction">
+              <summary>修正事实</summary>
+              <p class="muted">仅修改事实内容；关联实体、事实类型和原文引用沿用本条记录。</p>
+              <FinalizationValueEditor :model-value="item.value" :disabled="!editable" @update:model-value="updateFactValue(item.id, $event)" @pending-change="valueEditorPending.set(item.id, $event)" />
+            </details>
+            <n-button size="small" :disabled="!editable" @click="excludeFact(item.id)">排除此项事实</n-button>
           </article>
         </div>
 
+        <details :key="`add-fact-${review.changeSet.revision}`" class="fact-correction" @toggle="factBuilderMounted ||= $event.target.open">
+          <summary>补录遗漏事实</summary>
+          <AddCanonFactEditor v-if="factBuilderMounted" :key="review.changeSet.revision" :candidate-content="reviewCandidateContent" :chapter-number="chapterNumber" :entities="factEntities" :disabled="!editable" @add="addFact" @dirty-change="addedFactPending = $event" />
+        </details>
+
         <div v-if="changeSetDraft.storyProgressEvents.length" class="change-group">
           <h4>故事进度</h4>
-          <label v-for="item in changeSetDraft.storyProgressEvents" :key="item.id">
-            <span>{{ targetLabel(item) }}</span>
-            <select v-model="item.status" :disabled="!editable">
-              <option value="started">开始</option>
-              <option value="advanced">推进</option>
-              <option value="completed">完成</option>
-            </select>
-          </label>
+          <p class="muted">可排除正文没有完成的进度。保存时会重新核对父子任务的完成条件。</p>
+          <article v-for="item in changeSetDraft.storyProgressEvents" :key="item.id" class="change-item">
+            <label><span>{{ targetLabel(item) }}</span>
+              <select v-model="item.status" :disabled="!editable">
+                <option value="started">开始</option>
+                <option value="advanced">推进</option>
+                <option value="completed">完成</option>
+              </select>
+            </label>
+            <small>{{ evidenceText(item.evidence) }}</small>
+            <n-button size="small" :disabled="!editable" @click="excludeProgress(item.id)">排除此项进度</n-button>
+          </article>
         </div>
 
         <div v-if="changeSetDraft.planningPatches.length" class="change-group">
@@ -358,16 +464,20 @@ async function refreshPostFinalization() {
         <div v-if="changeSetDraft.planningSuggestions.length" class="change-group">
           <h4>非权威建议</h4>
           <p class="muted">以下建议仅供作者参考，不会写入规划。</p>
-          <p v-for="item in changeSetDraft.planningSuggestions" :key="item.id">{{ item.message }}</p>
+          <article v-for="item in changeSetDraft.planningSuggestions" :key="item.id">
+            <p>{{ item.message }}</p>
+            <small>{{ evidenceText(item.evidence) }}</small>
+          </article>
         </div>
       </section>
 
+      <p v-if="pendingFields" class="muted" role="status">请先完成字段编辑或添加补录事实；清空尚未添加的内容也可取消本次输入。</p>
       <n-button
         v-if="changed"
         type="primary"
         block
         :loading="controller.busy.value"
-        :disabled="!editable"
+        :disabled="!editable || pendingFields"
         @click="saveCorrection"
       >保存修正</n-button>
       <n-button
@@ -382,7 +492,7 @@ async function refreshPostFinalization() {
         type="primary"
         block
         :loading="controller.busy.value"
-        :disabled="!editable || changed"
+        :disabled="!editable || unsaved || requiredFindings"
         @click="confirmChangeSet"
       >确认以上变更</n-button>
       <n-button
@@ -390,7 +500,7 @@ async function refreshPostFinalization() {
         type="success"
         block
         :loading="controller.busy.value"
-        :disabled="busy"
+        :disabled="busy || draftStale || requiredFindings"
         @click="commitChapter"
       >定稿本章</n-button>
       <section v-if="controller.canRevoke?.value" class="review-section" aria-label="撤销已确认审查">
@@ -401,6 +511,10 @@ async function refreshPostFinalization() {
         </template>
       </section>
     </template>
+    <section v-if="referenceFromReview(review) && !controller.finalized.value" class="review-section" aria-label="按审稿意见调整">
+      <n-button type="primary" color="#934735" block :disabled="busy || draftStale || unsaved" @click="emit('adjust-review')">基于审稿意见调整</n-button>
+      <p v-if="unsaved" class="muted">先保存或放弃未保存的审稿修正，再调整正文。</p>
+    </section>
   </n-card>
 </template>
 
@@ -428,6 +542,10 @@ h3 { font-size: 15px; } h4 { font-size: 13px; }
 .review-list span, .review-list small, .change-item small { color: #817565; font-size: 11px; line-height: 1.55; }
 .change-group { margin-top: 14px; }
 .change-item { margin-bottom: 8px; }
+.fact-correction { min-width: 0; margin: 8px 0; border-top: 1px solid #dfd1bc; padding-top: 9px; }
+.fact-correction summary { cursor: pointer; color: #835531; font-size: 12px; font-weight: 700; }
+.fact-correction summary:focus-visible { outline: 2px solid #9b6a32; outline-offset: 3px; }
 pre { overflow: auto; max-height: 150px; margin: 0; color: #55493c; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.6 ui-monospace, monospace; }
 .muted { color: #6f6559; font-size: 12px; line-height: 1.6; }
+.finding-selected { border-left:3px solid var(--nc-vermilion); padding-left:8px; }
 </style>

@@ -164,6 +164,8 @@ class StartDraftOperation:
     start_offset: int | None = None
     end_offset: int | None = None
     selected_text_hash: str | None = None
+    preview_only: bool = False
+    review_reference: Mapping | None = None
 
 
 @dataclass(frozen=True)
@@ -255,6 +257,8 @@ class DraftOperationService:
             )
             if (
                 not isinstance(command, StartDraftOperation)
+                or not isinstance(command.preview_only, bool)
+                or (command.preview_only and not local)
                 or not cls._canonical_uuid(command.project_id)
                 or not cls._canonical_uuid(command.chapter_session_id)
                 or command.operation_type not in (
@@ -292,6 +296,11 @@ class DraftOperationService:
             ):
                 raise ValueError
             instruction.encode("utf-8")
+            if command.review_reference is not None:
+                from backend.services.draft_review import review_reference
+                if local:
+                    raise ValueError
+                review_reference(command.review_reference)
         except (AttributeError, TypeError, ValueError, UnicodeError):
             raise DraftOperationRequestInvalid() from None
         return StartDraftOperation(
@@ -305,6 +314,8 @@ class DraftOperationService:
             start_offset=command.start_offset,
             end_offset=command.end_offset,
             selected_text_hash=command.selected_text_hash,
+            preview_only=command.preview_only,
+            review_reference=(dict(command.review_reference) if command.review_reference is not None else None),
         )
 
     async def start(self, command: StartDraftOperation) -> DraftOperationResult:
@@ -354,7 +365,7 @@ class DraftOperationService:
             )
             if project is None or chapter is None or draft is None:
                 raise DraftOperationNotFound()
-            if chapter.get("active_draft_operation_id") is not None:
+            if chapter.get("status") != "drafting" or chapter.get("active_draft_operation_id") is not None:
                 raise DraftOperationConflict()
             if (
                 draft.get("revision") != command.expected_working_draft_revision
@@ -407,7 +418,6 @@ class DraftOperationService:
             )
             if not self._valid_undo_before(before, stored, draft):
                 raise DraftOperationConflict()
-
             now = self._clock()
             current_snapshot = {
                 "id": self._new_id(),
@@ -452,6 +462,79 @@ class DraftOperationService:
             if isinstance(chapter_number, bool) or not isinstance(chapter_number, int):
                 raise DraftOperationStorageError("chapter identity is invalid")
             return chapter_number
+
+    async def apply_local_preview(self, command: UndoLocalDraft) -> int:
+        command = self.validate_undo(command)
+        async with self._storage_transaction() as session:
+            project = await self.repository.lock_project(session, command.project_id)
+            chapter = await self.repository.lock_session_for_operation(
+                session, command.project_id, command.chapter_session_id)
+            draft = await self.repository.lock_working_draft_for_operation(
+                session, command.project_id, command.chapter_session_id)
+            if project is None or chapter is None or draft is None:
+                raise DraftOperationNotFound()
+            if chapter.get("status") != "drafting" or chapter.get("active_draft_operation_id") is not None:
+                raise DraftOperationConflict()
+            stored = await self.repository.read_draft_operation(
+                session, command.project_id, command.chapter_session_id, command.source_operation_id)
+            if stored is None:
+                raise DraftOperationNotFound()
+            source = self.project_stored_result(stored)
+            manifest = json.loads(stored["input_manifest_json"])
+            if (manifest.get("previewOnly") is not True or source.status != "completed"
+                    or source.operation_type not in LOCAL_DRAFT_OPERATION_TYPES
+                    or command.expected_working_draft_revision != stored["base_working_draft_revision"]
+                    or command.expected_content_hash != stored["base_working_draft_hash"]):
+                raise DraftOperationConflict()
+            payload = {
+                "source": "draft-operation", "operationId": source.operation_id,
+                "operationType": source.operation_type, "providerId": source.provider_id,
+                "modelName": source.model_name,
+                "baseWorkingDraftRevision": stored["base_working_draft_revision"],
+            }
+            if (draft["revision"] == command.expected_working_draft_revision + 1
+                    and draft.get("source_payload") == payload):
+                return chapter["chapter_num"]
+            if (draft["revision"] != command.expected_working_draft_revision
+                    or draft["content_hash"] != command.expected_content_hash
+                    or hashlib.sha256(draft["content"].encode("utf-8")).hexdigest() != command.expected_content_hash):
+                raise DraftOperationConflict()
+            authority = await self._read_authority(session, chapter, draft)
+            current = self._authority_snapshot(authority)
+            if any(current[key] != manifest.get(key) for key in current):
+                raise DraftOperationConflict()
+            selection = manifest["selection"]
+            try:
+                target = validate_selection(draft["content"], selection["startOffset"],
+                                            selection["endOffset"], selection["selectedTextHash"])
+                content, _, _ = replace_selection(target, source.partial_output)
+            except ValueError:
+                raise DraftOperationConflict() from None
+            if len(content) > DRAFT_OPERATION_CONTENT_MAX_SCALARS:
+                raise DraftOperationConflict()
+            now = self._clock()
+            content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            if content_hash != source.result_content_hash or draft["revision"] + 1 != source.result_working_draft_revision:
+                raise DraftOperationConflict()
+            for role, revision, text, digest in (
+                ("before", draft["revision"], draft["content"], draft["content_hash"]),
+                ("after", draft["revision"] + 1, content, content_hash),
+            ):
+                if not await self.repository.insert_working_draft_revision(session, {
+                    "id": self._new_id(), "project_id": command.project_id,
+                    "chapter_session_id": command.chapter_session_id, "working_draft_id": draft["id"],
+                    "working_draft_revision": revision, "snapshot_role": role,
+                    "replacement_reason": source.operation_type, "source_operation_id": source.operation_id,
+                    "content": text, "content_hash": digest, "created_at": now,
+                }):
+                    raise DraftOperationStorageError("could not append preview adoption snapshot")
+            if not await self.repository.upsert_working_draft(session, {
+                "id": draft["id"], "project_id": command.project_id,
+                "chapter_session_id": command.chapter_session_id, "revision": draft["revision"] + 1,
+                "content": content, "content_hash": content_hash, "source_payload": payload, "updated_at": now,
+            }, expected_revision=draft["revision"], expected_content_hash=draft["content_hash"]):
+                raise DraftOperationStorageError("preview adoption CAS failed")
+            return chapter["chapter_num"]
 
     @staticmethod
     def _valid_undo_before(before, stored, draft) -> bool:
@@ -658,7 +741,9 @@ class DraftOperationService:
                 except ValueError:
                     raise DraftOperationConflict() from None
 
-            authority = await self._read_authority(session, chapter_session, draft)
+            authority = await self._read_authority(
+                session, chapter_session, draft, review_reference=command.review_reference,
+            )
             manifest = self._manifest(command, authority)
             manifest_hash = canonical_hash(manifest)
             provider_authority = authority["provider_authority"]
@@ -727,6 +812,7 @@ class DraftOperationService:
                 working_draft=draft,
                 author_instruction=command.author_instruction,
                 story_context=authority["story_context"],
+                review_context=authority.get("review_report"),
                 selection_context=(
                     selection_context(selection) if selection is not None else None
                 ),
@@ -930,47 +1016,55 @@ class DraftOperationService:
                 raise _DraftOperationResultInvalid(
                     "draft operation event budget exhausted"
                 )
+            preview_only = context["command"].preview_only
             result_revision = int(draft["revision"]) + 1
             result_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
             partial_output = replacement if local_operation else content
             partial_output_hash = hashlib.sha256(
                 partial_output.encode("utf-8")
             ).hexdigest()
-            before = self._recovery_row(
-                context, draft, int(draft["revision"]), "before",
-                draft["content"], draft["content_hash"], now,
-            )
-            after = self._recovery_row(
-                context, draft, result_revision, "after", content, result_hash, now,
-            )
-            if not await self.repository.insert_working_draft_revision(session, before):
-                raise DraftOperationStorageError("could not append before snapshot")
-            row = {
-                "id": draft["id"],
-                "project_id": context["command"].project_id,
-                "chapter_session_id": context["command"].chapter_session_id,
-                "revision": result_revision,
-                "content": content,
-                "content_hash": result_hash,
-                "source_payload": {
-                    "source": "draft-operation",
-                    "operationId": attempt["id"],
-                    "operationType": context["command"].operation_type,
-                    "providerId": attempt["provider_id"],
-                    "modelName": attempt["model_name_snapshot"],
-                    "baseWorkingDraftRevision": int(draft["revision"]),
-                },
-                "updated_at": now,
-            }
-            if not await self.repository.upsert_working_draft(
-                session,
-                row,
-                expected_revision=int(draft["revision"]),
-                expected_content_hash=draft["content_hash"],
-            ):
-                raise DraftOperationStorageError("working draft CAS failed")
-            if not await self.repository.insert_working_draft_revision(session, after):
-                raise DraftOperationStorageError("could not append after snapshot")
+            if not preview_only:
+                before = self._recovery_row(
+                    context, draft, int(draft["revision"]), "before",
+                    draft["content"], draft["content_hash"], now,
+                )
+                after = self._recovery_row(
+                    context, draft, result_revision, "after", content, result_hash, now,
+                )
+                if not await self.repository.insert_working_draft_revision(session, before):
+                    raise DraftOperationStorageError("could not append before snapshot")
+                row = {
+                    "id": draft["id"],
+                    "project_id": context["command"].project_id,
+                    "chapter_session_id": context["command"].chapter_session_id,
+                    "revision": result_revision,
+                    "content": content,
+                    "content_hash": result_hash,
+                    "source_payload": {
+                        "source": "draft-operation",
+                        "operationId": attempt["id"],
+                        "operationType": context["command"].operation_type,
+                        "providerId": attempt["provider_id"],
+                        "modelName": attempt["model_name_snapshot"],
+                        "baseWorkingDraftRevision": int(draft["revision"]),
+                    },
+                    "updated_at": now,
+                }
+                if not await self.repository.upsert_working_draft(
+                    session,
+                    row,
+                    expected_revision=int(draft["revision"]),
+                    expected_content_hash=draft["content_hash"],
+                ):
+                    raise DraftOperationStorageError("working draft CAS failed")
+                if not await self.repository.insert_working_draft_revision(session, after):
+                    raise DraftOperationStorageError("could not append after snapshot")
+                reference = context["command"].review_reference
+                if reference is not None and not await self.repository.invalidate_adjusted_review(
+                    session, context["command"].project_id, context["command"].chapter_session_id,
+                    reference, now,
+                ):
+                    raise DraftOperationStorageError("could not invalidate adjusted review")
             if not await self.repository.insert_draft_operation_event(
                 session,
                 self._event_row(
@@ -1145,7 +1239,8 @@ class DraftOperationService:
             == context["attempt"]["model_name_snapshot"]
         )
         authority = await self._read_authority(
-            session, locked["session"], locked["draft"], strict=False
+            session, locked["session"], locked["draft"], strict=False,
+            review_reference=context["command"].review_reference,
         )
         authority_matches = False
         if authority is not None:
@@ -1244,6 +1339,9 @@ class DraftOperationService:
                 if attempt["status"] != "running":
                     raise _DraftOperationFenceLost()
 
+                manifest = json.loads(attempt["input_manifest_json"])
+                review_ref = manifest.get("reviewReference")
+
                 persisted = attempt["partial_output_text"]
                 normalized = persisted.strip()
                 if normalized:
@@ -1305,6 +1403,21 @@ class DraftOperationService:
                         or draft.get("content_hash") != base_hash
                     ):
                         raise DraftOperationConflict()
+                    if review_ref is not None:
+                        authority = await self._read_authority(
+                            session, chapter_session, draft, strict=False, review_reference=review_ref,
+                        )
+                        snapshot = None if authority is None else self._authority_snapshot(authority)
+                        if snapshot is None or any(manifest.get(key) != value for key, value in snapshot.items()):
+                            if not await self.repository.expire_draft_operation_for_drift(
+                                session, project_id, session_id, operation_id, int(attempt["fencing_token"]), now,
+                            ):
+                                raise _DraftOperationFenceLost()
+                            return self._project_expired(attempt, now)
+                        if not await self.repository.invalidate_adjusted_review(
+                            session, project_id, session_id, review_ref, now,
+                        ):
+                            raise DraftOperationStorageError("could not invalidate adjusted review")
                     result_revision = base_revision + 1
                     row.update(
                         result_working_draft_revision=result_revision,
@@ -1386,7 +1499,7 @@ class DraftOperationService:
             "created_at": now,
         }
 
-    async def _read_authority(self, session, chapter_session, draft, *, strict=True):
+    async def _read_authority(self, session, chapter_session, draft, *, strict=True, review_reference=None):
         try:
             authoritative_session = await self.repository.read_session_by_id(
                 session,
@@ -1424,6 +1537,14 @@ class DraftOperationService:
                 ),
             }
             self._validate_authority(authority)
+            if review_reference is not None:
+                from backend.services.draft_review import current_review_report
+                bundle = await self.repository.read_review_for_draft_operation(
+                    session, authoritative_session["project_id"], authoritative_session["id"],
+                    review_reference,
+                )
+                authority["review_report"] = current_review_report(review_reference, bundle, authority, draft)
+                authority["review_reference"] = dict(review_reference)
             return authority
         except (KeyError, TypeError, ValueError, UnicodeError):
             if not strict:
@@ -1597,6 +1718,7 @@ class DraftOperationService:
     def _authority_snapshot(cls, authority):
         provider = authority["provider_authority"]
         return {
+            **({"reviewReference": authority["review_reference"]} if "review_reference" in authority else {}),
             "session": {
                 key: authority["session"].get(key)
                 for key in _SESSION_IDENTITY_FIELDS
@@ -1632,6 +1754,8 @@ class DraftOperationService:
                 "endOffset": command.end_offset,
                 "selectedTextHash": command.selected_text_hash,
             }
+        if command.preview_only:
+            manifest["previewOnly"] = True
         secrets = normalize_provider_secrets(
             (authority["provider"].get("api_key"), authority["provider"].get("base_url"))
         )
@@ -1642,6 +1766,7 @@ class DraftOperationService:
     @staticmethod
     def _request_fingerprint(command):
         fingerprint = {
+            **({"reviewReference": command.review_reference} if command.review_reference is not None else {}),
             "projectId": command.project_id,
             "chapterSessionId": command.chapter_session_id,
             "operationType": command.operation_type,
@@ -1655,6 +1780,8 @@ class DraftOperationService:
                 "endOffset": command.end_offset,
                 "selectedTextHash": command.selected_text_hash,
             }
+        if command.preview_only:
+            fingerprint["previewOnly"] = True
         return canonical_hash(fingerprint)
 
     @staticmethod
@@ -1885,6 +2012,14 @@ class DraftOperationService:
             if not isinstance(manifest, dict):
                 raise ValueError
             if canonical_hash(manifest) != manifest_hash:
+                raise ValueError
+            preview_only = manifest.get("previewOnly", False)
+            if "reviewReference" in manifest:
+                from backend.services.draft_review import review_reference
+                if operation_type != "generate_new":
+                    raise ValueError
+                review_reference(manifest["reviewReference"])
+            if not isinstance(preview_only, bool) or (preview_only and operation_type not in LOCAL_DRAFT_OPERATION_TYPES):
                 raise ValueError
             model = manifest.get("model")
             selection_manifest = manifest.get("selection")

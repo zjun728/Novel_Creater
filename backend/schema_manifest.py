@@ -19,8 +19,10 @@ FRAGMENTS = (
     "25_bible.sql",
     "30_planning.sql",
     "40_drafts.sql",
+    "42_review_decisions.sql",
     "50_canon.sql",
     "60_projections.sql",
+    "65_continuity_issues.sql",
     "70_corpus.sql",
     "80_project_imports.sql",
 )

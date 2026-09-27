@@ -1262,6 +1262,11 @@ async def _prepare_planning_race(
         WRITE_FENCE_PROJECT,
         now,
     )
+    # Confirming the contract synchronizes project targets and advances the CAS version.
+    assert await disposable_mysql.session.fetchone(
+        "SELECT lifecycle_revision FROM projects WHERE id=%s",
+        (WRITE_FENCE_PROJECT,),
+    ) == {"lifecycle_revision": 1}
     return transaction, planning, now
 
 
@@ -1432,10 +1437,10 @@ async def test_preparation_keeps_confirmed_planning_as_archived_read_only_entry(
     assert active.next_action == "prepare_chapter_outline"
     assert (
         active.target_path
-        == f"/projects/{WRITE_FENCE_PROJECT}/planning/story-blocks"
+        == f"/projects/{WRITE_FENCE_PROJECT}/planning/outlines"
     )
 
-    await service.archive(WRITE_FENCE_PROJECT, 0)
+    await service.archive(WRITE_FENCE_PROJECT, 1)
     archived = await service.preparation(WRITE_FENCE_PROJECT)
     assert archived.lifecycle == "archived"
     assert archived.planning == "current"
@@ -1764,7 +1769,7 @@ async def test_active_planning_generation_lease_blocks_archive_until_terminal(
     )
     try:
         try:
-            archive_result = await lifecycle.archive(WRITE_FENCE_PROJECT, 0)
+            archive_result = await lifecycle.archive(WRITE_FENCE_PROJECT, 1)
         except BaseException as exc:
             archive_result = exc
     finally:
@@ -1782,7 +1787,7 @@ async def test_active_planning_generation_lease_blocks_archive_until_terminal(
     )
     assert terminal["status"] in {"succeeded", "failed"}
     assert terminal["active_slot"] is None
-    archived = await lifecycle.archive(WRITE_FENCE_PROJECT, 0)
+    archived = await lifecycle.archive(WRITE_FENCE_PROJECT, 1)
     assert archived.archived_at is not None
 
 
@@ -1801,7 +1806,7 @@ async def test_expired_planning_lease_allows_archive_and_publish_stays_fenced(
         ProjectRepository(clock=clock),
         transaction,
     )
-    archived = await lifecycle.archive(WRITE_FENCE_PROJECT, 0)
+    archived = await lifecycle.archive(WRITE_FENCE_PROJECT, 1)
     gateway.release.set()
     result = await asyncio.wait_for(generation_task, timeout=10)
 
@@ -1931,7 +1936,7 @@ async def _run_planning_archive_race(
 
     async def archive_with_completion():
         try:
-            return await archive_service.archive(WRITE_FENCE_PROJECT, 0)
+            return await archive_service.archive(WRITE_FENCE_PROJECT, 1)
         finally:
             archive_completed.set()
 
@@ -1995,7 +2000,7 @@ async def test_real_planning_write_lock_then_archive_commits_before_archive(
         "status": "active",
     }
     assert project["archived_at"] is not None
-    assert project["lifecycle_revision"] == 1
+    assert project["lifecycle_revision"] == 2
 
 
 @pytest.mark.asyncio
@@ -2022,7 +2027,7 @@ async def test_real_planning_write_failure_rolls_back_then_archive_succeeds(
     )
     assert draft is None
     assert project["archived_at"] is not None
-    assert project["lifecycle_revision"] == 1
+    assert project["lifecycle_revision"] == 2
 
 
 @pytest.mark.asyncio
@@ -2130,7 +2135,9 @@ async def test_archive_blocks_writes_and_restore_reopens_future_writes_but_keeps
         clock=lambda: now,
     )
 
-    await project_service.archive(WRITE_FENCE_PROJECT, 0)
+    assert (await project_service.get(WRITE_FENCE_PROJECT)).lifecycle_revision == 1
+    archived = await project_service.archive(WRITE_FENCE_PROJECT, 1)
+    assert archived.lifecycle_revision == 2
     assert await disposable_mysql.session.fetchone(
         """SELECT head.revision,head.content_hash,revision.content_json
              FROM project_planning_heads head
@@ -2249,7 +2256,8 @@ async def test_archive_blocks_writes_and_restore_reopens_future_writes_but_keeps
             WHERE id=%s""",
         (now + 1, CONTRACT_BATCH),
     )
-    restored = await project_service.restore(WRITE_FENCE_PROJECT, 1)
+    restored = await project_service.restore(WRITE_FENCE_PROJECT, 2)
+    assert restored.lifecycle_revision == 3
     confirmed_seed_after_restore = await capture(
         seed_service.create(
             CreateSeed(

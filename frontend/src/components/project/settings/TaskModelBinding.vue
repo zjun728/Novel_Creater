@@ -1,6 +1,7 @@
 <script setup>
 import {
   computed,
+  nextTick,
   onBeforeUnmount,
   onMounted,
   ref,
@@ -32,7 +33,7 @@ const props = defineProps({
     default: false,
   },
 })
-const emit = defineEmits(['busy-change', 'dirty-change'])
+const emit = defineEmits(['busy-change', 'dirty-change', 'saved', 'cancel'])
 const providerStore = useProviderStore()
 const modelBindingStore = useModelBindingStore()
 const binding = ref(null)
@@ -113,8 +114,8 @@ const mixedAdvancedSelection = computed(
 )
 const sourceDescription = computed(() => (
   binding.value?.sourceProjectId
-    ? `继承自项目 ${binding.value.sourceProjectId} 的完整 Ready 快照；本项目绑定 revision ${binding.value.revision}。`
-    : `本项目绑定 revision ${binding.value?.revision ?? '—'}；未继承其他项目快照。`
+    ? '已继承其他项目的模型配置，可按创作任务调整。'
+    : '为规划、正文和其他创作任务选择模型。'
 ))
 
 
@@ -155,9 +156,9 @@ function reasonDetail(reason) {
   const [code, taskKey] = String(reason || '').split(':', 2)
   const task = taskLabels[taskKey] || taskKey || '对应任务'
   const messages = {
-    binding_incomplete: ['八项记录不完整', '重新加载完整快照。'],
-    task_unbound: [`${task}尚未绑定`, '选择 Ready Provider 后原子保存全部八项。'],
-    provider_unavailable: [`${task}的 Provider 不可用`, '先恢复 Provider，再重新保存完整快照。'],
+    binding_incomplete: ['任务配置不完整', '请重新加载配置。'],
+    task_unbound: [`${task}尚未绑定`, '选择可用模型服务后保存配置。'],
+    provider_unavailable: [`${task}的模型服务不可用`, '请检查服务连接，再保存配置。'],
     model_snapshot_mismatch: [`${task}的模型快照已变化`, '重新保存以冻结当前模型身份。'],
   }
   const [title, guidance] = messages[code]
@@ -214,12 +215,14 @@ async function saveBindings() {
     || isSaving.value
     || requiresReload.value
   ) return
+  if (!hasChanges.value && bindingReady.value) { emit('saved'); return }
   const projectId = props.projectId
   const generation = saveGuard.begin()
   savingStatus.value = true
   saveError.value = ''
   saveSuccess.value = ''
   let writeCompleted = false
+  let returnAfterSave = false
   try {
     const saved = await modelBindingStore.replaceBindings(projectId, {
       expectedRevision: binding.value.revision,
@@ -254,22 +257,26 @@ async function saveBindings() {
       saveError.value = '保存后绑定又发生了变化；已加载服务器上的最新完整快照。'
     } else {
       saveSuccess.value = nextStatus.bindingReady
-        ? '完整八项快照已保存，后端确认 Ready。'
-        : '完整八项快照已保存；当前仍有待恢复项。'
+        ? '模型配置已保存，可以开始创作。'
+        : '模型配置已保存；仍有任务需要配置可用服务。'
+      if (nextStatus.bindingReady) returnAfterSave = true
     }
   } catch (failure) {
     if (!saveGuard.isCurrent(generation)) return
     if (writeCompleted) {
       requiresReload.value = true
-      saveError.value = '快照已保存，但 Ready 核验结果未知。请重新加载，不要重复提交。'
+      saveError.value = '配置已保存，但可用状态暂未确认。请重新加载，不要重复提交。'
     } else if (failure?.status === 409) {
       requiresReload.value = true
-      saveError.value = '绑定 revision 已变化。请重新加载后再编辑。'
+      saveError.value = '配置已被更新。请重新加载后再编辑。'
     } else {
       saveError.value = failure.message || '模型绑定保存失败'
     }
   } finally {
-    if (saveGuard.isCurrent(generation)) savingStatus.value = false
+    if (saveGuard.isCurrent(generation)) {
+      savingStatus.value = false
+      if (returnAfterSave) { await nextTick(); emit('saved') }
+    }
   }
 }
 
@@ -304,16 +311,16 @@ onBeforeUnmount(() => {
   <section class="binding-ledger" aria-labelledby="binding-ledger-heading">
     <header class="ledger-heading">
       <div>
-        <p class="folio">PROJECT MODEL LEDGER</p>
-        <h2 id="binding-ledger-heading">项目模型绑定</h2>
+
+        <h2 id="binding-ledger-heading">创作使用的模型</h2>
         <p>{{ sourceDescription }}</p>
       </div>
       <div class="status-seals" aria-live="polite">
         <n-tag :type="bindingComplete ? 'success' : 'warning'" round>
-          {{ bindingComplete ? 'Complete · 八项完整' : 'Incomplete' }}
+          {{ bindingComplete ? '配置完整' : '配置未完成' }}
         </n-tag>
         <n-tag :type="bindingReady ? 'success' : 'warning'" round>
-          {{ bindingReady ? 'Ready · 可调用' : 'Not Ready' }}
+          {{ bindingReady ? '连接可用' : '连接待恢复' }}
         </n-tag>
       </div>
     </header>
@@ -323,21 +330,21 @@ onBeforeUnmount(() => {
     </n-alert>
     <n-alert v-if="error" type="error" class="state-alert">
       {{ error }}
-      <template #action>
+      <div class="alert-actions">
         <n-button size="small" @click="loadSnapshot">重新加载</n-button>
-      </template>
+      </div>
     </n-alert>
 
     <n-spin :show="loading">
       <template v-if="binding">
         <section class="simple-binding" aria-label="全部任务统一模型">
           <div>
-            <span>默认 · 应用到全部八项</span>
-            <strong>全部任务使用同一模型</strong>
+            <span>模型服务</span>
+            <strong>项目默认模型</strong>
             <p v-if="mixedAdvancedSelection">
               当前八项使用不同模型；选择后会统一覆盖草稿。
             </p>
-            <p v-else>一次选择、一次 CAS，原子替换完整八项快照。</p>
+            <p v-else>选择后应用于全部任务；下方可单独调整规划与正文模型。</p>
           </div>
           <n-select
             :value="simpleProviderId"
@@ -350,19 +357,29 @@ onBeforeUnmount(() => {
           />
         </section>
 
+        <div class="primary-models">
+          <label v-for="taskKey in ['planning', 'writing']" :key="taskKey">
+            <span>{{ taskKey === 'planning' ? '规划模型' : '正文模型' }}</span>
+            <n-select :value="draftBindings[taskKey]" :options="providerOptions"
+              :disabled="readonly || loading || isSaving || requiresReload" clearable filterable
+              placeholder="请选择模型" @update:value="value => updateBinding(taskKey, value)" />
+          </label>
+        </div>
+        <h3>其他任务</h3>
+        <p class="other-copy">选题、审查、记忆提取等任务可展开分别指定。</p>
         <button
           class="advanced-toggle"
           type="button"
           :aria-expanded="String(advanced)"
           @click="advanced = !advanced"
         >
-          <span>{{ advanced ? '收起高级设置' : '高级设置 · 分别绑定八项' }}</span>
+          <span>{{ advanced ? '收起其他任务' : '展开其他任务配置' }}</span>
           <span aria-hidden="true">{{ advanced ? '−' : '+' }}</span>
         </button>
 
         <div v-if="advanced" class="binding-grid">
           <article
-            v-for="(taskKey, index) in TASK_KEYS"
+            v-for="(taskKey, index) in TASK_KEYS.filter(key => !['planning', 'writing'].includes(key))"
             :key="taskKey"
             class="binding-row"
           >
@@ -390,17 +407,17 @@ onBeforeUnmount(() => {
         <section
           v-if="reasonDetails.length"
           class="reason-sheet"
-          aria-label="后端 Ready 判定原因"
+          aria-label="模型连接状态"
         >
           <header>
-            <strong>Readiness 恢复依据</strong>
+            <strong>待处理的配置</strong>
             <span>以后端实时判定为准</span>
           </header>
           <ul>
             <li v-for="reason in reasonDetails" :key="reason.code">
               <div>
                 <strong>{{ reason.title }}</strong>
-                <code>{{ reason.code }}</code>
+
               </div>
               <p>{{ reason.guidance }}</p>
             </li>
@@ -414,9 +431,9 @@ onBeforeUnmount(() => {
           aria-live="assertive"
         >
           {{ saveError }}
-          <template v-if="requiresReload" #action>
+          <div v-if="requiresReload" class="alert-actions">
             <n-button size="small" @click="loadSnapshot">重新加载</n-button>
-          </template>
+          </div>
         </n-alert>
         <n-alert
           v-if="saveSuccess"
@@ -427,11 +444,14 @@ onBeforeUnmount(() => {
           {{ saveSuccess }}
         </n-alert>
 
+        <p class="other-copy">密钥仅在服务设置中管理，不出现在作品内容中。</p>
+        <router-link :to="{ path: '/settings/providers', query: { projectId } }">管理服务商与模型</router-link>
         <footer class="ledger-actions">
           <div>
-            <strong>Whole snapshot · revision {{ binding.revision }}</strong>
-            <p>保存永远替换全部八项，不进行逐项修补。</p>
+            <strong>配置适用于后续请求</strong>
+            <p>历史创作结果不受影响。</p>
           </div>
+          <n-button :disabled="isSaving || loading" @click="emit('cancel')">取消</n-button>
           <n-button
             type="primary"
             size="large"
@@ -441,11 +461,10 @@ onBeforeUnmount(() => {
               || loading
               || isSaving
               || requiresReload
-              || (!hasChanges && bindingReady)
             "
             @click="saveBindings"
           >
-            {{ hasChanges ? '保存完整八项' : '重新签押当前快照' }}
+            保存配置并返回
           </n-button>
         </footer>
       </template>
@@ -454,6 +473,8 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.primary-models{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin:28px 0}.primary-models label{display:grid;gap:10px;color:var(--nc-muted);font-size:13px}.other-copy{color:var(--nc-muted);font-size:13px;line-height:1.8}.binding-ledger a{color:var(--nc-vermilion)}.ledger-actions>div{margin-right:auto}@media(max-width:700px){.primary-models{grid-template-columns:1fr}}
+
 .binding-ledger { color: #302d28; }
 .ledger-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 22px; padding-bottom: 20px; border-bottom: 1px solid #d8ccb7; }
 .ledger-heading h2 { margin: 3px 0 7px; color: #302b25; font-family: Georgia, 'Noto Serif SC', serif; font-size: 25px; font-weight: 650; }
@@ -492,4 +513,6 @@ onBeforeUnmount(() => {
   .binding-row { grid-template-columns: 32px 1fr; }
   .binding-row :deep(.n-select) { grid-column: 2; }
 }
+
+.ledger-heading{padding-bottom:12px}.ledger-heading h2{font-size:23px}.simple-binding{margin-top:16px;padding:14px 18px;background:var(--nc-paper)}.primary-models{margin:20px 0}.ledger-actions{position:sticky;bottom:0;background:var(--nc-paper);padding:16px 0;z-index:2}.binding-ledger h3{margin:14px 0 6px}
 </style>

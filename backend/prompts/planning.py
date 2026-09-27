@@ -14,7 +14,9 @@ from pydantic import (
     Field,
     field_validator,
     model_validator,
+    model_serializer,
 )
+from backend.domain.planning_expansion import PlanningExpansion, PlanningContinuationOutput, PlanningBlockAdjustmentOutput
 
 from backend.domain.contracts import (
     MAX_CHAPTER_WORD_RANGE_VALUE,
@@ -283,6 +285,14 @@ class PlanningGenerationManifest(BaseModel):
     basis: PlanningGenerationBasis
     draft: DraftPlanningAggregate
     story_context: PlanningStoryContext = Field(alias="storyContext")
+    expansion: PlanningExpansion | None = None
+
+    @model_serializer(mode="wrap")
+    def omit_legacy_expansion(self, handler):
+        result = handler(self)
+        if self.expansion is None:
+            result.pop("expansion", None)
+        return result
 
     @model_validator(mode="after")
     def reject_private_material(self) -> Self:
@@ -464,6 +474,58 @@ def build_planning_messages(
                 "Do not return commentary, markdown, prompt text, or evidence.",
             ],
         }
+        if manifest_value.expansion is not None:
+            manifest_snapshot["expansion"] = manifest_value.expansion.model_dump(mode="json", by_alias=True)
+            instruction = {
+                "task": "Prepare author-reviewed future planning: " + manifest_value.expansion.mode,
+                "rules": [
+                    "Return exactly one JSON object matching outputContract, without commentary.",
+                    "Use confirmed storyContext, the previous final chapter and actual progress. Future plans are not accomplished facts.",
+                    "Every new node at every depth needs a unique clientNodeKey; omit id/revision/contentHash for new nodes.",
+                    "initial: generate volumes, plot lines and exactly the first story block in the first volume, with meaningful stages and scene tasks and completionEvidence. Set activeStoryBlockRef to it.",
+                    "next_block/next_volume: copy all existing volumes, plots and storyBlocks including nested identities and content unchanged. Never remove or rewrite them.",
+                    "Reuse targetVolumeRef and targetBlockRef when supplied. If targetBlockRef is null, append exactly one complete block; if targetVolumeRef is null, append exactly one next volume. Order new nodes after existing nodes.",
+                    "Set activeStoryBlockRef to the selected next block; every stage requires actionable sceneTasks. Keep all relations within this draft and reuse existing plot lines for continuation.",
+                    "The output remains an unconfirmed draft. Do not claim any planned events already happened.",
+                ],
+            }
+            if manifest_value.expansion.mode != "initial":
+                instruction = {
+                    "task": ("当前卷已结束。必须准备下一卷的第一个故事块。" if manifest_value.expansion.mode == "next_volume"
+                             else "当前故事块已完成。准备同一卷中的下一个故事块。"),
+                    "mode": manifest_value.expansion.mode,
+                    "rules": [
+                        "Return exactly one JSON object with only nextVolume and nextStoryBlock according to outputContract. Do not return or copy the existing draft.",
+                        "The current active story block has finished. Prepare the NEXT block, never return the current block.",
+                        "If targetBlockRef is null, nextStoryBlock MUST be a new complete block with stages and sceneTasks, linked to existing plot IDs. Otherwise return nextStoryBlock:null to reuse that target.",
+                        "If targetVolumeRef is null, nextVolume MUST be a new volume and nextStoryBlock.volumeRef must equal its clientNodeKey. Otherwise return nextVolume:null and use targetVolumeRef exactly.",
+                        "Every new node at every depth needs a unique clientNodeKey. Omit id/revision/contentHash. Order the new volume/block after all existing volumes/blocks respectively.",
+                        "Use confirmed storyContext, previous final chapter and actual progress. Preserve unresolved story questions; planned events are not completed facts.",
+                        "Each stage needs concrete sceneTasks and completionEvidence. Output is future planning awaiting author review.",
+                    ],
+                }
+                expansion = manifest_value.expansion
+                instruction["requiredOutput"] = {
+                    "nextVolume": ("MUST be a NEW volume object, NOT null" if expansion.target_volume_ref is None
+                                   else "MUST be null; reuse existing volume " + expansion.target_volume_ref),
+                    "nextStoryBlock": ("MUST be a NEW complete story block object, NOT null" if expansion.target_block_ref is None
+                                       else "MUST be null; reuse existing block " + expansion.target_block_ref),
+                    "newVolumeOrder": max((v.order for v in manifest_value.draft.volumes), default=0) + 1,
+                    "newStoryBlockOrder": max((b.order for b in manifest_value.draft.story_blocks), default=0) + 1,
+                }
+            if manifest_value.expansion.mode == "revise_block":
+                instruction = {
+                    "task": "按作者要求调整当前故事块尚未实施的未来安排，供作者对比确认。",
+                    "rules": [
+                        "Return exactly one JSON object with storyBlock matching outputContract.",
+                        "Return the full adjusted current story block identified by targetBlockRef. Preserve its id/revision/contentHash, volumeRef, order and active lifecycle.",
+                        "Change only future content requested in authorInstructions. Keep references to existing plots. Other volumes, plots and blocks are outside your output.",
+                        "Keep every node listed in protectedNodeRefs as an EXACT deep copy, including content and identities. These stages or tasks already have actual progress and may not be changed or removed.",
+                        "Keep existing node IDs, revision and contentHash; the server computes new revisions. New stages/tasks need unique clientNodeKey without id/revision/contentHash.",
+                        "Retain existing child nodes. Unimplemented children can be edited or retired; never retire protected nodes. Include actionable active stages and sceneTasks with completionEvidence.",
+                        "Actual progress and final chapter are facts; future planned events are not already completed.",
+                    ],
+                }
         evidence = {
             "manifest": manifest_snapshot,
             "authorInstructions": author_instructions,
@@ -471,6 +533,50 @@ def build_planning_messages(
                 by_alias=True
             ),
         }
+        if manifest_value.expansion is not None and manifest_value.expansion.mode != "initial":
+            evidence["outputContract"] = PlanningContinuationOutput.model_json_schema(by_alias=True)
+            for field, target, node in (
+                ("nextVolume", manifest_value.expansion.target_volume_ref, "DraftVolume"),
+                ("nextStoryBlock", manifest_value.expansion.target_block_ref, "DraftStoryBlock"),
+            ):
+                evidence["outputContract"]["properties"][field] = (
+                    {"$ref": "#/$defs/" + node} if target is None else {"type": "null"}
+                )
+        if manifest_value.expansion is not None and manifest_value.expansion.mode == "revise_block":
+            evidence["outputContract"] = PlanningBlockAdjustmentOutput.model_json_schema(by_alias=True)
+        if manifest_value.expansion is not None and manifest_value.expansion.mode.startswith('fill_'):
+            from backend.domain.planning_completion import missing_block_fields, missing_volume_fields, completion_patch_schema
+            from backend.domain.planning_expansion import node_ref
+            expansion = manifest_value.expansion
+            volume = next(v for v in manifest_value.draft.volumes if node_ref(v) == expansion.target_volume_ref)
+            block = next((b for b in manifest_value.draft.story_blocks if node_ref(b) == expansion.target_block_ref), None)
+            fill_volume = expansion.mode == 'fill_next_volume' and bool(missing_volume_fields(volume))
+            fill_block = block is None or bool(missing_block_fields(block))
+            instruction = {
+                'task': '只补齐已有后续安排的缺失内容，保留作者已填写的每个字段，供作者核对后采用。',
+                'mode': expansion.mode,
+                'rules': [
+                    'Return exactly one JSON object with nextVolume and nextStoryBlock according to outputContract, without commentary or markdown.',
+                    'For an EXISTING target return ONLY its missing fields listed in outputContract, otherwise null. The server keeps all existing content and identity. Never copy or invent id, clientNodeKey, revision, contentHash, order, lifecycle or relations for an existing node.',
+                    'Only fill blank text or empty arrays. Existing nonempty arrays must retain their exact order and length; their nodes may only have blank fields filled.',
+                    'Never change or remove any implemented node listed in protectedNodeRefs. Do not rewrite other volumes, plots or blocks.',
+                    'For missing stages/tasks add meaningful tasks and completionEvidence. New nodes need unique clientNodeKey without id/revision/contentHash.',
+                    'When no target block exists, create exactly one complete first block in targetVolumeRef, ordered after existing blocks. Use existing plot IDs.',
+                    'Use the previous final chapter and actual progress as facts; proposed future events have not happened. Output remains an unconfirmed draft.',
+                ],
+            }
+            evidence['outputContract'] = PlanningContinuationOutput.model_json_schema(by_alias=True)
+            for field, required, node in [('nextVolume', fill_volume, 'DraftVolume'), ('nextStoryBlock', fill_block, 'DraftStoryBlock')]:
+                existing=volume if field=='nextVolume' else block
+                evidence['outputContract']['properties'][field] = (
+                    completion_patch_schema(existing,evidence['outputContract']['$defs'][node],evidence['outputContract']['$defs'])
+                    if required and existing else {'$ref': '#/$defs/' + node} if required else {'type': 'null'})
+            evidence['completionTargets']={
+                'volume': volume.model_dump(mode='json',by_alias=True) if fill_volume else None,
+                'storyBlock': block.model_dump(mode='json',by_alias=True) if block and fill_block else None,
+                'missing': (missing_volume_fields(volume) if fill_volume else []) +
+                           (missing_block_fields(block) if block and fill_block else ['首个故事块'] if fill_block else []),
+            }
         messages = (
             {"role": "system", "content": canonical_json(instruction)},
             {"role": "user", "content": canonical_json(evidence)},

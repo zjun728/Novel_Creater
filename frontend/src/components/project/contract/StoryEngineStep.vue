@@ -229,7 +229,7 @@ async function saveSection() {
   const channelProfile = channelProfileKey.value.trim()
   const genreProfile = genreProfileKey.value.trim()
   if (!channelProfile || !genreProfile) {
-    await showError('渠道定位标识和题材定位标识均不能为空。')
+    await showError('请填写目标发布渠道和作品题材。')
     return
   }
   try {
@@ -296,16 +296,16 @@ watch(options, rows => {
       <header>
         <span>AUTHOR POSITIONING</span>
         <h3 id="story-profile-heading">明确渠道与题材定位</h3>
-        <p>系统只用项目与当前种子提供初值；最终标识由作者核对并可直接修改，不会自动补造。</p>
+        <p>填写计划发布的平台或创作方向，题材沿用当前种子，可按作品定位调整。</p>
       </header>
       <label>
-        <span>渠道定位标识</span>
-        <small>例如你在项目中维护的真实渠道键；不能为空。</small>
+        <span>目标发布渠道</span>
+        <small>填写渠道名称，例如：起点中文网、QQ阅读或个人创作。</small>
         <n-input v-model:value="channelProfileKey" maxlength="120" @update:value="markDirty" />
       </label>
       <label>
-        <span>题材定位标识</span>
-        <small>可沿用当前种子题材，也可以在签约前改成更准确的标识。</small>
+        <span>作品题材</span>
+        <small>沿用当前种子的题材，也可以在确认前调整。</small>
         <n-input v-model:value="genreProfileKey" maxlength="120" @update:value="markDirty" />
       </label>
     </section>

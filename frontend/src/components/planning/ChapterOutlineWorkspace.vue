@@ -13,9 +13,12 @@ import ChapterOutlineHistoryDrawer from './ChapterOutlineHistoryDrawer.vue'
 const props = defineProps({
   store: { type: Object, required: true },
   controller: { type: Object, required: true },
+  overlayZIndex: { type: Number, default: undefined },
 })
+const emit = defineEmits(['overlay-change'])
 
 const confirmOpen = ref(false)
+watch(() => confirmOpen.value || props.controller.historyOpen.value, value => emit('overlay-change', value), { flush: 'sync' })
 const confirmDialog = ref(null)
 const confirmInitial = ref(null)
 const confirmFocus = createModalFocusManager({
@@ -275,7 +278,7 @@ watch(
   () => props.store.outlineState?.projectId,
   () => { confirmOpen.value = false },
 )
-onBeforeUnmount(() => confirmFocus.unmount())
+onBeforeUnmount(() => { confirmFocus.unmount(); emit('overlay-change', false) })
 </script>
 
 <template>
@@ -587,7 +590,7 @@ onBeforeUnmount(() => confirmFocus.unmount())
     </template>
 
     <Teleport to="body">
-      <div v-if="confirmOpen" class="confirm-backdrop">
+      <div v-if="confirmOpen" class="confirm-backdrop" :style="{ zIndex: overlayZIndex }">
         <section
           ref="confirmDialog"
           class="confirm-panel"
@@ -623,6 +626,7 @@ onBeforeUnmount(() => confirmFocus.unmount())
     </Teleport>
 
     <chapter-outline-history-drawer
+      :overlay-z-index="overlayZIndex"
       :open="controller.historyOpen.value"
       :history="store.outlineHistory"
       @close="controller.closeHistory"

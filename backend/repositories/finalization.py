@@ -280,12 +280,24 @@ class FinalizationRepository:
         except (TypeError, ValueError):
             raise FinalizationDataCorruption("persisted chapter outline is invalid") from None
 
+        progress_rows = await session.fetchall(
+            """SELECT field_path,payload_json FROM plot_thread_projections
+               WHERE project_id=%s AND revision_number=%s AND entity_id IS NULL
+               ORDER BY subject_key,field_path,id""",
+            (project_id, value.get("canon_revision")),
+        )
+        actual_progress = [
+            {"field_path": row["field_path"],
+             "payload": _decoded_json_value(row["payload_json"], "Progress projection payload")}
+            for row in progress_rows
+        ]
         return {
             "canon_context": {
                 "revision": value.get("canon_revision"),
                 "projectionHash": value.get("projection_hash"),
                 "entities": list(entities),
                 "currentState": current_state,
+                "actualProgress": actual_progress,
             },
             "planning_context": {
                 "id": value.get("planning_revision_id"),
@@ -586,12 +598,17 @@ class FinalizationRepository:
                       attempt.draft_candidate_id,attempt.candidate_hash,
                       attempt.current_revision,attempt.current_revision_hash,
                       attempt.confirmed_revision,attempt.confirmed_revision_hash,
+                      decisions.report_hash AS decisions_report_hash,
+                      decisions.revision AS decisions_revision,
+                      decisions.ignored_finding_ids_json,
                       report.status AS quality_status,
                       report.deterministic_blocks_json,report.findings_json,
                       report.content_hash AS quality_content_hash,
                       revision.payload_json,
                       revision.source AS revision_source
                  FROM finalization_change_sets attempt
+                 LEFT JOIN review_finding_decisions decisions
+                   ON decisions.project_id=attempt.project_id AND decisions.attempt_id=attempt.id
                  LEFT JOIN candidate_quality_reports report
                    ON report.project_id=attempt.project_id
                   AND report.id=attempt.quality_report_id
@@ -659,15 +676,37 @@ class FinalizationRepository:
                 "revision": value["confirmed_revision"],
                 "contentHash": value.get("confirmed_revision_hash"),
             }
+        from backend.domain.review_decisions import effective_findings
+        decisions = {"revision": value.get("decisions_revision") or 0, "ignoredFindingIds": []}
+        if value.get("decisions_revision") is not None:
+            if report is None or value.get("decisions_report_hash") != report["contentHash"]:
+                raise FinalizationDataCorruption("review decision report changed")
+            decisions["ignoredFindingIds"] = _decoded_array(value.get("ignored_finding_ids_json"), "review decisions")
+            try:
+                effective_findings(report, decisions)
+            except (TypeError, ValueError):
+                raise FinalizationDataCorruption("review decisions are invalid") from None
         return {
             "attemptId": value["attempt_id"],
             "status": value["status"],
             "candidateId": value["draft_candidate_id"],
             "candidateHash": value["candidate_hash"],
             "qualityReport": report,
+            "findingDecisions": decisions,
             "changeSet": change_set,
             "confirmation": confirmation,
         }
+
+    async def save_finding_decisions(self, session, project_id, attempt_id, report_hash, expected_revision, ignored, now):
+        if expected_revision == 0:
+            return await session.execute(
+                "INSERT INTO review_finding_decisions (project_id,attempt_id,report_hash,revision,ignored_finding_ids_json,updated_at) VALUES (%s,%s,%s,1,%s,%s)",
+                (project_id, attempt_id, report_hash, canonical_json(ignored), now),
+            ) == 1
+        return await session.execute(
+            "UPDATE review_finding_decisions SET revision=revision+1,ignored_finding_ids_json=%s,updated_at=%s WHERE project_id=%s AND attempt_id=%s AND report_hash=%s AND revision=%s",
+            (canonical_json(ignored), now, project_id, attempt_id, report_hash, expected_revision),
+        ) == 1
 
     async def insert_preparing_attempt(
         self,

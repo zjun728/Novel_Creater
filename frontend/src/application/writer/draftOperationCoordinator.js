@@ -1,4 +1,5 @@
 import { ApiError } from '../../api/db/api-error.js'
+import { normalizeReviewReference } from '../../utils/reviewReference.js'
 import { unicodeScalarLength } from '../../utils/unicodeScalarText.js'
 import { createDraftOperationTimeline } from './draftOperationTimeline.js'
 
@@ -77,6 +78,8 @@ function command(value, idFactory, operationType = 'generate_new') {
   ] : [
     'expectedWorkingDraftRevision', 'expectedContentHash', 'authorInstruction',
   ]
+  if (local && source.previewOnly === true) fields.push('previewOnly')
+  if (!local && Object.hasOwn(source, 'reviewReference')) fields.push('reviewReference')
   if (
     Object.keys(source).length !== fields.length
     || fields.some(field => !Object.hasOwn(source, field))
@@ -109,6 +112,8 @@ function command(value, idFactory, operationType = 'generate_new') {
     frozen.endOffset = source.endOffset
     frozen.selectedTextHash = source.selectedTextHash
   }
+  if (source.previewOnly === true) frozen.previewOnly = true
+  if (!local && Object.hasOwn(source, 'reviewReference')) frozen.reviewReference = normalizeReviewReference(source.reviewReference)
   return Object.freeze(frozen)
 }
 
@@ -391,9 +396,12 @@ export function createDraftOperationCoordinator({
     try {
       const workspace = await reload()
       if (!isCurrent(token)) return null
+      const preview = activeAction?.command?.previewOnly === true
+      const expectedRevision = preview ? activeAction.command.expectedWorkingDraftRevision : operation.resultWorkingDraftRevision
+      const expectedHash = preview ? activeAction.command.expectedContentHash : operation.resultContentHash
       if (LOCAL_OPERATION_TYPES.has(operation.operationType) && (
-        workspace?.workingDraft?.revision !== operation.resultWorkingDraftRevision
-        || workspace?.workingDraft?.contentHash !== operation.resultContentHash
+        workspace?.workingDraft?.revision !== expectedRevision
+        || workspace?.workingDraft?.contentHash !== expectedHash
       )) throw new TypeError('Invalid local draft operation workspace')
       return workspace
     } catch (error) {
@@ -607,6 +615,7 @@ export function createDraftOperationCoordinator({
       token,
       cancelPromise: null,
       operationType: frozenCommand.operationType,
+      command: frozenCommand,
     }
     currentStatus = 'starting'
     currentOperation = null

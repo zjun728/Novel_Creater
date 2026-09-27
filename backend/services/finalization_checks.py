@@ -12,10 +12,12 @@ from backend.domain.finalization import (
     FinalizationAuthority,
     FinalizationChangeSet,
     HardBlockCode,
+    change_set_payload,
 )
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.finalization_planning import apply_planning_patches, frozen_protected_node_ids
 from backend.domain.planning import PlanningAggregate
+from backend.domain.canon import CanonEventInput, ConfirmationStatus, thaw_json
 
 
 _BASIS_KEYS = (
@@ -329,6 +331,48 @@ def _planning_identities(planning_context: Mapping[str, Any]):
     return identities
 
 
+def validate_parent_progress(change_set, canon_context, planning_context):
+    """A parent's completion requires every active descendant to be complete."""
+    children = {}
+    for block in planning_context['content']['storyBlocks']:
+        stages = [stage for stage in block['stages'] if stage.get('lifecycle') != 'archived']
+        children[('story_block', block['id'])] = [('stage', stage['id']) for stage in stages]
+        for stage in stages:
+            children[('stage', stage['id'])] = [
+                ('scene_task', task['id']) for task in stage['sceneTasks']
+                if task.get('lifecycle') != 'archived'
+            ]
+    statuses = {}
+    if any(event.field_path.startswith('plot.progress.') for event in change_set.canon_events):
+        raise ValueError('Finalization progress must use story progress events')
+    for row in canon_context.get('actualProgress', []):
+        value = row.get('payload')
+        if not isinstance(value, Mapping):
+            continue
+        key = (value.get('targetType'), value.get('targetId'))
+        if row.get('field_path') == f'plot.progress.{key[0]}.{key[1]}':
+            statuses[key] = value.get('status')
+    seen = set()
+    for event in change_set.story_progress_events:
+        key = (event.target_type.value, event.target_id)
+        if key in seen:
+            raise ValueError('Finalization progress target repeated')
+        seen.add(key)
+        statuses[key] = event.status.value
+
+    def complete(key):
+        descendants = children.get(key)
+        # Intermediate grouping need not emit a redundant event, but all leaves must be complete.
+        if descendants:
+            return statuses.get(key) not in ('started', 'advanced') and all(complete(child) for child in descendants)
+        return statuses.get(key) == 'completed'
+
+    for event in change_set.story_progress_events:
+        key = (event.target_type.value, event.target_id)
+        if event.status.value == 'completed' and not complete(key):
+            raise ValueError('Finalization parent progress incomplete')
+
+
 def validate_change_set_context(
     change_set: FinalizationChangeSet,
     *,
@@ -362,6 +406,23 @@ def validate_change_set_context(
     ):
         raise ValueError("Finalization ChangeSet context invalid")
 
+    # Apply the same fact contract as Canon before an author can confirm it.
+    # Keep persisted review parsing permissive so older malformed reviews remain
+    # readable and can be cancelled/corrected instead of trapping the workspace.
+    for item in change_set.canon_events:
+        CanonEventInput(
+            entity_id=item.entity_id,
+            fact_kind=item.fact_kind,
+            field_path=item.field_path,
+            value=thaw_json(item.value),
+            evidence=item.evidence.model_dump(by_alias=True, mode="json"),
+            effective_start_chapter=item.effective_start_chapter,
+            effective_end_chapter=item.effective_end_chapter,
+            confirmation_status=ConfirmationStatus.CONFIRMED,
+            assertion_operator=item.assertion_operator,
+            value_cardinality=item.value_cardinality,
+        )
+
     planning = _planning_identities(planning_context)
     all_planning_ids = {
         identity for values in planning.values() for identity in values
@@ -369,6 +430,7 @@ def validate_change_set_context(
     for progress in change_set.story_progress_events:
         if progress.target_id not in planning[progress.target_type.value]:
             raise ValueError("Finalization ChangeSet context invalid")
+    validate_parent_progress(change_set, canon_context, planning_context)
     for patch in change_set.planning_patches:
         identity = planning[patch.target_type.value].get(patch.target_id)
         if identity != (patch.expected_revision, patch.expected_hash):
@@ -408,7 +470,7 @@ def validate_planning_patch_application(change_set, planning_context, *, allow_p
 def demote_protected_planning_patches(change_set, planning_context):
     """Call only after validating the complete, original provider ChangeSet."""
     protected = frozen_protected_node_ids(planning_context)
-    payload = change_set.model_dump(by_alias=True, mode="json")
+    payload = change_set_payload(change_set)
     executable = []
     for patch in payload["planningPatches"]:
         if patch["targetId"] not in protected:

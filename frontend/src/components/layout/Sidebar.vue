@@ -1,4 +1,10 @@
 <script setup>
+import { reactive } from 'vue'
+const expandedSections = reactive({})
+function isExpanded(section) {
+  return expandedSections[section.label] ?? section.items.some(item => item.selected)
+}
+
 defineProps({
   shell: {
     type: Object,
@@ -34,6 +40,7 @@ defineProps({
         :class="{ 'product-sidebar__nav-link--selected': item.selected }"
         :to="item.path"
         :aria-label="item.label"
+        :title="shell.sidebarCollapsed ? item.label : undefined"
         :aria-current="item.selected ? 'page' : undefined"
       >
         <span class="product-sidebar__nav-mark" aria-hidden="true">{{ item.mark }}</span>
@@ -85,12 +92,12 @@ defineProps({
           :key="section.label || 'overview'"
           class="product-sidebar__module-section"
         >
-          <h4
-            class="product-sidebar__section-heading"
-            :class="{ 'product-sidebar__section-heading--hidden': !section.label }"
-          >
-            {{ section.label || '项目入口' }}
-          </h4>
+          <button v-if="section.label" class="product-sidebar__section-toggle" :aria-label="section.label" :title="shell.sidebarCollapsed ? section.label : undefined" :aria-expanded="isExpanded(section)" @click="expandedSections[section.label] = !isExpanded(section)">
+            <span class="product-sidebar__nav-label">{{ section.label }}</span>
+            <span v-if="shell.sidebarCollapsed" aria-hidden="true">{{ section.label.slice(0, 1) }}</span>
+            <span aria-hidden="true">{{ isExpanded(section) ? '⌃' : '⌄' }}</span>
+          </button>
+          <div v-show="!section.label || isExpanded(section)">
           <router-link
             v-for="module in section.items"
             :key="module.key"
@@ -98,11 +105,13 @@ defineProps({
             :class="{ 'product-sidebar__module-link--selected': module.selected }"
             :to="module.path"
             :aria-label="module.label"
+            :title="shell.sidebarCollapsed ? module.label : undefined"
             :aria-current="module.selected ? 'page' : undefined"
           >
             <span aria-hidden="true">{{ module.mark }}</span>
-            <span>{{ module.label }}</span>
+            <span class="product-sidebar__nav-label">{{ module.label }}</span>
           </router-link>
+          </div>
         </div>
       </nav>
 
@@ -121,8 +130,8 @@ defineProps({
 <style scoped>
 .product-sidebar {
   display: flex;
-  width: 248px;
-  min-width: 248px;
+  width: 224px;
+  min-width: 224px;
   height: 100%;
   flex-direction: column;
   overflow: hidden;
@@ -454,4 +463,8 @@ defineProps({
     transition: none;
   }
 }
+.product-sidebar__section-toggle { display:flex; justify-content:space-between; align-items:center; width:100%; min-height:38px; padding:6px 12px; border:0; background:transparent; color:var(--nc-muted); font:inherit; font-size:13px; cursor:pointer; }
+.product-sidebar__section-toggle:focus-visible { outline:2px solid var(--nc-vermilion); }
+.product-sidebar__project-kicker { display:none; }
+.product-sidebar__module-link { min-height:36px; font-weight:400; }
 </style>

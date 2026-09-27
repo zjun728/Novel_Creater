@@ -8,12 +8,15 @@ import pytest
 
 from backend import http_errors
 from backend.domain.model_bindings import TASK_KEYS
+from backend.domain.continuity_issues import CreateContinuityIssue, UpdateContinuityIssue
 from backend.domain.seeds import SeedPayload
 from backend.repositories import project_lifecycle
 from backend.services.canon import CanonService, CommitCanonRevision
+from backend.services.continuity_issues import ContinuityIssueService
 from backend.services.draft_operations import (
     DraftOperationService,
     StartDraftOperation,
+    UndoLocalDraft,
 )
 from backend.services.chapter_sessions import (
     ChapterSessionService,
@@ -200,6 +203,10 @@ def _canon_service(repository, _provider):
     return CanonService(repository, transaction_factory=_transaction)
 
 
+def _continuity_issue_service(repository, _provider):
+    return ContinuityIssueService(repository, transaction_factory=_transaction)
+
+
 ServiceFactory = Callable[[object, _ProviderProbe], object]
 Invocation = Callable[[object], Awaitable[object]]
 
@@ -216,6 +223,23 @@ class _WriteEntrypoint:
 # permanent-delete use their separate lifecycle protocol; assets and corpus are
 # global resources rather than project-owned writes.
 WRITE_ENTRYPOINTS = (
+    _WriteEntrypoint(
+        "continuity_issue.create",
+        "lock_active_project",
+        _continuity_issue_service,
+        lambda service: service.create("p1", CreateContinuityIssue(
+            id="20000000-0000-4000-8000-000000000001",
+            category="fact", severity="medium", description="归档项目不能创建连续性问题",
+            sourceChapterNumber=1,
+        )),
+    ),
+    _WriteEntrypoint(
+        "continuity_issue.update",
+        "lock_active_project",
+        _continuity_issue_service,
+        lambda service: service.update("p1", "20000000-0000-4000-8000-000000000001",
+            UpdateContinuityIssue(status="resolved", resolutionNote="归档后不能写入处理说明", expectedUpdatedAt=1)),
+    ),
     _WriteEntrypoint(
         "project.rename",
         "lock_active_project",
@@ -483,6 +507,18 @@ WRITE_ENTRYPOINTS = (
         ),
     ),
     _WriteEntrypoint(
+        "chapter.apply_local_preview",
+        "lock_project",
+        _draft_operation_service,
+        lambda service: service.apply_local_preview(UndoLocalDraft(
+            project_id="10000000-0000-0000-0000-000000000001",
+            chapter_session_id="20000000-0000-0000-0000-000000000001",
+            expected_working_draft_revision=1,
+            expected_content_hash="a" * 64,
+            source_operation_id="30000000-0000-0000-0000-000000000001",
+        )),
+    ),
+    _WriteEntrypoint(
         "canon.commit",
         "lock_project",
         _canon_service,
@@ -503,6 +539,12 @@ def test_planning_archived_inventory_covers_every_mutating_entrypoint():
         "outline.save_draft",
         "outline.confirm_draft",
     } <= names
+
+
+def test_continuity_issue_archived_inventory_covers_create_and_update():
+    assert {entrypoint.name for entrypoint in WRITE_ENTRYPOINTS if entrypoint.name.startswith("continuity_issue.")} == {
+        "continuity_issue.create", "continuity_issue.update",
+    }
 
 
 @pytest.mark.asyncio

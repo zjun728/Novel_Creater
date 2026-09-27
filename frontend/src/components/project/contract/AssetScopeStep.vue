@@ -441,9 +441,12 @@ onBeforeUnmount(() => { emit('editing-change', false); loadEpoch += 1; fragmentE
     <div v-if="loading" class="loading-grid" aria-busy="true"><section><n-skeleton text :repeat="6" /></section><section><n-skeleton text :repeat="6" /></section></div>
 
     <template v-else-if="!loadError">
+      <n-alert v-if="assetStore.recommendations?.rankingUnavailable" type="warning" role="status">
+        AI 推荐暂时不可用，仍可从完整经验库和语料库手动选择，或保留当前范围。
+      </n-alert>
       <section class="asset-section" aria-labelledby="experience-heading">
         <div class="section-title"><div><span>推荐经验卡</span><h3 id="experience-heading">方法候选</h3></div><strong>{{ selectedExperienceIds.length }} 张已选</strong></div>
-        <n-empty v-if="!recommendedCards.length" description="当前没有经验卡推荐；完整经验库仍可浏览" />
+        <n-empty v-if="!recommendedCards.length && !assetStore.recommendations?.rankingUnavailable" description="当前没有经验卡推荐；完整经验库仍可浏览" />
         <div v-else class="card-grid">
           <article v-for="card in recommendedCards" :key="card.id" :class="{ selected: selectedExperienceIds.includes(card.id) }"><n-tag size="small" :bordered="false">{{ card.category }}</n-tag><h4>{{ card.title }}</h4><p>{{ card.method }}</p><div><n-tag v-for="reason in card.reasonCodes" :key="reason" size="small" :bordered="false">{{ reasonLabel(reason) }}</n-tag></div><n-button block size="small" :aria-pressed="selectedExperienceIds.includes(card.id)" @click="toggleExperience(card.id)">{{ selectedExperienceIds.includes(card.id) ? '移出范围' : '明确纳入' }}</n-button></article>
         </div>
@@ -456,7 +459,7 @@ onBeforeUnmount(() => { emit('editing-change', false); loadEpoch += 1; fragmentE
         <div class="budget-meter" role="status" aria-live="polite"><span>有界预览预算</span><strong>{{ previewBudgetUsed }} / 4000 字</strong><small>剩余 {{ previewBudgetRemaining }} 字；单个范围最多 300 字。</small></div>
         <section class="corpus-recommendations" aria-labelledby="recommended-corpus-heading">
           <div class="subsection-title"><span>正式候选</span><h4 id="recommended-corpus-heading">推荐语料片段</h4></div>
-          <n-empty v-if="!recommendedCorpusFragments.length" description="当前没有语料片段推荐；完整语料库仍可浏览" />
+          <n-empty v-if="!recommendedCorpusFragments.length && !assetStore.recommendations?.rankingUnavailable" description="当前没有语料片段推荐；完整语料库仍可浏览" />
           <div v-else class="corpus-recommendation-grid">
             <article v-for="recommendation in recommendedCorpusFragments" :key="recommendation.fragmentId" :class="{ selected: recommendationSelection(recommendation) }">
               <div><n-tag size="small" :bordered="false">{{ recommendation.source.name }}</n-tag><small>r{{ recommendation.source.revision }} · {{ recommendation.rangeStart }}–{{ recommendation.rangeEnd }}</small></div>

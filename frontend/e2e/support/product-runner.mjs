@@ -841,7 +841,14 @@ export async function terminateOwnedProcessTree(child, {
     try {
       await runWindowsTreeTerminator(pid, { spawnImpl, timeoutMs })
     } catch (error) {
-      errors.push(error)
+      // The Windows supervisor owns a kill-on-close Job Object. If taskkill
+      // cannot finish in time, terminating that supervisor still closes the
+      // job and kills its descendants, including a child started during stop.
+      try {
+        if (child.kill?.('SIGKILL') !== true) throw error
+      } catch {
+        errors.push(error)
+      }
     }
     try {
       await waitForCloseAndDrain(state, timeoutMs)

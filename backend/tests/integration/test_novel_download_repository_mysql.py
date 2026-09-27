@@ -43,11 +43,11 @@ async def _insert_additional_final_chapter(
     content: str,
     persisted_hash: str,
 ) -> None:
-    outline_id = f"61000000-0000-4000-8000-0000000000{suffix}"
-    session_id = f"62000000-0000-4000-8000-0000000000{suffix}"
-    candidate_id = f"63000000-0000-4000-8000-0000000000{suffix}"
-    record_id = f"64000000-0000-4000-8000-0000000000{suffix}"
-    final_id = f"65000000-0000-4000-8000-0000000000{suffix}"
+    outline_id = f"61000000-0000-4000-8000-{suffix.zfill(12)}"
+    session_id = f"62000000-0000-4000-8000-{suffix.zfill(12)}"
+    candidate_id = f"63000000-0000-4000-8000-{suffix.zfill(12)}"
+    record_id = f"64000000-0000-4000-8000-{suffix.zfill(12)}"
+    final_id = f"65000000-0000-4000-8000-{suffix.zfill(12)}"
     base_outline = await session.fetchone(
         """SELECT planning_revision_id,planning_revision,planning_hash,
                   canon_revision,projection_revision,projection_hash,
@@ -147,7 +147,7 @@ async def _insert_additional_final_chapter(
             candidate_id,
             base_record["change_set_id"],
             base_record["change_set_revision"],
-            suffix[-1] * 64,
+            canonical_hash({'fixtureChapter': chapter_number}),
             base_record["request_fingerprint"],
             content_hash,
             base_record["change_set_hash"],

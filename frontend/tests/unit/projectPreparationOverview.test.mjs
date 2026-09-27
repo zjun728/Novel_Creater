@@ -66,7 +66,7 @@ function overview(overrides = {}) {
       writing: 'working_draft',
     },
     writerCore: { canonRevision: 3, projectionRevision: 3, synchronized: true },
-    continuity: { availability: 'pending_module', pendingCount: null },
+    continuity: { availability: 'available', pendingCount: 2 },
     recentAchievements: [
       { kind: 'final_chapter', label: '第 3 章已定稿', occurredAtMs: 1_777_777_770_000 },
       { kind: 'planning', label: '故事规划已确认', occurredAtMs: 1_777_777_760_000 },
@@ -149,6 +149,8 @@ async function renderOverview({
         { path: '/projects/:projectId/bible', component: { template: '<div />' } },
         { path: '/projects/:projectId/planning/volumes', component: { template: '<div />' } },
         { path: '/projects/:projectId/planning/story-blocks', component: { template: '<div />' } },
+        { path: '/projects/:projectId/planning/outlines', component: { template: '<div />' } },
+        { path: '/projects/:projectId/write/chapters/:chapterNumber', component: { template: '<div />' } },
         { path: '/projects/:projectId/manuscript', component: { template: '<div />' } },
       ],
     })
@@ -172,11 +174,13 @@ async function renderOverview({
   }
 }
 
-test('overview presents project identity, long-form progress, authority and latest final above the fold', async () => {
+test('overview presents compact identity and current progress, with details collapsed', async () => {
   const html = await renderOverview()
   assert.match(html, /典镇山河/)
   assert.match(html, /东方玄幻/)
-  assert.match(html, /以山河典册镇压乱世妖祟/)
+  assert.match(html, /当前创作进度/)
+  assert.match(html, /<details class="overview-more"[^>]*><summary[^>]*>创作基础与项目详情/)
+  assert.doesNotMatch(html, /<details[^>]*\sopen/)
   assert.match(html, /2,400,000 字/)
   assert.match(html, /18,600 字/)
   assert.match(html, /第 1 卷 · 山河初醒/)
@@ -199,14 +203,15 @@ test('overview renders six manual module links with Chinese authority labels and
     assert.match(html, new RegExp(status))
   }
   assert.match(html, /href="\/projects\/project%20%2F%20%E4%B8%80\/seeds"/)
-  assert.match(html, /href="\/projects\/project%20%2F%20%E4%B8%80\/manuscript"/)
+  assert.match(html, /href="\/projects\/project%20%2F%20%E4%B8%80\/write\/chapters\/4"/)
+  assert.match(html, /href="\/projects\/project%20%2F%20%E4%B8%80\/planning\/outlines"/)
   assert.doesNotMatch(html, /下一步|nextAction|overview-next-action/)
 })
 
 test('overview explains Writer Core and continuity in author language and limits achievements to five', async () => {
   const html = await renderOverview()
   assert.match(html, /创作核心已同步至第 3 版/)
-  assert.match(html, /连续性问题将在连续性模块启用后显示/)
+  assert.match(html, /2 个连续性问题待处理/)
   assert.equal((html.match(/class="overview-achievement"/g) || []).length, 5)
   assert.doesNotMatch(html, /volume-1|project \/ 一|contentHash|rawJson/)
 })
@@ -231,14 +236,15 @@ test('overview explicitly renders archived, missing, loading, retryable error an
   assert.doesNotMatch(stale, /典镇山河|以山河典册镇压乱世妖祟/)
 })
 
-test('overview source uses only the overview read model and omits delivery, backup and next-action coupling', async () => {
+test('overview separates authoritative continuation context and omits delivery and backup controls', async () => {
   const source = await readFile(
     new URL('../../src/views/ProjectOverviewView.vue', import.meta.url),
     'utf8',
   )
   assert.match(source, /loadOverview/)
-  assert.match(source, /ProjectPageHeader/)
+  assert.match(source, /createProjectOverviewContext/)
+  assert.match(source, /contextState.action.targetPath/)
   assert.doesNotMatch(source, /loadPreparation|currentPreparation|mapProjectNextAction/)
   assert.doesNotMatch(source, /NovelDownloadPanel|ProjectBackupPanel|ManuscriptSummaryLink/)
-  assert.doesNotMatch(source, /nextAction|targetPath|rawJson|contentHash/)
+  assert.doesNotMatch(source, /rawJson|contentHash/)
 })

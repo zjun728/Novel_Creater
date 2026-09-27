@@ -101,6 +101,7 @@ def _authority_rows(project_id: str, *, aggregate=None, latest=None):
     ]
     if latest is not None:
         rows.append(latest)
+    rows.append({"pending_count": 0})
     return rows
 
 
@@ -182,6 +183,7 @@ async def test_full_snapshot_uses_existing_authoritative_chapter_behavior(
     )
 
     assert set(snapshot) == {
+        "continuity",
         "project",
         "selected_seed",
         "contract",
@@ -415,7 +417,7 @@ async def test_default_composition_reuses_scoped_read_only_authority_queries():
     assert "status='active' AND active_slot=1" in outline_draft_sql
     assert outline_draft_args == (project_id, 1)
     forbidden = re.compile(
-        r"\b(?:insert|update|delete|replace|merge)\b|\bfor\s+update\b|continuity",
+        r"\b(?:insert|update|delete|replace|merge)\b|\bfor\s+update\b",
         re.IGNORECASE,
     )
     assert all(not forbidden.search(sql) for sql, _ in compact_calls)
@@ -522,14 +524,14 @@ async def test_sql_is_bounded_read_only_and_preserves_immutable_authorities():
     )
 
     forbidden_sql = re.compile(
-        r"\b(?:insert|update|delete|replace|merge)\b|\bfor\s+update\b|continuity",
+        r"\b(?:insert|update|delete|replace|merge)\b|\bfor\s+update\b",
         re.IGNORECASE,
     )
     assert all(not forbidden_sql.search(sql) for sql in compact_sql)
     assert "final_chapters.content" not in " ".join(compact_sql).lower()
     assert not any(
         key in snapshot
-        for key in ("next_action", "target_path", "status_label", "continuity")
+        for key in ("next_action", "target_path", "status_label")
     )
     assert "payload_json" not in snapshot["project"]
     assert "content" not in snapshot["final_aggregate"]
@@ -567,3 +569,30 @@ async def test_empty_final_aggregate_normalizes_scalars_and_skips_latest_read():
     assert snapshot["authoritative_chapter_number"] == 1
     final_sql = [sql for sql, _ in session.calls if "final_chapters" in sql]
     assert len(final_sql) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [0, 3, 101])
+async def test_continuity_count_uses_same_snapshot_and_project_pending_filter(count):
+    project_id = "project / 一 % _ '\""
+    rows = _authority_rows(project_id, aggregate={"chapter_count": 0, "scalar_count": 0, "latest_number": None})
+    rows[-1] = {"pending_count": count}
+    session = ScriptedSession(*rows)
+    snapshot = await _repository(ScriptedChapterSessions(), ScriptedOutlines()).read_snapshot(session, project_id)
+    assert snapshot["continuity"] == {"pending_count": count}
+    calls = [(" ".join(sql.split()), args) for sql, args in session.calls if "FROM continuity_issues" in sql]
+    assert calls == [("SELECT COUNT(*) AS pending_count FROM continuity_issues WHERE project_id=%s AND status='pending'", (project_id,))]
+    assert not session.rows
+
+
+@pytest.mark.asyncio
+async def test_continuity_read_failure_propagates_instead_of_zero():
+    class FailedCountSession(ScriptedSession):
+        async def fetchone(self, sql, args=None):
+            if "FROM continuity_issues" in sql:
+                raise RuntimeError("count unavailable")
+            return await super().fetchone(sql, args)
+
+    rows = _authority_rows("p", aggregate={"chapter_count": 0, "scalar_count": 0, "latest_number": None})
+    with pytest.raises(RuntimeError, match="count unavailable"):
+        await _repository(ScriptedChapterSessions(), ScriptedOutlines()).read_snapshot(FailedCountSession(*rows), "p")

@@ -108,6 +108,13 @@ _NEIGHBOR_SELECT = """
 SELECT project.id AS project_id, final.chapter_num AS final_chapter_num
   FROM projects project
   LEFT JOIN final_chapters final ON final.project_id=project.id
+    AND final.chapter_num IN (
+      %s,
+      (SELECT MAX(previous.chapter_num) FROM final_chapters previous
+        WHERE previous.project_id=project.id AND previous.chapter_num<%s),
+      (SELECT MIN(following.chapter_num) FROM final_chapters following
+        WHERE following.project_id=project.id AND following.chapter_num>%s)
+    )
  WHERE project.id=%s
  ORDER BY final.chapter_num ASC, final.id ASC
 """
@@ -157,6 +164,8 @@ def _node_payload(node: Volume | Plot | StoryBlock | Stage | SceneTask) -> dict[
                        storyQuestion=node.story_question, futureDirection=node.future_direction,
                        expectedPayoff=node.expected_payoff,
                        relatedCharacters=node.related_characters)
+        if node.character_design is not None:
+            payload["characterDesign"] = node.character_design.model_dump(mode="json", by_alias=True)
     elif isinstance(node, StoryBlock):
         payload.update(volumeId=node.volume_id, plotIds=node.plot_ids, order=node.order,
                        title=node.title, entrySituation=node.entry_situation,
@@ -432,7 +441,10 @@ class ManuscriptRepository:
             target_rows = await session.fetchall(
                 _TARGET_SELECT, (project_id, chapter_number),
             )
-            neighbor_rows = await session.fetchall(_NEIGHBOR_SELECT, (project_id,))
+            neighbor_rows = await session.fetchall(
+                _NEIGHBOR_SELECT,
+                (chapter_number, chapter_number, chapter_number, project_id),
+            )
         except (aiomysql.OperationalError, aiomysql.InterfaceError):
             raise ManuscriptUnavailable() from None
         return _lookup_from_rows(target_rows, neighbor_rows, chapter_number)

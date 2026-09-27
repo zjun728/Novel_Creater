@@ -94,6 +94,14 @@ test('canonical path builders encode project IDs and require positive chapter nu
   for (const invalid of ['01', '9007199254740993']) assert.throws(() => parsePositiveChapterNumber(invalid), /positive chapter number/i)
 })
 
+test('continuity issues has its own page and cannot become a facts record kind', async () => {
+  const { projectRoutes, continuityIssuesPath } = await loadRouteModule()
+  const router = createRouter({ history: createMemoryHistory(), routes: projectRoutes })
+  assert.equal(continuityIssuesPath('a/b'), '/projects/a%2Fb/continuity/issues')
+  assert.equal(router.resolve('/projects/p/continuity/issues').name, 'ContinuityIssues')
+  assert.equal(router.resolve('/projects/p/continuity/settings').name, 'ProjectContinuity')
+})
+
 test('formal route registry names only canonical destinations and catches retired paths', async () => {
   const { projectRoutes } = await loadRouteModule()
   const router = createRouter({
@@ -135,8 +143,8 @@ test('formal route registry names only canonical destinations and catches retire
     'ProjectPlanningStoryBlocks',
   )
   assert.equal(
-    router.resolve('/projects/project-1/planning/outlines').meta.notFound,
-    true,
+    router.resolve('/projects/project-1/planning/outlines').name,
+    'ProjectPlanningOutlines',
   )
   assert.equal(
     router.resolve('/projects/project-1/settings/models').name,
@@ -165,11 +173,19 @@ test('formal route registry names only canonical destinations and catches retire
   }
 })
 
-test('reader route lazy-loads the finalized chapter reader with params-only props', async () => {
+test('legacy chapter routes only redirect and the workbench owns the chapter view', async () => {
   const { projectRoutes } = await loadRouteModule()
   const route = projectRoutes.find(item => item.name === 'FinalChapterReader')
-  assert.equal(route.props, true)
-  assert.match(String(route.component), /FinalChapterReaderView/)
+  assert.equal(route.component, undefined)
+  assert.deepEqual(route.redirect({ params: { projectId: 'p', chapterNumber: '2' }, query: { view: 'outline' }, hash: '#quote' }), {
+    path: '/projects/p/workbench/chapters/2', query: { view: 'outline' }, hash: '#quote',
+  })
+  const writer = projectRoutes.find(item => item.name === 'ChapterWriter')
+  assert.equal(writer.component, undefined)
+  assert.equal(writer.redirect({ params: { projectId: 'p', chapterNumber: '2' }, query: {}, hash: '' }).path, '/projects/p/workbench/chapters/2')
+  const workbench = projectRoutes.find(item => item.name === 'ChapterWorkbench')
+  assert.equal(workbench.props, true)
+  assert.match(String(workbench.component), /ChapterWorkbenchView/)
 })
 
 test('planning tabs share one view and survive direct navigation and browser history', async () => {

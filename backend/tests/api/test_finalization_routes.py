@@ -89,6 +89,11 @@ class FakeFinalizationService:
             confirmed_revision=1, confirmed_revision_hash=HASH_A,
         )
 
+    async def decide_finding(self, command):
+        if self.error: raise self.error
+        self.decision = command
+        return {'decisionsRevision': command.expected_decisions_revision + 1}
+
     async def cancel(self, command):
         if self.error:
             raise self.error
@@ -121,6 +126,21 @@ def _client():
     app.dependency_overrides[finalization.get_atomic_finalization_service] = lambda: atomic
     install_error_handlers(app)
     return TestClient(app, raise_server_exceptions=False), service, atomic
+
+
+def test_finding_decision_route_keeps_report_and_revision_guards():
+    client, service, _ = _client()
+    path = '/api/projects/p1/chapter-sessions/session-1/finalization/finding-decisions'
+    payload = {'expectedRevision': 2, 'expectedRevisionHash': HASH_A, 'attemptId': 'attempt-1',
+               'qualityReportHash': HASH_B, 'expectedDecisionsRevision': 3, 'findingId': 'finding-1', 'ignored': True}
+    response = client.post(path, json=payload)
+    assert response.status_code == 200 and response.json()['decisionsRevision'] == 4
+    assert service.decision.project_id == 'p1' and service.decision.chapter_session_id == 'session-1'
+    assert service.decision.report_hash == HASH_B and service.decision.expected_revision_hash == HASH_A
+    assert service.decision.finding_id == 'finding-1' and service.decision.ignored
+    assert client.post(path, json={**payload, 'qualityReportHash': 'invalid'}).status_code == 422
+    service.error = FinalizationConflict('changed')
+    assert client.post(path, json=payload).status_code == 409
 
 
 def test_prepare_get_correct_confirm_cancel_and_commit_use_narrow_closed_contracts():

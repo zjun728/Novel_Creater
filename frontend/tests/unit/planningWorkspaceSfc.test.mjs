@@ -457,6 +457,12 @@ function workspaceStore() {
 }
 
 async function renderActualProgressPanel(vite) {
+  const { api } = await vite.ssrLoadModule('/src/api/db/client.js')
+  api.planning.checkContinuation = async projectId => ({ projectId, status: 'block_active', message: '当前故事块尚未完成', actions: [], missing: [] })
+  for (const name of ['PlanningReader', 'PlanningComparison', 'PlanningContinuationPanel']) {
+    const component = await vite.ssrLoadModule(`/src/components/planning/${name}.vue`)
+    component.default.render = await clientRender(`components/planning/${name}.vue`)
+  }
   const Panel = await vite.ssrLoadModule('/src/components/planning/ActualProgressPanel.vue')
   Panel.default.render = await clientRender('components/planning/ActualProgressPanel.vue')
 }
@@ -708,7 +714,7 @@ test('mounted PlanningWorkspace gives each planning tab the same current author 
       app.mount(root)
       await flush()
 
-      assert.match(text(root), /未来规划/)
+      assert.match(text(root), /规划阅读|工作稿 · 尚未采用/)
       assert.match(text(root), /正文进度/)
       assert.match(text(root), /第 6 章.*故事块.*工作稿中的夜入县衙.*已完成/)
       assert.equal(walk(root).filter(item => item.props.class === 'actual-progress-panel').length, 1)
@@ -794,6 +800,36 @@ async function createPlanningVite() {
   })
 }
 
+test('active confirmed planning without a draft remains readable in every planning section', async () => {
+  const vite = await createPlanningVite()
+  try {
+    const Workspace = await vite.ssrLoadModule('/src/components/planning/PlanningWorkspace.vue')
+    const store = workspaceStore()
+    store.localContent = null
+    store.state = { ...planningState(), draft: null, futurePlan: authoritativePlanningContent() }
+    const controller = createPlanningWorkspaceController({ store, projectId: () => 'A' })
+    assert.equal(controller.readOnly.value, false)
+    assert.equal(controller.editable.value, false)
+    for (const [activeTab, heading] of [
+      ['volumes', '分卷规划'], ['plots', '情节线'], ['story-blocks', '故事块'],
+    ]) {
+      const html = await renderToString(createSSRApp(Workspace.default, { store, controller, activeTab }))
+      assert.match(html, new RegExp(`<h1[^>]*>${heading}</h1>`))
+      assert.match(html, /class="planning-reader"/)
+      assert.match(html, /调整规划/)
+      assert.match(html, activeTab === 'story-blocks' ? /夜入县衙/ : activeTab === 'plots' ? /残卷主线/ : /入世卷/)
+      assert.doesNotMatch(html, /<input|<textarea|<select/)
+      assert.doesNotMatch(html, /新增分卷|新增情节线|新增故事块/)
+      assert.match(html, /<details class="progress-disclosure"/)
+      assert.doesNotMatch(html, /<details[^>]*\sopen(?:\s|>)/)
+    }
+    assert.equal(store.state.draft, null)
+    assert.equal(store.localContent, null)
+  } finally {
+    await vite.close()
+  }
+})
+
 test('mounted workspace locks editor mutations for every busy or recovery state and restores them', async () => {
   const vite = await createPlanningVite()
   const originalDocument = global.document
@@ -830,6 +866,9 @@ test('mounted workspace locks editor mutations for every busy or recovery state 
     app.mount(root)
     await flush()
 
+    assert.equal(walk(root).some(item => item.type === 'input'), false)
+    byButtonText(root, '调整规划').props.onClick()
+    await flush()
     const volumeTitle = () => walk(root).find(item => (
       item.type === 'input' && item.props.value === '入世卷'
     ))
@@ -904,6 +943,9 @@ test('mounted story-block workspace edits through one controller, supports physi
     app.mount(root)
     await flush()
 
+    assert.equal(walk(root).some(item => item.type === 'input'), false)
+    byButtonText(root, '调整规划').props.onClick()
+    await flush()
     assert.match(text(root), /故事块编排/)
     assert.match(text(root), /当前活动故事块/)
     const title = () => walk(root).find(item => (
@@ -1073,8 +1115,7 @@ test('real story-block SSR and mounted controls expose only referenced retired p
     assert.match(html, /旧线真名/)
     assert.match(html, /旧卷真名[\s\S]{0,80}已退役/)
     assert.match(html, /旧线真名[\s\S]{0,80}已退役/)
-    assert.match(html, /<select value="volume-retired"/)
-    assert.match(html, /value="plot-retired"[^>]*checked/)
+    assert.doesNotMatch(html, /<select|<input/)
     assert.doesNotMatch(html, /不可新选的旧线/)
 
     const root = node('root')
@@ -1083,6 +1124,8 @@ test('real story-block SSR and mounted controls expose only referenced retired p
     app.mount(root)
     await flush()
 
+    byButtonText(root, '调整规划').props.onClick()
+    await flush()
     const selects = walk(root).filter(item => item.type === 'select')
     const activeVolume = selects.find(item => item.props.value === 'volume-retired')
     assert.ok(activeVolume)
@@ -1184,9 +1227,8 @@ test('archived future plan uses one canonical DTO normalizer in real SSR and mou
       activeTab: 'story-blocks',
     }
     const html = await renderToString(createSSRApp(Workspace.default, props))
-    assert.match(html, /当前活动故事块/)
-    assert.match(html, /<select value="volume-retired"[^>]*disabled/)
-    assert.match(html, /value="plot-retired"[^>]*checked[^>]*disabled/)
+    assert.match(html, /当前故事块/)
+    assert.doesNotMatch(html, /<select|<input|<textarea/)
     assert.match(html, /权威旧卷[\s\S]{0,80}已退役/)
     assert.match(html, /权威旧线[\s\S]{0,80}已退役/)
 
@@ -1195,18 +1237,9 @@ test('archived future plan uses one canonical DTO normalizer in real SSR and mou
     app.provide(ssrContextKey, { modules: new Set() })
     app.mount(root)
     await flush()
-    const selectedVolume = walk(root).find(item => (
-      item.type === 'select' && item.props.value === 'volume-retired'
-    ))
-    const checkedPlots = walk(root).filter(item => (
-      item.type === 'input'
-      && item.props.type === 'checkbox'
-      && item.props.checked === true
-    ))
-    assert.ok(selectedVolume)
-    assert.equal(selectedVolume.props.disabled, true)
-    assert.deepEqual(checkedPlots.map(item => item.props.value), ['plot-1', 'plot-retired'])
-    assert.match(text(root), /当前活动故事块/)
+    assert.equal(walk(root).some(item => ['input', 'textarea', 'select'].includes(item.type)), false)
+    assert.equal(byButtonText(root, '调整规划'), undefined)
+    assert.match(text(root), /当前故事块/)
     assert.match(text(root), /权威旧卷\s*·\s*已退役/)
     assert.match(text(root), /权威旧线\s*·\s*已退役/)
     app.unmount()
@@ -1246,6 +1279,27 @@ test('real story-block SSR exposes a labelled h3 h4 h5 hierarchy with live title
   } finally {
     await vite.close()
   }
+})
+
+test('story blocks default to the current volume without hiding unassigned new drafts', async () => {
+  const vite = await createPlanningVite()
+  try {
+    const StoryBlock = await vite.ssrLoadModule('/src/components/planning/StoryBlockEditor.vue')
+    const content = planningContent()
+    const original = content.storyBlocks[0]
+    const other = { ...structuredClone(original), id: 'other-block', clientNodeKey: 'other-block', volumeRef: 'other-volume', title: '其他卷故事块' }
+    const unassigned = { ...structuredClone(original), id: 'new-block', clientNodeKey: 'new-block', volumeRef: '', title: '未分卷新草稿' }
+    const blocks = [original, other, unassigned]
+    const before = JSON.stringify(blocks)
+    const html = await renderToString(createSSRApp(StoryBlock.default, {
+      modelValue: blocks, volumes: content.volumes, plots: content.plots,
+      activeStoryBlockRef: content.activeStoryBlockRef,
+    }))
+    assert.match(html, /夜入县衙/)
+    assert.match(html, /未分卷新草稿/)
+    assert.doesNotMatch(html, /其他卷故事块/)
+    assert.equal(JSON.stringify(blocks), before)
+  } finally { await vite.close() }
 })
 
 test('pending recovery stays visible, keyboard-actionable and disabled only while checking', async () => {
@@ -1466,6 +1520,8 @@ test('mounted route preserves instructions across tabs, cancels project leave, t
     const root = node('root')
     app.mount(root)
 
+    await waitFor(() => byButtonText(root, '调整规划'))
+    byButtonText(root, '调整规划').props.onClick()
     const instructions = await waitFor(() => walk(root).find(item => (
       item.type === 'textarea'
       && item.props.id === 'planning-author-instructions'
@@ -1693,7 +1749,7 @@ test('mounted history drawer renders the immutable hierarchy and owns modal keyb
   }
 })
 
-test('planning workspace embeds outline authoring under story blocks with separate local locks', async () => {
+test('planning workspace owns outline authoring in its dedicated section with separate local locks', async () => {
   const contents = await readFile(
     source('components/planning/PlanningWorkspace.vue'),
     'utf8',
@@ -1701,7 +1757,7 @@ test('planning workspace embeds outline authoring under story blocks with separa
 
   assert.match(contents, /ChapterOutlineWorkspace/)
   assert.match(contents, /createChapterOutlineController/)
-  assert.match(contents, /activeTab === 'story-blocks'/)
+  assert.match(contents, /v-if="activeTab === 'outlines' && store.outlineState !== undefined"/)
   assert.match(contents, /chapter-outline-workspace/)
   assert.match(contents, /outlineController/)
   assert.match(contents, /hasCombinedLeaveRisk/)

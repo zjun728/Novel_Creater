@@ -67,6 +67,7 @@ test('dispatcher owns the exact Phase 3C runner and validates MySQL first', () =
   }
   assert.equal(runSuites(['browser-phase3c'], {
     rootDirectory: repositoryRoot,
+    pytestTempLifecycle: { prepare() {}, cleanupStage() {}, cleanupAll() {} },
     environment,
     spawnSyncImpl(command, args, options) {
       calls.push({ command, args, options })
@@ -82,6 +83,7 @@ test('dispatcher owns the exact Phase 3C runner and validates MySQL first', () =
   delete incomplete.TEST_MYSQL_PASSWORD
   assert.equal(runSuites(['browser-phase3c'], {
     rootDirectory: repositoryRoot,
+    pytestTempLifecycle: { prepare() {}, cleanupStage() {}, cleanupAll() {} },
     environment: incomplete,
     stderr: { write() {} },
     spawnSyncImpl() {
@@ -720,7 +722,12 @@ test('Phase 3C executable browser behavior covers the frozen ten-flow contract',
     ['manual Outline save confirm and Session', [
       "getByRole('button', { name: '建立新工作稿' }).click()",
       "getByRole('button', { name: '保存小纲工作稿' }).click()",
-      "getByRole('button', { name: '预览并确认小纲' }).click()",
+      'await page.goto(OUTLINES_PATH)',
+      "getByRole('button', { name: /^(采用小纲|更新当前小纲)$/u }).click()",
+      "getByRole('dialog', { name: '确认章节小纲' })",
+      "waitForNamedResponse(page, 'Outline confirmation'",
+      "isResponse(response, 'POST', OUTLINE_CONFIRM_PATH)",
+      "await dialog.getByRole('button', { name: '确认并签印' }).click()",
       "waitForNamedResponse(page, 'ChapterSession creation'",
       'await nextAction.click()',
     ]],
@@ -748,8 +755,11 @@ test('Phase 3C executable browser behavior covers the frozen ten-flow contract',
       'OVERVIEW_PATH',
       'STORY_BLOCKS_PATH',
       'WRITER_PATH',
-      'preparationPayload.authoritativeChapterNumber',
-      'expect(preparationPayload.targetPath).toBe(WRITER_PATH)',
+      'expect(preparationPayload.progress.authoritativeChapterNumber).toBe(1)',
+      "await expect(nextAction).toHaveAttribute('href', WRITER_PATH)",
+      "page.locator('a.overview-module').filter({ hasText: '正文写作' })",
+      "getByRole('button', { name: '开始本章写作', exact: true }).click()",
+      '`/projects/${PROJECT_ID}/workbench/chapters/1$`',
     ]],
     ['archived missing upstream Canon mismatch and wrong chapter fail closed', [
       "'@archived",

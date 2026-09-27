@@ -82,8 +82,8 @@ def test_project_overview_route_uses_dependency_override_and_decodes_id():
                     synchronized=True,
                 ),
                 continuity=OverviewContinuity(
-                    availability="pending_module",
-                    pending_count=None,
+                    availability="available",
+                    pending_count=3,
                 ),
                 recent_achievements=(),
             )
@@ -102,6 +102,7 @@ def test_project_overview_route_uses_dependency_override_and_decodes_id():
 
     assert response.status_code == 200
     assert service.calls == ["project / 一"]
+    assert response.json()["continuity"] == {"availability": "available", "pendingCount": 3}
     assert response.json()["project"] == {
         "id": "project / 一",
         "title": "典镇山河",

@@ -2516,3 +2516,69 @@ async def test_undo_local_rejects_active_write_or_missing_exact_provenance(drift
         await service.undo_local(undo)
 
     assert repo.snapshot() == before
+
+@pytest.mark.asyncio
+async def test_preview_does_not_write_until_adopted_and_can_undo():
+    from backend.services.draft_operations import UndoLocalDraft
+    service, repo, gateway, _, _ = make_service(gateway=FakeGateway('新的局部段落'))
+    cmd = local_command(repo, preview_only=True)
+    original = copy.deepcopy(repo.draft)
+    completed = await start_and_finish(service, cmd)
+    assert completed.status == 'completed'
+    assert completed.result_working_draft_revision == original['revision'] + 1
+    assert completed.result_content_hash != original['content_hash']
+    assert repo.draft == original
+    assert repo.revisions == []
+    receipt = copy.deepcopy(repo.operations[completed.operation_id])
+    adopt = UndoLocalDraft(PROJECT_ID, SESSION_ID, original['revision'], original['content_hash'], completed.operation_id)
+    assert await service.apply_local_preview(adopt) == 7
+    assert repo.draft['content'] == original['content'][:301] + '新的局部段落' + original['content'][303:]
+    assert repo.draft['revision'] == original['revision'] + 1
+    assert len(repo.revisions) == 2
+    assert await service.apply_local_preview(adopt) == 7
+    assert len(repo.revisions) == 2
+    assert repo.operations[completed.operation_id] == receipt
+    assert len(gateway.calls) == 1
+    await service.undo_local(UndoLocalDraft(PROJECT_ID, SESSION_ID, repo.draft['revision'], repo.draft['content_hash'], completed.operation_id))
+    assert repo.draft['content'] == original['content']
+    assert repo.draft['revision'] == original['revision'] + 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('drift', ['draft', 'finalized', 'outline', 'active'])
+async def test_preview_adoption_rejects_changed_authority_without_writes(drift):
+    from backend.services.draft_operations import UndoLocalDraft
+    from backend.services.draft_operations import PublicDomainError
+    service, repo, _, _, _ = make_service()
+    cmd = local_command(repo, preview_only=True)
+    completed = await start_and_finish(service, cmd)
+    if drift == 'draft':
+        repo.draft['revision'] += 1
+    elif drift == 'finalized':
+        repo.session['status'] = 'finalized'
+    elif drift == 'outline':
+        repo.outline['chapter_outline_hash'] = 'f' * 64
+    else:
+        repo.session['active_draft_operation_id'] = KEY
+    before = copy.deepcopy(repo.draft)
+    with pytest.raises(PublicDomainError):
+        await service.apply_local_preview(UndoLocalDraft(PROJECT_ID, SESSION_ID, cmd.expected_working_draft_revision, cmd.expected_content_hash, completed.operation_id))
+    assert repo.draft == before
+    assert repo.revisions == []
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['before', 'after', 'cas'])
+async def test_preview_adoption_rolls_back_all_writes_on_storage_failure(failure):
+    from backend.services.draft_operations import UndoLocalDraft, DraftOperationStorageError
+    service, repo, _, _, _ = make_service(gateway=FakeGateway('新的局部段落'))
+    cmd = local_command(repo, preview_only=True)
+    completed = await start_and_finish(service, cmd)
+    original = repo.snapshot()
+    if failure == 'cas':
+        repo.fail_cas = True
+    else:
+        repo.fail_snapshot_role = failure
+    with pytest.raises(DraftOperationStorageError):
+        await service.apply_local_preview(UndoLocalDraft(PROJECT_ID, SESSION_ID,
+            cmd.expected_working_draft_revision, cmd.expected_content_hash, completed.operation_id))
+    assert repo.snapshot() == original

@@ -21,17 +21,22 @@ from backend.domain.market_sources import PACKAGE_VERSION, load_market_source_pa
 from backend.domain.product_database_readiness import DatabaseInventory
 from backend.repositories.market import MarketRepository
 from backend.schema_manifest import (
-    FRAGMENTS,
     STATEMENT_DELIMITER,
-    created_table_names,
-    manifest_hash,
     read_fragment_statements,
 )
-from backend.schema_version import EXPECTED_SCHEMA_VERSION
 
 
 PRODUCT_DATABASE = "novel_creator_v113"
 V113_SCHEMA_VERSION = "writer-core-v1.13.0"
+V114_SCHEMA_VERSION = "writer-core-v1.14.0"
+V113_MANIFEST_HASH = "89b21cba12141afa1a2076cb70c559cd2bd13d71eb904c37c6ce5becc24fd857"
+V114_MANIFEST_HASH = "a76acfe31cf0a2b755496f06f2b3188b9381d5f3e102238ebf89e704288feebc"
+V114_FRAGMENTS = (
+    "00_metadata.sql", "10_core.sql", "12_application.sql", "15_assets.sql",
+    "18_market.sql", "19_topics.sql", "20_contracts.sql", "25_bible.sql",
+    "30_planning.sql", "40_drafts.sql", "50_canon.sql", "60_projections.sql",
+    "70_corpus.sql", "80_project_imports.sql",
+)
 TOPIC_FRAGMENT = "19_topics.sql"
 EXPECTED_OLD_TABLE_COUNT = 91
 EXPECTED_TOPIC_TABLE_COUNT = 8
@@ -151,10 +156,10 @@ class ProductUpgradeDependencies:
 
 
 def v113_statements() -> tuple[str, ...]:
-    """Derive v1.13 from the current manifest by excluding only Topic Center."""
+    """Return the fixed historical v1.13 stream, independent of later fragments."""
     return tuple(
         statement
-        for fragment in FRAGMENTS
+        for fragment in V114_FRAGMENTS
         if fragment != TOPIC_FRAGMENT
         for statement in read_fragment_statements(fragment)
     )
@@ -183,6 +188,20 @@ def v113_table_names() -> tuple[str, ...]:
 
 def v113_manifest_hash() -> str:
     payload = f"\n{STATEMENT_DELIMITER}\n".join(v113_statements()).encode("utf-8")
+    return sha256(payload).hexdigest()
+
+
+def v114_statements() -> tuple[str, ...]:
+    return tuple(statement for fragment in V114_FRAGMENTS
+                 for statement in read_fragment_statements(fragment))
+
+
+def v114_table_names() -> tuple[str, ...]:
+    return _table_names(v114_statements())
+
+
+def v114_manifest_hash() -> str:
+    payload = f"\n{STATEMENT_DELIMITER}\n".join(v114_statements()).encode("utf-8")
     return sha256(payload).hexdigest()
 
 
@@ -216,13 +235,15 @@ def _validate_v113_market_source_inventory(value: object) -> None:
 
 
 def _validate_static_manifest() -> None:
-    if TOPIC_FRAGMENT not in FRAGMENTS:
+    if v113_manifest_hash() != V113_MANIFEST_HASH or v114_manifest_hash() != V114_MANIFEST_HASH:
+        raise SchemaUpgradeError("historical schema manifest changed")
+    if TOPIC_FRAGMENT not in V114_FRAGMENTS:
         raise SchemaUpgradeError("schema upgrade manifest preflight failed")
     if len(v113_table_names()) != EXPECTED_OLD_TABLE_COUNT:
         raise SchemaUpgradeError("schema upgrade manifest preflight failed")
     if len(topic_statements()) != EXPECTED_TOPIC_TABLE_COUNT:
         raise SchemaUpgradeError("schema upgrade manifest preflight failed")
-    if len(created_table_names()) != EXPECTED_CURRENT_TABLE_COUNT:
+    if len(v114_table_names()) != EXPECTED_CURRENT_TABLE_COUNT:
         raise SchemaUpgradeError("schema upgrade manifest preflight failed")
     if set(v113_table_names()) & set(_table_names(topic_statements())):
         raise SchemaUpgradeError("schema upgrade manifest preflight failed")
@@ -241,9 +262,9 @@ def _validate_inventory(
 ) -> UpgradeInventory:
     if type(value) is not UpgradeInventory:
         raise SchemaUpgradeError("schema upgrade inventory preflight failed") from None
-    expected_version = EXPECTED_SCHEMA_VERSION if current else V113_SCHEMA_VERSION
-    expected_hash = manifest_hash() if current else v113_manifest_hash()
-    expected_tables = tuple(sorted(created_table_names() if current else v113_table_names()))
+    expected_version = V114_SCHEMA_VERSION if current else V113_SCHEMA_VERSION
+    expected_hash = v114_manifest_hash() if current else v113_manifest_hash()
+    expected_tables = tuple(sorted(v114_table_names() if current else v113_table_names()))
     if (
         value.database != PRODUCT_DATABASE
         or _SERVER_84.fullmatch(value.server_version) is None
@@ -323,14 +344,14 @@ async def upgrade_v113_to_v114(
         if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes, bytearray)):
             raise ValueError
         names = tuple(row.get("TABLE_NAME") for row in rows if isinstance(row, Mapping))
-        if names != tuple(sorted(created_table_names())):
+        if names != tuple(sorted(v114_table_names())):
             raise ValueError
 
         changed = await session.execute(  # type: ignore[attr-defined]
             _METADATA_CAS,
             (
-                EXPECTED_SCHEMA_VERSION,
-                manifest_hash(),
+                V114_SCHEMA_VERSION,
+                v114_manifest_hash(),
                 now_ms,
                 V113_SCHEMA_VERSION,
                 v113_manifest_hash(),
@@ -344,7 +365,7 @@ async def upgrade_v113_to_v114(
     return SchemaUpgradeResult(
         database=name,
         from_schema=V113_SCHEMA_VERSION,
-        to_schema=EXPECTED_SCHEMA_VERSION,
+        to_schema=V114_SCHEMA_VERSION,
         added_tables=EXPECTED_TOPIC_TABLE_COUNT,
         table_count=EXPECTED_CURRENT_TABLE_COUNT,
     )
@@ -378,8 +399,8 @@ def _validate_verification(value: object) -> UpgradeVerification:
     if (
         type(value) is not UpgradeVerification
         or value.database != PRODUCT_DATABASE
-        or value.schema_version != EXPECTED_SCHEMA_VERSION
-        or value.manifest_hash != manifest_hash()
+        or value.schema_version != V114_SCHEMA_VERSION
+        or value.manifest_hash != v114_manifest_hash()
         or value.table_count != EXPECTED_CURRENT_TABLE_COUNT
         or value.package_version != PACKAGE_VERSION
         or value.source_count != EXPECTED_MARKET_SOURCE_COUNT
@@ -480,7 +501,7 @@ async def run_product_upgrade(
                 type(schema_result) is not SchemaUpgradeResult
                 or schema_result.database != name
                 or schema_result.from_schema != V113_SCHEMA_VERSION
-                or schema_result.to_schema != EXPECTED_SCHEMA_VERSION
+                or schema_result.to_schema != V114_SCHEMA_VERSION
                 or schema_result.added_tables != EXPECTED_TOPIC_TABLE_COUNT
                 or schema_result.table_count != EXPECTED_CURRENT_TABLE_COUNT
             ):
@@ -513,7 +534,7 @@ async def run_product_upgrade(
         backup_sha256=receipt.backup_sha256,
         backup_byte_length=receipt.backup_byte_length,
         from_schema=V113_SCHEMA_VERSION,
-        to_schema=EXPECTED_SCHEMA_VERSION,
+        to_schema=V114_SCHEMA_VERSION,
         added_tables=EXPECTED_TOPIC_TABLE_COUNT,
         table_count=verification.table_count,
         package_version=verification.package_version,
@@ -845,8 +866,8 @@ def _default_dependencies(config: Mapping[str, object]) -> ProductUpgradeDepende
                 raise
         return UpgradeVerification(
             database=database,
-            schema_version=EXPECTED_SCHEMA_VERSION,
-            manifest_hash=manifest_hash(),
+            schema_version=V114_SCHEMA_VERSION,
+            manifest_hash=v114_manifest_hash(),
             table_count=EXPECTED_CURRENT_TABLE_COUNT,
             package_version=package.package_version,
             source_count=len(package.sources),

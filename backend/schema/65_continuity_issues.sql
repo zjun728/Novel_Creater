@@ -1,0 +1,35 @@
+CREATE TABLE continuity_issues (
+  id CHAR(36) PRIMARY KEY,
+  project_id CHAR(36) NOT NULL,
+  category VARCHAR(24) NOT NULL,
+  severity VARCHAR(8) NOT NULL,
+  status VARCHAR(8) NOT NULL,
+  source_chapter INT NULL,
+  source_finalization_id CHAR(36) NULL,
+  source_canon_revision INT NULL,
+  description TEXT NOT NULL,
+  suggestion TEXT NULL,
+  future_target TEXT NULL,
+  resolution_note TEXT NULL,
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
+  UNIQUE KEY uq_continuity_issue_project_id (project_id, id),
+  KEY ix_continuity_issue_status (project_id, status, created_at, id),
+  KEY ix_continuity_issue_created (project_id, created_at, id),
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, source_finalization_id) REFERENCES finalization_records(project_id, id) ON DELETE RESTRICT,
+  FOREIGN KEY (project_id, source_canon_revision) REFERENCES canon_revisions(project_id, revision_number) ON DELETE RESTRICT,
+  CHECK (category IN ('time','location','character_state','rule','fact')),
+  CHECK (severity IN ('low','medium','high')),
+  CHECK (status IN ('pending','resolved','ignored')),
+  CHECK ((source_chapter IS NULL AND source_finalization_id IS NULL AND source_canon_revision IS NULL)
+    OR (source_chapter IS NOT NULL AND source_chapter >= 1 AND source_finalization_id IS NOT NULL
+      AND source_canon_revision IS NOT NULL AND source_canon_revision >= 1)),
+  CHECK (CHAR_LENGTH(TRIM(description)) > 0 AND CHAR_LENGTH(description) <= 4000),
+  CHECK (suggestion IS NULL OR (CHAR_LENGTH(TRIM(suggestion)) > 0 AND CHAR_LENGTH(suggestion) <= 4000)),
+  CHECK (future_target IS NULL OR (CHAR_LENGTH(TRIM(future_target)) > 0 AND CHAR_LENGTH(future_target) <= 4000)),
+  CHECK (resolution_note IS NULL OR (CHAR_LENGTH(TRIM(resolution_note)) > 0 AND CHAR_LENGTH(resolution_note) <= 4000)),
+  CHECK (status = 'pending' OR resolution_note IS NOT NULL),
+  CHECK (created_at >= 0 AND updated_at >= created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement

@@ -12,11 +12,11 @@ defineEmits(['create'])
 <template>
   <div class="project-empty">
     <span aria-hidden="true">{{ archived ? '藏' : '始' }}</span>
-    <h2>{{ archived ? '没有已归档项目' : '从一个名字开始' }}</h2>
+    <h2>{{ archived ? '没有已归档项目' : '从一个创作方向开始' }}</h2>
     <p>
       {{ archived
         ? '归档的项目会完整保留正文、工作稿与候选，并出现在这里。'
-        : '新建项目只需要名称，其他创作决定都可以进入项目后再完成。' }}
+        : '从候选种子选择创作方向并创建项目；还没有候选时，可先进入选题中心讨论。' }}
     </p>
     <button v-if="!archived" type="button" @click="$emit('create')">新建项目</button>
   </div>

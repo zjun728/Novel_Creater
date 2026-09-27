@@ -86,8 +86,14 @@ test('@selection-tools completes four local tools, preserves cancelled prose, an
   await editor.press('Shift+ArrowRight')
   await expect(page.getByRole('button', { name: 'AI 改写' })).toBeVisible()
 
+  const instruction = page.getByRole('textbox', { name: '作者临时要求' })
+  await instruction.fill('保留人物称谓。')
+  await page.getByLabel('选区改写预设', { exact: true }).selectOption('加强心理')
+  await page.getByRole('button', { name: '填入改写要求' }).click()
+  await expect(instruction).toHaveValue(/保留人物称谓。[\s\S]*加强选区心理描写/u)
+
   await completeLocal(page, editor, replacementPreview, 'AI 改写', outputs[0], expectedDrafts[0], expectedDrafts[1])
-  await completeLocal(page, editor, replacementPreview, 'AI 润色', outputs[1], expectedDrafts[1], expectedDrafts[2])
+  await completeLocal(page, editor, replacementPreview, '去 AI 味/润色', outputs[1], expectedDrafts[1], expectedDrafts[2])
 
   await page.getByRole('button', { name: 'AI 扩写' }).click()
   await expect(replacementPreview).toBeVisible()

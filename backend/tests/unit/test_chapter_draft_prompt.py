@@ -9,6 +9,66 @@ LOCAL_CASES = {
 }
 
 
+def test_blank_instruction_promotes_contract_chapter_length_without_old_draft():
+    messages = build_chapter_draft_messages(
+        operation_type="generate_new",
+        chapter_session={"chapter_num": 3, "chapter_outline": {"chapterGoal": "只核查旧船记录"}},
+        working_draft={"content": "旧的有补充要求的正文"},
+        story_context={"creationContract": {"chapterWordRangePreference": [2800, 3800]}},
+    )
+    prompt = messages[1]["content"]
+    assert "本次完整章节目标字数：2800–3800 字" in prompt
+    assert "只核查旧船记录" in prompt
+    assert "作者临时要求：" not in prompt
+    assert "旧的有补充要求的正文" not in prompt
+
+
+def test_local_edit_does_not_receive_full_chapter_word_budget():
+    messages = build_chapter_draft_messages(
+        operation_type="polish_selection",
+        chapter_session={"chapter_num": 3, "chapter_outline": {}},
+        working_draft={"content": "旧正文"},
+        selection_context={"left": "", "selected": "一句话", "right": ""},
+        story_context={"creationContract": {"chapterWordRangePreference": [2800, 3800]}},
+    )
+    assert "本次完整章节目标字数：" not in messages[1]["content"]
+
+
+def test_confirmed_outline_capacity_and_disclosure_boundary_are_explicit():
+    messages = build_chapter_draft_messages(
+        operation_type="generate_new",
+        chapter_session={"chapter_num": 3, "chapter_outline": {
+            "capacityPolicy": {"targetMin": 1800, "targetMax": 2400},
+            "chapterGoal": "证人只说见过记录，牌子用途仍未知",
+            "scenes": ["询问牌子用途时，证人只答不知"],
+            "forbiddenEarlyEvents": ["提前解释牌子用途"],
+            "continuation": ["人物尚未查到完整记录"],
+        }},
+        working_draft={"content": ""},
+        story_context={"creationContract": {"chapterWordRangePreference": [2800, 3800]}},
+    )
+    prompt = messages[1]["content"]
+    assert "本次完整章节目标字数：1800–2400 字" in prompt
+    boundary = prompt.split("本章最终执行边界", 1)[1]
+    assert "询问牌子用途时，证人只答不知" in boundary
+    assert "禁止提前发生：\n- 提前解释牌子用途" in boundary
+    assert "人物尚未查到完整记录" in boundary
+
+
+def test_polish_preserves_story_information_and_only_replaces_selection():
+    messages = build_chapter_draft_messages(
+        operation_type="polish_selection",
+        chapter_session={"chapter_num": 2, "chapter_outline": {}},
+        working_draft={"content": "不应发送的完整正文"},
+        selection_context={"left": "左侧", "selected": "待润色片段", "right": "右侧"},
+    )
+    prompt = messages[1]["content"]
+    assert "保留剧情、既定事实、人物意图和信息量" in prompt
+    assert "不得新增事件或改变人物贡献归属" in prompt
+    assert "只输出用于替换精确选中内容的新文本" in prompt
+    assert "不应发送的完整正文" not in prompt
+
+
 def test_generate_new_prompt_uses_outline_but_not_existing_prose_as_rewrite_input():
     messages = build_chapter_draft_messages(
         operation_type="generate_new",

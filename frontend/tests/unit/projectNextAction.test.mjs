@@ -64,3 +64,21 @@ test('every action returns a closed complete available object', () => {
     assert.deepEqual(value, { state: 'available', eyebrow, label, description, targetPath: '/authority', chapterNumber: chapterActions.includes(nextAction) ? 7 : null })
   }
 })
+
+test('completed story block explains planning handoff and sync mismatch never exposes a target', () => {
+  const value = { lifecycle:'active', nextAction:'continue_planning', targetPath:'/projects/p/planning/story-blocks', authoritativeChapterNumber:8, reasons:['activeStoryBlockCompleted'] }
+  const completed = mapProjectNextAction(value)
+  assert.equal(completed.label, '调整后续故事规划')
+  assert.match(completed.description, /故事块已完成/)
+  const sync = mapProjectNextAction({...value, reasons:['canon_projection_unsynchronized']})
+  assert.equal(sync.state, 'unavailable')
+  assert.equal(sync.targetPath, undefined)
+  assert.match(sync.description, /只读/)
+})
+
+test('workbench continuation reuses the server chapter without creating or incrementing it', async () => {
+  const {mapWorkbenchNextAction} = await import('../../src/application/projects/projectNextAction.js')
+  const next = mapWorkbenchNextAction({lifecycle:'active',nextAction:'prepare_chapter_outline',targetPath:'/projects/p/planning/outlines',authoritativeChapterNumber:8}, 'p')
+  assert.equal(next.targetPath, '/projects/p/workbench/chapters/8')
+  assert.equal(next.chapterNumber, 8)
+})

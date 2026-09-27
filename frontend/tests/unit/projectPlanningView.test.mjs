@@ -31,8 +31,8 @@ async function createWriterVite() {
           if (!id.endsWith('ChapterWriterView.vue')) return null
           return code
             .replace(
-              "import { computed, onBeforeUnmount, ref, watch } from 'vue'",
-              "import { computed, h, onBeforeUnmount, ref, watch } from 'vue'",
+              '<script setup>',
+              "<script setup>\nimport { h } from 'vue'",
             )
             .replace(
               /import\s*\{\s*onBeforeRouteLeave,[\s\S]*?\}\s*from 'vue-router'/u,
@@ -50,6 +50,7 @@ async function createWriterVite() {
               "import FinalizationPanel from '@/components/writer/FinalizationPanel.vue'",
               'const FinalizationPanel = { render: () => null }',
             )
+            .replace("import WorkbenchOutlineDialog from '@/components/writer/WorkbenchOutlineDialog.vue'", 'const WorkbenchOutlineDialog = { render: () => null }')
             .replace('const loading = ref(true)', 'const loading = ref(false)')
             .replaceAll('loading.value = true', 'loading.value = false')
         },
@@ -112,7 +113,7 @@ function hasPersistentOutlineLink(node, conditional = false) {
       prop.type === 7
       && prop.name === 'bind'
       && prop.arg?.content === 'to'
-      && prop.exp?.content === 'storyBlocksPath'
+      && prop.exp?.content === 'outlinesPath'
     ))
     && node.children?.some(child => (
       child.type === 2 && child.content.includes('调整本章小纲')
@@ -123,7 +124,7 @@ function hasPersistentOutlineLink(node, conditional = false) {
   ))
 }
 
-test('one project planning view hosts all three canonical tabs and the shared workspace', async () => {
+test('one project planning view hosts four canonical tabs and the shared workspace', async () => {
   const [view, workspace, storyBlocks] = await Promise.all([
     source('views/ProjectPlanningView.vue'),
     source('components/planning/PlanningWorkspace.vue'),
@@ -152,7 +153,9 @@ test('one project planning view hosts all three canonical tabs and the shared wo
   assert.match(workspace, /stage\.sceneTasks/)
   assert.match(workspace, /createModalFocusManager/)
   assert.match(workspace, /trapTab/)
-  assert.doesNotMatch(`${view}\n${workspace}\n${storyBlocks}`, /outlines|useStoryBlockStore/)
+  assert.match(view, /ProjectPlanningOutlines/)
+  assert.match(view, /planningOutlinesPath/)
+  assert.doesNotMatch(`${view}\n${workspace}\n${storyBlocks}`, /useStoryBlockStore/)
 })
 
 test('planning view owns one local aggregate and exact leave/load boundaries', async () => {
@@ -201,7 +204,10 @@ test('writer keeps the outline router link visible while the workspace loads', a
   const template = writer.match(/<template>([\s\S]*)<\/template>/u)?.[1]
   const ast = parseTemplate(template || '')
 
-  assert.equal(hasPersistentOutlineLink(ast), true)
+  assert.ok(ast.children.length)
+  assert.match(writer, /<workbench-outline-dialog[^>]*v-model:show="outlineDialogOpen"/)
+  assert.match(writer, /@click="openOutlineEditor"/)
+  assert.match(writer, /await autosave.flush\(\)/)
 })
 
 test('writer renders current and stale candidate basis badges', async () => {

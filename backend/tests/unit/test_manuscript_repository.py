@@ -47,6 +47,38 @@ def _target_row(**kwargs):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("entity_id", (None, "person-id"))
+async def test_finalized_chapter_accepts_pinned_character_plan_and_rejects_tampering(entity_id):
+    import json
+    from backend.repositories.manuscripts import ManuscriptRepository
+
+    previous = _planning()
+    draft = _as_draft_payload(previous)
+    draft["plots"][0]["characterDesign"] = {
+        "entityId": entity_id, "displayName": "沈砚",
+        "nodes": [{"id": "change-1", "title": "分工留证", "belief": "接受伙伴复核"}],
+    }
+    planning = normalize_planning_aggregate(
+        DraftPlanningAggregate.model_validate(draft),
+        previous_confirmed=previous, previous_draft=None,
+        id_factory=iter(()).__next__,
+    )
+    row = _target_row(planning=planning)
+    repository = ManuscriptRepository()
+    result = await repository.load_chapter(CapturingSession(([row], [row])), "project-id", 1)
+    assert result.chapter.content == "最终正文"
+    directory = await repository.load_directory(CapturingSession(([row],)), "project-id")
+    assert directory.volumes[0].chapters[0].number == 1
+
+    # A changed character-plan body must still fail the pinned hash checks.
+    payload = json.loads(row["planning_content_json"])
+    payload["plots"][0]["characterDesign"]["nodes"][0]["belief"] = "篡改后的计划"
+    row["planning_content_json"] = json.dumps(payload, ensure_ascii=False)
+    with pytest.raises(ManuscriptCorrupt):
+        await repository.load_chapter(CapturingSession(([row], [row])), "project-id", 1)
+
+
+@pytest.mark.asyncio
 async def test_directory_query_is_lightweight_parameterized_and_deterministic():
     from backend.repositories.manuscripts import ManuscriptRepository
 
@@ -215,7 +247,9 @@ async def test_chapter_reads_only_target_prose_and_metadata_only_neighbors():
     neighbor_sql, neighbor_args = session.calls[1]
     neighbor_projection = neighbor_sql.lower().split(" from ", 1)[0]
     assert "final.content" not in neighbor_projection
-    assert neighbor_args == ("project-id",)
+    assert neighbor_args == (2, 2, 2, "project-id")
+    assert "MAX(previous.chapter_num)" in neighbor_sql
+    assert "MIN(following.chapter_num)" in neighbor_sql
 
 
 @pytest.mark.asyncio

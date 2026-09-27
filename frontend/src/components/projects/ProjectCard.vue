@@ -140,6 +140,10 @@ export default defineComponent({
   transform: translateY(-1px);
 }
 
+.project-card:has(.project-more[open]) {
+  z-index: 1;
+}
+
 .project-card--archived {
   background: #f8f4ec;
 }

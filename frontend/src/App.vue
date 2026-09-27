@@ -94,7 +94,7 @@ onErrorCaptured((_error, _instance, info) => {
 </script>
 
 <template>
-  <n-config-provider :locale="zhCN" :date-locale="dateZhCN">
+  <n-config-provider :locale="zhCN" :date-locale="dateZhCN" :theme-overrides="{ common: { primaryColor: '#934735', primaryColorHover: '#a55642', primaryColorPressed: '#793b2d', primaryColorSuppl: '#934735' } }">
     <n-message-provider>
       <n-dialog-provider>
         <AppInteractionBoundary :blocking="blocking">

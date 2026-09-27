@@ -9,6 +9,32 @@ from backend.repositories.project_lifecycle import (
 
 
 class PlanningRepository:
+    async def read_expansion_authority(self, session, project_id):
+        from backend.repositories.chapter_outlines import ChapterOutlineRepository
+        return {
+            "projection": await self.read_projection_head(session, project_id),
+            "current": await ChapterOutlineRepository().read_current_authorities(session, project_id),
+            "activeSession": await session.fetchone(
+                "SELECT id,chapter_num FROM chapter_sessions WHERE project_id=%s AND status='drafting' LIMIT 1",
+                (project_id,),
+            ),
+        }
+
+    async def read_draft_generation_manifest(self, session, project_id, attempt_id):
+        row = await session.fetchone(
+            """SELECT candidate.input_manifest_json
+                 FROM planning_generation_attempts source
+                 JOIN planning_generation_attempts candidate
+                   ON candidate.project_id=source.project_id AND candidate.draft_id=source.draft_id
+                WHERE source.project_id=%s AND source.id=%s
+                  AND candidate.status='succeeded'
+                  AND (candidate.id=source.id OR JSON_EXTRACT(candidate.input_manifest_json,'$.expansion') IS NOT NULL)
+                ORDER BY (JSON_EXTRACT(candidate.input_manifest_json,'$.expansion') IS NOT NULL) DESC,
+                         candidate.fencing_token DESC LIMIT 1""",
+            (project_id, attempt_id),
+        )
+        return row["input_manifest_json"] if row else None
+
     async def lock_active_project(self, session, project_id: str):
         return await lock_active_project(session, project_id)
 
@@ -336,6 +362,14 @@ class PlanningRepository:
             """SELECT * FROM projection_heads
                 WHERE project_id=%s""",
             (project_id,),
+        )
+
+    async def read_character_entity(self, session, project_id: str, entity_id: str, revision: int):
+        return await session.fetchone(
+            """SELECT id FROM canon_entities
+               WHERE project_id=%s AND id=%s AND entity_type='person'
+                 AND created_revision<=%s""",
+            (project_id, entity_id, revision),
         )
 
     async def read_actual_plot_progress(

@@ -507,6 +507,26 @@ async def test_extraction_with_identity_outside_frozen_context_is_failed():
 
 
 @pytest.mark.asyncio
+async def test_unbound_stable_definition_fails_before_publishing_author_review():
+    payload = _change_set().model_dump(by_alias=True, mode="json")
+    payload["canonEvents"] = [{
+        "id": "event-1", "entityId": None, "factKind": "stable_definition",
+        "fieldPath": "fact.test", "value": "正文事实",
+        "evidence": _finding().evidence.model_dump(by_alias=True, mode="json"),
+        "assertionOperator": "equals", "valueCardinality": "single",
+    }]
+    repository = FakeRepository()
+    service, _, _, extraction = _service(
+        repository, extraction_result=FinalizationChangeSet.model_validate(payload),
+    )
+    result = await service.prepare(_command())
+    assert len(extraction.calls) == 1
+    assert result.status == "failed"
+    assert repository.inserted_revisions == []
+    assert repository.published == []
+
+
+@pytest.mark.asyncio
 async def test_cancellation_is_recorded_then_propagated_with_priority():
     repository = FakeRepository()
     service, _, _, _ = _service(repository, cancelled=True)

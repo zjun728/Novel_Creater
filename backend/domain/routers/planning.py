@@ -17,6 +17,7 @@ from pydantic import (
 
 from backend.database import transaction
 from backend.domain.planning import DraftPlanningAggregate
+from backend.domain.planning_expansion import GenerationMode
 from backend.gateways.planning_provider import PlanningProviderGateway
 from backend.http_errors import PublicDomainError
 from backend.prompts.planning import _PRIVATE_TEXT as _PLANNING_PRIVATE_TEXT
@@ -130,6 +131,7 @@ class ConfirmDraftBody(_StrictBody):
 
 
 class GenerateDraftBody(_StrictBody):
+    generationMode: GenerationMode = "volumes_plots"
     draftRevision: int = Field(ge=1)
     draftHash: str = Field(pattern=r"^[0-9a-f]{64}$")
     idempotencyKey: str = Field(
@@ -439,6 +441,14 @@ async def get_planning(pid: str, service=Depends(get_planning_service)):
     return _public_state(result)
 
 
+@router.get("/projects/{pid}/planning/continuation")
+async def inspect_planning_continuation(pid: str, service=Depends(get_planning_service)):
+    try:
+        return await service.inspect_continuation(pid)
+    except Exception as error:
+        _raise_public(error)
+
+
 @router.get("/projects/{pid}/planning/history")
 async def get_planning_history(
     pid: str,
@@ -545,6 +555,7 @@ async def generate_planning_draft(
             draft_hash=body.draftHash,
             idempotency_key=body.idempotencyKey,
             author_instructions=body.authorInstructions,
+            generation_mode=body.generationMode,
         )
     )
     return _public_operation(result)
@@ -575,6 +586,15 @@ async def get_planning_operation(
     return _public_operation(
         await service.get_operation(pid, operation_id)
     )
+
+
+@router.post("/projects/{pid}/planning/drafts/{draft_id}/cancel-generation")
+async def cancel_planning_generation(pid: str, draft_id: str, request: Request,
+                                     service=Depends(get_planning_generation_service)):
+    body = _validate(CreateDraftBody, await _request_json(request))
+    if not is_safe_planning_idempotency_key(body.idempotencyKey):
+        raise PlanningRequestInvalid()
+    return _public_operation(await service.cancel_by_key(pid, draft_id, body.idempotencyKey))
 
 
 __all__ = (

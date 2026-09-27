@@ -30,6 +30,7 @@ from backend.services.finalization_checks import (
     validate_change_set_context,
 )
 from backend.domain.finalization_planning import frozen_protected_node_ids
+from backend.domain.review_decisions import effective_findings, has_required_findings
 
 
 _HASH_LENGTH = 64
@@ -154,6 +155,25 @@ class CancelFinalization:
             self.expected_revision,
             self.expected_revision_hash,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class DecideFinding(ConfirmFinalization):
+    attempt_id: str
+    report_hash: str
+    expected_decisions_revision: int
+    finding_id: str
+    ignored: bool
+
+    def __post_init__(self):
+        ConfirmFinalization.__post_init__(self)
+        if (not isinstance(self.attempt_id, str) or not self.attempt_id
+            or not isinstance(self.finding_id, str) or not self.finding_id
+            or type(self.ignored) is not bool
+            or type(self.expected_decisions_revision) is not int or self.expected_decisions_revision < 0
+            or not isinstance(self.report_hash, str) or len(self.report_hash) != 64
+            or any(c not in '0123456789abcdef' for c in self.report_hash)):
+            raise ValueError('invalid finding decision')
 
 
 @dataclass(frozen=True, slots=True)
@@ -576,6 +596,33 @@ class FinalizationService:
                 return {"state": "empty"}
         return value
 
+    async def decide_finding(self, command: DecideFinding):
+        if type(command) is not DecideFinding:
+            raise TypeError('command must be DecideFinding')
+        async with self.transaction_factory() as session:
+            attempt, _, _ = await self._lock_review_inputs(session, command)
+            view = await self.repository.read_current_view(session, command.project_id, command.chapter_session_id) or {}
+            report = view.get('qualityReport') or {}
+            decisions = (view or {}).get('findingDecisions') or {'revision': 0, 'ignoredFindingIds': []}
+            if (attempt['id'] != command.attempt_id or view.get('attemptId') != command.attempt_id
+                or report.get('contentHash') != command.report_hash or report.get('status') != 'completed'
+                or decisions['revision'] != command.expected_decisions_revision):
+                raise FinalizationConflict('FINALIZATION_STATE_CONFLICT')
+            finding = next((f for f in report.get('findings', []) if f['id'] == command.finding_id), None)
+            if finding is None or finding.get('severity') != 'optional':
+                raise ValueError('only optional findings can be ignored')
+            ignored = set(decisions['ignoredFindingIds'])
+            if (command.finding_id in ignored) == command.ignored:
+                return view
+            if command.ignored:
+                ignored.add(command.finding_id)
+            else:
+                ignored.discard(command.finding_id)
+            effective_findings(report, {'ignoredFindingIds': sorted(ignored)})
+            if not await self.repository.save_finding_decisions(session, command.project_id, attempt['id'], command.report_hash, decisions['revision'], sorted(ignored), self._clock()):
+                raise FinalizationConflict('FINALIZATION_STATE_CONFLICT')
+            return await self.repository.read_current_view(session, command.project_id, command.chapter_session_id)
+
     async def correct(self, command: CorrectFinalization) -> ReviewedFinalization:
         if type(command) is not CorrectFinalization:
             raise TypeError("command must be CorrectFinalization")
@@ -630,6 +677,9 @@ class FinalizationService:
             raise TypeError("command must be ConfirmFinalization")
         async with self.transaction_factory() as session:
             attempt, candidate, snapshot = await self._lock_review_inputs(session, command)
+            view = await self.repository.read_current_view(session, command.project_id, command.chapter_session_id)
+            if has_required_findings((view or {}).get('qualityReport')):
+                raise FinalizationConflict('REQUIRED_FINDINGS_UNRESOLVED')
             revision = await self.repository.lock_change_set_revision(
                 session,
                 command.project_id,

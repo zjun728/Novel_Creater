@@ -18,6 +18,7 @@ from backend.http_errors import (
 from backend.repositories.chapter_sessions import ActiveChapterSessionConflict
 from backend.services.bibles import BIBLE_POLICY_VERSION
 from backend.services.projections import build_projection_bundle
+from backend.services.planning_progress import planning_progress_reason
 
 
 class CreateProject(BaseModel):
@@ -651,6 +652,7 @@ class ProjectLifecycleService:
             and bible_head_revision == 0
         )
         generate_bible = edit_bible and planning_ready
+        progress_reason = planning_progress_reason(snapshot.get("outline_authorities"))
         reasons = []
         if lifecycle == "archived":
             next_action = "archived_read_only"
@@ -674,7 +676,7 @@ class ProjectLifecycleService:
         elif outline_operation is not None:
             next_action = "recover_chapter_outline_operation"
             target_path = self._project_path(
-                project_id, "planning/story-blocks"
+                project_id, "planning/outlines"
             )
             reasons.append("outline_operation_pending")
         elif active_selection == "missing":
@@ -697,16 +699,20 @@ class ProjectLifecycleService:
             next_action = "establish_planning"
             target_path = self._project_path(project_id, "planning/volumes")
             reasons.append(f"planning_{planning}")
+        elif progress_reason is not None:
+            next_action = "continue_planning"
+            target_path = self._project_path(project_id, "planning/story-blocks")
+            reasons.append(progress_reason)
         elif outline == "draft":
             next_action = "continue_chapter_outline"
             target_path = self._project_path(
-                project_id, "planning/story-blocks"
+                project_id, "planning/outlines"
             )
             reasons.append("chapter_outline_draft")
         elif outline != "current":
             next_action = "prepare_chapter_outline"
             target_path = self._project_path(
-                project_id, "planning/story-blocks"
+                project_id, "planning/outlines"
             )
             reasons.append(f"chapter_outline_{outline}")
         else:
@@ -716,6 +722,10 @@ class ProjectLifecycleService:
                 f"write/chapters/{authoritative_chapter_number}",
             )
             reasons.append("chapter_outline_current")
+        projection = snapshot.get("canon_projection")
+        if (lifecycle == "active" and projection is not None
+                and projection.get("canon_revision") != projection.get("projection_revision")):
+            reasons.append("canon_projection_unsynchronized")
         if lifecycle == "active" and not planning_ready:
             reasons.append("planning_model_not_ready")
 

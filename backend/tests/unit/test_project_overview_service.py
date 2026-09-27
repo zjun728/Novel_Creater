@@ -65,6 +65,7 @@ def _snapshot(**changes):
         ],
     }
     values = {
+        "continuity": {"pending_count": 0},
         "project": {
             "id": "project / 一 % _ ' \"",
             "title": "典镇山河",
@@ -213,8 +214,8 @@ def test_complete_snapshot_maps_to_exact_camel_case_author_response():
             "synchronized": True,
         },
         "continuity": {
-            "availability": "pending_module",
-            "pendingCount": None,
+            "availability": "available",
+            "pendingCount": 0,
         },
         "recentAchievements": [
             {
@@ -555,3 +556,28 @@ def test_achievement_ties_are_deterministic_and_bad_timestamps_are_excluded():
         (item.kind, item.label, item.occurred_at_ms)
         for item in result.recent_achievements
     }) == len(result.recent_achievements)
+
+
+@pytest.mark.parametrize("count", [0, 3, 101])
+def test_continuity_count_is_available_for_active_and_archived_projects(count):
+    snapshot = _snapshot(continuity={"pending_count": count})
+    for archived_at in (None, 100):
+        snapshot["project"]["archived_at"] = archived_at
+        result = build_project_overview(snapshot)
+        assert result.continuity.availability == "available"
+        assert result.continuity.pending_count == count
+
+
+@pytest.mark.parametrize("continuity", [None, {}, {"pending_count": None},
+    {"pending_count": -1}, {"pending_count": True}, {"pending_count": "0"},
+    {"pending_count": 1.5}, [], {"pending_count": float("nan")}])
+def test_continuity_invalid_count_fails_closed(continuity):
+    with pytest.raises(ProjectOverviewConsistencyError, match="continuity"):
+        build_project_overview(_snapshot(continuity=continuity))
+
+
+def test_continuity_missing_snapshot_count_fails_closed():
+    snapshot = _snapshot()
+    del snapshot["continuity"]
+    with pytest.raises(ProjectOverviewConsistencyError, match="continuity"):
+        build_project_overview(snapshot)

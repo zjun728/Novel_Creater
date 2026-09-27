@@ -93,10 +93,12 @@ RECORD_FIELD_ALLOWLISTS: Mapping[str, frozenset[str]] = MappingProxyType({
     "working-draft-revision": frozenset({"label", "workingDraftLogicalId", "chapterLogicalId", "candidateLogicalId", "operationLogicalId", "revision", "content", "contentHash", "replacementReason", "snapshotRole", "createdAt"}),
     "operation-event": frozenset({"label", "operationLogicalId", "sequence", "eventType", "contentHash", "createdAt"}),
     "candidate-freeze": frozenset({"label", "chapterLogicalId", "candidateLogicalId", "requestFingerprint", "createdAt"}),
+    "review-finding-decisions": frozenset({"changeSetLogicalId", "reportHash", "revision", "ignoredFindingIds", "updatedAt"}),
     "candidate-quality": frozenset({"label", "chapterLogicalId", "candidateLogicalId", "status", "candidateHash", "expectedCanonRevision", "expectedPlanningHash", "expectedOutlineHash", "policyVersion", "contextManifestHash", "modelName", "deterministicBlocks", "findings", "contentHash", "createdAt"}),
-    "finalization-change-set": frozenset({"label", "chapterLogicalId", "candidateLogicalId", "status", "candidateHash", "contentHash", "createdAt", "updatedAt", "confirmedAt"}),
+    "finalization-change-set": frozenset({"label", "qualityReportLogicalId", "expectedCanonRevision", "expectedPlanningHash", "expectedOutlineHash", "chapterLogicalId", "candidateLogicalId", "status", "candidateHash", "contentHash", "createdAt", "updatedAt", "confirmedAt"}),
     "finalization-change-set-revision": frozenset({"label", "changeSetLogicalId", "revision", "payload", "contentHash", "source", "createdAt"}),
     "finalization-record": frozenset({"label", "chapterLogicalId", "candidateLogicalId", "changeSetLogicalId", "changeSetRevision", "candidateHash", "changeSetHash", "expectedCanonRevision", "committedCanonRevision", "resultPayload", "resultHash", "finalizedAt"}),
+    "continuity-issue": frozenset({"label", "category", "severity", "status", "sourceChapterNumber", "sourceFinalizationLogicalId", "sourceCanonRevision", "description", "suggestion", "futureTarget", "resolutionNote", "createdAt", "updatedAt"}),
     "final-chapter": frozenset({"label", "chapterLogicalId", "candidateLogicalId", "finalizationRecordLogicalId", "planningRevisionLogicalId", "planningRevision", "planningHash", "outlineRevisionLogicalId", "chapterOutlineRevision", "chapterOutlineHash", "chapterNumber", "title", "content", "contentHash", "canonRevision", "finalizedAt"}),
     "canon-entity": frozenset({"label", "entityType", "canonicalName", "normalizedName", "createdRevision", "createdAt"}),
     "entity-alias": frozenset({"label", "entityLogicalId", "alias", "normalizedAlias", "createdRevision", "createdAt"}),
@@ -195,18 +197,42 @@ def _reject_sensitive(value: object) -> None:
     reject_sensitive_keys(value)
 
 
-def _validate_logical_identity_references(value: object) -> None:
+def _validate_logical_identity_references(
+    value: object, path: tuple[str, ...] = (), *,
+    seed_payload_path: tuple[str, ...] | None = None,
+) -> None:
     if isinstance(value, Mapping):
         for key, nested in value.items():
+            if key == "_provenance" and path == seed_payload_path:
+                # Shared market sources are frozen evidence, not live package
+                # references. Preserve their original IDs and provenance hash,
+                # only inside a fully validated seed revision's closed schema.
+                from backend.domain.seeds import decode_seed_revision
+
+                try:
+                    decode_seed_revision(_thaw_json(value))
+                except (TypeError, ValueError):
+                    raise _invalid_value() from None
+                continue
+            # Character plan node IDs are scoped to their containing Plot, not
+            # database identities. Only this closed schema slot is exempt.
+            if key == "id" and path[-5:] == ("plots", "[]", "characterDesign", "nodes", "[]"):
+                if not isinstance(nested, str) or not nested.strip() or len(nested) > 64:
+                    raise _invalid_value()
+                continue
             normalized = key.replace("_", "").replace("-", "").casefold() if isinstance(key, str) else ""
             if normalized == "id" or normalized.endswith("id") or normalized.endswith("ids"):
                 candidates = nested if isinstance(nested, (list, tuple)) else (nested,)
                 if any(candidate is not None and (not isinstance(candidate, str) or not re.fullmatch(r"[a-z]+(?:-[a-z]+)*:[1-9][0-9]*", candidate)) for candidate in candidates):
                     raise _invalid_value()
-            _validate_logical_identity_references(nested)
+            _validate_logical_identity_references(
+                nested, (*path, key), seed_payload_path=seed_payload_path,
+            )
     elif isinstance(value, (list, tuple)):
         for nested in value:
-            _validate_logical_identity_references(nested)
+            _validate_logical_identity_references(
+                nested, (*path, "[]"), seed_payload_path=seed_payload_path,
+            )
 
 
 def freeze_json_value(value: object) -> object:
@@ -225,7 +251,11 @@ def thaw_json_value(value: object) -> object:
 def canonical_json_bytes(value: Mapping[str, object]) -> bytes:
     validate_json_depth(value)
     _reject_sensitive(value)
-    _validate_logical_identity_references(value)
+    _validate_logical_identity_references(
+        value,
+        seed_payload_path=("data", "payload")
+        if value.get("entityType") == "creative-seed-revision" else None,
+    )
     try:
         return canonical_json(_thaw_json(value)).encode("utf-8")
     except (TypeError, ValueError):
@@ -261,7 +291,16 @@ class PackageRecord:
             or not set(self.data).issubset(RECORD_FIELD_ALLOWLISTS[self.entity_type])
         ):
             raise _invalid_value()
-        object.__setattr__(self, "data", freeze_json_value(self.data))
+        if self.entity_type == "creative-seed-revision":
+            validate_json_depth(self.data)
+            _reject_sensitive(self.data)
+            _validate_logical_identity_references(
+                self.data, seed_payload_path=("payload",),
+            )
+            frozen_data = _freeze_json(self.data)
+        else:
+            frozen_data = freeze_json_value(self.data)
+        object.__setattr__(self, "data", frozen_data)
 
     def to_public_dict(self) -> dict[str, object]:
         return {
