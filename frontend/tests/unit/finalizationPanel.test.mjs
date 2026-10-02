@@ -399,6 +399,92 @@ test('excluding facts and progress stays local until the corrected revision is s
   } finally { app.unmount() }
 })
 
+test('an author can reclassify an extracted event as a claim without replacing its identity or evidence', async () => {
+  const { app, root, controller, calls, payload, dirtyChanges } = await mountReview({
+    includeFactChanges: true, factValue: '角色根据痕迹推断有人来过。',
+  })
+  try {
+    const type = walk(root).find(node => node.type === 'select' && node.props['aria-label'] === '事实类型：状态')
+    assert.ok(type, 'each extracted fact exposes its current classification')
+    assert.equal(type.props.value, 'dynamic_event')
+    await type.props.onChange({ target: { value: 'claim' } })
+    await VueRuntime.nextTick()
+    assert.deepEqual(calls, [])
+    assert.deepEqual(controller.review.value.changeSet.payload, payload)
+    assert.equal(dirtyChanges.at(-1), true)
+    assert.equal(buttons(root, '确认以上变更')[0].props.disabled, true)
+    await buttons(root, '保存修正')[0].props.onClick()
+    await VueRuntime.nextTick()
+    assert.deepEqual(calls[0][1].changeSet.canonEvents[0], { ...payload.canonEvents[0], factKind: 'claim' })
+    assert.deepEqual(calls[0][1].changeSet.canonEvents[1], payload.canonEvents[1])
+    assert.deepEqual(calls[0][1].changeSet.storyProgressEvents, payload.storyProgressEvents)
+    assert.equal(controller.review.value.changeSet.revision, 2)
+    assert.equal(dirtyChanges.at(-1), false)
+    await buttons(root, '确认以上变更')[0].props.onClick()
+    assert.deepEqual(calls[1], ['confirm', { expectedRevision: 2, expectedRevisionHash: 'b'.repeat(64) }])
+    assert.match(nodeText(root), /人物说法或推测/)
+  } finally { app.unmount() }
+})
+
+test('fact classification rejects undeclared entities, unknown kinds and edits while locked', async () => {
+  const { app, root, controller, calls, payload, pauseLoad } = await mountReview({ includeFactChanges: true })
+  let releaseLoad
+  try {
+    const type = walk(root).find(node => node.type === 'select' && node.props['aria-label'] === '事实类型：状态')
+    assert.ok(type)
+    assert.equal(type.children.find(node => node.props.value === 'stable_definition').props.disabled, true)
+    for (const value of ['stable_definition', 'unknown']) await type.props.onChange({ target: { value } })
+    await VueRuntime.nextTick()
+    assert.equal(buttons(root, '保存修正').length, 0)
+    releaseLoad = pauseLoad()
+    await VueRuntime.nextTick()
+    assert.equal(type.props.disabled, true)
+    await type.props.onChange({ target: { value: 'claim' } })
+    await releaseLoad(); releaseLoad = null
+    controller.review.value = { ...controller.review.value, confirmation: { revision: 1, contentHash: 'a'.repeat(64) } }
+    await VueRuntime.nextTick()
+    assert.equal(type.props.disabled, true)
+    await type.props.onChange({ target: { value: 'claim' } })
+    await VueRuntime.nextTick()
+    assert.deepEqual(controller.review.value.changeSet.payload, payload)
+    assert.deepEqual(calls, [])
+    assert.equal(buttons(root, '保存修正').length, 0)
+  } finally { await releaseLoad?.(); app.unmount() }
+})
+
+test('a failed classification save keeps the local claim draft and blocks confirmation', async () => {
+  const { app, root, controller, calls, dirtyChanges } = await mountReview({ includeFactChanges: true, correctFailure: true })
+  try {
+    const type = walk(root).find(node => node.type === 'select' && node.props['aria-label'] === '事实类型：状态')
+    await type.props.onChange({ target: { value: 'claim' } })
+    await VueRuntime.nextTick()
+    await buttons(root, '保存修正')[0].props.onClick()
+    await VueRuntime.nextTick()
+    assert.equal(type.props.value, 'claim')
+    assert.equal(controller.review.value.changeSet.payload.canonEvents[0].factKind, 'dynamic_event')
+    assert.equal(controller.review.value.changeSet.revision, 1)
+    assert.equal(dirtyChanges.at(-1), true)
+    assert.equal(buttons(root, '确认以上变更')[0].props.disabled, true)
+    await buttons(root, '确认以上变更')[0].props.onClick()
+    assert.equal(calls.length, 1)
+  } finally { app.unmount() }
+})
+
+test('fact classification cannot change stale, cancelled or finalized reviews', async () => {
+  for (const state of ['stale', 'cancelled', 'finalized']) {
+    const { app, root, controller, payload, calls } = await mountReview({ includeFactChanges: true, draftStale: state === 'stale' })
+    try {
+      const type = walk(root).find(node => node.type === 'select' && node.props['aria-label'] === '事实类型：状态')
+      if (state !== 'stale') controller.review.value = { ...controller.review.value, status: state === 'finalized' ? 'committed' : state }
+      await VueRuntime.nextTick()
+      await type.props.onChange({ target: { value: 'claim' } })
+      await VueRuntime.nextTick()
+      assert.deepEqual(controller.review.value.changeSet.payload, payload, state)
+      assert.deepEqual(calls, [], state)
+    } finally { app.unmount() }
+  }
+})
+
 test('failed fact and progress correction preserves exclusions and reports dirty until unmount', async () => {
   const { app, root, controller, calls, dirtyChanges } = await mountReview({ includeFactChanges: true, correctFailure: true })
   try {

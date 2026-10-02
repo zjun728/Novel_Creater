@@ -216,6 +216,21 @@ function updateFactValue(id, value) {
   if (item) item.value = JSON.parse(JSON.stringify(value))
 }
 
+const factKindLabels = {
+  dynamic_event: '已发生的事件',
+  claim: '人物说法或推测',
+  stable_definition: '稳定设定',
+}
+const hasFactEntity = item => Boolean(item.entityId
+  && factEntities.value.some(entity => entity.id === item.entityId))
+
+function updateFactKind(id, kind) {
+  if (!editable.value || !Object.hasOwn(factKindLabels, kind)) return
+  const item = changeSetDraft.value.canonEvents.find(event => event.id === id)
+  if (!item || (kind === 'stable_definition' && !hasFactEntity(item))) return
+  item.factKind = kind
+}
+
 function excludeAlias(id) {
   if (!editable.value) return
   const aliases = changeSetDraft.value.aliases
@@ -408,14 +423,22 @@ async function refreshPostFinalization() {
 
         <div v-if="changeSetDraft.canonEvents.length" class="change-group">
           <h4>Canon 事实</h4>
-          <p class="muted">对照原文修正事实内容，或排除提取错误的事实。保存修正并通过校验后，才可确认。</p>
+          <p class="muted">对照原文核对内容和类型；人物说法或推测不等于已证实事实。修正事实时，也请核对上方摘要。保存修正并通过校验后，才可确认。</p>
           <article v-for="item in changeSetDraft.canonEvents" :key="item.id" class="change-item">
             <strong>{{ fieldLabel(item.fieldPath) }}</strong>
+            <n-tag class="fact-kind-tag" size="small" :type="item.factKind === 'claim' ? 'warning' : 'default'">{{ factKindLabels[item.factKind] || '未知类型' }}</n-tag>
             <pre>{{ displayValue(item.value) }}</pre>
             <small>{{ evidenceText(item.evidence) }}</small>
             <details class="fact-correction">
               <summary>修正事实</summary>
-              <p class="muted">仅修改事实内容；关联实体、事实类型和原文引用沿用本条记录。</p>
+              <p class="muted">可修正内容和类型；关联实体、原文引用沿用本条记录。记录说法或推测时，请在内容中保留是谁的判断和未确定之处。</p>
+              <label><span>事实类型</span>
+                <select :value="item.factKind" :disabled="!editable" :aria-label="`事实类型：${fieldLabel(item.fieldPath)}`" @change="updateFactKind(item.id, $event.target.value)">
+                  <option value="dynamic_event">已发生的事件</option>
+                  <option value="claim">人物说法或推测</option>
+                  <option value="stable_definition" :disabled="!hasFactEntity(item)">稳定设定（须关联实体）</option>
+                </select>
+              </label>
               <FinalizationValueEditor :model-value="item.value" :disabled="!editable" @update:model-value="updateFactValue(item.id, $event)" @pending-change="valueEditorPending.set(item.id, $event)" />
             </details>
             <n-button size="small" :disabled="!editable" @click="excludeFact(item.id)">排除此项事实</n-button>
@@ -543,6 +566,7 @@ h3 { font-size: 15px; } h4 { font-size: 13px; }
 .review-list span, .review-list small, .change-item small { color: #817565; font-size: 11px; line-height: 1.55; }
 .change-group { margin-top: 14px; }
 .change-item { margin-bottom: 8px; }
+.fact-kind-tag { justify-self: start; }
 .fact-correction { min-width: 0; margin: 8px 0; border-top: 1px solid #dfd1bc; padding-top: 9px; }
 .fact-correction summary { cursor: pointer; color: #835531; font-size: 12px; font-weight: 700; }
 .fact-correction summary:focus-visible { outline: 2px solid #9b6a32; outline-offset: 3px; }
