@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 import stat
@@ -79,7 +80,7 @@ class LocalCorsConfigError(RuntimeError):
 def load_cors_allowed_origins(
     *, environment: Mapping[str, str] | None = None,
 ) -> tuple[str, ...]:
-    """Read exact origins once at application creation, never from a request."""
+    """Read browser-serialized origins once, never derive permission from a request."""
     source = os.environ if environment is None else environment
     value = source.get("CORS_ALLOWED_ORIGINS")
     if value is None:
@@ -103,7 +104,8 @@ def load_cors_allowed_origins(
                 parsed.scheme in {"http", "https"}
                 and origin.startswith(parsed.scheme + "://")
                 and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
-                and not parsed.netloc.endswith(":")
+                and re.fullmatch(r"(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?",
+                                 parsed.netloc, flags=re.IGNORECASE) is not None
                 and not parsed.path
                 and (port is None or 1 <= port <= 65535)
             )
@@ -111,6 +113,12 @@ def load_cors_allowed_origins(
             valid = False
         if not valid:
             raise LocalCorsConfigError(error) from None
+        # Browsers lowercase hosts, serialize ports as integers, and omit the
+        # scheme's default port. Match that representation before deduplication.
+        host = "[::1]" if parsed.hostname == "::1" else parsed.hostname
+        default_port = 80 if parsed.scheme == "http" else 443
+        suffix = "" if port is None or port == default_port else f":{port}"
+        origin = f"{parsed.scheme}://{host}{suffix}"
         if origin not in origins:
             origins.append(origin)
     return tuple(origins)
