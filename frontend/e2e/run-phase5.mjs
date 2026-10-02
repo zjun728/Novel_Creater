@@ -216,7 +216,7 @@ export async function runPhase5({ environment = process.env, log = console.log, 
       const [backendPort, denyPort, vitePort] = ports
       const backendUrl = `http://127.0.0.1:${backendPort}`; const denyUrl = `http://127.0.0.1:${denyPort}`; const viteUrl = `http://127.0.0.1:${vitePort}`
       const nonce = randomUUID()
-      const backendEnvironment = {
+      const backendEnvironment = { CORS_ALLOWED_ORIGINS: viteUrl,
         ...base, MYSQL_HOST: environment.TEST_MYSQL_HOST, MYSQL_PORT: environment.TEST_MYSQL_PORT,
         MYSQL_USER: environment.TEST_MYSQL_USER, MYSQL_PASSWORD: environment.TEST_MYSQL_PASSWORD,
         MYSQL_DB: databaseName, BROWSER_TEST_DATABASE: databaseName, BROWSER_PROJECT_ID: PROJECT_ID,

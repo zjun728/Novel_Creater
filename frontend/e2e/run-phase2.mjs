@@ -578,6 +578,7 @@ export function buildEnvironments(
     ...providerFixture,
   }
   const backend = {
+    CORS_ALLOWED_ORIGINS: viteUrl,
     ...base,
     ...database,
     ...providerFixture,

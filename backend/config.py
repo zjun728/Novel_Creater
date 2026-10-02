@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import stat
 from typing import Mapping
+from urllib.parse import urlsplit
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -69,6 +70,50 @@ class LocalCorpusConfigError(RuntimeError):
 
 class LocalSchedulerConfigError(RuntimeError):
     """The optional local market scheduler flag is invalid."""
+
+
+class LocalCorsConfigError(RuntimeError):
+    """The explicit browser origin allowlist is invalid."""
+
+
+def load_cors_allowed_origins(
+    *, environment: Mapping[str, str] | None = None,
+) -> tuple[str, ...]:
+    """Read exact origins once at application creation, never from a request."""
+    source = os.environ if environment is None else environment
+    value = source.get("CORS_ALLOWED_ORIGINS")
+    if value is None:
+        return ("http://localhost:5173", "http://127.0.0.1:5173")
+    if value == "":
+        return ()
+    error = "CORS_ALLOWED_ORIGINS must contain comma-separated exact HTTP(S) loopback origins"
+    if type(value) is not str:
+        raise LocalCorsConfigError(error)
+    origins = []
+    for item in value.split(","):
+        origin = item.strip()
+        if not origin or any(c.isspace() or ord(c) < 32 for c in origin) or any(
+            c in origin for c in "*?#@"
+        ):
+            raise LocalCorsConfigError(error)
+        try:
+            parsed = urlsplit(origin)
+            port = parsed.port
+            valid = (
+                parsed.scheme in {"http", "https"}
+                and origin.startswith(parsed.scheme + "://")
+                and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+                and not parsed.netloc.endswith(":")
+                and not parsed.path
+                and (port is None or 1 <= port <= 65535)
+            )
+        except ValueError:
+            valid = False
+        if not valid:
+            raise LocalCorsConfigError(error) from None
+        if origin not in origins:
+            origins.append(origin)
+    return tuple(origins)
 
 
 class RuntimeConfigurationError(RuntimeError):

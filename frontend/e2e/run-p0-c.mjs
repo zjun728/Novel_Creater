@@ -242,7 +242,7 @@ async function runOne({ environment, deadlines }) {
       environments={
         prepare:{...base,TEST_MYSQL_HOST:environment.TEST_MYSQL_HOST,TEST_MYSQL_PORT:environment.TEST_MYSQL_PORT,TEST_MYSQL_USER:environment.TEST_MYSQL_USER,TEST_MYSQL_PASSWORD:environment.TEST_MYSQL_PASSWORD},
         provider:{...base,P0C_PROVIDER_PORT:String(providerPort.port),P0C_PROVIDER_COUNTER:counterPath,P0C_PROVIDER_NONCE:nonce},
-        backend:{...base,...mysql,M2_BROWSER_RUN_NONCE:nonce,P0C_PROVIDER_URL:`${providerUrl}/v1`,P0C_PROVIDER_COUNTER:counterPath},
+        backend:{CORS_ALLOWED_ORIGINS:viteUrl,...base,...mysql,M2_BROWSER_RUN_NONCE:nonce,P0C_PROVIDER_URL:`${providerUrl}/v1`,P0C_PROVIDER_COUNTER:counterPath},
         vite:{...base,M2_BROWSER_RUN_NONCE:nonce,VITE_API_BASE_URL:`${backendUrl}/api`},
         browser:{...base,PLAYWRIGHT_BASE_URL:viteUrl,BROWSER_VITE_ORIGIN:viteUrl,BROWSER_BACKEND_ORIGIN:backendUrl,BROWSER_OWNED_ROOT:root,BROWSER_ARTIFACT_ROOT:path.join(root,'phase2b-test-results'),BROWSER_QIDIAN_SNAPSHOT_PATH:snapshotPath,PLAYWRIGHT_JSON_OUTPUT_FILE:browserReportPath},
       }

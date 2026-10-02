@@ -317,6 +317,7 @@ test('Phase 7B injected lifecycle runs every owned step in exact order and strip
   ])
   assert.deepEqual(harness.backendEnvironment, {
     ONLY_TEST: 'yes', MYSQL_DB: 'novel_creator_v113', MARKET_SCHEDULER_ENABLED: 'false',
+    CORS_ALLOWED_ORIGINS: 'http://127.0.0.1:41002',
   })
   assert.equal(
     Object.keys(harness.backendEnvironment).some(key => key.startsWith('PHASE7B_BROWSER_')),

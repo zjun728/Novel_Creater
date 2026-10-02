@@ -269,7 +269,7 @@ export async function runPhase4C({ environment = process.env, log = console.log,
       const denyUrl = `http://127.0.0.1:${denyPort}`
       const viteUrl = `http://127.0.0.1:${vitePort}`
       const nonce = randomUUID()
-      const backendEnvironment = {
+      const backendEnvironment = { CORS_ALLOWED_ORIGINS: viteUrl,
         ...base,
         MYSQL_HOST: environment.TEST_MYSQL_HOST,
         MYSQL_PORT: environment.TEST_MYSQL_PORT,

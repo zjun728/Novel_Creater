@@ -1186,6 +1186,7 @@ function buildEnvironments(
   const base = allowlistedBaseEnvironment(environment)
   const prepare = cleanupEnvironment
   const backend = {
+    CORS_ALLOWED_ORIGINS: viteUrl,
     ...base,
     MYSQL_HOST: environment.TEST_MYSQL_HOST,
     MYSQL_PORT: environment.TEST_MYSQL_PORT,

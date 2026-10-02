@@ -518,6 +518,7 @@ test('one formal spec owns one fresh database, two distinct ports, nonce health,
   })
   assertExactEnvironment(starts[0].options.env, {
     ...baseEnvironment,
+    CORS_ALLOWED_ORIGINS: 'http://127.0.0.1:41002',
     MYSQL_HOST: TEST_ENVIRONMENT.TEST_MYSQL_HOST,
     MYSQL_PORT: TEST_ENVIRONMENT.TEST_MYSQL_PORT,
     MYSQL_USER: TEST_ENVIRONMENT.TEST_MYSQL_USER,

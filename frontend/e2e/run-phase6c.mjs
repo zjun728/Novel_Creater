@@ -332,7 +332,7 @@ export async function runPhase6C({ environment = process.env, log = console.log,
       const python = environment.PYTHON || 'python'
       const backupPath = path.join(roots.downloadRoot, 'phase6c-import-source.zip')
       const finalPath = path.join(roots.downloadRoot, 'phase6c-imported-finalized.txt')
-      const backendEnvironment = {
+      const backendEnvironment = { CORS_ALLOWED_ORIGINS: viteUrl,
         ...mysql,
         BROWSER_OWNED_ROOT: owned,
         BROWSER_DOWNLOAD_ROOT: roots.downloadRoot,

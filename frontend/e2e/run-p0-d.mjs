@@ -302,7 +302,7 @@ async function runOne({ environment, deadlines, dependencies = {} }) {
       environments = {
         prepare: { ...base, TEST_MYSQL_HOST: environment.TEST_MYSQL_HOST, TEST_MYSQL_PORT: environment.TEST_MYSQL_PORT, TEST_MYSQL_USER: environment.TEST_MYSQL_USER, TEST_MYSQL_PASSWORD: environment.TEST_MYSQL_PASSWORD },
         provider: { ...base, P0D_PROVIDER_PORT: String(providerPort.port), P0D_PROVIDER_NONCE: nonce, P0D_PROVIDER_COUNTER: counterPath, P0D_PROVIDER_SECRET: PROVIDER_SECRET },
-        backend: { ...base, ...mysql, M2_BROWSER_RUN_NONCE: nonce, MARKET_SCHEDULER_ENABLED: 'false', P0D_PROVIDER_URL: providerUrl, P0D_PROVIDER_SECRET: PROVIDER_SECRET, P0D_PROVIDER_COUNTER: counterPath, P0D_OUTBOUND_LEDGER: ledgerPath, BROWSER_PROJECT_ID: PROJECT_ID, BROWSER_TEST_DATABASE: database },
+        backend: { CORS_ALLOWED_ORIGINS: viteUrl, ...base, ...mysql, M2_BROWSER_RUN_NONCE: nonce, MARKET_SCHEDULER_ENABLED: 'false', P0D_PROVIDER_URL: providerUrl, P0D_PROVIDER_SECRET: PROVIDER_SECRET, P0D_PROVIDER_COUNTER: counterPath, P0D_OUTBOUND_LEDGER: ledgerPath, BROWSER_PROJECT_ID: PROJECT_ID, BROWSER_TEST_DATABASE: database },
         vite: { ...base, M2_BROWSER_RUN_NONCE: nonce, VITE_API_BASE_URL: `${backendUrl}/api` },
         browser: { ...base, PLAYWRIGHT_BASE_URL: viteUrl, BROWSER_VITE_ORIGIN: viteUrl, BROWSER_BACKEND_ORIGIN: backendUrl, BROWSER_PROJECT_ID: PROJECT_ID, BROWSER_SECRET_SENTINEL: PROVIDER_SECRET, BROWSER_OWNED_ROOT: root, BROWSER_ARTIFACT_ROOT: path.join(root, 'phase2b-test-results'), PLAYWRIGHT_JSON_OUTPUT_NAME: reportPath },
       }

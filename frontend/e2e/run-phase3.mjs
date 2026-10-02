@@ -683,6 +683,7 @@ export async function runOneScenario({
         const providerUrl = `http://127.0.0.1:${providerPort.port}/v1`
         const common = {
           ...environment,
+          CORS_ALLOWED_ORIGINS: viteUrl,
           MYSQL_HOST: environment.TEST_MYSQL_HOST,
           MYSQL_PORT: environment.TEST_MYSQL_PORT,
           MYSQL_USER: environment.TEST_MYSQL_USER,

@@ -381,7 +381,7 @@ export async function runPhase6B({ environment = process.env, log = console.log,
       const viteUrl = `http://127.0.0.1:${vitePort}`
       const nonce = randomUUID()
       const python = environment.PYTHON || 'python'
-      const backendEnvironment = {
+      const backendEnvironment = { CORS_ALLOWED_ORIGINS: viteUrl,
         ...mysql, BROWSER_OUTBOUND_LEDGER_PATH: roots.outboundLedgerPath,
         M2_BROWSER_RUN_NONCE: nonce, SCHEDULER_ENABLED: '0', MARKET_SCHEDULER_ENABLED: 'false',
         MANAGED_CORPUS_ROOT: roots.corpusRoot, PHASE6B_PACKAGE_TEMP_ROOT: roots.packageTempRoot,

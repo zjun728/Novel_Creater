@@ -660,6 +660,7 @@ export function buildEnvironments(
     TEST_MYSQL_PASSWORD: environment.TEST_MYSQL_PASSWORD,
   }
   const backend = {
+    CORS_ALLOWED_ORIGINS: viteUrl,
     ...base,
     MYSQL_HOST: environment.TEST_MYSQL_HOST,
     MYSQL_PORT: environment.TEST_MYSQL_PORT,

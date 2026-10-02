@@ -465,7 +465,7 @@ export async function runPhase7B({
     const apiUrl = `http://127.0.0.1:${apiPort}`
     const viteUrl = `http://127.0.0.1:${vitePort}`
     await atStage('vite-start', () => deps.writeViteConfig(roots.viteConfigPath, roots.runnerRoot, apiUrl))
-    const backendEnvironment = await atStage('backend-start', () => deps.createBackendEnvironment(environment))
+    const backendEnvironment = { ...await atStage('backend-start', () => deps.createBackendEnvironment(environment)), CORS_ALLOWED_ORIGINS: viteUrl }
     const sensitiveValues = await atStage('backend-start', () => deps.runtimeSensitiveValues(backendEnvironment))
     const backendOwnerNonce = await atStage('backend-start', () => deps.backendNonce())
     const backendLaunch = await atStage('backend-start', () => deps.createBackendLaunch({ ownerNonce: backendOwnerNonce, port: apiPort }))
