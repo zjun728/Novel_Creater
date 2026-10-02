@@ -7,7 +7,7 @@ import json
 import httpx
 import pytest
 
-from backend.domain.finalization import FinalizationChangeSet, QualityFinding
+from backend.domain.finalization import FinalizationChangeSet, QualityFinding, change_set_payload
 from backend.gateways.finalization_provider import (
     FinalizationExtractionGateway,
     FinalizationExtractionProvider,
@@ -219,6 +219,37 @@ async def test_extraction_rejects_unanchored_items_without_silently_dropping_the
             gateway, "extract", provider=_provider(),
             model_name="finalization-model", manifest=_manifest(),
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_source", [False, True])
+async def test_extraction_preserves_evidence_keys_in_json_values_and_still_validates_source(bad_source):
+    payload = _extraction_payload()
+    content = {"evidence": "ordinary fact content", "nested": [{"evidence": _evidence()}]}
+    payload["canonEvents"] = [{
+        "id": "event-json", "entityId": None, "factKind": "dynamic_event",
+        "fieldPath": "chapter.event", "value": content,
+        "evidence": {**_evidence(), "quote": "missing from prose"} if bad_source else _evidence(),
+        "assertionOperator": "equals", "valueCardinality": "single",
+    }]
+    payload["planningPatches"] = [{
+        "id": "patch-json", "targetType": "volume", "targetId": "volume-1",
+        "expectedRevision": 1, "expectedHash": "a" * 64,
+        "fieldPath": "title", "replacement": content, "evidence": _evidence(),
+    }]
+    gateway = FinalizationExtractionGateway(transport=httpx.MockTransport(
+        lambda request: _response(payload, request)
+    ))
+    if bad_source:
+        with pytest.raises(FinalizationProviderError):
+            await _call(gateway, "extract", provider=_provider(), model_name="finalization-model", manifest=_manifest())
+        return
+    result = change_set_payload(await _call(
+        gateway, "extract", provider=_provider(), model_name="finalization-model", manifest=_manifest(),
+    ))
+    assert result["canonEvents"][0]["value"] == content
+    assert result["planningPatches"][0]["replacement"] == content
+    assert result["canonEvents"][0]["evidence"]["excerptHash"] == sha256("沈砚".encode()).hexdigest()
 
 
 @pytest.mark.asyncio

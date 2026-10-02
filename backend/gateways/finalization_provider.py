@@ -145,6 +145,11 @@ def _hydrate_nested(value: object, prose: str) -> object:
     if type(value) is dict:
         result = {}
         for key, item in value.items():
+            # Fact values and Planning replacements are opaque strict JSON.
+            # Their own keys (including "evidence") are content, not locations.
+            if key in {"value", "replacement"}:
+                result[key] = item
+                continue
             result[key] = (
                 _hydrate_evidence(item, prose)
                 if key == "evidence"

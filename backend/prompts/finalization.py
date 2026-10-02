@@ -424,6 +424,7 @@ def build_progress_audit_messages(*, manifest: FinalizationProviderManifest, eve
     instruction = {
         "task": "verify_proposed_progress", "language": "zh-CN", "response": "json_object_only",
         "rules": [
+            "先将任务动作与 completionEvidence 要求的结果分开核对。执行或观察到动作，并不自动证明已取得结果；必须从正文找出实际取得的知识、信息、交付物或状态。把结果直接写入理由不能代替正文证据。仅看到一次事件或听到一个时刻，不能推算重复事件的时间间隔；明确测量、比较或直接获得间隔信息才支持该结果。缺少所需结果时列入 unmetRequirements 并保留 started/advanced。",
             "这是执行结果核验，不是剧情效果评分。任务中的每个动作都必须发生；威胁生效、压力已经产生、旁人接受安排，不能替代人员离开、材料交付等尚未发生的动作。调动类任务除非明确只要求发令，完成必须有本人实际离开原处或到达新处的正文证据；只有宣布、转述、确认明日调令时只能 started/advanced。不要把行政安排已生效解释为人已离开。",
             "先确定正文当前时刻，再读相对时间：今夜仍与本人在原处交谈、执行说定在明天，说明此刻尚未执行。人物说‘你调走我一人’、旁白推算调走后的工期，均不能推翻同场景明确的未来执行时间。只有后文明确跨到次日且写出执行动作，才可 completed。",
             "Independently classify every requested event against candidateParagraphs and the full task AND completionEvidence. Only requested identities are supplied, not the first extractor's opinions. Output exactly one decision per event id; do not add facts, tasks or identities.",

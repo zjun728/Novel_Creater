@@ -834,6 +834,28 @@ def _rewrite_records(
                 raise _invalid()
             binding["contentHash"] = target["contentHash"]
 
+    # Outline authority pins a historical projection, whose hash includes the
+    # rewritten Canon identities. Repair the pin before hashing the outline;
+    # retain its revision rather than substituting the latest project state.
+    outline_projection_hashes: dict[int, str] = {}
+    for record in records:
+        if record.entity_type not in {
+            "chapter-outline-draft", "chapter-outline-revision", "chapter-outline-confirmation",
+        }:
+            continue
+        data = rewritten[(record.entity_type, record.logical_id)]
+        for basis in (data, data.get("payload")):
+            if not isinstance(basis, dict) or "projectionHash" not in basis:
+                continue
+            revision = basis.get("projectionRevision")
+            if type(revision) is not int or revision < 0:
+                raise _invalid()
+            if revision not in outline_projection_hashes:
+                outline_projection_hashes[revision] = _target_projection(
+                    rewritten, identity_map.ids, revision=revision,
+                )["contentHash"]
+            basis["projectionHash"] = outline_projection_hashes[revision]
+
     hash_order = (
         "creative-seed-revision", "story-engine-option", "asset", "project-contract-draft", "creation-contract", "style-contract",
         "project-bible-draft", "creation-bible-revision", "planning-draft", "planning-revision",

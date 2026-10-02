@@ -703,7 +703,8 @@ def test_real_encoders_handle_multiple_engine_options_experience_asset_and_scala
     assert canon_row["value_json"] == '"scalar"'
 
 
-def test_production_planning_then_outline_topology_rehashes_target_authorities() -> None:
+@pytest.mark.parametrize("outline_projection_revision", (0, 1))
+def test_production_planning_then_outline_topology_rehashes_target_authorities(outline_projection_revision) -> None:
     from backend.domain.chapter_outlines import DraftChapterOutline, EditableChapterOutlineContent, OutlineCapacityPolicy, normalize_chapter_outline
     from backend.domain.planning import DraftPlanningAggregate, normalize_planning_aggregate
 
@@ -748,7 +749,8 @@ def test_production_planning_then_outline_topology_rehashes_target_authorities()
             "scenes": ["scene"], "forbiddenEarlyEvents": [], "capacityPolicy": capacity.model_dump(mode="json", by_alias=True),
         }),
         planning=planning, authoritative_chapter_number=1, planning_revision_id="planning-revision:1",
-        planning_revision=1, capacity_policy=capacity, canon_revision=0, projection_revision=0,
+        planning_revision=1, capacity_policy=capacity, canon_revision=outline_projection_revision,
+        projection_revision=outline_projection_revision,
         projection_hash="e" * 64,
     )
     planning_record = PackageRecord("planning-revision", "planning-revision:1", revision=1, data={
@@ -812,6 +814,13 @@ def test_production_planning_then_outline_topology_rehashes_target_authorities()
     assert target_outline["payload"]["planningHash"] == target_planning["contentHash"]
     assert target_outline["payload"]["volumeRef"]["id"] != planning.volumes[0].id
     assert target_outline["contentHash"] != outline.content_hash
+    expected_outline_projection = _target_projection(rewritten, identity_map.ids, revision=outline_projection_revision)
+    assert target_outline["payload"]["projectionHash"] == expected_outline_projection["contentHash"]
+    assert target_outline["payload"]["canonRevision"] == outline_projection_revision
+    assert target_outline["payload"]["projectionRevision"] == outline_projection_revision
+    assert target_outline["contentHash"] == canonical_hash({
+        key: value for key, value in target_outline["payload"].items() if key != "contentHash"
+    })
     target_canon = rewritten[(canon_revision.entity_type, canon_revision.logical_id)]
     target_receipt = rewritten[(receipt_record.entity_type, receipt_record.logical_id)]
     expected_projection = _target_projection(rewritten, identity_map.ids, revision=1)
