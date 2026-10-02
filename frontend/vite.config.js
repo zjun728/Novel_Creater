@@ -31,6 +31,16 @@ export default defineConfig({
     tailwindcss(),
     ...(browserRunNonce ? [m2BrowserOwnershipPlugin(browserRunNonce)] : []),
   ],
+  // Keep ordinary entrypoints aligned with the backend's explicit CORS origins.
+  // Custom CLI ports must be paired with CORS_ALLOWED_ORIGINS on the backend.
+  server: {
+    port: 5173,
+    strictPort: true,
+  },
+  preview: {
+    port: 5173,
+    strictPort: true,
+  },
   build: {
     emptyOutDir: true
   },
