@@ -30,6 +30,15 @@ const valueText = value => authorValue(value).join('；') || '无'
       <p>{{ state.message }}</p><button id="final-review-retry" type="button" @click="$emit('retry')">重新读取审查记录</button>
     </div>
     <template v-else-if="review">
+      <section v-if="review.findingDecisions?.disputeEvents?.length" aria-label="作者审稿处理记录">
+        <h3>作者审稿处理记录（只读）</h3>
+        <article v-for="event in review.findingDecisions.disputeEvents" :key="event.id" class="final-review-summary__item">
+          <h4>{{ { note: '记录异议', retain: '作者确认保留原稿', revoke: '撤回处理' }[event.action] }}</h4>
+          <p>{{ review.qualityReport?.findings?.find(f => f.id === event.findingId)?.reason }}</p>
+          <p>{{ event.reason }} · {{ new Date(event.createdAt).toLocaleString() }}</p>
+          <blockquote v-for="ref in event.evidence" :key="ref.id">{{ { candidate: '本章正文', canon: '此前事实与进度', planning: '规划要求', outline: '本章小纲', contract: '创作契约', bible: '创作基础' }[ref.sourceType] }}：{{ ref.quote }}</blockquote>
+        </article>
+      </section>
       <p class="final-review-summary__source">来源：第 {{ review.chapterNumber }} 章定稿 · 只读记录</p>
       <p class="final-review-summary__intro">以下为本章定稿时保留的审查与已确认变更。历史状态反映本章当时的变化；后续章节可能继续改变状态。</p>
       <p class="final-review-summary__abstract">{{ review.summary || '本章未记录审查摘要。' }}</p>

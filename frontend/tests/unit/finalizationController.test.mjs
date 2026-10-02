@@ -68,6 +68,44 @@ const preparation = {
   authoritativeChapterNumber: 5,
 }
 
+test('author dispute is version-bound and failed save preserves previous decisions', async () => {
+  const initial = structuredClone(review)
+  initial.qualityReport.findings = [{ id: 'required', severity: 'required' }]
+  initial.findingDecisions = { revision: 0, ignoredFindingIds: [] }
+  let fail = false
+  const calls = []
+  const controller = createFinalizationController({ getReview: async () => structuredClone(initial),
+    disputeFinding: async command => {
+      calls.push(command)
+      if (fail) throw Error('conflict')
+      return { ...initial, findingDecisions: { revision: 1, ignoredFindingIds: [], disputeEvents: [{ findingId: 'required', action: 'note' }] } }
+    } })
+  await controller.load()
+  await controller.saveFindingDispute({ findingId: 'required', action: 'note', reason: '新状态', category: 'state_change', evidence: [] })
+  assert.equal(calls[0].attemptId, initial.attemptId)
+  assert.equal(calls[0].qualityReportHash, HASH_A)
+  assert.equal(calls[0].expectedDecisionsRevision, 0)
+  assert.match(calls[0].eventId, /^[a-f0-9]{64}$/)
+  await assert.rejects(controller.confirmChangeSet())
+  fail = true
+  await assert.rejects(controller.saveFindingDispute({ findingId: 'required', action: 'retain' }))
+  assert.equal(controller.review.value.findingDecisions.disputeEvents[0].action, 'note')
+})
+
+test('retained required opinion confirms with exact author revision; revoke restores block', async () => {
+  const initial = structuredClone(review)
+  initial.qualityReport.findings = [{ id: 'required', severity: 'required' }]
+  initial.findingDecisions = { revision: 2, ignoredFindingIds: [], disputeEvents: [{ findingId: 'required', action: 'note' }, { findingId: 'required', action: 'retain' }] }
+  let received
+  const controller = createFinalizationController({ getReview: async () => structuredClone(initial), confirm: async value => { received = value } })
+  await controller.load()
+  await controller.confirmChangeSet()
+  assert.equal(received.expectedDecisionsRevisionPin, 2)
+  initial.findingDecisions.disputeEvents.push({ findingId: 'required', action: 'revoke' })
+  await controller.load()
+  await assert.rejects(controller.confirmChangeSet())
+})
+
 function committed(chapterNumber = 4) {
   return {
     recordId: 'record-1', finalChapterId: 'chapter-1', chapterNumber,

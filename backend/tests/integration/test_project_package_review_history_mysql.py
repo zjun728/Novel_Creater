@@ -10,6 +10,40 @@ from backend.tests.integration.test_continuity_issue_packages_mysql import (
 
 @pytest.mark.mysql
 @pytest.mark.asyncio
+async def test_distinct_saves_of_one_candidate_survive_backup_restore(disposable_mysql, monkeypatch, tmp_path):
+    transaction = await _seed_finalized_project(disposable_mysql, monkeypatch)
+    async with transaction() as session:
+        original = await session.fetchone(
+            "SELECT * FROM candidate_freeze_requests WHERE project_id=%s ORDER BY created_at,id LIMIT 1",
+            (PROJECT_ID,),
+        )
+        assert original is not None
+        repeated = {**original, "id": str(uuid4()), "idempotency_key": uuid4().hex * 2,
+                    "created_at": original["created_at"] + 1}
+        columns = tuple(repeated)
+        await session.execute(
+            f"INSERT INTO candidate_freeze_requests ({','.join(columns)}) VALUES ({','.join(['%s'] * len(columns))})",
+            tuple(repeated.values()),
+        )
+        source = await session.fetchall(
+            "SELECT COUNT(*) AS n FROM candidate_freeze_requests WHERE project_id=%s GROUP BY draft_candidate_id ORDER BY n",
+            (PROJECT_ID,),
+        )
+    lifecycle = await _lifecycle(transaction).get(PROJECT_ID)
+    async with _packages(disposable_mysql, tmp_path) as export:
+        package = await export(PROJECT_ID, lifecycle.lifecycle_revision)
+        plan = await _publish(package, transaction)
+        async with transaction() as session:
+            restored = await session.fetchall(
+                "SELECT COUNT(*) AS n FROM candidate_freeze_requests WHERE project_id=%s GROUP BY draft_candidate_id ORDER BY n",
+                (plan.target_project_id,),
+            )
+        assert restored == source
+        await _assert_restored_reviews_readable(transaction, plan.target_project_id)
+
+
+@pytest.mark.mysql
+@pytest.mark.asyncio
 async def test_repeated_quality_and_failed_attempts_survive_restore(disposable_mysql, monkeypatch, tmp_path):
     from backend.tests.integration.test_continuity_issue_packages_mysql import finalized_fixture
     from backend.domain.finalization import FinalizationChangeSet

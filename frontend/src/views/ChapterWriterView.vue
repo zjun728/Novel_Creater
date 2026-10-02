@@ -225,6 +225,8 @@ const autosave = createWorkingDraftAutosave({
 })
 const finalization = createFinalizationController({
   decideFinding: command => api.chapterSessions.decideFinding(projectId.value, session.value.id, command),
+  disputeFinding: command => api.chapterSessions.disputeFinding(projectId.value, session.value.id, command),
+  disputeEvidence: command => api.chapterSessions.disputeEvidence(projectId.value, session.value.id, command),
   getReview: () => api.chapterSessions.getFinalization(
     projectId.value,
     session.value.id,

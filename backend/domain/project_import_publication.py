@@ -473,9 +473,9 @@ def _candidate_quality(record: PackageRecord, data: Mapping[str, object], contex
 
 
 def _review_finding_decisions(record: PackageRecord, data: Mapping[str, object], context: PublicationEncodingContext) -> tuple[EncodedBatch, ...]:
-    columns = ("project_id", "attempt_id", "report_hash", "revision", "ignored_finding_ids_json", "updated_at")
+    columns = ("project_id", "attempt_id", "report_hash", "revision", "ignored_finding_ids_json", "updated_at", "dispute_events_json")
     row = (context.target_project_id, _required(data, "changeSetLogicalId"), _required(data, "reportHash"),
-           _required(data, "revision"), _json_value(data, "ignoredFindingIds"), _required(data, "updatedAt"))
+           _required(data, "revision"), _json_value(data, "ignoredFindingIds"), _required(data, "updatedAt"), canonical_json(data.get("disputeEvents", [])))
     return (EncodedBatch("review_finding_decisions", columns, (row,)),)
 
 
@@ -766,8 +766,10 @@ def _outline_draft(record: PackageRecord, data: Mapping[str, object], context: P
 
 def _candidate_freeze(record: PackageRecord, data: Mapping[str, object], context: PublicationEncodingContext) -> tuple[EncodedBatch, ...]:
     authority = {"candidateId": data.get("candidateLogicalId"), "chapterId": data.get("chapterLogicalId"), "fingerprint": data.get("requestFingerprint")}
+    # Separate saves can reuse one candidate while retaining distinct requests.
+    request_identity = {**authority, "freezeLogicalId": record.logical_id}
     columns = ("id", "project_id", "chapter_session_id", "idempotency_key", "request_hash", "draft_candidate_id", "created_at")
-    return (EncodedBatch("candidate_freeze_requests", columns, ((context.ids[(record.entity_type, record.logical_id)], context.target_project_id, _required(data, "chapterLogicalId"), _derived_hash(context, "candidate-freeze/idempotency", authority), _derived_hash(context, "candidate-freeze/request", authority), _required(data, "candidateLogicalId"), _required(data, "createdAt")),)),)
+    return (EncodedBatch("candidate_freeze_requests", columns, ((context.ids[(record.entity_type, record.logical_id)], context.target_project_id, _required(data, "chapterLogicalId"), _derived_hash(context, "candidate-freeze/idempotency", request_identity), _derived_hash(context, "candidate-freeze/request", authority), _required(data, "candidateLogicalId"), _required(data, "createdAt")),)),)
 
 
 def _reference_use(record: PackageRecord, data: Mapping[str, object], context: PublicationEncodingContext) -> tuple[EncodedBatch, ...]:
@@ -889,7 +891,7 @@ _SPECIAL_RECORD_HANDLERS: Mapping[str, RecordEncoder] = MappingProxyType({
 })
 
 STATIC_TABLE_COLUMNS: Mapping[str, tuple[str, ...]] = MappingProxyType({
-    "review_finding_decisions": ("project_id", "attempt_id", "report_hash", "revision", "ignored_finding_ids_json", "updated_at"),
+    "review_finding_decisions": ("project_id", "attempt_id", "report_hash", "revision", "ignored_finding_ids_json", "updated_at", "dispute_events_json"),
     "continuity_issues": ("id", "project_id", "category", "severity", "status", "source_chapter", "source_finalization_id", "source_canon_revision", "description", "suggestion", "future_target", "resolution_note", "created_at", "updated_at"),
     "projects": ("id", "title", "genre", "description", "target_words", "target_chapters", "status", "current_chapter", "archived_at", "lifecycle_revision", "created_at", "updated_at"),
     "project_model_binding_revisions": ("id", "project_id", "revision", "content_hash", "source_project_id", "created_at"),

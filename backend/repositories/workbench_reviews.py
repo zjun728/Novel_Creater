@@ -47,6 +47,8 @@ SELECT {_AUTHORITY_COLUMNS},
        report.context_manifest_hash AS quality_context_hash,
        report.status AS quality_status, report.content_hash AS quality_hash,
        report.deterministic_blocks_json, report.findings_json,
+       decisions.report_hash AS decisions_report_hash, decisions.revision AS decisions_revision,
+       decisions.ignored_finding_ids_json, decisions.dispute_events_json,
        canon.project_id AS canon_project_id, canon.revision_number AS canon_revision,
        canon.source_id AS canon_source_id, canon.source_type AS canon_source_type
   FROM projects project
@@ -62,6 +64,8 @@ SELECT {_AUTHORITY_COLUMNS},
     ON report.project_id=attempt.project_id AND report.id=attempt.quality_report_id
   LEFT JOIN canon_revisions canon
     ON canon.project_id=record.project_id AND canon.revision_number=record.committed_canon_revision
+  LEFT JOIN review_finding_decisions decisions
+    ON decisions.project_id=attempt.project_id AND decisions.attempt_id=attempt.id
  WHERE project.id=%s AND final.chapter_num=%s
  ORDER BY final.id LIMIT 2
 """

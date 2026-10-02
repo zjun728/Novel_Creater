@@ -2426,6 +2426,7 @@ function finalizationReview(value) {
     ...(source.findingDecisions ? { findingDecisions: {
       revision: source.findingDecisions.revision,
       ignoredFindingIds: [...source.findingDecisions.ignoredFindingIds],
+      ...(source.findingDecisions.disputeEvents ? { disputeEvents: structuredClone(source.findingDecisions.disputeEvents) } : {}),
     } } : {}),
     changeSet,
     confirmation,
@@ -3162,6 +3163,14 @@ export const api = {
       `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/finalization/finding-decisions`,
       pickDefined(data, ['expectedRevision', 'expectedRevisionHash', 'attemptId', 'qualityReportHash', 'expectedDecisionsRevision', 'findingId', 'ignored']),
     )),
+    disputeEvidence: (projectId, sessionId, data) => post(
+      `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/finalization/dispute-evidence`,
+      pickDefined(data, ['expectedRevision', 'expectedRevisionHash']),
+    ),
+    disputeFinding: async (projectId, sessionId, data) => finalizationReview(await post(
+      `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/finalization/disputes`,
+      pickDefined(data, ['expectedRevision', 'expectedRevisionHash', 'attemptId', 'qualityReportHash', 'expectedDecisionsRevision', 'findingId', 'action', 'category', 'reason', 'evidence', 'eventId']),
+    )),
     correctFinalization: async (projectId, sessionId, data) => (
       finalizationReviewed(await post(
         `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/finalization/revisions`,
@@ -3174,7 +3183,7 @@ export const api = {
     confirmFinalization: async (projectId, sessionId, data) => (
       finalizationReviewed(await post(
         `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/finalization/confirm`,
-        pickDefined(data, ['expectedRevision', 'expectedRevisionHash']),
+        pickDefined(data, ['expectedRevision', 'expectedRevisionHash', 'expectedDecisionsRevisionPin']),
       ))
     ),
     cancelFinalization: async (projectId, sessionId, data) => (

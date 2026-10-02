@@ -405,7 +405,7 @@ class AtomicFinalizationService:
                 raise FinalizationCommitInvalid("finalization precheck failed")
             from backend.domain.review_decisions import has_required_findings
             review = await self.repository.read_current_view(session, command.project_id, command.chapter_session_id)
-            if has_required_findings((review or {}).get('qualityReport')):
+            if has_required_findings((review or {}).get('qualityReport'), (review or {}).get('findingDecisions')):
                 raise FinalizationCommitInvalid('required findings unresolved')
 
             if await self.canon_committer.repository.find_idempotent(

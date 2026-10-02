@@ -93,7 +93,7 @@ RECORD_FIELD_ALLOWLISTS: Mapping[str, frozenset[str]] = MappingProxyType({
     "working-draft-revision": frozenset({"label", "workingDraftLogicalId", "chapterLogicalId", "candidateLogicalId", "operationLogicalId", "revision", "content", "contentHash", "replacementReason", "snapshotRole", "createdAt"}),
     "operation-event": frozenset({"label", "operationLogicalId", "sequence", "eventType", "contentHash", "createdAt"}),
     "candidate-freeze": frozenset({"label", "chapterLogicalId", "candidateLogicalId", "requestFingerprint", "createdAt"}),
-    "review-finding-decisions": frozenset({"changeSetLogicalId", "reportHash", "revision", "ignoredFindingIds", "updatedAt"}),
+    "review-finding-decisions": frozenset({"changeSetLogicalId", "reportHash", "revision", "ignoredFindingIds", "disputeEvents", "updatedAt"}),
     "candidate-quality": frozenset({"label", "chapterLogicalId", "candidateLogicalId", "status", "candidateHash", "expectedCanonRevision", "expectedPlanningHash", "expectedOutlineHash", "policyVersion", "contextManifestHash", "modelName", "deterministicBlocks", "findings", "contentHash", "createdAt"}),
     "finalization-change-set": frozenset({"label", "qualityReportLogicalId", "expectedCanonRevision", "expectedPlanningHash", "expectedOutlineHash", "chapterLogicalId", "candidateLogicalId", "status", "candidateHash", "contentHash", "createdAt", "updatedAt", "confirmedAt"}),
     "finalization-change-set-revision": frozenset({"label", "changeSetLogicalId", "revision", "payload", "contentHash", "source", "createdAt"}),
@@ -218,6 +218,15 @@ def _validate_logical_identity_references(
             # database identities. Only this closed schema slot is exempt.
             if key == "id" and path[-5:] == ("plots", "[]", "characterDesign", "nodes", "[]"):
                 if not isinstance(nested, str) or not nested.strip() or len(nested) > 64:
+                    raise _invalid_value()
+                continue
+            # Dispute request keys and content-addressed evidence keys are not
+            # relational IDs. Only these exact closed history slots carry them.
+            if key == 'id' and path in {
+                ('disputeEvents', '[]'), ('disputeEvents', '[]', 'evidence', '[]'),
+                ('data', 'disputeEvents', '[]'), ('data', 'disputeEvents', '[]', 'evidence', '[]'),
+            }:
+                if not isinstance(nested, str) or re.fullmatch(r'[0-9a-f]{64}', nested) is None:
                     raise _invalid_value()
                 continue
             normalized = key.replace("_", "").replace("-", "").casefold() if isinstance(key, str) else ""

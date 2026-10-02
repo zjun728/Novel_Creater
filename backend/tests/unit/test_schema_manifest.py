@@ -28,7 +28,7 @@ EXPECTED_FRAGMENTS = (
     "25_bible.sql",
     "30_planning.sql",
     "40_drafts.sql",
-    "42_review_decisions.sql",
+    "43_review_disputes.sql",
     "50_canon.sql",
     "60_projections.sql",
     "65_continuity_issues.sql",

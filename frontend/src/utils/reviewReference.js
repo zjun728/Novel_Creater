@@ -1,7 +1,8 @@
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const HASH = /^[0-9a-f]{64}$/
 const fields = ['attemptId', 'candidateId', 'candidateHash', 'changeSetRevision', 'changeSetHash', 'qualityReportHash']
-export const effectiveReviewFindings = review => (review?.qualityReport?.findings || []).filter(item => !(review?.findingDecisions?.ignoredFindingIds || []).includes(item.id))
+export const latestDispute = (decisions, id) => (decisions?.disputeEvents || []).filter(event => event.findingId === id).at(-1)
+export const effectiveReviewFindings = review => (review?.qualityReport?.findings || []).filter(item => !(review?.findingDecisions?.ignoredFindingIds || []).includes(item.id) && !(item.severity === 'required' && latestDispute(review?.findingDecisions, item.id)?.action === 'retain'))
 
 export function normalizeReviewReference(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)

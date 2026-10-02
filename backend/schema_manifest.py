@@ -19,7 +19,7 @@ FRAGMENTS = (
     "25_bible.sql",
     "30_planning.sql",
     "40_drafts.sql",
-    "42_review_decisions.sql",
+    "43_review_disputes.sql",
     "50_canon.sql",
     "60_projections.sql",
     "65_continuity_issues.sql",
@@ -44,7 +44,7 @@ def _normalize_newlines(text: str) -> str:
 
 def read_fragment_statements(fragment_name: str) -> tuple[str, ...]:
     """Return one named fragment without accepting caller-controlled paths."""
-    if fragment_name not in FRAGMENTS:
+    if fragment_name not in (*FRAGMENTS, "42_review_decisions.sql"):
         raise ValueError("fragment is outside the schema manifest")
     normalized = _normalize_newlines(
         (SCHEMA_DIR / fragment_name).read_text(encoding="utf-8")

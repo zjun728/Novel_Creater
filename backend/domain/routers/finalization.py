@@ -24,6 +24,7 @@ from backend.services.finalization import (
     ConfirmFinalization,
     CorrectFinalization,
     DecideFinding,
+    DisputeFinding,
     FinalizationConflict,
     FinalizationPreflightConflict,
     FinalizationService,
@@ -115,6 +116,7 @@ class CorrectFinalizationBody(_StrictBody):
 class ConfirmFinalizationBody(_StrictBody):
     expectedRevision: int = Field(ge=1)
     expectedRevisionHash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expectedDecisionsRevisionPin: int | None = Field(default=None, ge=0)
 
 
 class CommitFinalizationBody(ConfirmFinalizationBody):
@@ -140,6 +142,45 @@ async def decide_finding(project_id: str, session_id: str, body: FindingDecision
             expected_decisions_revision=body.expectedDecisionsRevision,
             finding_id=body.findingId, ignored=body.ignored,
         ))
+    except (FinalizationConflict, FinalizationDataCorruption, TypeError, ValueError) as error:
+        _raise_public(error)
+
+
+class DisputeEvidenceBody(_StrictBody):
+    id: str = Field(pattern=r'^[0-9a-f]{64}$')
+    quote: str = Field(min_length=1, max_length=10000)
+
+
+class DisputeBody(ConfirmFinalizationBody):
+    attemptId: str = Field(min_length=1, max_length=36)
+    qualityReportHash: str = Field(pattern=r'^[0-9a-f]{64}$')
+    expectedDecisionsRevision: int = Field(ge=0)
+    findingId: str = Field(min_length=1, max_length=100)
+    action: str = Field(pattern=r'^(note|retain|revoke)$')
+    category: str = Field(pattern=r'^(attribution|state_change|custody|style|other)$')
+    reason: str = Field(min_length=1, max_length=2000)
+    evidence: list[DisputeEvidenceBody] = Field(max_length=8)
+    eventId: str = Field(pattern=r'^[0-9a-f]{64}$')
+
+
+@router.post('/projects/{project_id}/chapter-sessions/{session_id}/finalization/dispute-evidence')
+async def dispute_evidence(project_id: str, session_id: str, body: ConfirmFinalizationBody,
+                           service: FinalizationService = Depends(get_finalization_service)):
+    try:
+        return await service.dispute_evidence(ConfirmFinalization(project_id, session_id, body.expectedRevision, body.expectedRevisionHash))
+    except (FinalizationConflict, FinalizationDataCorruption, TypeError, ValueError) as error:
+        _raise_public(error)
+
+
+@router.post('/projects/{project_id}/chapter-sessions/{session_id}/finalization/disputes')
+async def dispute_finding(project_id: str, session_id: str, body: DisputeBody,
+                          service: FinalizationService = Depends(get_finalization_service)):
+    try:
+        return await service.dispute_finding(DisputeFinding(
+            project_id, session_id, body.expectedRevision, body.expectedRevisionHash,
+            body.attemptId, body.qualityReportHash, body.expectedDecisionsRevision,
+            body.findingId, body.action, body.category, body.reason,
+            tuple(item.model_dump() for item in body.evidence), body.eventId))
     except (FinalizationConflict, FinalizationDataCorruption, TypeError, ValueError) as error:
         _raise_public(error)
 
@@ -263,6 +304,7 @@ async def confirm_finalization(
             chapter_session_id=session_id,
             expected_revision=body.expectedRevision,
             expected_revision_hash=body.expectedRevisionHash,
+            expected_decisions_revision_pin=body.expectedDecisionsRevisionPin,
         ))
     except (FinalizationConflict, FinalizationDataCorruption, TypeError, ValueError) as error:
         _raise_public(error)

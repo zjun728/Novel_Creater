@@ -176,7 +176,7 @@ def _change_set(planning, content):
     })
 
 
-async def _seed(session, transaction_factory, *, with_review=True):
+async def _seed(session, transaction_factory, *, with_review=True, confirm_review=True, quality_findings=None):
     creation_id, style_id = await _insert_revision_one_contracts(
         session, project_id=PROJECT_ID, binding_id=BINDING_ID,
         seed_id=SEED_ID, seed_revision_id=SEED_REVISION_ID,
@@ -311,7 +311,7 @@ async def _seed(session, transaction_factory, *, with_review=True):
         "created_at": NOW, "updated_at": NOW,
     })
     report = QualityReportPayload.model_validate({
-        "status": "completed", "deterministicBlocks": [], "findings": [],
+        "status": "completed", "deterministicBlocks": [], "findings": quality_findings or [],
     })
     report_payload = report.model_dump(by_alias=True, mode="json")
     await repository.insert_quality_report(session, {
@@ -323,7 +323,7 @@ async def _seed(session, transaction_factory, *, with_review=True):
         "policy_version": "quality-v1", "context_manifest_hash": manifest_hash,
         "provider_id": None, "provider_profile_revision": None,
         "model_name_snapshot": None, "status": "completed",
-        "deterministic_blocks": [], "findings": [],
+        "deterministic_blocks": [], "findings": report_payload['findings'],
         "content_hash": canonical_hash(report_payload), "created_at": NOW,
     })
     change_set = _change_set(planning, content)
@@ -340,11 +340,12 @@ async def _seed(session, transaction_factory, *, with_review=True):
         extraction_id="extraction-1", revision=1,
         revision_hash=revision_hash, updated_at=NOW,
     )
-    assert await repository.confirm_current_revision(
-        session, project_id=PROJECT_ID, session_id=SESSION_ID,
-        change_set_id=ATTEMPT_ID, revision=1,
-        revision_hash=revision_hash, confirmed_at=NOW,
-    )
+    if confirm_review:
+        assert await repository.confirm_current_revision(
+            session, project_id=PROJECT_ID, session_id=SESSION_ID,
+            change_set_id=ATTEMPT_ID, revision=1,
+            revision_hash=revision_hash, confirmed_at=NOW,
+        )
     return planning, change_set
 
 

@@ -546,6 +546,8 @@ def _rewrite_record_data(
             _rewrite_finalization(payload, ids)
         elif record.entity_type == "review-finding-decisions":
             data["ignoredFindingIds"] = sorted(_typed_id(item, ("quality-finding",), ids) for item in data["ignoredFindingIds"])
+            for event in data.get("disputeEvents", []):
+                event["findingId"] = _typed_id(event["findingId"], ("quality-finding",), ids)
         elif record.entity_type == "candidate-quality":
             for finding in data.get("findings", []):
                 _definition(finding, "quality-finding", ids)

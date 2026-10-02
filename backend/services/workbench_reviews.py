@@ -3,7 +3,7 @@
 import json
 from hashlib import sha256
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from backend.domain.finalization import (
     FinalizationChangeSet, QualityReportPayload, change_set_hash, change_set_payload,
@@ -25,6 +25,7 @@ class WorkbenchReviewSummary(BaseModel):
     canonRevision: int
     summary: str
     qualityReport: dict
+    findingDecisions: dict = Field(default_factory=dict)
     canonEvents: list[dict]
     storyProgressEvents: list[dict]
     planningPatches: list[dict]
@@ -120,6 +121,15 @@ class WorkbenchReviewReader:
             # The commit gate never permits deterministic blocks to be accepted.
             if quality['deterministicBlocks']:
                 raise ValueError('committed review contains deterministic blocks')
+            decisions = {'revision': row.get('decisions_revision') or 0, 'ignoredFindingIds': [], 'disputeEvents': []}
+            if row.get('decisions_revision') is not None:
+                if row.get('decisions_report_hash') != row['quality_hash']:
+                    raise ValueError('review decisions report differs')
+                decisions['ignoredFindingIds'] = _json(row['ignored_finding_ids_json'], list)
+                if row.get('dispute_events_json') is not None:
+                    decisions['disputeEvents'] = _json(row['dispute_events_json'], list)
+                from backend.domain.review_decisions import effective_findings
+                effective_findings(quality, decisions)
             from backend.domain.finalization_identity import finalization_storage_id
             scoped = {item.id: finalization_storage_id(project_id, row['attempt_id'], "entity", item.id)
                       for item in change_set.entities}
@@ -159,6 +169,6 @@ class WorkbenchReviewReader:
             return WorkbenchReviewSummary(
                 projectId=project_id, chapterNumber=number, finalizationId=row['record_id'],
                 canonRevision=row['canon_revision'], summary=change_set.summary,
-                qualityReport=quality, canonEvents=payload['canonEvents'],
+                qualityReport=quality, findingDecisions=decisions, canonEvents=payload['canonEvents'],
                 storyProgressEvents=payload['storyProgressEvents'], planningPatches=payload['planningPatches'],
             )

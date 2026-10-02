@@ -275,6 +275,7 @@ async function refreshPostFinalization() {
       :report="review?.qualityReport" :blocks="hardBlocks" :content="reviewCandidateContent" :disabled="busy"
       :stale="resultsStale" :can-adjust="!!referenceFromReview(review) && !unsaved"
       :decisions="review?.findingDecisions" :can-decide="editable && !unsaved" :error="controller.error.value"
+      :load-evidence="controller.loadDisputeEvidence" :save-dispute="controller.saveFindingDispute"
       @decide="decideFinding" @reload="controller.load().catch(() => {})"
       :can-check-changes="!!changeSetDraft" @locate="emit('locate-finding', $event)" @adjust="emit('adjust-review')" @check-changes="checkChanges" />
     <n-alert v-if="review?.status === 'invalidated'" type="warning" title="需要重新审稿">旧审稿已失效。请保存当前正文为候选稿，再重新审查。</n-alert>

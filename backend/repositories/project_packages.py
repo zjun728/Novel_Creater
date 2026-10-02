@@ -920,7 +920,7 @@ _policy_copy["project_model_binding_revisions"]["source_project_id"] = "normaliz
 _policy_copy["review_finding_decisions"] = {
     "project_id": "derived", "attempt_id": "logical_reference",
     "report_hash": "public_field", "revision": "public_field",
-    "ignored_finding_ids_json": "public_field", "updated_at": "public_field",
+    "ignored_finding_ids_json": "public_field", "updated_at": "public_field", "dispute_events_json": "public_field",
 }
 _policy_copy["continuity_issues"] = {
     "id": "derived", "project_id": "derived",
@@ -1203,6 +1203,7 @@ def _column_export_decision(table: str, column: str, category: str) -> str:
     allowlist = RECORD_FIELD_ALLOWLISTS[PROJECT_TABLE_RECORD_TYPES[table]]
     explicit = {
         ("review_finding_decisions", "ignored_finding_ids_json"): "ignoredFindingIds",
+        ("review_finding_decisions", "dispute_events_json"): "disputeEvents",
         ("review_finding_decisions", "attempt_id"): "changeSetLogicalId",
         ("bible_confirmation_requests", "result_hash"): "contentHash",
         ("planning_confirmation_requests", "planning_draft_id"): "draftLogicalId",
@@ -1252,7 +1253,7 @@ PACKAGE_COLUMN_EXPORT_DECISION_FINGERPRINT = sha256(
     _PACKAGE_COLUMN_EXPORT_DECISION_MANIFEST.encode("utf-8")
 ).hexdigest()
 if PACKAGE_COLUMN_EXPORT_DECISION_FINGERPRINT != (
-    "2f2beb50978de827b627163a4ae9eed8cfba0dcdc51ab32b81588416c6b794be"
+    "72c153c675c53a8f5fe2401b674cc451ba7e3d303e74f8edc39a7f6870be7d35"
 ):
     raise RuntimeError("project package export decisions require an explicit audit")
 
@@ -2522,12 +2523,16 @@ class ProjectPackageRepository:
                                             if attempt and item["id"] == attempt.get("quality_report_id")), None)
                             if quality is None or row["report_hash"] != quality["content_hash"]:
                                 raise _invalid()
+                            if data.get("disputeEvents") is None:
+                                data.pop("disputeEvents", None)
                             from backend.domain.review_decisions import validate_package_decisions
                             raw_findings = _json_value(quality["findings_json"])
                             validate_package_decisions(data, {"status": quality["status"], "findings": raw_findings})
                             finding_ids = {source["id"]: target["id"] for source, target in
                                            zip(raw_findings, quality_findings_payloads[id(quality)], strict=True)}
                             data["ignoredFindingIds"] = sorted(finding_ids[item] for item in data["ignoredFindingIds"])
+                            for event in data.get("disputeEvents", []):
+                                event["findingId"] = finding_ids[event["findingId"]]
                         if table == "canon_events":
                             data = _rewrite_canon_progress_reference(data, authority_identities)
                         record = PackageRecord(

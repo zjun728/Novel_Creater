@@ -4,6 +4,7 @@ import { mapWorkbenchNextAction } from '../projects/projectNextAction.js'
 import { finalChapterPath as projectFinalChapterPath } from '../../router/projectRoutes.js'
 import { generateId } from '../../utils/id.js'
 import { sha256Text } from '../../utils/sha256Text.js'
+import { effectiveReviewFindings } from '../../utils/reviewReference.js'
 
 
 const HASH = /^[a-f0-9]{64}$/u
@@ -67,6 +68,8 @@ export function createFinalizationController({
   prepare = unavailable('prepare'),
   correct = unavailable('correct'),
   decideFinding = unavailable('decideFinding'),
+  disputeFinding = unavailable('disputeFinding'),
+  disputeEvidence = unavailable('disputeEvidence'),
   confirm = unavailable('confirm'),
   cancel = unavailable('cancel'),
   revoke = unavailable('revoke'),
@@ -357,12 +360,36 @@ export function createFinalizationController({
     }, '建议处理状态未能确认保存，请重新读取后再试。')
   }
 
+  async function loadDisputeEvidence() {
+    return run(async active => {
+      const value = review.value
+      if (value?.status !== 'awaiting_author' || value.confirmation || finalized.value) throw new TypeError('evidence unavailable')
+      const result = await disputeEvidence(currentRevision(value))
+      if (!active()) return null
+      if (result.attemptId !== value.attemptId || result.candidateHash !== value.candidateHash) throw new TypeError('evidence changed')
+      return result.records
+    }, '依据读取失败，请重新读取审稿后重试。')
+  }
+
+  async function saveFindingDispute(data) {
+    return run(async active => {
+      const value = review.value
+      if (value?.status !== 'awaiting_author' || value.confirmation || finalized.value) throw new TypeError('dispute unavailable')
+      const next = await disputeFinding({ ...data, ...currentRevision(value), attemptId: value.attemptId,
+        qualityReportHash: value.qualityReport.contentHash, expectedDecisionsRevision: value.findingDecisions?.revision || 0,
+        eventId: await sha256Text(idFactory()) })
+      if (!active()) return null
+      review.value = next
+      return next
+    }, '作者处理尚未确认保存，请重新读取审稿核对结果后再试。')
+  }
+
   async function confirmChangeSet() {
     return run(async active => {
-      if (primaryAction.value !== 'confirm' || review.value?.qualityReport?.findings?.some(item => item.severity === 'required')) {
+      if (primaryAction.value !== 'confirm' || effectiveReviewFindings(review.value).some(item => item.severity === 'required')) {
         throw new TypeError('finalization confirmation is unavailable')
       }
-      await confirm(currentRevision(review.value))
+      await confirm({ ...currentRevision(review.value), ...(review.value.findingDecisions?.disputeEvents?.length ? { expectedDecisionsRevisionPin: review.value.findingDecisions.revision } : {}) })
       if (!active()) return null
       const value = await getReview()
       if (!active()) return null
@@ -465,6 +492,8 @@ export function createFinalizationController({
     prepareCandidate,
     correctChangeSet,
     setFindingIgnored,
+    loadDisputeEvidence,
+    saveFindingDispute,
     confirmChangeSet,
     cancelReview,
     revokeReview,

@@ -2127,7 +2127,7 @@ def test_every_non_secret_classified_column_has_an_explicit_export_or_normalizat
         for decision in PACKAGE_COLUMN_EXPORT_DECISIONS.values()
     )
     assert PACKAGE_COLUMN_EXPORT_DECISION_FINGERPRINT == (
-        "2f2beb50978de827b627163a4ae9eed8cfba0dcdc51ab32b81588416c6b794be"
+        "72c153c675c53a8f5fe2401b674cc451ba7e3d303e74f8edc39a7f6870be7d35"
     )
     assert {
         (table, column): PACKAGE_COLUMN_EXPORT_DECISIONS[(table, column)]

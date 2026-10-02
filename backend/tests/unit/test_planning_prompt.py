@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 
 import pytest
 
@@ -10,6 +11,42 @@ from backend.prompts.planning import (
     build_planning_messages,
     planning_text_contains_private_material,
 )
+
+
+@pytest.mark.parametrize("mode", ["next_block", "next_volume"])
+def test_continuation_with_large_history_keeps_current_context_and_full_source(mode):
+    manifest = _manifest()
+    blocks = []
+    for index in range(12):
+        block = deepcopy(_existing_story_block())
+        block["clientNodeKey"] = f"block-{index}"
+        block["order"] = index + 1
+        block["stages"][0]["clientNodeKey"] = f"stage-{index}"
+        task = block["stages"][0]["sceneTasks"][0]
+        task["clientNodeKey"] = f"task-{index}"
+        task["task"] = "核对旧城的账册线索。" * 300
+        blocks.append(block)
+    manifest["draft"]["storyBlocks"] = blocks
+    manifest["draft"]["activeStoryBlockRef"] = "block-11"
+    manifest["expansion"] = {
+        "mode": mode, "authorityHash": "c" * 64,
+        "targetVolumeRef": "volume-existing" if mode == "next_block" else None,
+        "targetBlockRef": None,
+        "continuity": {"previousFinalChapter": "尚未找到内应。", "actualProgress": []},
+    }
+    original = deepcopy(manifest)
+    messages = build_planning_messages(manifest=manifest, author_instructions="")
+    evidence = json.loads(messages[1]["content"])
+    rendered = json.dumps(messages, ensure_ascii=False, separators=(",", ":")).encode()
+    assert len(rendered) <= PLANNING_MAX_PROMPT_BYTES
+    assert manifest == original
+    assert evidence["manifest"]["expansion"]["continuity"] == original["expansion"]["continuity"]
+    supplied = evidence["manifest"]["draft"]["storyBlocks"]
+    assert supplied[-1]["stages"] == original["draft"]["storyBlocks"][-1]["stages"]
+    for actual, before in zip(supplied[:-1], original["draft"]["storyBlocks"][:-1]):
+        assert "stages" not in actual
+        assert all(actual[key] == value for key, value in before.items() if key != "stages")
+    assert set(evidence["outputContract"]["properties"]) == {"nextVolume", "nextStoryBlock"}
 
 
 def _existing_story_block() -> dict[str, object]:

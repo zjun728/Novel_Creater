@@ -601,6 +601,7 @@ class FinalizationRepository:
                       decisions.report_hash AS decisions_report_hash,
                       decisions.revision AS decisions_revision,
                       decisions.ignored_finding_ids_json,
+                      decisions.dispute_events_json,
                       report.status AS quality_status,
                       report.deterministic_blocks_json,report.findings_json,
                       report.content_hash AS quality_content_hash,
@@ -682,6 +683,8 @@ class FinalizationRepository:
             if report is None or value.get("decisions_report_hash") != report["contentHash"]:
                 raise FinalizationDataCorruption("review decision report changed")
             decisions["ignoredFindingIds"] = _decoded_array(value.get("ignored_finding_ids_json"), "review decisions")
+            if value.get('dispute_events_json') is not None:
+                decisions['disputeEvents'] = _decoded_array(value['dispute_events_json'], 'review disputes')
             try:
                 effective_findings(report, decisions)
             except (TypeError, ValueError):
@@ -706,6 +709,17 @@ class FinalizationRepository:
         return await session.execute(
             "UPDATE review_finding_decisions SET revision=revision+1,ignored_finding_ids_json=%s,updated_at=%s WHERE project_id=%s AND attempt_id=%s AND report_hash=%s AND revision=%s",
             (canonical_json(ignored), now, project_id, attempt_id, report_hash, expected_revision),
+        ) == 1
+
+    async def save_dispute_events(self, session, project_id, attempt_id, report_hash, expected_revision, ignored, events, now):
+        if expected_revision == 0:
+            return await session.execute(
+                'INSERT INTO review_finding_decisions (project_id,attempt_id,report_hash,revision,ignored_finding_ids_json,dispute_events_json,updated_at) VALUES (%s,%s,%s,1,%s,%s,%s)',
+                (project_id, attempt_id, report_hash, canonical_json(ignored), canonical_json(events), now),
+            ) == 1
+        return await session.execute(
+            'UPDATE review_finding_decisions SET revision=revision+1,dispute_events_json=%s,updated_at=%s WHERE project_id=%s AND attempt_id=%s AND report_hash=%s AND revision=%s',
+            (canonical_json(events), now, project_id, attempt_id, report_hash, expected_revision),
         ) == 1
 
     async def insert_preparing_attempt(

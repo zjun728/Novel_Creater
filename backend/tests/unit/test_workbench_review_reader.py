@@ -87,7 +87,7 @@ async def test_review_is_single_snapshot_with_pinned_names_and_verified_evidence
         assert item['evidence']['verified'] is True
         assert item['evidence']['excerpt'] == '最终'
     assert all(call[1] == 'single-read-snapshot' for call in repo.calls)
-    assert set(result) == {'projectId', 'chapterNumber', 'finalizationId', 'canonRevision', 'summary', 'qualityReport', 'canonEvents', 'storyProgressEvents', 'planningPatches'}
+    assert set(result) == {'projectId', 'chapterNumber', 'finalizationId', 'canonRevision', 'summary', 'qualityReport', 'findingDecisions', 'canonEvents', 'storyProgressEvents', 'planningPatches'}
     assert 'final_content' not in result and 'context_manifest_json' not in result
 
 

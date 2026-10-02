@@ -1,16 +1,18 @@
 """Author decisions are separate from immutable quality reports."""
 
 def effective_findings(report, decisions=None):
+    from backend.domain.review_disputes import retained_ids
     ignored = set((decisions or {}).get("ignoredFindingIds", []))
     findings = (report or {}).get("findings", [])
     eligible = {item["id"] for item in findings if item.get("severity") == "optional"}
     if not ignored <= eligible:
         raise ValueError("invalid ignored quality findings")
-    return [item for item in findings if item["id"] not in ignored]
+    retained = retained_ids(report, decisions)
+    return [item for item in findings if item["id"] not in ignored | retained]
 
 
-def has_required_findings(report):
-    return any(item.get("severity") == "required" for item in (report or {}).get("findings", []))
+def has_required_findings(report, decisions=None):
+    return any(item.get("severity") == "required" for item in effective_findings(report, decisions))
 
 
 def validate_package_decisions(data, report):

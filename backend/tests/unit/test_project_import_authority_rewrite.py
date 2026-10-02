@@ -45,6 +45,34 @@ SEED_PAYLOAD = {key: "x" for key in (
 )}
 
 
+def test_repeated_freeze_requests_for_same_candidate_keep_distinct_import_keys() -> None:
+    records = tuple(PackageRecord("candidate-freeze", f"candidate-freeze:{i}", data={
+        "chapterLogicalId": "chapter:1",
+        "candidateLogicalId": "draft-candidate:1",
+        "requestFingerprint": "a" * 64, "createdAt": i,
+    }) for i in (1, 2))
+    ids = {(r.entity_type, r.logical_id): str(UUID(int=i + 20)) for i, r in enumerate(records)}
+    rewritten = {(r.entity_type, r.logical_id): {
+        **dict(r.data), "chapterLogicalId": str(UUID(int=10)),
+        "candidateLogicalId": str(UUID(int=11)),
+    } for r in records}
+
+    def rows(command_id=COMMAND_ID):
+        batches = encode_publication_batches(records, rewritten, ids,
+            command_id=command_id, target_project_id=str(UUID(int=12)),
+            new_title="Imported", source_records=records)
+        return [dict(zip(b.columns, row, strict=True)) for b in batches for row in b.rows]
+
+    result = rows()
+    assert len(result) == 2
+    assert len({row["idempotency_key"] for row in result}) == 2
+    assert len({row["request_hash"] for row in result}) == 1
+    assert {row["draft_candidate_id"] for row in result} == {str(UUID(int=11))}
+    assert result == rows()
+    assert {r["idempotency_key"] for r in result}.isdisjoint(
+        r["idempotency_key"] for r in rows(str(UUID(int=99))))
+
+
 def test_historical_publication_encoders_have_no_singleton_current_authority_lookup() -> None:
     source = inspect.getsource(publication_module)
     assert "_one_record" not in source

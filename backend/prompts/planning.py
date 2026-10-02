@@ -577,6 +577,22 @@ def build_planning_messages(
                 'missing': (missing_volume_fields(volume) if fill_volume else []) +
                            (missing_block_fields(block) if block and fill_block else ['首个故事块'] if fill_block else []),
             }
+        if manifest_value.expansion is not None and manifest_value.expansion.mode in {"next_block", "next_volume"}:
+            # Continuation returns only new nodes. Keep the full frozen draft for
+            # server-side merging, but do not resend unrelated nested task history.
+            detailed_refs = {
+                manifest_value.draft.active_story_block_ref,
+                manifest_value.expansion.target_block_ref,
+            } - {None}
+            for block in manifest_snapshot["draft"]["storyBlocks"]:
+                if (block.get("id") or block.get("clientNodeKey")) not in detailed_refs:
+                    block.pop("stages", None)
+            evidence["planningContextScope"] = (
+                "Only current and target blocks include full stages/tasks. Other "
+                "blocks retain their narrative fields and unresolved questions; "
+                "omitted task details remain unchanged on the server. This is "
+                "planning context, not a complete draft or proof of completion."
+            )
         messages = (
             {"role": "system", "content": canonical_json(instruction)},
             {"role": "user", "content": canonical_json(evidence)},

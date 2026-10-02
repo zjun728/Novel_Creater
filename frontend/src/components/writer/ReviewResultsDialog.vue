@@ -2,6 +2,8 @@
 import { computed } from 'vue'
 import { NButton, NModal } from 'naive-ui'
 import { evidenceExcerpt } from '../../application/writer/finalizationEvidence.js'
+import ReviewDisputePanel from './ReviewDisputePanel.vue'
+import { latestDispute } from '../../utils/reviewReference.js'
 
 const props = defineProps({
   show: Boolean,
@@ -17,6 +19,8 @@ const props = defineProps({
   canDecide: Boolean,
   decisions: { type: Object, default: () => ({ revision: 0, ignoredFindingIds: [] }) },
   error: { type: String, default: '' },
+  loadEvidence: Function,
+  saveDispute: Function,
 })
 const emit = defineEmits(['update:show', 'locate', 'adjust', 'check-changes', 'decide', 'reload'])
 const dimensions = {
@@ -27,7 +31,8 @@ const dimensions = {
 const findings = computed(() => props.report?.findings || [])
 const ignored = item => (props.decisions?.ignoredFindingIds || []).includes(item.id)
 const severityLabel = item => ({ required: '必须调整', suggested: '建议调整', optional: '可忽略' })[item.severity] || '建议调整（旧报告未分级）'
-const requiredCount = computed(() => props.blocks.length + findings.value.filter(item => item.severity === 'required').length)
+const retained = item => latestDispute(props.decisions, item.id)?.action === 'retain'
+const requiredCount = computed(() => props.blocks.length + findings.value.filter(item => item.severity === 'required' && !retained(item)).length)
 const suggestedCount = computed(() => findings.value.filter(item => !item.severity || item.severity === 'suggested').length)
 const optionalCount = computed(() => findings.value.filter(item => item.severity === 'optional' && !ignored(item)).length)
 const ignoredCount = computed(() => findings.value.filter(ignored).length)
@@ -76,19 +81,20 @@ function act(event, item) {
         <section v-for="group in groups" :key="group.key" :aria-label="group.label">
           <h3>{{ group.label }} · {{ group.items.length }} 项</h3>
           <article v-for="item in group.items" :key="item.id" class="review-result" :class="{ 'review-result--block': item.severity === 'required', 'review-result--ignored': ignored(item) }">
-            <h4>{{ ignored(item) ? '已忽略' : severityLabel(item) }} · {{ item.reason }}</h4>
+            <h4>{{ retained(item) ? '作者保留原稿（原意见：必须调整）' : ignored(item) ? '已忽略' : severityLabel(item) }} · {{ item.reason }}</h4>
             <p v-if="excerpt(item)">原文：“{{ preview(item) }}”</p>
             <p v-else class="review-notice">原文片段不可用，请重新核对候选稿。</p>
             <details v-if="Array.from(excerpt(item) || '').length > 160"><summary>展开完整原文</summary><p>{{ excerpt(item) }}</p></details>
             <p>{{ item.suggestedAction }}</p>
             <n-button size="small" :disabled="disabled || stale || !item.evidence || !excerpt(item)" @click="act('locate', item)">定位原文并修改</n-button>
             <n-button v-if="item.severity === 'optional'" size="small" :disabled="disabled || stale || !canDecide" @click="emit('decide', item.id, !ignored(item))">{{ ignored(item) ? '恢复采用' : '忽略此建议' }}</n-button>
+            <ReviewDisputePanel v-if="loadEvidence && saveDispute" :key="item.id" :finding="item" :decisions="decisions" :disabled="disabled || stale || !canDecide" :load-evidence="loadEvidence" :save-dispute="saveDispute" />
           </article>
         </section>
         <p v-if="report?.status === 'completed' && !findings.length && !blocks.length">没有发现审查问题；定稿前仍需核对本章事实和进度变更。</p>
       </div>
       <footer>
-        <p class="review-notice">必须处理项解决后需重新审查。质量建议由作者判断；修改正文后需重新审稿。</p>
+        <p class="review-notice">确定性问题必须修复。模型必须调整意见可修改后重审，或逐条记录依据并由作者确认保留原稿；修改正文后需重新审稿。</p>
         <div class="review-dialog-actions">
           <n-button @click="emit('update:show', false)">关闭</n-button>
           <n-button color="#934735" :disabled="disabled || stale || !canAdjust" @click="act('adjust')">基于审稿意见调整</n-button>

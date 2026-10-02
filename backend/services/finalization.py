@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 from uuid import uuid4
 
@@ -131,6 +131,7 @@ class ConfirmFinalization:
     chapter_session_id: str
     expected_revision: int
     expected_revision_hash: str
+    expected_decisions_revision_pin: int | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         _validate_review_identity(
@@ -174,6 +175,31 @@ class DecideFinding(ConfirmFinalization):
             or not isinstance(self.report_hash, str) or len(self.report_hash) != 64
             or any(c not in '0123456789abcdef' for c in self.report_hash)):
             raise ValueError('invalid finding decision')
+
+
+@dataclass(frozen=True, slots=True)
+class DisputeFinding(ConfirmFinalization):
+    attempt_id: str
+    report_hash: str
+    expected_decisions_revision: int
+    finding_id: str
+    action: str
+    category: str
+    reason: str
+    evidence: tuple
+    event_id: str
+
+    def __post_init__(self):
+        ConfirmFinalization.__post_init__(self)
+        from backend.domain.review_disputes import CATEGORIES
+        if (not self.attempt_id or not self.finding_id or self.action not in ('note', 'retain', 'revoke')
+            or self.category not in CATEGORIES or not isinstance(self.reason, str)
+            or not 1 <= len(self.reason.strip()) <= 2000
+            or type(self.expected_decisions_revision) is not int or self.expected_decisions_revision < 0
+            or not isinstance(self.evidence, tuple) or len(self.evidence) > 8
+            or any(not isinstance(h, str) or len(h) != 64 or any(c not in '0123456789abcdef' for c in h)
+                   for h in (self.report_hash, self.event_id))):
+            raise ValueError('invalid author dispute')
 
 
 @dataclass(frozen=True, slots=True)
@@ -623,6 +649,60 @@ class FinalizationService:
                 raise FinalizationConflict('FINALIZATION_STATE_CONFLICT')
             return await self.repository.read_current_view(session, command.project_id, command.chapter_session_id)
 
+    async def dispute_evidence(self, command: ConfirmFinalization):
+        from backend.domain.review_disputes import evidence_catalogue
+        async with self.transaction_factory() as session:
+            attempt, candidate, snapshot = await self._lock_review_inputs(session, command)
+            return {'attemptId': attempt['id'], 'candidateHash': attempt['candidate_hash'],
+                    'records': evidence_catalogue(candidate, snapshot)}
+
+    async def dispute_finding(self, command: DisputeFinding):
+        from backend.domain.review_disputes import evidence_catalogue, validate_history
+        if type(command) is not DisputeFinding:
+            raise TypeError('command must be DisputeFinding')
+        async with self.transaction_factory() as session:
+            attempt, candidate, snapshot = await self._lock_review_inputs(session, command)
+            view = await self.repository.read_current_view(session, command.project_id, command.chapter_session_id) or {}
+            report = view.get('qualityReport') or {}
+            decisions = view.get('findingDecisions') or {'revision': 0, 'ignoredFindingIds': []}
+            if (attempt['id'] != command.attempt_id or view.get('attemptId') != command.attempt_id
+                or report.get('contentHash') != command.report_hash or report.get('status') != 'completed'):
+                raise FinalizationConflict('FINALIZATION_STATE_CONFLICT')
+            events = list(decisions.get('disputeEvents', []))
+            catalogue = {r['id']: r for r in evidence_catalogue(candidate, snapshot)}
+            if command.action == 'revoke':
+                prior = next((e for e in reversed(events) if e['findingId'] == command.finding_id), None)
+                if prior is None:
+                    raise ValueError('nothing to revoke')
+                # Revocation cannot require reconstructing an old imported
+                # source. It withdraws authority and keeps the saved evidence.
+                catalogue = {r['id']: {k: v for k, v in r.items() if k != 'quote'} for r in prior['evidence']}
+            refs = []
+            for ref in command.evidence:
+                if not isinstance(ref, dict) or set(ref) != {'id', 'quote'} or ref['id'] not in catalogue:
+                    raise ValueError('unknown evidence')
+                record = catalogue[ref['id']]
+                if not isinstance(ref['quote'], str) or not ref['quote'].strip() or ref['quote'] not in record['text']:
+                    raise ValueError('invalid evidence quote')
+                refs.append({**record, 'quote': ref['quote']})
+            replay = next((e for e in events if e['id'] == command.event_id), None)
+            if replay:
+                if any(replay[k] != v for k, v in {'findingId': command.finding_id, 'action': command.action,
+                    'category': command.category, 'reason': command.reason.strip(), 'evidence': refs}.items()):
+                    raise FinalizationConflict('FINALIZATION_STATE_CONFLICT')
+                return view
+            if decisions['revision'] != command.expected_decisions_revision:
+                raise FinalizationConflict('FINALIZATION_STATE_CONFLICT')
+            events.append({'id': command.event_id, 'revision': decisions['revision'] + 1,
+                           'findingId': command.finding_id, 'action': command.action,
+                           'category': command.category, 'reason': command.reason.strip(),
+                           'evidence': refs, 'createdAt': self._clock()})
+            validate_history(events, report, decisions['revision'] + 1)
+            if not await self.repository.save_dispute_events(session, command.project_id, attempt['id'],
+                    command.report_hash, decisions['revision'], decisions['ignoredFindingIds'], events, self._clock()):
+                raise FinalizationConflict('FINALIZATION_STATE_CONFLICT')
+            return await self.repository.read_current_view(session, command.project_id, command.chapter_session_id)
+
     async def correct(self, command: CorrectFinalization) -> ReviewedFinalization:
         if type(command) is not CorrectFinalization:
             raise TypeError("command must be CorrectFinalization")
@@ -678,7 +758,10 @@ class FinalizationService:
         async with self.transaction_factory() as session:
             attempt, candidate, snapshot = await self._lock_review_inputs(session, command)
             view = await self.repository.read_current_view(session, command.project_id, command.chapter_session_id)
-            if has_required_findings((view or {}).get('qualityReport')):
+            decisions = (view or {}).get('findingDecisions') or {}
+            if decisions.get('disputeEvents') and command.expected_decisions_revision_pin != decisions.get('revision'):
+                raise FinalizationConflict('FINALIZATION_STATE_CONFLICT')
+            if has_required_findings((view or {}).get('qualityReport'), decisions):
                 raise FinalizationConflict('REQUIRED_FINDINGS_UNRESOLVED')
             revision = await self.repository.lock_change_set_revision(
                 session,
