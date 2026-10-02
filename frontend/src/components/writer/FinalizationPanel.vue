@@ -93,8 +93,14 @@ watch(currentCandidates, values => {
   previousCandidateIds = ids
 }, { immediate: true, flush: 'sync' })
 
-watch(() => review.value?.changeSet, value => {
+watch(() => [review.value?.attemptId, review.value?.candidateId, review.value?.candidateHash, review.value?.changeSet], (current, previous) => {
+  const value = current[3]
   revokeConfirmation.value = false
+  // A same-version reread must not discard unsaved fields, including incomplete editor input.
+  if (changeSetDraft.value && value?.payload && previous
+    && current.slice(0, 3).every((identity, index) => identity === previous[index])
+    && value.revision === previous[3]?.revision
+    && value.contentHash === previous[3]?.contentHash) return
   valueEditorPending.value.clear()
   addedFactPending.value = false
   factBuilderMounted.value = false
@@ -306,7 +312,7 @@ async function refreshPostFinalization() {
       v-if="controller.recoveryPending?.value"
       :disabled="controller.busy.value"
       @click="controller.load().catch(() => {})"
-    >核对撤销结果</n-button>
+    >{{ controller.correctionRecovery?.value ? '刷新核对修正' : '核对撤销结果' }}</n-button>
 
     <n-alert
       v-if="review?.status === 'failed' && !hardBlocks.length && !controller.busy.value"

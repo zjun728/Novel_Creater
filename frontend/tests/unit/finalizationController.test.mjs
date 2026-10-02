@@ -39,6 +39,166 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
+test('accepted correction with lost reread fences writes until R2 is authoritatively recovered', async () => {
+  let server = structuredClone(review)
+  let readFailure = false
+  const commands = []
+  const controller = createFinalizationController({
+    getReview: async () => {
+      if (readFailure) throw Object.assign(new Error('read unavailable'), { status: 503 })
+      return structuredClone(server)
+    },
+    correct: async command => {
+      commands.push(command)
+      assert.equal(command.expectedRevision, server.changeSet.revision)
+      assert.equal(command.expectedRevisionHash, server.changeSet.contentHash)
+      server.changeSet = { revision: 2, contentHash: HASH_B, payload: structuredClone(command.changeSet) }
+      readFailure = true
+      return { currentRevision: 2, currentRevisionHash: HASH_B }
+    },
+  })
+  const draft = { ...payload, summary: '作者修正摘要' }
+  await controller.load()
+  await assert.rejects(controller.correctChangeSet(draft), /read unavailable/)
+  assert.equal(server.changeSet.revision, 2)
+  assert.equal(controller.review.value.changeSet.revision, 1)
+  assert.match(controller.error.value, /已被服务端接受.*读取失败/)
+  assert.doesNotMatch(controller.error.value, /未保存|重试/)
+  assert.equal(controller.correctionRecovery.value, 'accepted')
+  assert.equal(controller.recoveryPending.value, true)
+  for (const action of [
+    () => controller.correctChangeSet(draft), () => controller.confirmChangeSet(),
+    () => controller.cancelReview(), () => controller.prepareCandidate(candidate),
+    () => controller.setFindingIgnored('optional', true),
+    () => controller.saveFindingDispute({ findingId: 'required', action: 'retain' }),
+    () => controller.commitChapter(), () => controller.revokeReview(),
+  ]) assert.equal(await action(), false)
+  assert.equal(commands.length, 1)
+  await assert.rejects(controller.load(), /read unavailable/)
+  assert.equal(controller.recoveryPending.value, true)
+  assert.match(controller.error.value, /刷新核对修正/)
+  readFailure = false
+  await controller.load()
+  assert.equal(controller.review.value.changeSet.revision, 2)
+  assert.equal(controller.review.value.changeSet.contentHash, HASH_B)
+  assert.equal(controller.review.value.changeSet.payload.summary, draft.summary)
+  assert.equal(controller.recoveryPending.value, false)
+  assert.equal(controller.correctionRecovery.value, '')
+  assert.equal(controller.error.value, '')
+  await assert.rejects(controller.correctChangeSet({ ...draft, summary: '再次明确修改' }))
+  assert.equal(commands[1].expectedRevision, 2)
+  assert.equal(commands[1].expectedRevisionHash, HASH_B)
+})
+
+test('definitive correction rejection preserves the authoritative version and submitted draft', async () => {
+  let reads = 0
+  const failure = Object.assign(new Error('invalid correction'), { status: 422 })
+  const draft = reactive({ ...payload, summary: '保留作者输入' })
+  const controller = createFinalizationController({
+    getReview: async () => { reads += 1; return structuredClone(review) },
+    correct: async command => {
+      assert.equal(command.expectedRevision, 1)
+      assert.equal(command.expectedRevisionHash, HASH_A)
+      throw failure
+    },
+  })
+  await controller.load()
+  await assert.rejects(controller.correctChangeSet(draft), error => error === failure)
+  assert.equal(reads, 1)
+  assert.deepEqual(controller.review.value, review)
+  assert.equal(draft.summary, '保留作者输入')
+  assert.equal(controller.recoveryPending.value, false)
+  assert.equal(controller.correctionRecovery.value, '')
+  assert.match(controller.error.value, /未保存/)
+})
+
+test('lost correction response is unknown for both saved and unsaved server outcomes', async t => {
+  for (const status of [0, 408, 500, 502, 200]) {
+    for (const saved of [false, true]) {
+      await t.test(`status=${status}, saved=${saved}`, async () => {
+        let server = structuredClone(review)
+        let writes = 0
+        let reads = 0
+        const draft = { ...payload, summary: '未知结果的作者修改' }
+        const controller = createFinalizationController({
+          getReview: async () => { reads += 1; return structuredClone(server) },
+          correct: async () => {
+            writes += 1
+            if (saved) server.changeSet = { revision: 2, contentHash: HASH_B, payload: draft }
+            throw Object.assign(new Error('response unavailable'), { status })
+          },
+        })
+        await controller.load()
+        await assert.rejects(controller.correctChangeSet(draft), /response unavailable/)
+        assert.equal(reads, 1)
+        assert.equal(controller.recoveryPending.value, true)
+        assert.equal(controller.correctionRecovery.value, 'unknown')
+        assert.match(controller.error.value, /保存结果尚未确认.*刷新核对修正/)
+        assert.doesNotMatch(controller.error.value, /未保存|重试/)
+        assert.equal(await controller.correctChangeSet(draft), false)
+        assert.equal(writes, 1)
+        await controller.load()
+        assert.equal(controller.review.value.changeSet.revision, saved ? 2 : 1)
+        assert.equal(controller.review.value.changeSet.payload.summary, saved ? draft.summary : payload.summary)
+        assert.equal(controller.recoveryPending.value, false)
+      })
+    }
+  }
+})
+
+test('correction never bypasses missing version pins or a stale revision/hash rejection', async () => {
+  let server = structuredClone(review)
+  let writes = 0
+  const controller = createFinalizationController({
+    getReview: async () => structuredClone(server),
+    correct: async command => {
+      writes += 1
+      if (command.expectedRevision !== server.changeSet.revision
+        || command.expectedRevisionHash !== server.changeSet.contentHash) {
+        throw Object.assign(new Error('CAS conflict'), { status: 409 })
+      }
+    },
+  })
+  await controller.load()
+  controller.review.value = { ...review, changeSet: { ...review.changeSet, contentHash: 'invalid' } }
+  await assert.rejects(controller.correctChangeSet(payload), /revision is required/)
+  assert.equal(writes, 0)
+  assert.equal(controller.recoveryPending.value, false)
+  await controller.load()
+  server.changeSet = { ...server.changeSet, revision: 2, contentHash: HASH_B }
+  await assert.rejects(controller.correctChangeSet(payload), /CAS conflict/)
+  assert.equal(controller.review.value.changeSet.revision, 1)
+  assert.equal(controller.recoveryPending.value, false)
+  await controller.load()
+  controller.review.value = { ...controller.review.value, changeSet: { ...server.changeSet, contentHash: HASH_A } }
+  await assert.rejects(controller.correctChangeSet(payload), /CAS conflict/)
+  assert.equal(writes, 2)
+})
+
+test('reset discards late correction outcomes without locking the new chapter or rereading', async t => {
+  for (const accepted of [true, false]) {
+    await t.test(`accepted=${accepted}`, async () => {
+      const pending = deferred()
+      let reads = 0
+      const controller = createFinalizationController({
+        getReview: async () => { reads += 1; return structuredClone(review) },
+        correct: () => pending.promise,
+      })
+      await controller.load()
+      const action = controller.correctChangeSet(payload)
+      controller.reset()
+      if (accepted) pending.resolve({ currentRevision: 2, currentRevisionHash: HASH_B })
+      else pending.reject(Object.assign(new Error('lost response'), { status: 0 }))
+      assert.equal(await action, null)
+      assert.equal(reads, 1)
+      assert.equal(controller.review.value, null)
+      assert.equal(controller.recoveryPending.value, false)
+      assert.equal(controller.correctionRecovery.value, '')
+      assert.equal(controller.error.value, '')
+    })
+  }
+})
+
 test('finding decision saves report identity and revision, failure retains authoritative state', async () => {
   const initial = structuredClone(review)
   initial.qualityReport.findings = [{ id: 'optional', severity: 'optional' }]

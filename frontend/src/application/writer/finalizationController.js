@@ -92,6 +92,7 @@ export function createFinalizationController({
   const busy = ref(false)
   const error = ref('')
   const recoveryPending = ref(false)
+  const correctionRecovery = ref('')
   const commitUncertain = ref(false)
   let recoveryTarget = null
   let generation = 0
@@ -220,7 +221,7 @@ export function createFinalizationController({
       if (!disposed && token === generation) {
         error.value = failure?.code === 'FinalizationPreflightConflict'
           ? '规划调整不符合当前定稿依据，请在未确认时放弃本次审查并重新审查。'
-          : message
+          : typeof message === 'function' ? message() : message
       }
       throw failure
     } finally {
@@ -230,7 +231,7 @@ export function createFinalizationController({
 
   async function load() {
     return run(async active => {
-      if (recoveryPending.value) {
+      if (recoveryPending.value && recoveryTarget) {
         await reconcileRevocation(active)
         if (!active()) return null
       }
@@ -239,10 +240,13 @@ export function createFinalizationController({
       review.value = value
       commitUncertain.value = false
       recoveryPending.value = false
+      correctionRecovery.value = ''
       recoveryTarget = null
       if (value?.status !== 'committed') result.value = null
       return value
-    }, '定稿审查状态加载失败，请刷新后重试。', true)
+    }, () => correctionRecovery.value
+      ? correctionFailureMessage()
+      : '定稿审查状态加载失败，请刷新后重试。', true)
   }
 
   async function reconcileRevocation(active) {
@@ -329,21 +333,48 @@ export function createFinalizationController({
     }, '审查未完成，请刷新权威状态后重试。')
   }
 
+  function correctionFailureMessage() {
+    if (correctionRecovery.value === 'accepted') {
+      return '修正已被服务端接受，但最新状态读取失败，本地修改已保留。请点击“刷新核对修正”核对后再操作。'
+    }
+    if (correctionRecovery.value === 'unknown') {
+      return '修正保存结果尚未确认，本地修改已保留。请点击“刷新核对修正”，核对前不要再次提交。'
+    }
+    return '修正未保存，请刷新后重试。'
+  }
+
   async function correctChangeSet(changeSet) {
     return run(async active => {
       if (primaryAction.value === 'blocked' || finalized.value) {
         throw new TypeError('finalization correction is unavailable')
       }
-      await correct({
+      const command = {
         ...currentRevision(review.value),
         changeSet: structuredClone(toRaw(changeSet)),
-      })
+      }
+      try {
+        await correct(command)
+      } catch (failure) {
+        if (!active()) return null
+        const status = Number(failure?.status || 0)
+        // An explicit client rejection is definitive; a lost/invalid response is not.
+        if (!(status >= 400 && status < 500 && status !== 408)) {
+          correctionRecovery.value = 'unknown'
+          recoveryPending.value = true
+        }
+        throw failure
+      }
       if (!active()) return null
+      // Acknowledgement is not a refreshed review. Keep writes fenced until the read succeeds.
+      correctionRecovery.value = 'accepted'
+      recoveryPending.value = true
       const value = await getReview()
       if (!active()) return null
       review.value = value
+      correctionRecovery.value = ''
+      recoveryPending.value = false
       return value
-    }, '修正未保存，请刷新后重试。')
+    }, correctionFailureMessage)
   }
 
   async function setFindingIgnored(findingId, ignored) {
@@ -465,6 +496,7 @@ export function createFinalizationController({
     committedTarget = null
     recoveryTarget = null
     recoveryPending.value = false
+    correctionRecovery.value = ''
     commitUncertain.value = false
     busy.value = false
     error.value = ''
@@ -483,6 +515,7 @@ export function createFinalizationController({
     busy: computed(() => busy.value),
     error,
     recoveryPending: computed(() => recoveryPending.value),
+    correctionRecovery: computed(() => correctionRecovery.value),
     canRevoke: computed(() => review.value?.status === 'awaiting_author'
       && primaryAction.value === 'commit' && !commitUncertain.value && !recoveryPending.value),
     hardBlocks,

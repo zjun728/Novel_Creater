@@ -109,7 +109,7 @@ const nodeText = node => [node?.text, ...(node?.children || []).map(nodeText)].f
 const walk = node => [node, ...(node.children || []).flatMap(walk)]
 const buttons = (root, label) => walk(root).filter(node => node.type === 'button' && nodeText(node) === label)
 
-async function mountReview({ correctFailure = false, includeFactChanges = false, factValue, disabled = false, draftStale = false, candidateContent = '' } = {}) {
+async function mountReview({ correctFailure = false, correctionReadFailure = false, correctionResponseLost = false, includeFactChanges = false, factValue, disabled = false, draftStale = false, candidateContent = '' } = {}) {
   const hashA = 'a'.repeat(64)
   const hashB = 'b'.repeat(64)
   const payload = {
@@ -140,15 +140,20 @@ async function mountReview({ correctFailure = false, includeFactChanges = false,
   }
   const calls = []
   let pendingRead = null
+  let readsUnavailable = false
   const controller = createFinalizationController({
     getReview: async () => {
       if (pendingRead) await pendingRead
+      if (readsUnavailable) throw Object.assign(new Error('read failed'), { status: 503 })
       return structuredClone(current)
     },
     correct: async command => {
       calls.push(['correct', command])
-      if (correctFailure) throw new Error('save failed')
+      if (correctFailure) throw Object.assign(new Error('save rejected'), { status: 422 })
+      if (correctionResponseLost) throw Object.assign(new Error('lost response'), { status: 0 })
       current = { ...current, changeSet: { revision: 2, contentHash: hashB, payload: command.changeSet } }
+      readsUnavailable = correctionReadFailure
+      return { currentRevision: 2, currentRevisionHash: hashB }
     },
     confirm: async command => {
       calls.push(['confirm', command])
@@ -172,10 +177,119 @@ async function mountReview({ correctFailure = false, includeFactChanges = false,
     const request = controller.load()
     return async () => { release(); await request }
   }
-  return { app, root, controller, calls, payload, pauseLoad, dirtyChanges }
+  return { app, root, controller, calls, payload, pauseLoad, dirtyChanges,
+    allowReviewReads: () => { readsUnavailable = false },
+    serverReview: () => structuredClone(current),
+  }
 }
 
 const valueEditor = root => walk(root).find(node => node.props['data-value-path'] === '事实内容')
+
+const summaryInput = root => walk(root).find(node => node.type === 'label'
+  && node.children.some(child => nodeText(child) === '章节摘要'))?.children.find(node => node.props['onUpdate:value'])
+
+async function editSummary(root, value) {
+  summaryInput(root).props['onUpdate:value'](value)
+  await VueRuntime.nextTick()
+}
+
+test('accepted save with lost read keeps summary and facts visible until refresh recovers R2', async () => {
+  const mounted = await mountReview({ correctionReadFailure: true, includeFactChanges: true, factValue: { condition: '原值' } })
+  const { root, controller, calls, dirtyChanges } = mounted
+  try {
+    await editSummary(root, '作者修正摘要')
+    await inputValue(labelled(valueEditor(root), '事实内容.condition：文字'), '作者修正事实')
+    await buttons(root, '保存修正')[0].props.onClick()
+    await VueRuntime.nextTick()
+    assert.equal(mounted.serverReview().changeSet.revision, 2)
+    assert.equal(controller.review.value.changeSet.revision, 1)
+    assert.match(nodeText(root), /已被服务端接受.*读取失败/)
+    assert.equal(summaryInput(root).props.value, '作者修正摘要')
+    assert.equal(labelled(valueEditor(root), '事实内容.condition：文字').props.value, '作者修正事实')
+    assert.equal(dirtyChanges.at(-1), true)
+    assert.equal(buttons(root, '保存修正')[0].props.disabled, true)
+    assert.equal(buttons(root, '确认以上变更')[0].props.disabled, true)
+    await buttons(root, '保存修正')[0].props.onClick()
+    await buttons(root, '刷新核对修正')[0].props.onClick()
+    await VueRuntime.nextTick()
+    assert.equal(calls.length, 1)
+    assert.equal(controller.recoveryPending.value, true)
+    assert.equal(summaryInput(root).props.value, '作者修正摘要')
+    mounted.allowReviewReads()
+    await buttons(root, '刷新核对修正')[0].props.onClick()
+    await VueRuntime.nextTick()
+    assert.equal(controller.review.value.changeSet.revision, 2)
+    assert.equal(controller.review.value.changeSet.payload.summary, '作者修正摘要')
+    assert.equal(controller.review.value.changeSet.payload.canonEvents[0].value.condition, '作者修正事实')
+    assert.equal(summaryInput(root).props.value, '作者修正摘要')
+    assert.equal(dirtyChanges.at(-1), false)
+    assert.equal(buttons(root, '刷新核对修正').length, 0)
+    await buttons(root, '确认以上变更')[0].props.onClick()
+    assert.equal(calls[1][0], 'confirm')
+    assert.equal(calls[1][1].expectedRevision, 2)
+    assert.equal(calls[1][1].expectedRevisionHash, 'b'.repeat(64))
+  } finally { mounted.app.unmount() }
+})
+
+test('rejected save and same-version refresh preserve author summary and incomplete fact input', async () => {
+  const mounted = await mountReview({ correctFailure: true, includeFactChanges: true, factValue: { count: 0 } })
+  const { root, controller, dirtyChanges } = mounted
+  try {
+    await editSummary(root, '未保存的摘要草稿')
+    await buttons(root, '保存修正')[0].props.onClick()
+    assert.equal(controller.recoveryPending.value, false)
+    assert.match(controller.error.value, /未保存/)
+    await inputValue(labelled(valueEditor(root), '事实内容.count：数字'), '-')
+    await controller.load()
+    await VueRuntime.nextTick()
+    assert.equal(controller.review.value.changeSet.revision, 1)
+    assert.equal(summaryInput(root).props.value, '未保存的摘要草稿')
+    assert.equal(labelled(valueEditor(root), '事实内容.count：数字').props.value, '-')
+    assert.equal(dirtyChanges.at(-1), true)
+    assert.equal(buttons(root, '保存修正')[0].props.disabled, true)
+    await inputValue(labelled(valueEditor(root), '事实内容.count：数字'), '3')
+    assert.equal(buttons(root, '保存修正')[0].props.disabled, false)
+  } finally { mounted.app.unmount() }
+})
+
+test('unknown unsaved POST outcome offers a read-only check and retains edits on unchanged R1', async () => {
+  const mounted = await mountReview({ correctionResponseLost: true })
+  const { root, controller, calls, dirtyChanges } = mounted
+  try {
+    await editSummary(root, '待核对摘要草稿')
+    await buttons(root, '保存修正')[0].props.onClick()
+    await VueRuntime.nextTick()
+    assert.match(nodeText(root), /保存结果尚未确认/)
+    assert.doesNotMatch(nodeText(root), /修正未保存/)
+    assert.equal(buttons(root, '保存修正')[0].props.disabled, true)
+    await buttons(root, '刷新核对修正')[0].props.onClick()
+    await VueRuntime.nextTick()
+    assert.equal(controller.review.value.changeSet.revision, 1)
+    assert.equal(controller.review.value.changeSet.payload.summary, '摘要')
+    assert.equal(summaryInput(root).props.value, '待核对摘要草稿')
+    assert.equal(dirtyChanges.at(-1), true)
+    assert.equal(buttons(root, '保存修正')[0].props.disabled, false)
+    assert.equal(calls.length, 1)
+    await buttons(root, '保存修正')[0].props.onClick()
+    assert.equal(calls.length, 2)
+    assert.equal(calls[1][1].expectedRevision, 1)
+    assert.equal(calls[1][1].expectedRevisionHash, 'a'.repeat(64))
+  } finally { mounted.app.unmount() }
+})
+
+test('a different review identity never inherits local edits even at the same revision/hash', async () => {
+  const mounted = await mountReview({ candidateContent: '正文' })
+  try {
+    await editSummary(mounted.root, '上个审查的本地摘要')
+    mounted.controller.review.value = {
+      ...mounted.controller.review.value, attemptId: 'new-attempt', candidateId: 'new-candidate',
+      changeSet: { ...mounted.controller.review.value.changeSet, payload: { ...mounted.payload, summary: '新审查摘要' } },
+    }
+    await VueRuntime.nextTick()
+    assert.equal(summaryInput(mounted.root).props.value, '新审查摘要')
+    assert.equal(mounted.dirtyChanges.at(-1), false)
+  } finally { mounted.app.unmount() }
+})
 test('review results open separately, group actual dimensions, and close without changing facts', async () => {
   const { app, root, controller, calls } = await mountReview({ candidateContent: '原文片段' })
   try {
