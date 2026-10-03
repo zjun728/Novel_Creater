@@ -3,6 +3,65 @@ import test from 'node:test'
 
 
 const HASH = 'a'.repeat(64)
+
+test('history client sends only saved pins and preserves typed values and source metadata', async () => {
+  const originalFetch = global.fetch
+  const pins = { attemptId: 'a', candidateId: 'c', candidateHash: HASH,
+    canonRevision: 14, expectedRevision: 2, expectedRevisionHash: HASH }
+  const values = [null, '', [], {}, false, 0, { nested: [null, false, 0, [], {}] }]
+  let request
+  global.fetch = async (url, options) => {
+    request = { url: String(url), options }
+    return jsonResponse({ projectId: 'p/1', chapterSessionId: 's/1', ...pins,
+      items: values.map((value, index) => ({ entityId: 'hero', fieldPath: `path.${index}`, state: 'present', value,
+        source: { eventId: `e${index}`, revision: 13, eventOrder: index + 1, privateInput: 'hidden' } })),
+      rawManifest: 'hidden' })
+  }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    const result = await api.chapterSessions.getFinalizationHistoryReference('p/1', 's/1', { ...pins, entityId: 'another', fieldPath: 'arbitrary' })
+    const url = new URL(request.url)
+    assert.match(url.pathname, /projects\/p%2F1\/chapter-sessions\/s%2F1\/finalization\/history-reference$/)
+    assert.deepEqual(Object.fromEntries(url.searchParams), Object.fromEntries(Object.entries(pins).map(([key, value]) => [key, String(value)])))
+    assert.equal(request.options.method, 'GET')
+    assert.deepEqual(result.items.map(item => item.value), values)
+    assert.equal(Object.hasOwn(result, 'rawManifest'), false)
+    assert.equal(Object.hasOwn(result.items[0].source, 'privateInput'), false)
+  } finally { global.fetch = originalFetch }
+})
+
+test('history client distinguishes absent, unavailable and non-applicable without inventing null values', async () => {
+  const originalFetch = global.fetch
+  global.fetch = async () => jsonResponse({ projectId: 'p', chapterSessionId: 's', attemptId: 'a', candidateId: 'c',
+    candidateHash: HASH, canonRevision: 0, expectedRevision: 1, expectedRevisionHash: HASH,
+    items: [{ entityId: 'hero', fieldPath: 'missing', state: 'absent' },
+      { entityId: 'hero', fieldPath: 'unknown', state: 'unavailable' },
+      { entityId: null, fieldPath: 'global', state: 'not_applicable', reason: 'global' }] })
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    const result = await api.chapterSessions.getFinalizationHistoryReference('p', 's', {})
+    assert.deepEqual(result.items.map(item => item.state), ['absent', 'unavailable', 'not_applicable'])
+    assert.ok(result.items.every(item => !Object.hasOwn(item, 'value')))
+  } finally { global.fetch = originalFetch }
+})
+
+test('history client rejects missing present value, future source and duplicate keys', async () => {
+  const originalFetch = global.fetch
+  const response = { projectId: 'p', chapterSessionId: 's', attemptId: 'a', candidateId: 'c', candidateHash: HASH,
+    canonRevision: 14, expectedRevision: 1, expectedRevisionHash: HASH,
+    items: [{ entityId: 'hero', fieldPath: 'status', state: 'present', value: null,
+      source: { eventId: 'event', revision: 13, eventOrder: 1 } }] }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    for (const transform of [value => delete value.items[0].value,
+      value => { value.items[0].source.revision = 15 }, value => value.items.push(structuredClone(value.items[0]))]) {
+      const invalid = structuredClone(response)
+      transform(invalid)
+      global.fetch = async () => jsonResponse(invalid)
+      await assert.rejects(api.chapterSessions.getFinalizationHistoryReference('p', 's', {}), TypeError)
+    }
+  } finally { global.fetch = originalFetch }
+})
 const EVIDENCE = {
   startScalar: 0,
   endScalar: 1,

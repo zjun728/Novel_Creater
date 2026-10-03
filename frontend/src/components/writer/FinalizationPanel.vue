@@ -2,6 +2,8 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { NAlert, NButton, NCard, NInput, NTag } from 'naive-ui'
 import { evidenceExcerpt } from '../../application/writer/finalizationEvidence.js'
+import { createFinalizationHistory } from '../../application/writer/finalizationHistory.js'
+import { api } from '../../api/db/client.js'
 import { effectiveReviewFindings, referenceFromReview } from '../../utils/reviewReference.js'
 import FinalizationValueEditor from './FinalizationValueEditor.vue'
 import AddCanonFactEditor from './AddCanonFactEditor.vue'
@@ -10,6 +12,9 @@ import ReviewResultsDialog from './ReviewResultsDialog.vue'
 
 const props = defineProps({
   controller: { type: Object, required: true },
+  projectId: { type: String, default: '' },
+  sessionId: { type: String, default: '' },
+  readHistory: { type: Function, default: api.chapterSessions.getFinalizationHistoryReference },
   candidates: { type: Array, default: () => [] },
   planningContent: { type: Object, default: null },
   disabled: { type: Boolean, default: false },
@@ -28,6 +33,12 @@ const valueEditorPending = ref(new Map())
 const addedFactPending = ref(false)
 const factBuilderMounted = ref(false)
 const review = computed(() => props.controller.review.value)
+const history = createFinalizationHistory({
+  getProjectId: () => props.projectId, getSessionId: () => props.sessionId,
+  getReview: () => review.value, getCandidates: () => props.candidates,
+  readHistory: (...args) => props.readHistory(...args),
+})
+onBeforeUnmount(() => history.dispose())
 const postFinalization = computed(() => props.controller.postFinalization.value)
 const busy = computed(() => props.disabled || props.controller.busy.value || props.controller.recoveryPending?.value)
 const currentCandidates = computed(() => props.candidates.filter(
@@ -221,6 +232,17 @@ function updateFactValue(id, value) {
   if (!editable.value) return
   const item = changeSetDraft.value.canonEvents.find(event => event.id === id)
   if (item) item.value = JSON.parse(JSON.stringify(value))
+}
+
+const referenceValue = value => JSON.stringify(value, null, 2)
+function referenceMessage(item) {
+  const value = history.lookup(item.entityId, item.fieldPath)
+  if (value.state === 'absent') return '截至冻结版本未找到该字段的已确认状态值；历史说法不作为状态参考。'
+  if (value.state === 'not_loaded') return '尚未读取此路径的历史参考，保存修正并正常重读后补齐。'
+  if (value.state === 'loading') return '正在读取历史参考…'
+  if (value.state === 'not_applicable') return value.reason === 'global'
+    ? '本项未关联特定实体，不适用同实体字段对照。' : '本次新增实体，无既有同实体参考。'
+  return '历史参考不可用；这不表示该字段不存在。'
 }
 
 const factKindLabels = {
@@ -442,13 +464,28 @@ async function refreshPostFinalization() {
         </div>
 
         <div v-if="changeSetDraft.canonEvents.length" class="change-group">
-          <h4>Canon 事实</h4>
+          <div class="section-heading">
+            <h4>Canon 事实</h4>
+            <n-button size="small" :disabled="history.loading.value || !history.canRead.value" @click="history.refresh">刷新历史参考</n-button>
+          </div>
           <p class="muted">对照原文核对内容和类型；人物说法或推测不等于已证实事实。修正事实时，也请核对上方摘要。保存修正并通过校验后，才可确认。</p>
+          <p class="muted">历史参考按本次候选冻结的 Canon 版本查询，未复验整份冻结输入。请核对新内容是否仍描述同一对象和事项；值变化也可能是正常更新。</p>
           <article v-for="item in changeSetDraft.canonEvents" :key="item.id" class="change-item">
             <strong>{{ fieldLabel(item.fieldPath) }}</strong>
+            <code class="fact-identity">实体 ID：{{ item.entityId ?? '全局记录' }} · 完整字段：{{ item.fieldPath }}</code>
             <n-tag class="fact-kind-tag" size="small" :type="item.factKind === 'claim' ? 'warning' : 'default'">{{ factKindLabels[item.factKind] || '未知类型' }}</n-tag>
-            <pre>{{ displayValue(item.value) }}</pre>
-            <small>{{ evidenceText(item.evidence) }}</small>
+            <div class="fact-comparison">
+              <section aria-label="历史参考值">
+                <strong>历史参考值<span v-if="history.reference.value"> · Canon R{{ history.reference.value.canonRevision }}</span></strong>
+                <template v-if="history.lookup(item.entityId, item.fieldPath).state === 'present'">
+                  <pre>{{ referenceValue(history.lookup(item.entityId, item.fieldPath).value) }}</pre>
+                  <small>来源：R{{ history.lookup(item.entityId, item.fieldPath).source.revision }} · 事件顺序 {{ history.lookup(item.entityId, item.fieldPath).source.eventOrder }}</small>
+                </template>
+                <p v-else class="muted">{{ referenceMessage(item) }}</p>
+              </section>
+              <section aria-label="当前作者草稿值"><strong>当前作者草稿值</strong><pre>{{ referenceValue(item.value) }}</pre></section>
+              <section aria-label="本次冻结候选正文依据"><strong>本次冻结候选正文依据</strong><small>{{ evidenceText(item.evidence) }}</small></section>
+            </div>
             <details class="fact-correction">
               <summary>修正事实</summary>
               <p class="muted">可修正内容和类型；关联实体、原文引用沿用本条记录。记录说法或推测时，请在内容中保留是谁的判断和未确定之处。</p>
@@ -602,6 +639,13 @@ h3 { font-size: 15px; } h4 { font-size: 13px; }
 .change-item { margin-bottom: 8px; }
 .change-item .rationale-error { color: #a33b2b; }
 .fact-kind-tag { justify-self: start; }
+.fact-identity { overflow-wrap: anywhere; color: #675d51; font-size: 11px; }
+.fact-comparison { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 8px 0; }
+.fact-comparison section { min-width: 0; padding: 10px; border: 1px solid #e4d8c6; border-radius: 6px; background: #fffdf8; }
+.fact-comparison section > strong { display: block; margin-bottom: 8px; font-size: 12px; }
+.fact-comparison small { display: block; overflow-wrap: anywhere; }
+.fact-comparison pre { max-height: 220px; }
+@media (max-width: 800px) { .fact-comparison { grid-template-columns: 1fr; } }
 .fact-correction { min-width: 0; margin: 8px 0; border-top: 1px solid #dfd1bc; padding-top: 9px; }
 .fact-correction summary { cursor: pointer; color: #835531; font-size: 12px; font-weight: 700; }
 .fact-correction summary:focus-visible { outline: 2px solid #9b6a32; outline-offset: 3px; }

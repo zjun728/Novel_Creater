@@ -2441,6 +2441,40 @@ function finalizationPrepared(value) {
   ])
 }
 
+function finalizationHistory(value) {
+  const source = finalizationObject(value, 'history reference')
+  const identity = pickDefined(source, ['projectId', 'chapterSessionId', 'attemptId', 'candidateId', 'canonRevision', 'expectedRevision'])
+  if (['projectId', 'chapterSessionId', 'attemptId', 'candidateId'].some(field => typeof identity[field] !== 'string' || !identity[field])
+    || !Number.isSafeInteger(identity.canonRevision) || identity.canonRevision < 0
+    || !Number.isSafeInteger(identity.expectedRevision) || identity.expectedRevision < 1
+    || !Array.isArray(source.items) || source.items.length > 2048) throw new TypeError('Invalid history reference')
+  const seen = new Set()
+  const items = source.items.map(value => {
+    const item = finalizationObject(value, 'history field')
+    if (!(item.entityId === null || (typeof item.entityId === 'string' && item.entityId))
+      || typeof item.fieldPath !== 'string' || !item.fieldPath || Array.from(item.fieldPath).length > 200
+      || !['present', 'absent', 'unavailable', 'not_applicable'].includes(item.state)) throw new TypeError('Invalid history field')
+    const key = JSON.stringify([item.entityId, item.fieldPath])
+    if (seen.has(key)) throw new TypeError('Duplicate history field')
+    seen.add(key)
+    const output = { entityId: item.entityId, fieldPath: item.fieldPath, state: item.state }
+    if (item.state === 'present') {
+      const origin = finalizationObject(item.source, 'history source')
+      if (!Object.hasOwn(item, 'value') || typeof origin.eventId !== 'string' || !origin.eventId
+        || !Number.isSafeInteger(origin.revision) || origin.revision < 0 || origin.revision > identity.canonRevision
+        || !Number.isSafeInteger(origin.eventOrder) || origin.eventOrder < 1) throw new TypeError('Invalid history source')
+      output.value = structuredClone(item.value)
+      output.source = pickDefined(origin, ['eventId', 'revision', 'eventOrder'])
+    } else if (item.state === 'not_applicable') {
+      if (!['global', 'new_entity'].includes(item.reason)) throw new TypeError('Invalid history scope')
+      output.reason = item.reason
+    }
+    return output
+  })
+  return { ...identity, candidateHash: finalizationHash(source.candidateHash, 'history candidate hash'),
+    expectedRevisionHash: finalizationHash(source.expectedRevisionHash, 'history revision hash'), items }
+}
+
 function finalizationReviewed(value) {
   return pickDefined(finalizationObject(value, 'review response'), [
     'attemptId', 'status', 'currentRevision', 'currentRevisionHash',
@@ -3148,6 +3182,11 @@ export const api = {
     ),
     getFinalization: async (projectId, sessionId) => finalizationReview(await get(
       `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/finalization`,
+    )),
+    getFinalizationHistoryReference: async (projectId, sessionId, data) => finalizationHistory(await get(
+      `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/finalization/history-reference${queryString(pickDefined(data, [
+        'attemptId', 'candidateId', 'candidateHash', 'canonRevision', 'expectedRevision', 'expectedRevisionHash',
+      ]))}`,
     )),
     prepareFinalization: async (
       projectId, sessionId, candidateId, data,

@@ -2,6 +2,26 @@
 
 
 class ContinuityRepository:
+    async def state_history_reference(self, session, project_id, entity_id, field_path, revision):
+        """Last state source for one exact key, using the existing projection rule.
+
+        The second row detects an invalid tie; this is not a facts/history page
+        (which also contains claims), nor a read from the current projection head.
+        """
+        return await session.fetchall(
+            """SELECT event.id,event.project_id,event.entity_id,event.field_path,
+                      event.revision_number,event.event_order,event.fact_kind,
+                      event.confirmation_status,event.value_json AS payload_json
+                 FROM canon_events event
+                WHERE event.project_id=%s
+                  AND CAST(event.entity_id AS BINARY)=CAST(%s AS BINARY)
+                  AND CAST(event.field_path AS BINARY)=CAST(%s AS BINARY)
+                  AND event.revision_number<=%s
+                  AND event.confirmation_status='confirmed' AND event.fact_kind<>'claim'
+                ORDER BY event.revision_number DESC, event.event_order DESC, event.id LIMIT 2""",
+            (project_id, entity_id, field_path, revision),
+        )
+
     async def future_design(self, session, project_id):
         """Read confirmed designs only when their full upstream basis is current."""
         return await session.fetchone(

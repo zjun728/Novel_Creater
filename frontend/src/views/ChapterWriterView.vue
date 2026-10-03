@@ -852,6 +852,8 @@ onBeforeUnmount(() => {
           <finalization-panel
             v-if="session"
             :controller="finalization"
+            :project-id="projectId"
+            :session-id="session?.id || ''"
             :candidates="candidates"
             :planning-content="planningContent"
             :chapter-number="chapterNumber"

@@ -51,7 +51,7 @@ test.before(async () => {
   FinalizationPanel = (await vite.ssrLoadModule(
     '/src/components/writer/FinalizationPanel.vue',
   )).default
-  for (const name of ['FinalizationValueEditor', 'AddCanonFactEditor', 'ReviewResultsDialog']) {
+  for (const name of ['FinalizationValueEditor', 'AddCanonFactEditor', 'ReviewResultsDialog', 'ReviewDisputePanel']) {
     const component = (await vite.ssrLoadModule(`/src/components/writer/${name}.vue`)).default
     const { descriptor } = parse(await source(`components/writer/${name}.vue`))
     component.render = new Function('Vue', compile(descriptor.template.content, {
@@ -109,7 +109,7 @@ const nodeText = node => [node?.text, ...(node?.children || []).map(nodeText)].f
 const walk = node => [node, ...(node.children || []).flatMap(walk)]
 const buttons = (root, label) => walk(root).filter(node => node.type === 'button' && nodeText(node) === label)
 
-async function mountReview({ correctFailure = false, correctionReadFailure = false, correctionResponseLost = false, includeFactChanges = false, factValue, disabled = false, draftStale = false, candidateContent = '' } = {}) {
+async function mountReview({ correctFailure = false, correctionReadFailure = false, correctionResponseLost = false, includeFactChanges = false, factValue, disabled = false, draftStale = false, candidateContent = '', readHistory = null, confirmed = false } = {}) {
   const hashA = 'a'.repeat(64)
   const hashB = 'b'.repeat(64)
   const payload = {
@@ -139,6 +139,8 @@ async function mountReview({ correctFailure = false, correctionReadFailure = fal
     confirmation: null,
     ...(candidateContent ? { candidateId: 'frozen', candidateHash: hashA } : {}),
   }
+  if (readHistory) Object.assign(current, { attemptId: 'attempt', candidateId: 'frozen', candidateHash: hashA })
+  if (confirmed) current.confirmation = { revision: 1, contentHash: hashA }
   const calls = []
   let pendingRead = null
   let readsUnavailable = false
@@ -165,7 +167,8 @@ async function mountReview({ correctFailure = false, correctionReadFailure = fal
   const dirtyChanges = []
   const app = renderer.createApp(InteractivePanel, {
     controller, disabled, draftStale, chapterNumber: 3,
-    candidates: candidateContent ? [{ id: 'frozen', contentHash: hashA, content: candidateContent }] : [],
+    candidates: candidateContent || readHistory ? [{ id: 'frozen', contentHash: hashA, content: candidateContent, canonRevision: 14 }] : [],
+    ...(readHistory ? { projectId: 'fixture-project', sessionId: 'fixture-session', readHistory } : {}),
     onDirtyChange: value => dirtyChanges.push(value),
   })
   app.provide(VueRuntime.ssrContextKey, {})
@@ -185,6 +188,126 @@ async function mountReview({ correctFailure = false, correctionReadFailure = fal
 }
 
 const valueEditor = root => walk(root).find(node => node.props['data-value-path'] === '事实内容')
+
+const historyResponse = (project, session, command, value = '此前瓶样记录') => ({ projectId: project,
+  chapterSessionId: session, ...command, items: [{ entityId: 'entity-1', fieldPath: 'status', state: 'present',
+    value, source: { eventId: 'old-event', revision: 13, eventOrder: 2 } }] })
+const historySettled = async () => { await VueRuntime.nextTick(); await new Promise(resolve => setTimeout(resolve, 0)) }
+
+test('history refresh preserves revoke confirmation, saved payload and untouched draft', async () => {
+  let reads = 0
+  const mounted = await mountReview({ includeFactChanges: true, confirmed: true,
+    readHistory: async (...args) => { reads += 1; return historyResponse(...args) } })
+  try {
+    await historySettled()
+    await buttons(mounted.root, '撤销已确认审查')[0].props.onClick()
+    await VueRuntime.nextTick()
+    const saved = structuredClone(mounted.controller.review.value)
+    await buttons(mounted.root, '刷新历史参考')[0].props.onClick()
+    await historySettled()
+    assert.equal(buttons(mounted.root, '确认撤销本次审查').length, 1)
+    assert.equal(reads, 2)
+    assert.deepEqual(mounted.controller.review.value, saved)
+    assert.equal(mounted.dirtyChanges.at(-1), false)
+    assert.equal(mounted.calls.length, 0)
+    assert.match(nodeText(mounted.root), /历史参考值.*此前瓶样记录/s)
+    assert.match(nodeText(mounted.root), /当前作者草稿值/)
+    assert.match(nodeText(mounted.root), /实体 ID：entity-1 · 完整字段：status/)
+  } finally { mounted.app.unmount() }
+})
+
+test('history refresh and failure preserve unfinished editor input and unsaved new value', async () => {
+  let fail = false
+  const mounted = await mountReview({ includeFactChanges: true, factValue: 12,
+    readHistory: async (...args) => { if (fail) throw new Error('comparison unavailable'); return historyResponse(...args, null) } })
+  try {
+    await historySettled()
+    const input = walk(valueEditor(mounted.root)).find(node => node.props.inputmode === 'decimal')
+    input.props.onInput({ target: { value: '-' } })
+    await VueRuntime.nextTick()
+    assert.equal(input.props.value, '-')
+    await buttons(mounted.root, '刷新历史参考')[0].props.onClick()
+    await historySettled()
+    assert.equal(input.props.value, '-')
+    assert.equal(mounted.dirtyChanges.at(-1), true)
+    fail = true
+    await buttons(mounted.root, '刷新历史参考')[0].props.onClick()
+    await historySettled()
+    assert.equal(input.props.value, '-')
+    assert.match(nodeText(mounted.root), /历史参考不可用/)
+    assert.equal(mounted.controller.recoveryPending.value, false)
+    assert.equal(mounted.controller.error.value, '')
+    assert.ok(!buttons(mounted.root, '保存修正').length || buttons(mounted.root, '保存修正')[0].props.disabled)
+    assert.equal(buttons(mounted.root, '确认以上变更')[0].props.disabled, true)
+  } finally { mounted.app.unmount() }
+})
+
+test('successful saved review reload remains accepted when comparison fails', async () => {
+  const mounted = await mountReview({ includeFactChanges: true, factValue: '原稿',
+    readHistory: async (project, session, command) => {
+      if (command.expectedRevision === 2) throw new Error('history failed')
+      return historyResponse(project, session, command)
+    } })
+  try {
+    await historySettled()
+    const input = walk(valueEditor(mounted.root)).find(node => node.type === 'textarea')
+    input.props.onInput({ target: { value: '新行踪记录' } })
+    await VueRuntime.nextTick()
+    await buttons(mounted.root, '保存修正')[0].props.onClick()
+    await historySettled()
+    assert.equal(mounted.controller.review.value.changeSet.revision, 2)
+    assert.equal(mounted.controller.review.value.changeSet.payload.canonEvents[0].value, '新行踪记录')
+    assert.equal(mounted.controller.recoveryPending.value, false)
+    assert.equal(mounted.controller.error.value, '')
+    assert.equal(mounted.dirtyChanges.at(-1), false)
+    assert.match(nodeText(mounted.root), /历史参考不可用/)
+    assert.equal(buttons(mounted.root, '确认以上变更')[0].props.disabled, false)
+  } finally { mounted.app.unmount() }
+})
+
+test('comparison success cannot resolve accepted POST followed by failed review GET', async () => {
+  const mounted = await mountReview({ includeFactChanges: true, factValue: '原稿', correctionReadFailure: true,
+    readHistory: async (...args) => historyResponse(...args) })
+  try {
+    await historySettled()
+    const input = walk(valueEditor(mounted.root)).find(node => node.type === 'textarea')
+    input.props.onInput({ target: { value: '作者修改' } })
+    await VueRuntime.nextTick()
+    await buttons(mounted.root, '保存修正')[0].props.onClick()
+    await buttons(mounted.root, '刷新历史参考')[0].props.onClick()
+    await historySettled()
+    assert.equal(mounted.controller.review.value.changeSet.revision, 1)
+    assert.equal(mounted.controller.recoveryPending.value, true)
+    assert.match(mounted.controller.error.value, /已被服务端接受/)
+    assert.equal(input.props.value, '作者修改')
+    mounted.allowReviewReads()
+    await mounted.controller.load()
+    await historySettled()
+    assert.equal(mounted.controller.review.value.changeSet.revision, 2)
+    assert.equal(mounted.controller.recoveryPending.value, false)
+    assert.match(nodeText(mounted.root), /作者修改/)
+  } finally { mounted.app.unmount() }
+})
+
+test('definite save rejection preserves local edits through comparison refresh', async () => {
+  const mounted = await mountReview({ includeFactChanges: true, factValue: '原稿', correctFailure: true,
+    readHistory: async (...args) => historyResponse(...args) })
+  try {
+    await historySettled()
+    const input = walk(valueEditor(mounted.root)).find(node => node.type === 'textarea')
+    input.props.onInput({ target: { value: '作者修改' } })
+    await VueRuntime.nextTick()
+    await buttons(mounted.root, '保存修正')[0].props.onClick()
+    const error = mounted.controller.error.value
+    await buttons(mounted.root, '刷新历史参考')[0].props.onClick()
+    await historySettled()
+    assert.equal(input.props.value, '作者修改')
+    assert.equal(mounted.controller.review.value.changeSet.revision, 1)
+    assert.equal(mounted.controller.error.value, error)
+    assert.equal(mounted.controller.recoveryPending.value, false)
+    assert.equal(mounted.dirtyChanges.at(-1), true)
+  } finally { mounted.app.unmount() }
+})
 
 const progressRationaleInputs = root => walk(root).filter(node => node.props['input-props']?.['aria-label']?.startsWith('任务状态判断依据：')
   && node.props['onUpdate:value'])

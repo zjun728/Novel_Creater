@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.database import transaction
+from backend.database import read_only_transaction, transaction
 from backend.domain.finalization import FinalizationChangeSet
 from backend.gateways.finalization_provider import (
     FinalizationExtractionGateway,
@@ -17,6 +17,7 @@ from backend.repositories.finalization import (
     FinalizationRepository,
 )
 from backend.repositories.canon import CanonRepository
+from backend.repositories.continuity import ContinuityRepository
 from backend.repositories.planning import PlanningRepository
 from backend.services.canon import CanonService
 from backend.services.finalization import (
@@ -36,6 +37,7 @@ from backend.services.finalization_commit import (
     CommitFinalization,
     FinalizationCommitInvalid,
 )
+from backend.services.finalization_history import FinalizationHistoryReader, ReadFinalizationHistory
 
 
 router = APIRouter(tags=["finalization"])
@@ -60,6 +62,10 @@ _atomic_service = AtomicFinalizationService(
 
 def get_finalization_service() -> FinalizationService:
     return _service
+
+
+def get_finalization_history_reader() -> FinalizationHistoryReader:
+    return FinalizationHistoryReader(FinalizationRepository(), ContinuityRepository(), read_only_transaction)
 
 
 def get_atomic_finalization_service() -> AtomicFinalizationService:
@@ -262,6 +268,27 @@ async def get_finalization(
 ):
     try:
         return await service.get_review(project_id, session_id)
+    except (FinalizationConflict, FinalizationDataCorruption, TypeError, ValueError) as error:
+        _raise_public(error)
+
+
+@router.get("/projects/{project_id}/chapter-sessions/{session_id}/finalization/history-reference")
+async def get_finalization_history(
+    project_id: str,
+    session_id: str,
+    attempt_id: str = Query(alias="attemptId", min_length=1, max_length=100),
+    candidate_id: str = Query(alias="candidateId", min_length=1, max_length=100),
+    candidate_hash: str = Query(alias="candidateHash", pattern=r"^[0-9a-f]{64}$"),
+    canon_revision: int = Query(alias="canonRevision", ge=0),
+    expected_revision: int = Query(alias="expectedRevision", ge=1),
+    expected_revision_hash: str = Query(alias="expectedRevisionHash", pattern=r"^[0-9a-f]{64}$"),
+    reader: FinalizationHistoryReader = Depends(get_finalization_history_reader),
+):
+    try:
+        return await reader.read(ReadFinalizationHistory(
+            project_id, session_id, attempt_id, candidate_id, candidate_hash,
+            canon_revision, expected_revision, expected_revision_hash,
+        ))
     except (FinalizationConflict, FinalizationDataCorruption, TypeError, ValueError) as error:
         _raise_public(error)
 

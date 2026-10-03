@@ -65,6 +65,36 @@ def _canonical_json_value(value: object) -> str:
 
 
 class FinalizationRepository:
+    async def read_history_context(self, session, project_id: str, session_id: str):
+        """One saved review identity, without locks or current-head eligibility."""
+        row = await session.fetchone(
+            """SELECT attempt.project_id,attempt.chapter_session_id,attempt.id AS attempt_id,
+                      attempt.draft_candidate_id,attempt.candidate_hash,
+                      attempt.current_revision,attempt.current_revision_hash,
+                      attempt.expected_canon_revision,attempt.expected_planning_hash,
+                      attempt.expected_outline_hash,attempt.context_manifest_json,
+                      attempt.context_manifest_hash,revision.payload_json,
+                      candidate.id AS candidate_id,candidate.project_id AS candidate_project_id,
+                      candidate.chapter_session_id AS candidate_session_id,candidate.content,
+                      candidate.content_hash AS candidate_content_hash,candidate.basis_hash,
+                      candidate.provenance_json,baseline.id AS baseline_revision_id
+                 FROM finalization_change_sets attempt
+                 LEFT JOIN finalization_change_set_revisions revision
+                   ON revision.project_id=attempt.project_id AND revision.change_set_id=attempt.id
+                  AND revision.revision=attempt.current_revision
+                  AND revision.content_hash=attempt.current_revision_hash
+                 LEFT JOIN draft_candidates candidate
+                   ON candidate.project_id=attempt.project_id
+                  AND candidate.chapter_session_id=attempt.chapter_session_id
+                  AND candidate.id=attempt.draft_candidate_id
+                 LEFT JOIN canon_revisions baseline ON baseline.project_id=attempt.project_id
+                  AND baseline.revision_number=attempt.expected_canon_revision
+                WHERE attempt.project_id=%s AND attempt.chapter_session_id=%s
+                ORDER BY attempt.created_at DESC,attempt.id DESC LIMIT 1""",
+            (project_id, session_id),
+        )
+        return None if row is None else dict(row)
+
     async def lock_project(self, session, project_id: str):
         return await lock_active_project(session, project_id)
 
