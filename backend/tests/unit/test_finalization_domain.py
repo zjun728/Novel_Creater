@@ -166,6 +166,18 @@ def test_evidence_requires_bounded_half_open_scalar_range(start, end, confidence
         })
 
 
+@pytest.mark.parametrize('rationale', ['', ' \n\t', '字' * 501, '😀' * 501, None])
+def test_progress_rationale_rejects_empty_or_overlong_existing_evidence_field(rationale):
+    with pytest.raises(ValidationError):
+        EvidenceLocation.model_validate({**_evidence(), 'rationale': rationale})
+
+
+@pytest.mark.parametrize('rationale', ['据正文', '字' * 500, '😀' * 500, '  正文不足以确认实际执行。  '])
+def test_progress_rationale_preserves_valid_text_and_counts_unicode_scalars(rationale):
+    evidence = EvidenceLocation.model_validate({**_evidence(), 'rationale': rationale})
+    assert evidence.rationale == rationale
+
+
 def test_change_set_rejects_alias_that_targets_no_new_or_known_entity():
     payload = _payload()
     payload["aliases"][0]["entityId"] = "missing"

@@ -128,7 +128,8 @@ async function mountReview({ correctFailure = false, correctionReadFailure = fal
     }))
     payload.storyProgressEvents = ['progress-1', 'progress-2'].map(id => ({
       id, targetType: 'scene_task', targetId: id, status: 'advanced',
-      evidence: { startScalar: 0, endScalar: 2 },
+      evidence: { startScalar: 0, endScalar: 2, excerptHash: hashA, confidence: 0.8,
+        rationale: `${id}：正文仅显示安排，未显示送交。` },
     }))
   }
   if (factValue !== undefined) payload.aliases = [{ id: 'alias-1', entityId: 'entity-1', alias: '哥哥' }]
@@ -184,6 +185,139 @@ async function mountReview({ correctFailure = false, correctionReadFailure = fal
 }
 
 const valueEditor = root => walk(root).find(node => node.props['data-value-path'] === '事实内容')
+
+const progressRationaleInputs = root => walk(root).filter(node => node.props['input-props']?.['aria-label']?.startsWith('任务状态判断依据：')
+  && node.props['onUpdate:value'])
+
+async function editProgressRationale(root, value, index = 0) {
+  progressRationaleInputs(root)[index].props['onUpdate:value'](value)
+  await VueRuntime.nextTick()
+}
+
+test('progress rationale alone follows pinned save, reload and confirmation without modifying other data', async () => {
+  const mounted = await mountReview({ includeFactChanges: true, factValue: { note: '人物转述仍保留归因' } })
+  const { root, controller, calls, payload, dirtyChanges } = mounted
+  const corrected = '本次正文已显示安排与抄录，但不足以确认实际送交；不据此断言世界中未执行。'
+  try {
+    assert.equal(progressRationaleInputs(root).length, 2)
+    assert.equal(progressRationaleInputs(root)[0].props.value, payload.storyProgressEvents[0].evidence.rationale)
+    assert.match(nodeText(root), /正文不足以确认/)
+    assert.match(nodeText(root), /不是新增世界事实/)
+    await editProgressRationale(root, corrected)
+    assert.deepEqual(controller.review.value.changeSet.payload, payload)
+    assert.equal(dirtyChanges.at(-1), true)
+    assert.equal(buttons(root, '确认以上变更')[0].props.disabled, true)
+    await buttons(root, '保存修正')[0].props.onClick()
+    await VueRuntime.nextTick()
+    const expected = structuredClone(payload)
+    expected.storyProgressEvents[0].evidence.rationale = corrected
+    assert.deepEqual(calls[0][1], { expectedRevision: 1, expectedRevisionHash: 'a'.repeat(64), changeSet: expected })
+    assert.deepEqual(controller.review.value.changeSet.payload, expected)
+    assert.equal(dirtyChanges.at(-1), false)
+    await controller.load()
+    await VueRuntime.nextTick()
+    assert.equal(progressRationaleInputs(root)[0].props.value, corrected)
+    assert.equal(progressRationaleInputs(root)[1].props.value, payload.storyProgressEvents[1].evidence.rationale)
+    await buttons(root, '确认以上变更')[0].props.onClick()
+    assert.deepEqual(calls[1][1], { expectedRevision: 2, expectedRevisionHash: 'b'.repeat(64) })
+    assert.equal(progressRationaleInputs(root)[0].props.disabled, true)
+  } finally { mounted.app.unmount() }
+})
+
+test('unchanged progress rationale creates no revision or dirty state', async () => {
+  const mounted = await mountReview({ includeFactChanges: true })
+  try {
+    await editProgressRationale(mounted.root, mounted.payload.storyProgressEvents[0].evidence.rationale)
+    assert.equal(mounted.dirtyChanges.at(-1), false)
+    assert.equal(buttons(mounted.root, '保存修正').length, 0)
+    assert.deepEqual(mounted.calls, [])
+    assert.equal(buttons(mounted.root, '确认以上变更')[0].props.disabled, false)
+  } finally { mounted.app.unmount() }
+})
+
+test('progress rationale uses the existing nonblank 500-scalar limit without truncation', async () => {
+  const mounted = await mountReview({ includeFactChanges: true })
+  try {
+    for (const invalid of ['', ' \n\t', '字'.repeat(501), '😀'.repeat(501)]) {
+      await editProgressRationale(mounted.root, invalid)
+      assert.equal(progressRationaleInputs(mounted.root)[0].props.value, invalid)
+      assert.equal(buttons(mounted.root, '保存修正')[0].props.disabled, true)
+      assert.equal(buttons(mounted.root, '确认以上变更')[0].props.disabled, true)
+      assert.match(nodeText(mounted.root), invalid.trim() ? /最多 500 个字符/ : /请填写任务状态判断依据/)
+      await buttons(mounted.root, '保存修正')[0].props.onClick()
+      assert.deepEqual(mounted.calls, [])
+    }
+    const boundary = '😀'.repeat(500)
+    await editProgressRationale(mounted.root, boundary)
+    assert.equal(buttons(mounted.root, '保存修正')[0].props.disabled, false)
+    await buttons(mounted.root, '保存修正')[0].props.onClick()
+    assert.equal(mounted.calls[0][1].changeSet.storyProgressEvents[0].evidence.rationale, boundary)
+  } finally { mounted.app.unmount() }
+})
+
+test('rationale remains recoverable when correction succeeds but its reread fails', async () => {
+  const mounted = await mountReview({ includeFactChanges: true, correctionReadFailure: true })
+  const edited = '本次正文不足以确认已执行送交，当前仅推进。'
+  try {
+    await editProgressRationale(mounted.root, edited)
+    await buttons(mounted.root, '保存修正')[0].props.onClick()
+    await VueRuntime.nextTick()
+    assert.equal(mounted.serverReview().changeSet.revision, 2)
+    assert.equal(mounted.controller.review.value.changeSet.revision, 1)
+    assert.equal(progressRationaleInputs(mounted.root)[0].props.value, edited)
+    assert.equal(progressRationaleInputs(mounted.root)[0].props.disabled, true)
+    assert.match(nodeText(mounted.root), /已被服务端接受/)
+    assert.equal(buttons(mounted.root, '确认以上变更')[0].props.disabled, true)
+    mounted.allowReviewReads()
+    await buttons(mounted.root, '刷新核对修正')[0].props.onClick()
+    await VueRuntime.nextTick()
+    assert.equal(progressRationaleInputs(mounted.root)[0].props.value, edited)
+    assert.equal(mounted.controller.review.value.changeSet.revision, 2)
+    assert.equal(mounted.dirtyChanges.at(-1), false)
+    assert.equal(mounted.calls.length, 1)
+  } finally { mounted.app.unmount() }
+})
+
+test('rejected rationale save preserves the author draft through same-version reread', async () => {
+  const mounted = await mountReview({ includeFactChanges: true, correctFailure: true })
+  const edited = '正文未展示实际送交，仍需作者核对。'
+  try {
+    await editProgressRationale(mounted.root, edited)
+    await buttons(mounted.root, '保存修正')[0].props.onClick()
+    await mounted.controller.load()
+    await VueRuntime.nextTick()
+    assert.equal(progressRationaleInputs(mounted.root)[0].props.value, edited)
+    assert.equal(mounted.controller.review.value.changeSet.revision, 1)
+    assert.deepEqual(mounted.controller.review.value.changeSet.payload, mounted.payload)
+    assert.equal(mounted.dirtyChanges.at(-1), true)
+    assert.equal(buttons(mounted.root, '确认以上变更')[0].props.disabled, true)
+  } finally { mounted.app.unmount() }
+})
+
+test('read-only and recovery states reject captured rationale edit events', async () => {
+  for (const state of ['confirmed', 'invalidated', 'cancelled', 'failed', 'disabled', 'stale', 'busy', 'finalized', 'recovery']) {
+    const mounted = await mountReview({ includeFactChanges: true, disabled: state === 'disabled', draftStale: state === 'stale', correctionReadFailure: state === 'recovery' })
+    let release
+    try {
+      const field = progressRationaleInputs(mounted.root)[0]
+      if (state === 'confirmed') mounted.controller.review.value = { ...mounted.controller.review.value, confirmation: { revision: 1, contentHash: 'a'.repeat(64) } }
+      if (['invalidated', 'cancelled', 'failed'].includes(state)) mounted.controller.review.value = { ...mounted.controller.review.value, status: state }
+      if (state === 'finalized') mounted.controller.result.value = { status: 'finalized' }
+      if (state === 'busy') release = mounted.pauseLoad()
+      if (state === 'recovery') {
+        await editProgressRationale(mounted.root, '保存后待核对的理由')
+        await buttons(mounted.root, '保存修正')[0].props.onClick()
+      }
+      await VueRuntime.nextTick()
+      const draftValue = field.props.value
+      field.props['onUpdate:value']('禁用时不允许修改')
+      await VueRuntime.nextTick()
+      assert.equal(field.props.value, draftValue, state)
+      assert.deepEqual(mounted.controller.review.value.changeSet.payload, mounted.payload, state)
+      assert.equal(mounted.calls.length, state === 'recovery' ? 1 : 0, state)
+    } finally { await release?.(); mounted.app.unmount() }
+  }
+})
 
 const summaryInput = root => walk(root).find(node => node.type === 'label'
   && node.children.some(child => nodeText(child) === '章节摘要'))?.children.find(node => node.props['onUpdate:value'])

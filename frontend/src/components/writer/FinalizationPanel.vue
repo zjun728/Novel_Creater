@@ -54,7 +54,8 @@ const changed = computed(() => {
   return Boolean(current && changeSetDraft.value)
     && JSON.stringify(current) !== JSON.stringify(changeSetDraft.value)
 })
-const pendingFields = computed(() => addedFactPending.value || [...valueEditorPending.value.values()].some(Boolean))
+const pendingFields = computed(() => addedFactPending.value || [...valueEditorPending.value.values()].some(Boolean)
+  || (changeSetDraft.value?.storyProgressEvents || []).some(item => progressRationaleError(item)))
 const unsaved = computed(() => changed.value || pendingFields.value)
 const reviewCandidateContent = computed(() => props.candidates.find(item => item.id === review.value?.candidateId
   && item.contentHash === review.value?.candidateHash)?.content || '')
@@ -254,6 +255,19 @@ function excludeProgress(id) {
   const events = changeSetDraft.value.storyProgressEvents
   const index = events.findIndex(item => item.id === id)
   if (index !== -1) events.splice(index, 1)
+}
+
+function progressRationaleError(item) {
+  const value = item.evidence?.rationale
+  if (typeof value !== 'string' || !value.trim()) return '请填写任务状态判断依据。'
+  if (Array.from(value).length > 500) return '任务状态判断依据最多 500 个字符，请缩短后保存；输入不会自动截断。'
+  return ''
+}
+
+function updateProgressRationale(id, value) {
+  if (!editable.value || typeof value !== 'string') return
+  const item = changeSetDraft.value.storyProgressEvents.find(event => event.id === id)
+  if (item?.evidence) item.evidence.rationale = value
 }
 
 async function commitChapter() {
@@ -459,6 +473,7 @@ async function refreshPostFinalization() {
         <div v-if="changeSetDraft.storyProgressEvents.length" class="change-group">
           <h4>故事进度</h4>
           <p class="muted">可排除正文没有完成的进度。保存时会重新核对父子任务的完成条件。</p>
+          <p class="muted">任务状态判断依据用于说明本次正文支持的进度，不是新增世界事实。正文没展示某动作，表示本次正文不足以确认，不能据此断言世界中没有发生。可按需修正已有理由。</p>
           <article v-for="item in changeSetDraft.storyProgressEvents" :key="item.id" class="change-item">
             <label><span>{{ targetLabel(item) }}</span>
               <select v-model="item.status" :disabled="!editable">
@@ -468,6 +483,19 @@ async function refreshPostFinalization() {
               </select>
             </label>
             <small>{{ evidenceText(item.evidence) }}</small>
+            <label>
+              <span>任务状态判断依据</span>
+              <n-input
+                :value="item.evidence.rationale"
+                type="textarea"
+                :input-props="{ 'aria-label': `任务状态判断依据：${targetLabel(item)}` }"
+                :disabled="!editable"
+                :status="progressRationaleError(item) ? 'error' : undefined"
+                @update:value="updateProgressRationale(item.id, $event)"
+              />
+              <small>1–500 个字符；沿用本条任务状态和原文定位。</small>
+              <small v-if="progressRationaleError(item)" class="rationale-error" role="alert">{{ progressRationaleError(item) }}</small>
+            </label>
             <n-button size="small" :disabled="!editable" @click="excludeProgress(item.id)">排除此项进度</n-button>
           </article>
         </div>
@@ -572,6 +600,7 @@ h3 { font-size: 15px; } h4 { font-size: 13px; }
 .review-list span, .review-list small, .change-item small { color: #817565; font-size: 11px; line-height: 1.55; }
 .change-group { margin-top: 14px; }
 .change-item { margin-bottom: 8px; }
+.change-item .rationale-error { color: #a33b2b; }
 .fact-kind-tag { justify-self: start; }
 .fact-correction { min-width: 0; margin: 8px 0; border-top: 1px solid #dfd1bc; padding-top: 9px; }
 .fact-correction summary { cursor: pointer; color: #835531; font-size: 12px; font-weight: 700; }

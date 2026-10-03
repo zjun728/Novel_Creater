@@ -600,6 +600,89 @@ async def test_author_correction_appends_one_revision_without_provider():
     assert repository.advanced[0]["expected_revision"] == 1
 
 
+def _progress_rationale_fixture():
+    snapshot = _snapshot()
+    snapshot['planning_context']['content']['storyBlocks'] = [{
+        'id': 'block-1', 'revision': 1, 'contentHash': HASH_A,
+        'stages': [{'id': 'stage-1', 'revision': 1, 'contentHash': HASH_A,
+                    'sceneTasks': [{'id': 'task-1', 'revision': 1, 'contentHash': HASH_A}]}],
+    }]
+    evidence = _finding().evidence.model_dump(by_alias=True, mode='json')
+    payload = _change_set().model_dump(by_alias=True, mode='json')
+    payload['entities'] = [{'id': 'entity-1', 'entityType': 'person', 'canonicalName': '隔离人物'}]
+    payload['canonEvents'] = [{'id': 'fact-1', 'entityId': 'entity-1', 'factKind': 'claim',
+                              'fieldPath': 'reported_plan', 'value': '人物口述的安排尚待核对',
+                              'assertionOperator': 'equals', 'valueCardinality': 'single', 'evidence': evidence}]
+    payload['storyProgressEvents'] = [{'id': 'progress-1', 'targetType': 'scene_task', 'targetId': 'task-1',
+                                      'status': 'advanced', 'evidence': {**evidence, 'rationale': '未完成送交。'}}]
+    original = FinalizationChangeSet.model_validate(payload)
+    corrected_payload = original.model_dump(by_alias=True, mode='json')
+    corrected_payload['storyProgressEvents'][0]['evidence']['rationale'] = '本次正文不足以确认实际送交，不断言世界中未发生。'
+    corrected = FinalizationChangeSet.model_validate(corrected_payload)
+    repository = FakeRepository(snapshots=[snapshot])
+    repository.current_attempt = _awaiting_attempt()
+    repository.current_attempt['current_revision_hash'] = canonical_hash(original.model_dump(by_alias=True, mode='json'))
+    repository.current_attempt['context_manifest_hash'] = canonical_hash(FinalizationService._context_manifest(_command(), 1, snapshot))
+    return repository, original, corrected
+
+
+@pytest.mark.asyncio
+async def test_rationale_only_correction_keeps_all_other_values_and_appends_author_history():
+    repository, original, corrected = _progress_rationale_fixture()
+    service, transactions, quality, extraction = _review_service(repository)
+    initial_hash = repository.current_attempt['current_revision_hash']
+    result = await service.correct(CorrectFinalization(
+        project_id='project-1', chapter_session_id='session-1',
+        expected_revision=1, expected_revision_hash=initial_hash, change_set=corrected,
+    ))
+    assert transactions.count == 1
+    assert quality.calls == extraction.calls == []
+    assert len(repository.inserted_revisions) == 1
+    row = repository.inserted_revisions[0]
+    assert row['source'] == 'author_correction'
+    assert row['revision'] == result.current_revision == 2
+    assert row['content_hash'] == result.current_revision_hash != initial_hash
+    assert repository.advanced[0]['expected_revision_hash'] == initial_hash
+    expected = original.model_dump(by_alias=True, mode='json')
+    expected['storyProgressEvents'][0]['evidence']['rationale'] = corrected.story_progress_events[0].evidence.rationale
+    assert row['change_set'].model_dump(by_alias=True, mode='json') == expected
+    assert original.story_progress_events[0].evidence.rationale == '未完成送交。'
+    # The existing repository fixture supplies the public view from the captured append.
+    # This checks service readback, not a real database transaction or serialization layer.
+    repository.view = {'attemptId': 'attempt-1', 'status': 'awaiting_author', 'changeSet': {
+        'revision': row['revision'], 'contentHash': row['content_hash'], 'source': row['source'], 'payload': expected,
+    }}
+    assert (await service.get_review('project-1', 'session-1'))['changeSet']['payload'] == expected
+    assert quality.calls == extraction.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mismatch', ['revision', 'hash', 'invalidated', 'confirmed', 'excerpt', 'target'])
+async def test_rationale_correction_retains_existing_revision_context_and_evidence_checks(mismatch):
+    repository, _, corrected = _progress_rationale_fixture()
+    expected_revision = 2 if mismatch == 'revision' else 1
+    expected_hash = HASH_B if mismatch == 'hash' else repository.current_attempt['current_revision_hash']
+    if mismatch == 'invalidated':
+        repository.current_attempt['status'] = 'invalidated'
+    if mismatch == 'confirmed':
+        repository.current_attempt['confirmed_revision'] = 1
+    if mismatch in ('excerpt', 'target'):
+        payload = corrected.model_dump(by_alias=True, mode='json')
+        if mismatch == 'excerpt':
+            payload['storyProgressEvents'][0]['evidence']['excerptHash'] = HASH_B
+        else:
+            payload['storyProgressEvents'][0]['targetId'] = 'unrelated-task'
+        corrected = FinalizationChangeSet.model_validate(payload)
+    service, _, quality, extraction = _review_service(repository)
+    with pytest.raises(ValueError if mismatch in ('excerpt', 'target') else FinalizationConflict):
+        await service.correct(CorrectFinalization(
+            project_id='project-1', chapter_session_id='session-1',
+            expected_revision=expected_revision, expected_revision_hash=expected_hash, change_set=corrected,
+        ))
+    assert repository.inserted_revisions == []
+    assert quality.calls == extraction.calls == []
+
+
 @pytest.mark.asyncio
 async def test_correction_rejects_stale_or_already_confirmed_revision():
     repository = FakeRepository()
