@@ -1,3 +1,8 @@
+from copy import deepcopy
+import json
+
+import pytest
+
 from backend.prompts.chapter_draft import build_chapter_draft_messages
 
 
@@ -176,3 +181,87 @@ def test_local_selection_prompt_requires_a_closed_context_shape():
             assert str(error) == "invalid local draft selection context"
         else:
             raise AssertionError("invalid local context must fail closed")
+
+
+@pytest.mark.parametrize("continuation", [
+    ["上一章留下的账料复核仍待验官公布，甲员尚未核对结论"],
+    "上一章留下的账料复核仍待验官公布，甲员尚未核对结论",
+])
+@pytest.mark.parametrize(("operation_type", "review_context"), [
+    ("generate_new", None),
+    ("rewrite_full", None),
+    ("generate_new", {
+        "findings": [{"reason": "核对动作过于概括", "suggestedAction": "写清本章实际核对过程"}],
+    }),
+])
+def test_full_chapter_continuation_is_carried_in_work_that_can_finish_in_this_chapter(
+    continuation, operation_type, review_context,
+):
+    outline = {
+        "chapterGoal": "验官实际公布复核结论，甲员当场核对完成；具体责任人仍未知",
+        "scenes": ["验官当众公布复核结论", "甲员逐条核对并记下实际结论与来源"],
+        "forbiddenEarlyEvents": ["不得提前揭露具体责任人"],
+        "continuation": continuation,
+        "capacityPolicy": {"targetMin": 1800, "targetMax": 2400},
+    }
+    original = deepcopy(outline)
+    messages = build_chapter_draft_messages(
+        operation_type=operation_type,
+        chapter_session={"chapter_num": 3, "chapter_outline": outline},
+        working_draft={"content": "需要保留意图的作者原稿"},
+        story_context={"creationContract": {"chapterWordRangePreference": [2800, 3800]}},
+        review_context=review_context,
+    )
+    prompt = messages[1]["content"]
+    outline_line = next(line for line in prompt.splitlines() if line.startswith("本章已确认小纲："))
+    assert json.loads(outline_line.split("：", 1)[1]) == original
+    assert outline == original
+    boundary = prompt.split("本章最终执行边界", 1)[1]
+    assert "必须达成的目标与保留的未知：" + original["chapterGoal"] in boundary
+    assert "逐场交付与人物知情范围：\n- " + "\n- ".join(original["scenes"]) in boundary
+    assert "禁止提前发生：\n- 不得提前揭露具体责任人" in boundary
+    carried_in = continuation[0] if isinstance(continuation, list) else continuation
+    expected = "承接的未完成情节：" + ("\n- " if isinstance(continuation, list) else "") + carried_in
+    assert expected in boundary
+    assert "结束时的状态与后续边界" not in prompt
+    assert "本次完整章节目标字数：1800–2400 字" in prompt
+    assert "篇幅执行预算：整章以约 2100 字为中心" in prompt
+    assert "当前 2 场，主体每场平均约 945 字" in prompt
+    if operation_type == "rewrite_full" or review_context is not None:
+        assert "当前工作稿：需要保留意图的作者原稿" in prompt
+    else:
+        assert "需要保留意图的作者原稿" not in prompt
+    if review_context is not None:
+        review_line = next(line for line in prompt.splitlines() if line.startswith("本稿完整审稿意见（由服务端读取）："))
+        assert json.loads(review_line.split("：", 1)[1]) == review_context
+        assert "依据以上审稿意见调整并输出完整章节正文" in prompt
+
+
+@pytest.mark.parametrize("operation_type", LOCAL_CASES)
+def test_continuation_label_fix_keeps_local_selection_scope(operation_type):
+    outline = {
+        "chapterGoal": "本章完成对照核验",
+        "scenes": ["现场核对后记下结论"],
+        "forbiddenEarlyEvents": ["不得启程前往别处"],
+        "continuation": ["上一章的对照尚未核完"],
+        "capacityPolicy": {"targetMin": 1800, "targetMax": 2400},
+    }
+    messages = build_chapter_draft_messages(
+        operation_type=operation_type,
+        chapter_session={"chapter_num": 3, "chapter_outline": outline},
+        working_draft={"content": "不得发送的完整工作稿"},
+        selection_context={"left": "左侧上下文", "selected": "精确选区", "right": "右侧上下文"},
+    )
+    prompt = messages[1]["content"]
+    outline_line = next(line for line in prompt.splitlines() if line.startswith("本章已确认小纲："))
+    assert json.loads(outline_line.split("：", 1)[1]) == outline
+    assert "需要处理的精确选中内容：精确选区" in prompt
+    assert "选中内容左侧上下文：左侧上下文" in prompt
+    assert "选中内容右侧上下文：右侧上下文" in prompt
+    assert "只输出用于替换精确选中内容的新文本" in prompt
+    assert "不得发送的完整工作稿" not in prompt
+    assert "本章最终执行边界" not in prompt
+    assert "承接的未完成情节：" not in prompt
+    assert "结束时的状态与后续边界：" not in prompt
+    assert "本次完整章节目标字数：" not in prompt
+    assert "篇幅执行预算：" not in prompt

@@ -152,7 +152,7 @@ def build_chapter_draft_messages(
             ("chapterGoal", "必须达成的目标与保留的未知"),
             ("scenes", "逐场交付与人物知情范围"),
             ("forbiddenEarlyEvents", "禁止提前发生"),
-            ("continuation", "结束时的状态与后续边界"),
+            ("continuation", "承接的未完成情节"),
         ):
             value = chapter_outline.get(key)
             if isinstance(value, str) and value.strip():
