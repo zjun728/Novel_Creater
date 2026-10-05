@@ -109,6 +109,47 @@ async def test_read_draft_prompt_context_loads_authorities_canon_and_previous_fi
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("value", [
+    "confirmed text", "", None, False, True, 0, 2.5, [], {},
+    ["retained", None, False, 0, {"nested": []}],
+    {"nested": ["text", None, False, 0, {}, []]},
+])
+@pytest.mark.parametrize("encoding", [str, bytes, bytearray])
+async def test_draft_context_preserves_every_json_fact_type(value, encoding):
+    document = canonical_json(value)
+    stored = document if encoding is str else encoding(document.encode("utf-8"))
+    session = CapturingSession(
+        rows=[{"seed_json": "{}", "creation_json": "{}",
+               "style_json": "{}", "bible_json": "{}"}],
+        all_rows=[{"id": "person-1", "entity_type": "person",
+                   "canonical_name": "Recorded person", "field_path": "record.state",
+                   "payload_json": stored}],
+    )
+    result = await ChapterSessionRepository().read_draft_prompt_context(
+        session, "project-1", 3,
+    )
+    fact = result["canon"]["currentState"][0]
+    assert fact["id"] == "person-1" and fact["field_path"] == "record.state"
+    assert type(fact["payload"]) is type(value)
+    assert canonical_json(fact["payload"]) == canonical_json(value)
+    assert all(sql.lstrip().startswith("SELECT") for sql, _ in session.calls)
+
+
+@pytest.mark.asyncio
+async def test_draft_context_missing_state_remains_none():
+    session = CapturingSession(
+        rows=[{"seed_json": "{}", "creation_json": "{}",
+               "style_json": "{}", "bible_json": "{}"}],
+        all_rows=[{"id": "person-1", "entity_type": "person",
+                   "canonical_name": "Recorded person", "field_path": None,
+                   "payload_json": None}],
+    )
+    result = await ChapterSessionRepository().read_draft_prompt_context(session, "project-1", 3)
+    assert result["canon"]["currentState"][0]["payload"] is None
+    assert result["canon"]["currentState"][0]["field_path"] is None
+
+
+@pytest.mark.asyncio
 async def test_upsert_working_draft_uses_revision_and_hash_cas():
     row = {
         "id": "draft-1",

@@ -309,7 +309,8 @@ class ChapterSessionRepository:
         for row in canon_rows:
             item = dict(row)
             payload = item.pop("payload_json", None)
-            item["payload"] = self._json(payload) if payload is not None else None
+            # Canon values may be any JSON type; document-only decoding loses scalar/array facts.
+            item["payload"] = json.loads(payload) if isinstance(payload, (str, bytes, bytearray)) else payload
             canon.append(item)
         previous_chapter = None
         if previous is not None:
