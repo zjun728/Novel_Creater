@@ -5,7 +5,6 @@ from copy import deepcopy
 
 import pytest
 
-from backend.domain.planning import DraftPlanningAggregate
 from backend.prompts.planning import (
     PLANNING_MAX_PROMPT_BYTES,
     build_planning_messages,
@@ -204,12 +203,10 @@ def test_prompt_requests_exact_closed_draft_shape_and_preserves_frozen_structure
     assert "omit id, revision, and contentHash" in rendered_rules
     assert "return null and [] exactly" in rendered_rules
     assert "Never create a StoryBlock" in rendered_rules
-    assert user == {
+    assert set(user) == {"manifest", "authorInstructions", "outputContract"}
+    assert {key: user[key] for key in ("manifest", "authorInstructions")} == {
         "manifest": _manifest(),
         "authorInstructions": "扩展为三卷，并让两条长期线逐步交叉。",
-        "outputContract": DraftPlanningAggregate.model_json_schema(
-            by_alias=True
-        ),
     }
     contract = user["outputContract"]
     assert contract["additionalProperties"] is False

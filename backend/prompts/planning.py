@@ -423,6 +423,62 @@ def validate_planning_story_context_candidate(
     _validate_safe_manifest(value)
 
 
+def _constrain_output_node_identities(
+    output_contract: dict,
+    manifest: PlanningGenerationManifest,
+) -> None:
+    """Complete and narrow the generation contract's identity alternatives.
+
+    Pydantic's after-validator is not exported into JSON Schema. The existing
+    non-empty generated-key instruction is stricter than DraftNode's fields;
+    whitespace keys remain allowed by both. Completion
+    patches are inline, identity-free objects; only full node definitions are
+    constrained here, including new children referenced by those patches.
+    """
+
+    mode = manifest.expansion.mode if manifest.expansion is not None else None
+    node_types = ("DraftVolume", "DraftPlot", "DraftStoryBlock", "DraftStage", "DraftSceneTask")
+    new_only: set[str] = set()
+    if mode == "initial":
+        new_only.update(("DraftStoryBlock", "DraftStage", "DraftSceneTask"))
+        if not manifest.draft.volumes:
+            new_only.add("DraftVolume")
+        if not manifest.draft.plots:
+            new_only.add("DraftPlot")
+    elif mode in {"next_block", "next_volume", "fill_next_block", "fill_next_volume"}:
+        new_only.update(node_types)
+
+    for name in node_types:
+        definition = output_contract.get("$defs", {}).get(name)
+        if definition is None:
+            continue
+        new_identity = {
+            "required": ["clientNodeKey"],
+            "properties": {
+                "clientNodeKey": {"type": "string", "minLength": 1},
+                "id": {"type": "null"},
+                "revision": {"type": "null"},
+                "contentHash": {"type": "null"},
+            },
+        }
+        if name in new_only:
+            definition["required"].append("clientNodeKey")
+            definition["properties"].update(new_identity["properties"])
+        else:
+            definition["oneOf"] = [
+                new_identity,
+                {
+                    "required": ["id", "revision", "contentHash"],
+                    "properties": {
+                        "clientNodeKey": {"type": "null"},
+                        "id": {"type": "string"},
+                        "revision": {"type": "integer"},
+                        "contentHash": {"type": "string"},
+                    },
+                },
+            ]
+
+
 def build_planning_messages(
     *,
     manifest: PlanningGenerationManifest | Mapping[str, object],
@@ -593,6 +649,7 @@ def build_planning_messages(
                 "omitted task details remain unchanged on the server. This is "
                 "planning context, not a complete draft or proof of completion."
             )
+        _constrain_output_node_identities(evidence["outputContract"], manifest_value)
         messages = (
             {"role": "system", "content": canonical_json(instruction)},
             {"role": "user", "content": canonical_json(evidence)},
