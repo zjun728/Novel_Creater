@@ -1018,8 +1018,7 @@ test('Writer embeds one compact author-controlled finalization panel', async () 
   assert.match(panel, /targetLabel\(item\)/)
   assert.doesNotMatch(panel, /item\.targetType\s*}}\s*·\s*{{\s*item\.targetId/)
   assert.match(panel, /previousCandidateIds/)
-  assert.match(panel, /review\?\.status === 'failed'/)
-  assert.match(panel, /审查未完成，正文和候选稿未受影响/)
+  assert.match(panel, /preparationNotice/)
   assert.equal(
     panel.match(/v-if="controller\.primaryAction\.value === 'confirm'"/g)?.length,
     2,
@@ -1036,7 +1035,8 @@ test('Writer embeds one compact author-controlled finalization panel', async () 
 test('retrying a failed review shows progress without erasing the previous review', async () => {
   let release
   const pending = new Promise(resolve => { release = resolve })
-  const previous = { status: 'failed', qualityReport: { findings: [], deterministicBlocks: [] } }
+  const previous = { status: 'failed', qualityReport: { status: 'completed', findings: [], deterministicBlocks: [] },
+    changeSet: null, confirmation: null }
   const controller = createFinalizationController({
     getReview: async () => previous,
     prepare: async () => pending,
@@ -1071,6 +1071,80 @@ test('retrying a failed review shows progress without erasing the previous revie
     await request
     app.unmount()
   }
+})
+
+test('preparation feedback distinguishes authoritative stages without claiming unknown outcomes', async t => {
+  const failed = { status: 'failed', currentRevision: null, qualityReport: {
+    status: 'completed', findings: [], deterministicBlocks: [],
+  }, changeSet: null, confirmation: null }
+  const successful = { ...failed, status: 'awaiting_author', currentRevision: 1,
+    changeSet: { revision: 1, contentHash: 'a'.repeat(64), payload: {
+      title: '第一章', summary: '摘要', existingEntityIds: [], entities: [], aliases: [],
+      canonEvents: [], storyProgressEvents: [], planningPatches: [], planningSuggestions: [],
+    } } }
+  const cases = [
+    { name: 'quality completed and change preparation failed', value: failed,
+      text: /质量审查已完成，但事实\/进度变更准备失败/, absent: /质量审查未完成|审查状态尚未确认/ },
+    { name: 'quality not completed and no changes prepared', value: { ...failed,
+      qualityReport: { ...failed.qualityReport, status: 'quality_not_completed' } },
+      text: /质量审查未完成，本次审查尚未生成可确认变更/, absent: /质量审查已完成/ },
+    { name: 'cancelled', value: { ...failed, status: 'cancelled' },
+      text: /本次审查已取消/, absent: /变更准备失败|本次审查未完成/ },
+    { name: 'preparing', value: { ...failed, status: 'preparing' },
+      text: /审查仍在准备中/, absent: /变更准备失败|本次审查未完成/ },
+    { name: 'awaiting author with prepared changes', value: successful,
+      text: /本章变更集/, absent: /变更准备失败|本次审查未完成|审查状态尚未确认/ },
+    { name: 'unknown status', value: { ...failed, status: 'unrecognized' },
+      text: /尚不能确认审查是否完成或变更是否已准备/, absent: /质量审查已完成，但|原正文和候选稿未受影响/ },
+    { name: 'failed with unknown quality result', value: { ...failed, qualityReport: null },
+      text: /核对质量结果与变更准备情况/, absent: /质量审查已完成|原正文和候选稿未受影响/ },
+    { name: 'inconsistent failure revision', value: { ...failed, currentRevision: 1 },
+      text: /核对质量结果与变更准备情况/, absent: /尚未生成可确认变更/ },
+  ]
+  for (const item of cases) await t.test(item.name, async () => {
+    const original = structuredClone(item.value)
+    const controller = createFinalizationController({ getReview: async () => structuredClone(item.value) })
+    await controller.load()
+    const app = createSSRApp(FinalizationPanel, { controller, candidates: [] })
+    app.component('router-link', { render: () => h('a') })
+    const html = await renderToString(app)
+    assert.match(html, item.text)
+    assert.doesNotMatch(html, item.absent)
+    if (item.value.status === 'failed' && item.value.currentRevision === null && item.value.qualityReport) {
+      assert.match(html, /原正文和候选稿未受影响/)
+      assert.match(html, /尚未生成可确认变更/)
+      assert.doesNotMatch(html, /确认以上变更|定稿本章/)
+    }
+    assert.deepEqual(controller.review.value, original)
+    assert.deepEqual(item.value, original)
+  })
+})
+
+test('lost preparation receipt shows an unknown outcome instead of the previous failed-stage notice', async () => {
+  const previous = { status: 'failed', qualityReport: { status: 'completed', findings: [], deterministicBlocks: [] },
+    changeSet: null, confirmation: null }
+  const controller = createFinalizationController({
+    getReview: async () => structuredClone(previous),
+    prepare: async () => { throw Object.assign(new Error('UNSAFE_PROVIDER_SECRET_AND_STACK'), { status: 0 }) },
+  })
+  await controller.load()
+  const hash = 'a'.repeat(64)
+  const app = renderer.createApp(InteractivePanel, { controller, candidates: [{
+    id: 'candidate', basisStatus: 'current', contentHash: hash,
+    canonRevision: 0, planningHash: hash, outlineHash: hash,
+  }] })
+  app.provide(VueRuntime.ssrContextKey, {})
+  app.component('router-link', { render: () => h('a') })
+  const root = makeNode('root')
+  app.mount(root)
+  try {
+    assert.match(nodeText(root), /质量审查已完成，但事实\/进度变更准备失败/)
+    await buttons(root, '审查并定稿')[0].props.onClick()
+    await VueRuntime.nextTick()
+    assert.match(nodeText(root), /本次审查结果尚未确认/)
+    assert.doesNotMatch(nodeText(root), /事实\/进度变更准备失败|UNSAFE_PROVIDER_SECRET_AND_STACK/)
+    assert.deepEqual(controller.review.value, previous)
+  } finally { app.unmount() }
 })
 
 test('the panel renders evidence without exposing full candidate prose', async () => {

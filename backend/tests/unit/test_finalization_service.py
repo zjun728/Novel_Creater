@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from contextlib import asynccontextmanager
 from hashlib import sha256
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -421,16 +423,17 @@ async def test_deterministic_hard_block_never_calls_extraction():
 
 
 @pytest.mark.asyncio
-async def test_same_idempotency_fingerprint_replays_without_provider_calls():
+@pytest.mark.parametrize("status", ["awaiting_author", "failed"])
+async def test_same_idempotency_fingerprint_replays_without_provider_calls(status):
     repository = FakeRepository()
     probe, _, _, _ = _service(repository)
     fingerprint = probe.request_fingerprint(_command(), _snapshot())
     repository.existing = {
         "id": "attempt-old",
         "request_fingerprint": fingerprint,
-        "status": "awaiting_author",
-        "current_revision": 1,
-        "current_revision_hash": HASH_A,
+        "status": status,
+        "current_revision": 1 if status == "awaiting_author" else None,
+        "current_revision_hash": HASH_A if status == "awaiting_author" else None,
         "quality_report_id": "report-old",
     }
     service, transactions, quality, extraction = _service(repository)
@@ -438,6 +441,7 @@ async def test_same_idempotency_fingerprint_replays_without_provider_calls():
     result = await service.prepare(_command())
 
     assert result.replayed is True and result.attempt_id == "attempt-old"
+    assert result.status == status
     assert transactions.count == 1
     assert quality.calls == extraction.calls == []
 
@@ -476,17 +480,29 @@ async def test_authority_drift_after_provider_work_invalidates_attempt():
 
 
 @pytest.mark.asyncio
-async def test_extraction_failure_records_fixed_failed_state():
+@pytest.mark.parametrize("quality_fails", [False, True])
+async def test_extraction_failure_records_fixed_failed_state(quality_fails):
     repository = FakeRepository()
-    service, _, _, extraction = _service(
+    candidate, authority = _candidate(), _current()
+    before = deepcopy((candidate, authority, repository.session))
+    repository.lock_candidate = AsyncMock(return_value=candidate)
+    repository.lock_current_authority = AsyncMock(return_value=authority)
+    service, _, quality, extraction = _service(
         repository, extraction_failure=FinalizationProviderError("safe"),
+        quality_failure=FinalizationProviderError("safe") if quality_fails else None,
     )
 
     result = await service.prepare(_command())
 
-    assert len(extraction.calls) == 1
+    assert len(quality.calls) == len(extraction.calls) == 1
     assert result.status == "failed"
+    assert result.quality_status == ("quality_not_completed" if quality_fails else "completed")
+    assert result.current_revision is result.current_revision_hash is None
     assert repository.terminal[0]["status"] == "failed"
+    assert len(repository.inserted_reports) == 1
+    assert repository.inserted_reports[0]["status"] == result.quality_status
+    assert repository.inserted_revisions == repository.published == []
+    assert (candidate, authority, repository.session) == before
 
 
 @pytest.mark.asyncio

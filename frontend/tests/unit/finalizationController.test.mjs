@@ -402,6 +402,67 @@ test('committing and unknown commit outcomes cannot be revoked', async () => {
 })
 
 
+test('preparation failures preserve candidates and explicit retries keep distinct idempotency keys', async () => {
+  const originalCandidate = structuredClone(candidate)
+  const current = { ...review, status: 'failed', changeSet: null, confirmation: null }
+  const calls = []
+  let sequence = 0
+  const controller = createFinalizationController({
+    getReview: async () => { calls.push(['read']); return structuredClone(current) },
+    prepare: async (id, command) => {
+      calls.push(['prepare', id, command])
+      return { attemptId: 'failed-attempt', status: 'failed', qualityStatus: 'completed', currentRevision: null }
+    },
+    confirm: async () => calls.push(['confirm']),
+    commit: async () => calls.push(['commit']),
+    idFactory: () => `explicit-prepare-${++sequence}`,
+  })
+  await controller.prepareCandidate(candidate)
+  assert.equal(controller.primaryAction.value, 'blocked')
+  assert.equal(controller.review.value.changeSet, null)
+  assert.equal(controller.finalized.value, false)
+  assert.deepEqual(calls.map(item => item[0]), ['prepare', 'read'])
+  await controller.prepareCandidate(candidate)
+  assert.deepEqual(calls.map(item => item[0]), ['prepare', 'read', 'prepare', 'read'])
+  assert.notEqual(calls[0][2].idempotencyKey, calls[2][2].idempotencyKey)
+  for (const index of [0, 2]) {
+    assert.match(calls[index][2].idempotencyKey, /^[a-f0-9]{64}$/u)
+    assert.equal(calls[index][2].candidateHash, candidate.contentHash)
+    assert.equal(calls[index][2].expectedCanonRevision, candidate.canonRevision)
+  }
+  await assert.rejects(controller.confirmChangeSet())
+  await assert.rejects(controller.commitChapter())
+  assert.equal(calls.some(item => ['confirm', 'commit'].includes(item[0])), false)
+  assert.deepEqual(candidate, originalCandidate)
+})
+
+test('lost preparation response or reread never becomes a definitive failure or exposes raw errors', async t => {
+  for (const stage of ['response', 'reread']) await t.test(stage, async () => {
+    const previous = { ...review, status: 'failed', changeSet: null, confirmation: null }
+    const calls = []
+    let reading = false
+    const controller = createFinalizationController({
+      getReview: async () => {
+        calls.push('read')
+        if (reading) throw Object.assign(new Error('UNSAFE_PROVIDER_SECRET_AND_STACK'), { status: 503 })
+        return structuredClone(previous)
+      },
+      prepare: async () => {
+        calls.push('prepare')
+        if (stage === 'response') throw Object.assign(new Error('UNSAFE_PROVIDER_SECRET_AND_STACK'), { status: 0 })
+        reading = true
+        return { status: 'awaiting_author', currentRevision: 1 }
+      },
+    })
+    await controller.load()
+    await assert.rejects(controller.prepareCandidate(candidate))
+    assert.equal(controller.error.value, '本次审查结果尚未确认，请重新读取审查状态后再操作。')
+    assert.doesNotMatch(controller.error.value, /UNSAFE|失败|已完成/)
+    assert.deepEqual(controller.review.value, previous)
+    assert.deepEqual(calls, stage === 'response' ? ['read', 'prepare'] : ['read', 'prepare', 'read'])
+  })
+})
+
 test('prepare, correct, confirm and commit expose one fenced primary action', async () => {
   const calls = []
   let current = structuredClone(review)

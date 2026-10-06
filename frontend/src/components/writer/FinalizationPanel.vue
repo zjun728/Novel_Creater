@@ -82,6 +82,41 @@ async function decideFinding(id, ignored) {
   try { await props.controller.setFindingIgnored(id, ignored) } catch { /* controller owns error */ }
 }
 const hardBlocks = computed(() => props.controller.hardBlocks.value)
+const preparationNotice = computed(() => {
+  if (busy.value || props.controller.error.value || props.draftStale
+    || props.controller.finalized.value || hardBlocks.value.length) return null
+  const value = review.value
+  if (!value) return null
+  if (value.status === 'failed') {
+    const noChanges = value.changeSet === null && value.confirmation === null
+      && value.currentRevision == null
+    if (noChanges && value.qualityReport?.status === 'completed') return {
+      type: 'warning', title: '事实/进度变更准备失败',
+      message: '质量审查已完成，但事实/进度变更准备失败。原正文和候选稿未受影响，尚未生成可确认变更。可稍后重新点击“审查并定稿”，重新执行审查。',
+    }
+    if (noChanges && value.qualityReport?.status === 'quality_not_completed') return {
+      type: 'warning', title: '质量审查未完成',
+      message: '质量审查未完成，本次审查尚未生成可确认变更。原正文和候选稿未受影响。可稍后重新点击“审查并定稿”，重新执行审查。',
+    }
+    return {
+      type: 'warning', title: '本次审查未完成',
+      message: '请重新读取审查状态，核对质量结果与变更准备情况后再操作。',
+    }
+  }
+  if (value.status === 'cancelled') return {
+    type: 'info', title: '本次审查已取消',
+    message: '不会依据本次审查确认或提交变更。需要时可重新审查。',
+  }
+  if (value.status === 'preparing') return {
+    type: 'info', title: '审查仍在准备中',
+    message: '请稍后重新读取审查状态，核对结果后再操作。',
+  }
+  if (!['empty', 'awaiting_author', 'committing', 'committed', 'invalidated'].includes(value.status)) return {
+    type: 'warning', title: '审查状态尚未确认',
+    message: '当前状态无法识别，请重新读取审查状态后再操作。尚不能确认审查是否完成或变更是否已准备。',
+  }
+  return null
+})
 const resultsStale = computed(() => props.draftStale || ['invalidated', 'cancelled'].includes(review.value?.status) || props.controller.finalized.value)
 watch(() => review.value?.attemptId, () => { resultsOpen.value = false }, { flush: 'sync' })
 async function checkChanges() {
@@ -351,11 +386,11 @@ async function refreshPostFinalization() {
     >{{ controller.correctionRecovery?.value ? '刷新核对修正' : '核对撤销结果' }}</n-button>
 
     <n-alert
-      v-if="review?.status === 'failed' && !hardBlocks.length && !controller.busy.value"
-      type="warning"
-      title="本次审查未完成"
+      v-if="preparationNotice"
+      :type="preparationNotice.type"
+      :title="preparationNotice.title"
       class="panel-alert"
-    >审查未完成，正文和候选稿未受影响。可稍后重新点击“审查并定稿”。</n-alert>
+    >{{ preparationNotice.message }}</n-alert>
 
     <template v-if="controller.finalized.value">
       <n-alert

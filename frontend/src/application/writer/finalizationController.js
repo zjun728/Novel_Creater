@@ -330,7 +330,7 @@ export function createFinalizationController({
       review.value = value
       result.value = null
       return value
-    }, '审查未完成，请刷新权威状态后重试。')
+    }, '本次审查结果尚未确认，请重新读取审查状态后再操作。')
   }
 
   function correctionFailureMessage() {
